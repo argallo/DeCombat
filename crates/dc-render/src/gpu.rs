@@ -82,7 +82,13 @@ fn describe(info: &wgpu::AdapterInfo) -> String {
     format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type)
 }
 
+/// `WGPU_BACKEND` (wgpu's comma list, e.g. `dx12`), when set and non-empty, narrows every attempt to those backends;
+/// the 32-bit Windows CI lane uses it to keep wgpu off the runner's Vulkan loader.
 fn instance_for(backends: wgpu::Backends) -> wgpu::Instance {
+    let backends = match wgpu::Backends::from_env().filter(|b| !b.is_empty()) {
+        Some(only) => backends & only,
+        None => backends,
+    };
     wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends,
         ..Default::default()

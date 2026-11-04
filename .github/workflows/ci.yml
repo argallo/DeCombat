@@ -30,7 +30,8 @@ jobs:
       matrix:
         include:
           - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
-          - { name: windows-i686, os: windows-latest, target: i686-pc-windows-msvc }
+          # wgpu-hal's Vulkan instance setup trips a debug UB check on 32-bit Windows runners: DX12 (WARP) only
+          - { name: windows-i686, os: windows-latest, target: i686-pc-windows-msvc, wgpu: dx12 }
           - { name: ubuntu-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin }
     runs-on: ${{ matrix.os }}
@@ -49,6 +50,8 @@ jobs:
       - name: build
         run: cargo build --workspace --all-targets --target ${{ matrix.target }}
       - name: test
+        env:
+          WGPU_BACKEND: ${{ matrix.wgpu }}
         run: cargo test --workspace --target ${{ matrix.target }}
 
   # The servers alone on Linux (a VPS host): independent of the client's system libraries. Mirrors the Windows

@@ -193,7 +193,10 @@ fn memory_store() -> &'static Mutex<BTreeMap<String, String>> {
 pub fn read_known(path: &Path) -> Result<BTreeMap<String, String>, String> {
     let text = match std::fs::read(path) {
         Ok(b) => String::from_utf8(b).map_err(|_| damaged(path))?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        // a parent folder that is a file reads as NotADirectory on Unix and NotFound on Windows: no store either way
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => {
+            return Ok(BTreeMap::new())
+        }
         Err(_) => return Err(damaged(path)),
     };
     let mut m = BTreeMap::new();
