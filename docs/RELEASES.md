@@ -23,7 +23,7 @@ pull requests:
 | `DeCombat-win-<tag>.zip` | dc-client.exe (static C runtime, no build machine paths, DeCombat icon and file details), DeCombat.bat, README |
 | `DeCombat-win-<tag>-bots.zip` | dc-botclient.exe and bots.bat, unzipped into the same folder; kept apart so antivirus heuristics about the bot tool never touch the game |
 | `DeCombat-mac-<tag>.zip` | DeCombat.app, universal, README |
-| `DeCombat-iOS-<tag>.ipa` or `DeCombat-iOS-<tag>-unsigned.ipa` | the iPad app, see "iOS" |
+| `DeCombat-iOS-<tag>.ipa` or `DeCombat-iOS-<tag>-unsigned.ipa` | the iPad app, see "iOS"; optional: a failed iOS build leaves it out |
 | `DeCombat-MapKit-win-<tag>.zip`, `DeCombat-MapKit-mac-<tag>.zip` | the community map builder |
 | `decombat-servers-linux-x86_64-<tag>.tar.gz` | the servers, for people hosting their own |
 
