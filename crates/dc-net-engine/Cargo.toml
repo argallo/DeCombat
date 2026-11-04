@@ -1,0 +1,15 @@
+[package]
+name = "dc-net-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Delivery state machine of the 2009 game-connection UDP transport (UDP_TRANSPORT_2009.md): links, out-of-band host / join, deterministic with injected time"
+
+[dependencies]
+# dc-wire: bit stream, datagram codecs and the transport constants this crate drives (std only).
+dc-wire = { path = "../dc-wire" }
+
+[dev-dependencies]
+# proptest (CLEANROOM.md §4a): two links over a simulated lossy / reordering channel must deliver reliable
+# messages exactly once and in order.
+proptest = "1"

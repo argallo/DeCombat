@@ -1,0 +1,11 @@
+[package]
+name = "dc-bute"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dc-rez = { path = "../dc-rez" }
+# serde_json (vetted, CLEANROOM.md §4a; already in the lock through dc-rom): reads the mod content-patch document
+# (modpatch.rs, MOD-21). The writer is our own canonical form.
+serde_json = "1"

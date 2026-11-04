@@ -1,0 +1,27 @@
+# The Vanilla++ server entry with community maps (DC_DEFAULTS.md MAP-71): lines for the `[[lobby.servers]]` entry of a
+# VANILLA lobby's server.toml, not a whole file and not a second instance. The steps are docs/VPS.md "Several instances
+# on one box" > "vanilla++"; the maps' side is docs/MODDING_GUIDE.md section 12.
+#
+# A map pack is a curated pack (LG-313): `<sha256>.zip` in the lobby's `paths.mods_dir`, one line per pack in the entry's
+# `mods`. Print the lines from the review list with `dc-config vanilla-plus-lines community/vanilla_plus.json`. The pack
+# below is the committed test example (examples/mods/starter_map, not on the review list, so that command does not print it); make its zip with `dc-modkit pack examples/mods/starter_map
+# -o starter_map-0.1.0.zip`. A test keeps this hash equal to the example's (crates/dc-mapkit/tests/starter_example.rs).
+#
+# The entry's own lines stay as they are: on a lobby that already has the entry, add only the `mods` lines, after its
+# `features`. A new entry goes after the existing ones, since entry ids follow config order (LG-304).
+#
+# The game host: a remote entry (`host = "us-west"`) needs an agent whose hello says `packs=1`, because its game servers
+# load the world from the pack on that machine (specs/HOST_AGENT.md); update it with tools/host/push.sh. The lobby
+# refuses a room on a community map on a host without it and logs why. `host = ""` runs the entry's matches on the
+# lobby's own machine.
+#
+# Check it on the host:  /opt/decombat/bin/dc-config check /opt/decombat/config/server.toml --fs
+# DC-DEFAULT: MAP-71
+
+[[lobby.servers]]
+name = "Vanilla++"
+capacity = 1000
+host = ""
+mods = [
+  { id = "starter_map", version = "0.1.0", sha256 = "69338cf475385bc111322e422d8a555cb368add8f8ba1afca36790bdba6377e1" },
+]

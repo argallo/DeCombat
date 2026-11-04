@@ -1,0 +1,92 @@
+[package]
+name = "dc-mapkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat community map builder: text project (map.json + terrain.r16 + own assets), JSON ops, validation, templates and the geometry model the build pipeline consumes (docs/MAPKIT_PLAN.md)"
+
+[lib]
+name = "dc_mapkit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dc-mapkit"
+path = "src/main.rs"
+
+# The editor window (MAPKIT_PLAN.md 5.2: on Windows `gui` is a second thin binary over the same lib so the console
+# `dc-mapkit` keeps stdout for `--json` and `mcp`; the CLI's `gui` verb spawns it). DC-DEFAULT: MAP-66.
+[[bin]]
+name = "dc-mapkit-gui"
+path = "src/bin/dc-mapkit-gui.rs"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+# The editor (MAPKIT_PLAN.md D7, P3): eframe / egui on the workspace's wgpu, native folder dialogs and dc-render's
+# viewport. Off = the data tool alone (no window stack). The lib tests never open a window or need a GPU with the
+# feature on: every editor-logic module (camera, picking, commands, view-models) is free of egui types.
+gui = ["dep:eframe", "dep:egui", "dep:egui-wgpu", "dep:rfd", "dep:dc-render", "dep:glam"]
+
+[dependencies]
+# The world-file writer and the object vocabulary the build stage emits (MAPKIT_PLAN.md 5.3, 6.1): the `build`
+# stub of this crate is implemented over `dc_world::synth::SynthWorld` by the next stage.
+dc-world = { path = "../dc-world" }
+# CLEANROOM.md 4a: the serde-typed project file `map.json` and the JSON ops / diagnostics of every `--json` verb
+# (MAPKIT_PLAN.md D3, 5.2); MIT OR Apache-2.0.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# CLEANROOM.md 4a: command-line parsing of the mapkit verbs (the same feature set as dc-lobby-server: `--flag value`,
+# unknown flag = exit 2); MIT OR Apache-2.0.
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context"] }
+# CLEANROOM.md 4a: PNG read / write for the project's OWN textures (the templates generate procedural PNGs under
+# `assets/`, `validate` reads their dimensions for the size estimate, `render` writes PNGs); already in the lock
+# through dc-client / dc-render; png only; MIT OR Apache-2.0.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# CLEANROOM.md 4a: the world-level checks of `build` / `validate --world` (MAPKIT_PLAN.md 5.3 step 6) sweep the
+# standing box and rays against the built world through the same collision code the game server and the client
+# run (`dc_sim::from_world::collision_world`); workspace crate, `std` + `world` features only (no ROM speed rows);
+# MIT OR Apache-2.0.
+dc-sim = { path = "../dc-sim", default-features = false, features = ["std", "world"] }
+# CLEANROOM.md 4a (mapkit-stage2 export / render / rom): workspace crates, MIT OR Apache-2.0, no cycle (none of
+# them depends on dc-mapkit).
+# dc-modkit: `export` packs the mod folder with the same validate + lint + deterministic zip the lobby hashes
+# (`pack_mod_bytes`), and the tests take its placeholder world as a hand-made build output.
+dc-modkit = { path = "../dc-modkit" }
+# dc-mod-lua: the manifest writer (`ModManifest`) and the map-record limits (`MAP_NAME_MAX`, ...) `export` obeys.
+dc-mod-lua = { path = "../dc-mod-lua" }
+# dc-tex: own PNG textures -> DTX (`write_bgra8`) at export; DTX -> RGBA for the ROM thumbnails.
+dc-tex = { path = "../dc-tex" }
+# dc-rez: the ROM archive walks of `rom textures|sounds|sprites|worlds` (run time only, nothing committed).
+dc-rez = { path = "../dc-rez" }
+# dc-rom: SHA-256 (the ROM digest of the thumbnail cache, the key-hash match of the surface table).
+dc-rom = { path = "../dc-rom" }
+# dc-bute: the ROM surface table (`rom surfaces`) read at run time.
+dc-bute = { path = "../dc-bute" }
+# dc-config: the mode-name vocabulary (`rom modes`, the record's `modes` list).
+dc-config = { path = "../dc-config" }
+
+# CLEANROOM.md 4a: draws a map's title picture (MAP-102) with the Roboto the project ships; already in the tree through
+# egui; Apache-2.0.
+ab_glyph = "0.2"
+
+# CLEANROOM.md 4a (mapkit-stage3 gui): the editor window and widgets. eframe / egui / egui-wgpu 0.32.3 are the one
+# egui line that pins the workspace's wgpu 25 / winit 0.30 (MAPKIT_PLAN.md D7); MIT OR Apache-2.0. No default
+# features: `default_fonts` stays OFF (egui's own font pack is OFL / Ubuntu Font Licence, outside 4a; the editor
+# ships Roboto, Apache-2.0, assets/fonts) and `glow` stays out; eframe takes `wgpu` + `x11` + `wayland` only.
+eframe = { version = "0.32.3", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }
+egui = { version = "0.32.3", optional = true, default-features = false }
+egui-wgpu = { version = "0.32.3", optional = true, default-features = false }
+# CLEANROOM.md 4a: native folder / file dialogs of the welcome screen and the ROM banner (macOS panels, the
+# Windows common dialogs, the xdg portal on Linux); default features (no gtk3); MIT.
+rfd = { version = "0.17", optional = true }
+# The editor viewport (MAPKIT_PLAN.md D7, MAP-27 / MAP-62): dc-render's headless `GpuContext` handed to eframe,
+# `WorldRenderer` + `OffscreenTarget` sampled by an egui paint callback; workspace crate, MIT OR Apache-2.0.
+dc-render = { path = "../dc-render", optional = true }
+# Camera maths shared with dc-render's `Camera` (glam `Vec3` / `Quat`); MIT OR Apache-2.0, already in the lock.
+glam = { version = "0.30", optional = true }
+
+[dev-dependencies]
+# CLEANROOM.md 4a: the build tests check the render data through `dc_render::SceneMesh::build` (one batch per
+# texture, the sky portals and the sky model, a CPU-only scene build without a GPU); workspace crate, already in
+# the lock through dc-client; MIT OR Apache-2.0.
+dc-render = { path = "../dc-render" }

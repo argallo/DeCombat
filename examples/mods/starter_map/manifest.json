@@ -1,0 +1,31 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "assets",
+    "content.maps"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "Starter Map: a DeCombat community map made with dc-mapkit from the starter template.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "starter_map",
+  "kind": "shared",
+  "name": "Starter Map",
+  "optional_dependencies": [],
+  "permissions": [],
+  "priority": 0,
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [
+    "map",
+    "starter"
+  ],
+  "version": "0.1.0"
+}

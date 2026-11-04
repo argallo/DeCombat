@@ -1,0 +1,8 @@
+[package]
+name = "dc-rez"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dc-rom = { path = "../dc-rom" }

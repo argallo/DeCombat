@@ -1,0 +1,140 @@
+<!doctype html>
+<!-- The admin web pages of dc-lobby-server (adminweb.rs, LG-387): sign-in, enrolment and key management with hardware
+     security keys. One template, the section is picked by data-page; the script is /admin-web.js (no inline script,
+     nothing loaded from elsewhere). Same look as the dashboard. Provenance: ORIGINAL -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="csrf" content="__CSRF__">
+<title>DeCombat admin</title>
+<style>
+:root {
+  --paper: #e8ebe6; --sheet: #f6f7f3; --ink: #19201b; --ink-2: #4b564e; --quiet: #6f7a72; --rule: #cdd3cc;
+  --good: #2e7a4c; --bad: #bf3426; --press: #19201b; --press-ink: #f6f7f3;
+  --display: Bahnschrift, "DIN Alternate", "DIN Condensed", "Barlow Semi Condensed", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --text: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #121613; --sheet: #1a1f1b; --ink: #e3e7df; --ink-2: #aab3ab; --quiet: #838d85; --rule: #2b332d;
+          --good: #63b981; --bad: #ec6a5b; --press: #e3e7df; --press-ink: #121613; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 14px/1.5 var(--text); }
+a { color: inherit; text-decoration-color: var(--quiet); text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+p { margin: 8px 0; }
+code { font-size: 13px; }
+.muted { color: var(--quiet); }
+
+/* sign-in and enrolment: one column, set on the page rather than in a floating box */
+.door { min-height: 100vh; display: grid; align-content: center; padding: 40px 20px; }
+.door > div { width: min(100%, 34rem); margin: 0 auto; border-left: 6px solid var(--ink); padding: 4px 0 6px 24px; }
+.door .mark { font: 400 15px/1 var(--display); color: var(--quiet); margin: 0 0 14px; }
+.door h1 { font: 600 clamp(30px, 6vw, 44px)/1.04 var(--display); margin: 0 0 14px; text-wrap: balance; }
+.door p { color: var(--ink-2); max-width: 52ch; }
+.door ol { color: var(--ink-2); padding-left: 20px; margin: 10px 0 0; }
+.door li { margin: 3px 0; }
+
+input, button { font: inherit; padding: 9px 14px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); color: var(--ink); }
+button { cursor: pointer; font-weight: 600; }
+button.main { background: var(--press); border-color: var(--press); color: var(--press-ink); padding: 11px 20px; }
+button.danger { border-color: var(--bad); color: var(--bad); background: transparent; }
+button:disabled { opacity: .5; cursor: default; }
+label.f { display: flex; flex-direction: column; gap: 4px; margin: 18px 0 4px; color: var(--quiet); font-size: 13px; }
+label.f input { color: var(--ink); font-size: 15px; }
+.bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
+.msg { font-weight: 600; min-height: 1.5em; margin-top: 14px; }
+.msg.ok { color: var(--good); } .msg.bad { color: var(--bad); }
+
+/* the key page sits inside the operator console */
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; padding: 0 20px; background: var(--sheet);
+       border-bottom: 1px solid var(--rule); }
+.top .mark { font: 600 18px/1 var(--display); padding: 14px 0; white-space: nowrap; }
+.top .mark span { color: var(--quiet); font-weight: 400; }
+nav { display: flex; flex-wrap: wrap; gap: 2px; align-self: stretch; align-items: stretch; }
+nav a { display: flex; align-items: center; padding: 0 11px; color: var(--ink-2); text-decoration: none;
+        border-bottom: 3px solid transparent; margin-bottom: -1px; min-height: 46px; }
+nav a:hover { color: var(--ink); }
+nav a.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+.top .out { margin-left: auto; padding: 6px 12px; }
+.page { padding: 26px 20px 60px; max-width: 1320px; margin: 0 auto; }
+.page h1 { font: 600 clamp(26px, 3.6vw, 36px)/1.1 var(--display); margin: 0 0 6px; }
+.page .lede { color: var(--ink-2); max-width: 78ch; margin-bottom: 22px; }
+.sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: middle; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+th { color: var(--quiet); font-weight: 500; font-size: 12.5px; }
+td input { width: 10rem; padding: 6px 9px; }
+td button { padding: 6px 11px; margin-right: 6px; }
+.add { margin-top: 26px; }
+.add h2 { font: 600 17px/1.2 var(--display); margin: 0 0 4px; }
+.add input { width: 16rem; }
+@media (max-width: 600px) { .door > div { padding-left: 16px; } .top { padding: 0 16px; } .page { padding: 18px 16px 50px; } .top .out { margin-left: 0; } }
+</style>
+<script src="/admin-web.js" defer></script>
+</head>
+<body data-page="__PAGE__">
+<noscript><p class="msg bad">These pages need JavaScript, for the security key.</p></noscript>
+
+<main id="login" class="door" hidden>
+  <div>
+    <p class="mark">DeCombat operations</p>
+    <h1>Sign in with your security key</h1>
+    <p>Plug in one of your YubiKeys, press the button, then enter the key's PIN and touch it when it blinks.</p>
+    <div class="bar"><button class="main" id="login-go">Sign in with security key</button></div>
+    <p class="msg" id="login-msg" role="status"></p>
+  </div>
+</main>
+
+<main id="enroll" class="door" hidden>
+  <div>
+    <p class="mark">DeCombat operations</p>
+    <h1>Add a security key</h1>
+    <p>Only a YubiKey with a PIN is accepted. This link works once.</p>
+    <ol>
+      <li>Type a name for the key, then click outside the box. A YubiKey touched while a text box has the cursor types a code into it.</li>
+      <li>Press the button and choose "Security key" if the browser asks.</li>
+      <li>Allow the browser to show the key's make and model: that is how the server knows it is a YubiKey.</li>
+      <li>Enter the key's PIN and touch it.</li>
+    </ol>
+    <label class="f">Name for this key<input id="enroll-label" maxlength="40" placeholder="for example Blue YubiKey"></label>
+    <div class="bar"><button class="main" id="enroll-go">Add this key</button></div>
+    <p class="msg" id="enroll-msg" role="status"></p>
+    <p id="enroll-next" hidden><a href="/login">Sign in now</a></p>
+  </div>
+</main>
+
+<div id="keys" hidden>
+  <div class="top">
+    <div class="mark">DeCombat <span>operations</span></div>
+    <nav>
+      <a href="/ops#live">Live</a><a href="/ops#problems">Problems</a><a href="/ops#matches">Matches</a><a href="/ops#timeline">Players</a><a href="/ops#alerts">Alerts</a><a href="/ops#bots">Bots</a><a href="/ops/beta">Beta list</a><a href="/keys" class="on" aria-current="page">Security keys</a>
+    </nav>
+    <button class="out" id="logout">Sign out</button>
+  </div>
+  <main class="page">
+    <h1>Security keys</h1>
+    <p class="lede">The keys that can sign in here. Adding or removing one asks you to touch a key you already have first. The last key
+      cannot be removed on this page; if every key is lost, make a new link on the server with <code>dc-lobby-server admin-web enroll</code>.</p>
+    <div class="sheet">
+      <table><thead><tr><th>#</th><th>Name</th><th>Model (AAGUID)</th><th>Checked against</th><th>Added</th><th>Last used</th><th></th></tr></thead>
+        <tbody id="key-rows"></tbody></table>
+    </div>
+    <div class="add">
+      <h2>Add another key</h2>
+      <p class="muted">Type its name first, then press the button: you touch a key you have, then the new one.</p>
+      <div class="bar">
+        <input id="add-label" maxlength="40" placeholder="Name for the new key" aria-label="Name for the new key">
+        <button class="main" id="add-go">Add another key</button>
+      </div>
+      <p class="msg" id="keys-msg" role="status"></p>
+    </div>
+  </main>
+</div>
+</body>
+</html>

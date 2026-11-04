@@ -1,0 +1,34 @@
+# systemd unit for a DeCombat remote game host (specs/HOST_AGENT.md, crates/dc-host/README.md). WRITTEN ON A MAC,
+# NOT RUN ON LINUX YET: check every line on the host. tools/host/push.sh installs it; by hand:
+#   sudo cp decombat-host.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now decombat-host        # start now and at boot
+#   journalctl -u decombat-host -f                   # the agent's log (game servers' stderr included)
+# Layout: /opt/decombat/bin/{dc-host,dc-dserver}, /opt/decombat/config/host.toml (the lobby address, fingerprint and
+# token; readable by `decombat` only), /opt/decombat/rom (the server ROM), /opt/decombat/logs (the game servers' logs
+# and working directory); everything owned by the system user `decombat`.
+# The agent dials out to the lobby; nothing listens on TCP here. The router forwards the UDP port_range only.
+
+[Unit]
+Description=DeCombat remote game host (dials the lobby, starts one dc-dserver per match)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=decombat
+Group=decombat
+WorkingDirectory=/opt/decombat
+ExecStart=/opt/decombat/bin/dc-host --config /opt/decombat/config/host.toml
+# The default KillMode=control-group: a stop or restart ends the game servers too. They could not be reattached by
+# the new agent anyway (their stdin / stdout pipes belong to the old process); the lobby closes those matches.
+Restart=always
+RestartSec=5
+LimitNOFILE=4096
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/decombat/logs
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,133 @@
+name: ci
+
+# On pull requests, pushes to master and by hand. `pull_request` (never `pull_request_target`): a fork's run has a
+# read-only token and no secrets, and no job here uses a secret. A newer push to a pull request cancels its older run.
+# The caches are written from master only, so a pull request cannot put anything in them for master's builds; the
+# release and deploy workflows restore none.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # ROM-gated tests (dc_rom::test_rom / rom_or_skip!) skip themselves when CA_ROM is unset; CI never has a ROM.
+  CA_ROM: ""
+
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { name: windows-i686, os: windows-latest, target: i686-pc-windows-msvc }
+          - { name: ubuntu-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: client libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev pkg-config
+      - name: build
+        run: cargo build --workspace --all-targets --target ${{ matrix.target }}
+      - name: test
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+  # The servers alone on Linux (a VPS host): independent of the client's system libraries. Mirrors the Windows
+  # check lane `DC_TARGET=linux python cargo_env.py cargo check` (docs/SERVER.md section 9); here it also links and
+  # runs the tests.
+  linux-servers:
+    name: test (linux-x86_64 servers)
+    # 22.04, not ubuntu-latest: binaries linked against its glibc 2.35 also run on a 24.04 VPS (not the reverse)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-gnu && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: build
+        run: cargo build --all-targets --target x86_64-unknown-linux-gnu -p dc-lobby-server -p dc-dserver -p dc-rez -p dc-botclient -p dc-config -p dc-host
+      - name: test
+        run: cargo test --target x86_64-unknown-linux-gnu -p dc-lobby-server -p dc-dserver -p dc-rez -p dc-botclient -p dc-config -p dc-host
+
+  # The community directory (community/community.json, served from decombat.com): a pull request that breaks the
+  # schema, a hash or a duplicate fails here.
+  community:
+    name: community directory
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: validate community.json
+        run: cargo run -p dc-config -- check-directory community/community.json
+
+  lint:
+    name: lint (fmt, clippy, clean-room gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal -c clippy -c rustfmt && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Only crates that are already clean are gated; add a crate here when its backlog is cleared.
+      - name: fmt (clean crates)
+        run: >
+          cargo fmt
+          -p dc-audio -p dc-bute -p dc-config -p dc-fx-data -p dc-mod-lua -p dc-model -p dc-modkit
+          -p dc-net-engine -p dc-render -p dc-rez -p dc-rom -p dc-sim -p dc-tex -p dc-ui-data
+          -p dc-wire -p dc-world -p dc-xtask -p dc-lobby-server -p dc-dserver -p dc-host -p dc-mapkit -- --check
+      # clippy-dirty at the time of writing: dc-audio dc-fx-data dc-modkit dc-tex dc-wire dc-world.
+      # dc-mapkit (DC_DEFAULTS.md MAP-76): --no-deps keeps the gate on the crate's own code (its path
+      # dependencies dc-tex and dc-world are on the dirty list); the GUI feature compiles without a GPU and no
+      # test opens a window, so the workspace build above covers it on all four targets.
+      - name: clippy -D warnings (clean crates)
+        run: >
+          cargo clippy --no-deps --all-targets
+          -p dc-bute -p dc-config -p dc-mod-lua -p dc-model -p dc-net-engine -p dc-render
+          -p dc-rez -p dc-rom -p dc-sim -p dc-ui-data -p dc-xtask -p dc-lobby-server -p dc-dserver -p dc-host
+          -p dc-mapkit
+          -- -D warnings
+      - name: clean-room gate (public mode)
+        run: python3 tools/assetcheck.py
+      - name: deploy script tests
+        run: |
+          set -e
+          bash tools/ship_servers_test.sh
+          bash tools/host/update_test.sh
+          bash tools/vps/tests/instance_test.sh
+          bash tools/vps/tests/backup_test.sh
+          bash tools/vps/tests/healthcheck_test.sh
+          bash tools/vps/tests/migrate_test.sh
+          bash tools/vps/tests/deploy_test.sh

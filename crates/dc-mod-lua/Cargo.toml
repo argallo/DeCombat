@@ -1,0 +1,15 @@
+[package]
+name = "dc-mod-lua"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dc-bute = { path = "../dc-bute" }
+dc-rez = { path = "../dc-rez" }
+# dc-config: the DeCombat mode-name vocabulary (`modes::MODE_NAMES`) a map record's `modes` list is checked
+# against (MAP-4 / MAP-6). Workspace crate, MIT OR Apache-2.0; dc-config depends on no mod crate (no cycle).
+dc-config = { path = "../dc-config" }
+# Real Lua 5.4 (vendored, built from source with the MSVC toolchain) replaces the hand-written
+# interpreter: correct language semantics, set_hook instruction limit, set_memory_limit.
+mlua = { version = "0.10", features = ["lua54", "vendored"] }

@@ -1,0 +1,12 @@
+{
+  "name": "decombat-landing",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test scripts/site.test.mjs",
+    "preview": "node scripts/preview.mjs",
+    "deploy": "npm run build && firebase deploy --only hosting --project decombat"
+  }
+}

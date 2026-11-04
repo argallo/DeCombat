@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "updated": "2026-11-03T00:00:00Z",
+  "servers": [
+    {
+      "id": "decombat-vanilla",
+      "name": "DeCombat",
+      "description": "The official servers: US Central, US West and Vanilla++ (US West) with Gun Game, Hardcore, Possession and reviewed community maps. No client mods. Operated by the DeCombat project; contact via the project repository.",
+      "region": "na",
+      "address": "play.decombat.com:10000",
+      "policy": "vanilla",
+      "client_visual_allowed": false,
+      "mods": [],
+      "fingerprint": "18:AA:F5:44:72:8D:98:01:F3:67:F3:F4:D9:1F:78:53:F2:CC:62:97:66:82:5E:4E:21:E0:17:ED:97:18:78:1A",
+      "website": "https://decombat.com"
+    },
+    {
+      "id": "decombat-hacking-mod",
+      "name": "Hacking Mod (US Central)",
+      "description": "Everyone hacks in the open here: the Hacking Mod shows players through walls with chams, nametags and health bars, and rooms may add no-recoil. Operated by the DeCombat project; contact via the project repository.",
+      "region": "na",
+      "address": "play.decombat.com:11000",
+      "policy": "modded",
+      "client_visual_allowed": true,
+      "mods": [
+        {
+          "id": "hacking_mod",
+          "version": "1.1.1",
+          "sha256": "03abce2b7f252c278649266c1574de0bcd5df19beaa3e895f39b3382d9736452"
+        }
+      ],
+      "fingerprint": "9B:CB:03:55:6D:3E:CD:9D:85:8D:DD:46:F0:D4:7C:9F:B3:70:F8:F9:88:76:6B:DD:94:D1:96:2E:F2:56:31:2A",
+      "website": "https://decombat.com"
+    }
+  ],
+  "known_mods": [
+    {
+      "id": "hacking_mod",
+      "name": "Hacking Mod",
+      "version": "1.1.1",
+      "sha256": "03abce2b7f252c278649266c1574de0bcd5df19beaa3e895f39b3382d9736452",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "author": "DeCombat",
+      "description": "See players through walls as boxes, chams or skeletons in your colours, with enemy nametags, health bars and team mate colours; rooms may turn recoil and spread off.",
+      "capabilities": [
+        "content.text",
+        "hooks.render",
+        "world.full_visibility",
+        "combat.no_recoil"
+      ]
+    },
+    {
+      "id": "drawn_crosshair",
+      "name": "Custom Crosshair",
+      "version": "1.1.0",
+      "sha256": "6ebce523fc0c19553a2b37c1683f92d92543e1e1a5dbaa6652d566994394235d",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "author": "DeCombat",
+      "description": "A cosmetic crosshair drawn by the game: shape, size, colour and recoil behaviour. Optional, and off on vanilla servers.",
+      "capabilities": [
+        "content.hud"
+      ]
+    }
+  ]
+}

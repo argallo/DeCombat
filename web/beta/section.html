@@ -1,0 +1,48 @@
+<!-- DeCombat beta signup section. Provenance: ORIGINAL.
+     Paste this section into index.html just before <section id="community" ...>,
+     add <a href="#beta">Beta</a> to the nav, link beta.css after style.css and load beta.js:
+       <link rel="stylesheet" href="beta.css" />
+       <script type="module" src="beta.js"></script>
+-->
+      <section id="beta" class="beta-section" aria-labelledby="beta-title">
+        <div class="wrap beta-inner">
+          <div class="beta-copy">
+            <p class="eyebrow">CLOSED BETA</p>
+            <h2 id="beta-title">GET IN <span class="amber-text">EARLY.</span></h2>
+            <p>
+              We are letting players in a few at a time so we can fix what breaks before everyone
+              arrives. Leave your e-mail address and we will send you an invite code when your
+              spot opens.
+            </p>
+            <p class="fine">
+              You confirm your address first with a link we mail you. We use it only for beta
+              invites and updates. Every mail has an unsubscribe link.
+            </p>
+          </div>
+          <form id="beta-form" class="beta-form" method="post"
+                action="https://beta.decombat.com/beta/signup" novalidate>
+            <label class="beta-field"><span class="eyebrow">E-MAIL</span>
+              <input id="beta-email" name="email" type="email" autocomplete="email"
+                     maxlength="254" required placeholder="you@example.com" />
+            </label>
+            <label class="beta-field"><span class="eyebrow">PLATFORM</span>
+              <select id="beta-platform" name="platform">
+                <option value="">Not sure yet</option>
+                <option value="windows">Windows</option>
+                <option value="mac">macOS</option>
+                <option value="ipad">iPad</option>
+              </select>
+              <span class="fine">Windows and macOS first; iPad later.</span>
+            </label>
+            <label class="beta-check">
+              <input id="beta-consent" name="consent" type="checkbox" value="1" required />
+              <span>Store my address to send beta invites and updates.
+                <a href="privacy">Privacy</a></span>
+            </label>
+            <button type="submit" id="beta-submit" class="button">
+              Request an invite <span aria-hidden="true">↗</span>
+            </button>
+            <p id="beta-status" class="beta-status fine" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>

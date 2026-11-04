@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dc-rom",
+    "crates/dc-rez",
+    "crates/dc-bute",
+    "crates/dc-wire",
+    "crates/dc-mod-lua",
+    "crates/dc-modkit",
+    "crates/dc-lobby-server",
+    "crates/dc-host",
+    "crates/dc-world",
+    "crates/dc-tex",
+    "crates/dc-model",
+    "crates/dc-xtask",
+    "crates/dc-net-engine",
+    "crates/dc-dserver",
+    "crates/dc-sim",
+    "crates/dc-cone",
+    "crates/dc-render",
+    "crates/dc-ui-data",
+    "crates/dc-audio",
+    "crates/dc-fx-data",
+    "crates/dc-config",
+    "crates/dc-botclient",
+    "crates/dc-client",
+    "crates/dc-hangdump",
+    "crates/dc-ios-hid",
+    "crates/dc-ios-app",
+    "crates/dc-mapkit",
+    "crates/dc-netlab",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# The Tier-1 differential test streams ~485 MB through Blowfish and SHA-256; keep that usable in debug test runs.
+[profile.dev.package.dc-rez]
+opt-level = 3
+[profile.dev.package.dc-rom]
+opt-level = 3
+[profile.dev.package.dc-bute]
+opt-level = 3
+[profile.dev.package.dc-xtask]
+opt-level = 3
+# Argon2id password hashing (dc-lobby-server LG-140) runs inside the lobby's state lock; keep it fast in debug builds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

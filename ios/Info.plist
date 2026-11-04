@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>DeCombat</string>
+  <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <!-- a launch screen (an empty one) takes the app out of iPadOS's compatibility mode: without it the app runs
+       scaled at 1024 x 768 points and the display stays at 60 Hz (OBSERVED 2026-10-31 on an iPad Pro M4) -->
+  <key>UILaunchScreen</key><dict/>
+  <key>UIRequiresFullScreen</key><true/>
+  <key>UIStatusBarHidden</key><true/>
+  <key>UIViewControllerBasedStatusBarAppearance</key><false/>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <!-- the 2009 client folder (EU-ROM), decombat.toml and the logs live in Documents: visible in the Files app and
+       in the Finder's file sharing so the ROM can be copied in -->
+  <key>UIFileSharingEnabled</key><true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+  <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>DeCombat talks to game servers on your network for local play.</string>
+  <key>CADisableMinimumFrameDurationOnPhone</key><true/>
+  <key>UIRequiredDeviceCapabilities</key>
+  <array><string>metal</string></array>
+  <key>MinimumOSVersion</key><string>17.0</string>
+</dict>
+</plist>

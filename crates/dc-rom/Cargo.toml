@@ -1,0 +1,9 @@
+[package]
+name = "dc-rom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# serde_json: the server ROM manifest (server_rom.rs); vetted in CLEANROOM.md 4a
+serde_json = "1"

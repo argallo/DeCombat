@@ -1,0 +1,14 @@
+[package]
+name = "dc-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# none: std only (CRC-32 is the public IEEE algorithm, implemented in udp.rs)
+
+[dev-dependencies]
+# proptest (CLEANROOM.md §4a): property round-trips for the bit stream, link framing and every field encoding.
+proptest = "1"
+# serde_json (CLEANROOM.md §4a): reads the Python reference vectors (wire_vectors.jsonl) in the gated replay test.
+serde_json = "1"

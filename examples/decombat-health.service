@@ -1,0 +1,13 @@
+# One health check (tools/vps/healthcheck.sh, OPS-21, docs/OPS.md). It exits 1 while something is failing, which is the check's
+# answer and no failure of the unit itself. NOT RUN ON A LINUX VPS YET.
+[Unit]
+Description=DeCombat health check
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/decombat/tools/healthcheck.sh
+SuccessExitStatus=1
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes

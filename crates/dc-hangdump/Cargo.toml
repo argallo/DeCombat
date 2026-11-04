@@ -1,0 +1,23 @@
+[package]
+name = "dc-hangdump"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat hang diagnostics: breadcrumbs, thread stacks of the own process, process counters, a minidump and a crash filter (Windows)"
+
+[target.'cfg(windows)'.dependencies]
+# Thread suspension, stack walk, symbols and the minidump through the Win32 API (already in the lock through the
+# wgpu / winit stack, same version); MIT OR Apache-2.0.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

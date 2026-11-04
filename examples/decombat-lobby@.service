@@ -1,0 +1,41 @@
+# systemd template unit: one more DeCombat lobby instance on the same box (docs/VPS.md "Several instances on one
+# box"). %i is the instance name; its folder /opt/decombat/instances/%i holds config/server.toml, decombat.env,
+# data/ (its own ca.db), logs/ and mods/, made by tools/vps/instance.sh <name> create. The binaries
+# (/opt/decombat/bin), the server ROM (/opt/decombat/rom) and the user `decombat` are shared with the default
+# instance (examples/decombat-lobby.service, which stays as it is). WRITTEN ON WINDOWS, NOT RUN ON LINUX YET.
+#   sudo bash /opt/decombat/tools/instance.sh modded start    # = systemctl enable --now decombat-lobby@modded
+#   sudo systemctl stop decombat-lobby@modded                 # graceful stop (LG-130), as for the default unit
+#   journalctl -u decombat-lobby@modded -f
+# The operator endpoint's address comes from DC_ADMIN in the instance's decombat.env (instance.sh picks a free
+# loopback port from 10091 up); the ports, the DB, the logs and the mods dir are in its server.toml.
+
+[Unit]
+Description=DeCombat lobby server, instance %i (starts one dc-dserver per match)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=decombat
+Group=decombat
+WorkingDirectory=/opt/decombat/instances/%i
+EnvironmentFile=/opt/decombat/instances/%i/decombat.env
+ExecStart=/opt/decombat/bin/dc-lobby-server --config /opt/decombat/instances/%i/config/server.toml --public --check-password --no-auto-create --register "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/instances/%i/logs/dserver --admin ${DC_ADMIN} --stop-grace 10
+# LG-130: the graceful stop, exactly as in decombat-lobby.service (only the lobby gets SIGTERM, KillMode=mixed).
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+# LG-326: the lobby closes new connections at 4000; each takes up to three descriptors
+LimitNOFILE=16384
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/decombat/instances/%i/data /opt/decombat/instances/%i/logs /opt/decombat/instances/%i/mods
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/decombat/community.schema.json",
+  "title": "DeCombat community directory",
+  "description": "Servers and known mods, one static document read by the landing page and the in-client browser. Rules the schema cannot express (unique ids, vanilla servers have no mods, server mod hashes must not contradict known_mods) are enforced by dc-config's validator (dc-config check-directory).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "updated", "servers", "known_mods"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "updated": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "servers": { "type": "array", "items": { "$ref": "#/$defs/server" } },
+    "known_mods": { "type": "array", "items": { "$ref": "#/$defs/known_mod" } }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "mod_id": { "type": "string", "pattern": "^[a-z0-9_.-]{1,64}$" },
+    "mod_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": { "$ref": "#/$defs/mod_id" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^\\S+$" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "region", "address", "policy"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]{3,40}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "description": { "type": "string", "maxLength": 400 },
+        "region": { "enum": ["na", "sa", "eu", "as", "oc", "af", "lan"] },
+        "address": { "type": "string", "description": "host:port of the lobby", "pattern": "^(\\[[0-9a-fA-F:]+\\]|[A-Za-z0-9.-]+):[0-9]{1,5}$" },
+        "policy": { "enum": ["vanilla", "modded"] },
+        "client_visual_allowed": { "type": "boolean" },
+        "players": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["current", "max"],
+          "properties": {
+            "current": { "type": "integer", "minimum": 0 },
+            "max": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "website": { "type": "string", "pattern": "^https?://\\S+$" },
+        "fingerprint": { "type": "string", "description": "SHA-256 fingerprint of the lobby's TLS certificate; the in-client browser pins it", "pattern": "^([0-9A-Fa-f]{64}|([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2})$" },
+        "mods": { "type": "array", "description": "Ordered mod set (load order); empty for vanilla.", "items": { "$ref": "#/$defs/mod_ref" } }
+      },
+      "if": { "properties": { "policy": { "const": "vanilla" } } },
+      "then": { "properties": { "mods": { "maxItems": 0 }, "client_visual_allowed": { "const": false } } },
+      "else": { "required": ["mods"], "properties": { "mods": { "minItems": 1 } } }
+    },
+    "known_mod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "version", "sha256", "source_repo"],
+      "properties": {
+        "id": { "$ref": "#/$defs/mod_id" },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^\\S+$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "source_repo": { "type": "string", "pattern": "^https://\\S+$" },
+        "author": { "type": "string" },
+        "description": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "manifest_url": { "type": "string", "pattern": "^https://\\S+$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "dc-ui-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Readers for the 2009 UI data (CRes.dll strings, layout table, screen pages, fonts), written from rust/specs/FMT_CRES_UI.md"
+
+# No third-party crates. All three dependencies are workspace crates:
+# - dc-rom: PE image access (resource directory walk, literal reads by rva) and the CA_ROM resolver.
+# - dc-rez: archive access and decryption of the text tables (the encrypted entries) and the font archive.
+# - dc-bute: the attribute text grammar (`[section]`, `key = value`) of the layout table.
+[dependencies]
+dc-rom = { path = "../dc-rom" }
+dc-rez = { path = "../dc-rez" }
+dc-bute = { path = "../dc-bute" }

@@ -1,0 +1,34 @@
+{
+  "id": "drawn_crosshair",
+  "name": "Custom Crosshair",
+  "version": "1.1.0",
+  "kind": "client_visual",
+  "capabilities": ["content.hud"],
+  "description": "A cosmetic crosshair drawn by the game at any resolution: length, thickness, gap (also negative), centre dot, T shape, black outline, any colour and opacity, and five styles. It can stay fixed, grow with the spread like the original, or kick only on a shot, with its own recoil scale. Share your setup as a code. Only you see it; it never loads on a vanilla server.",
+  "author": "DeCombat",
+  "tags": ["crosshair", "cosmetic", "hud"],
+  "screenshots": ["screenshots/main.png"],
+  "settings": [
+    {"key": "style", "label": "Style", "group": "Shape", "type": "choice", "default": "circle", "options": [
+      {"value": "cross", "label": "Cross"},
+      {"value": "circle", "label": "Circle"},
+      {"value": "dot", "label": "Dot"},
+      {"value": "cross_dot", "label": "Cross + dot"},
+      {"value": "circle_dot", "label": "Circle + dot"}
+    ]},
+    {"key": "length", "label": "Length", "type": "number", "min": 0.5, "max": 40, "step": 0.5, "default": 7},
+    {"key": "thickness", "label": "Thickness", "type": "number", "min": 0.5, "max": 12, "step": 0.1, "default": 1.2},
+    {"key": "gap", "label": "Gap", "type": "number", "min": -20, "max": 40, "step": 0.5, "default": 0},
+    {"key": "dot", "label": "Centre dot", "type": "bool", "default": false},
+    {"key": "t_style", "label": "T shape (no top arm)", "type": "bool", "default": false},
+    {"key": "outline", "label": "Outline", "type": "bool", "default": false},
+    {"key": "outline_thickness", "label": "Outline thickness", "type": "number", "min": 0.5, "max": 6, "step": 0.5, "default": 1},
+    {"key": "colour", "label": "Presets", "group": "Colour", "type": "colour", "default": "#4080ff"},
+    {"key": "recoil", "label": "Behaviour", "group": "Recoil", "type": "choice", "default": "true", "options": [
+      {"value": "true", "label": "Dynamic"},
+      {"value": "false", "label": "Static"},
+      {"value": "fire", "label": "On fire only"}
+    ]},
+    {"key": "recoil_scale", "label": "Recoil scale", "type": "number", "min": 0, "max": 3, "step": 0.05, "default": 1}
+  ]
+}

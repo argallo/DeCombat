@@ -1,0 +1,5 @@
+[toolchain]
+# Exact version recorded from `cargo --version` on 2026-10-24: cargo 1.99.1 (5f94df478 2026-08-27), rustc 1.99.1.
+# cargo_env.py selects the host triple (i686 default, x86_64 via DC_TARGET) with RUSTUP_TOOLCHAIN.
+channel = "stable"
+components = ["clippy", "rustfmt"]

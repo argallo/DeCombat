@@ -1,0 +1,14 @@
+[package]
+name = "dc-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reader for version-85 world files (.dat) of the 2009 client, written from rust/specs/FMT_DAT85.md"
+
+[dependencies]
+# dc-rom: only for its in-tree SHA-256, used to identify ROM class/property names by hash (FMT_DAT85.md 6.2).
+dc-rom = { path = "../dc-rom" }
+
+[dev-dependencies]
+# dc-rez: ROM-gated test and the stats example read the world files out of the user's own archive at run time.
+dc-rez = { path = "../dc-rez" }

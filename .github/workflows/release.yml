@@ -1,0 +1,356 @@
+name: release
+
+# Builds every package from one commit and, on a tag `v*`, publishes them all as one GitHub Release: the Windows zip,
+# the macOS universal app zip, the iOS .ipa, the two MapKit zips, the Linux server tarball, SHA256SUMS and generated
+# notes (docs/RELEASES.md). A release is all or nothing: job `publish` needs every build job, and the release stays a
+# draft until each asset is on it. Also runs on pushes to master that touch the code or the packaging (the packages stay
+# workflow artifacts there) and by hand. Moving the servers is another workflow, deploy-servers.yml; a release never
+# touches a server. Release builds restore no cache: what ships comes from a clean build.
+#   variables  DC_FRIEND_SERVER       the public lobby host (or host:port) baked into the Windows and macOS zips;
+#                                     required on a tag
+#              DC_FRIEND_FINGERPRINT  that lobby's certificate fingerprint (without it: trust on first use)
+#   secrets    DC_IOS_*               optional: a signed .ipa instead of the -unsigned one
+#              DC_MAC_*               optional: Developer ID signing and notarisation of the macOS zips
+on:
+  push:
+    branches: [master]
+    # a tag push always runs (GitHub does not apply the paths filter to tags)
+    tags: ["v*"]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "examples/**"
+      - "ios/**"
+      - "tools/vps/**"
+      - "tools/host/**"
+      - "tools/ci_*.sh"
+      - "tools/package_servers.sh"
+      - "tools/mac_notarise.sh"
+      - "tools/ios_release.sh"
+      - "tools/friend_pack_mac.sh"
+      - "tools/friend_pack_win.py"
+      - "tools/mapkit_pack_mac.sh"
+      - "tools/mapkit_pack_win.py"
+      - "assets/icon/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CA_ROM: ""
+  DC_FRIEND_SERVER: ${{ vars.DC_FRIEND_SERVER }}
+  DC_FRIEND_FINGERPRINT: ${{ vars.DC_FRIEND_FINGERPRINT }}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac-client:
+    name: friend package (macOS, universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: a release needs its lobby
+        shell: bash
+        run: |
+          if [ -n "$DC_FRIEND_SERVER" ]; then exit 0; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "::error::set the repository variable DC_FRIEND_SERVER: a release without its client zips is not published"; exit 1; fi
+          echo "::warning::set the repository variable DC_FRIEND_SERVER to build the friend packages; only the bare client is uploaded"
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin && rustup default stable
+      - name: build settings
+        run: bash tools/ci_env.sh
+      - name: build dc-client (arm64 and x86_64)
+        run: |
+          cargo build --locked --release -p dc-client -p dc-botclient --target aarch64-apple-darwin
+          cargo build --locked --release -p dc-client -p dc-botclient --target x86_64-apple-darwin
+          mkdir -p target/release
+          cp target/aarch64-apple-darwin/release/dc-client target/release/dc-client
+          cp target/aarch64-apple-darwin/release/dc-botclient target/release/dc-botclient
+      - name: check for build machine paths
+        run: bash tools/ci_check_paths.sh --warn target/aarch64-apple-darwin/release/dc-client target/x86_64-apple-darwin/release/dc-client
+      - name: package DeCombat.app
+        if: env.DC_FRIEND_SERVER != ''
+        run: tools/friend_pack_mac.sh --server "$DC_FRIEND_SERVER" --fingerprint "$DC_FRIEND_FINGERPRINT" --name "DeCombat-mac-$LABEL"
+      - name: sign and notarise (needs the DC_MAC_* secrets; skipped with a warning without them)
+        if: env.DC_FRIEND_SERVER != '' && github.ref_type == 'tag'
+        env:
+          DC_MAC_CERT_P12: ${{ secrets.DC_MAC_CERT_P12 }}
+          DC_MAC_CERT_PASSWORD: ${{ secrets.DC_MAC_CERT_PASSWORD }}
+          DC_MAC_SIGN_IDENTITY: ${{ secrets.DC_MAC_SIGN_IDENTITY }}
+          DC_MAC_NOTARY_APPLE_ID: ${{ secrets.DC_MAC_NOTARY_APPLE_ID }}
+          DC_MAC_NOTARY_PASSWORD: ${{ secrets.DC_MAC_NOTARY_PASSWORD }}
+          DC_MAC_NOTARY_TEAM: ${{ secrets.DC_MAC_NOTARY_TEAM }}
+        run: bash tools/mac_notarise.sh out_friend/*.zip
+      - name: upload friend package
+        if: env.DC_FRIEND_SERVER != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-mac-${{ github.sha }}
+          path: out_friend/*.zip
+          if-no-files-found: error
+          retention-days: 90
+      - name: upload bare client
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dc-client-macos-${{ github.sha }}
+          path: |
+            target/aarch64-apple-darwin/release/dc-client
+            target/x86_64-apple-darwin/release/dc-client
+          retention-days: 30
+
+  windows-client:
+    name: friend package (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: a release needs its lobby
+        shell: bash
+        run: |
+          if [ -n "$DC_FRIEND_SERVER" ]; then exit 0; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "::error::set the repository variable DC_FRIEND_SERVER: a release without its client zips is not published"; exit 1; fi
+          echo "::warning::set the repository variable DC_FRIEND_SERVER to build the friend packages; only the bare client is uploaded"
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc && rustup default stable
+      - name: build settings
+        shell: bash
+        # crt-static: one exe without a runtime to install (the player's machine has no build tools)
+        run: bash tools/ci_env.sh --crt-static
+      - name: build dc-client
+        run: cargo build --locked --release -p dc-client -p dc-botclient --target x86_64-pc-windows-msvc
+      - name: check for build machine paths
+        shell: bash
+        run: bash tools/ci_check_paths.sh target/x86_64-pc-windows-msvc/release/dc-client.exe
+      - name: package DeCombat.bat
+        if: env.DC_FRIEND_SERVER != ''
+        shell: bash
+        run: python tools/friend_pack_win.py --client target/x86_64-pc-windows-msvc/release/dc-client.exe --botclient target/x86_64-pc-windows-msvc/release/dc-botclient.exe --server "$DC_FRIEND_SERVER" --fingerprint "$DC_FRIEND_FINGERPRINT" --name "DeCombat-win-$LABEL" --commit "$SHORT_SHA"
+      - name: upload friend package
+        if: env.DC_FRIEND_SERVER != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-win-${{ github.sha }}
+          path: out_friend/*.zip
+          if-no-files-found: error
+          retention-days: 90
+      - name: upload bare client
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dc-client-windows-${{ github.sha }}
+          path: target/x86_64-pc-windows-msvc/release/dc-client.exe
+          retention-days: 30
+
+  # On a tag or by hand only: a Mac runner's minutes are not spent on every master push.
+  ios:
+    name: iOS package (.ipa)
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target aarch64-apple-ios && rustup default stable
+      - name: Install xcodegen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install xcodegen
+      - name: build settings
+        run: bash tools/ci_env.sh
+      - name: build the .ipa (signed with the DC_IOS_* secrets, else -unsigned)
+        env:
+          DC_IOS_CERT_P12: ${{ secrets.DC_IOS_CERT_P12 }}
+          DC_IOS_CERT_PASSWORD: ${{ secrets.DC_IOS_CERT_PASSWORD }}
+          DC_IOS_PROFILE: ${{ secrets.DC_IOS_PROFILE }}
+          DC_IOS_TEAM: ${{ secrets.DC_IOS_TEAM }}
+        run: bash tools/ios_release.sh --label "$LABEL" --out out_ios
+      - name: upload the .ipa
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-iOS-${{ github.sha }}
+          path: out_ios/*.ipa
+          if-no-files-found: error
+          retention-days: 90
+
+  # The MapKit packages (DC_DEFAULTS.md MAP-75): the five binaries the map builder ships with (dc-mapkit,
+  # dc-mapkit-gui when the crate carries it, and dc-lobby-server, dc-dserver, dc-client, which `dc-mapkit play`
+  # starts from the folder next to its own exe). No DC_FRIEND_SERVER gate: nothing is baked in. dc-mapkit is
+  # built with --bins --all-features so the GUI binary rides along whether or not it sits behind a feature; the
+  # game binaries are named one by one (their crates carry no other bins today, and a new helper bin must not
+  # slip into the package).
+  mac-mapkit:
+    name: MapKit package (macOS, universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin && rustup default stable
+      - name: build settings
+        run: bash tools/ci_env.sh
+      - name: build the five binaries (arm64 and x86_64)
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release --bins --all-features -p dc-mapkit --target "$t"
+            cargo build --locked --release -p dc-lobby-server -p dc-dserver -p dc-client --bin dc-lobby-server --bin dc-dserver --bin dc-client --target "$t"
+          done
+      - name: package DeCombat MapKit.app
+        run: tools/mapkit_pack_mac.sh --bin-dir target/aarch64-apple-darwin/release --x86-dir target/x86_64-apple-darwin/release --name "DeCombat-MapKit-mac-$LABEL"
+      - name: sign and notarise (needs the DC_MAC_* secrets; skipped with a warning without them)
+        if: github.ref_type == 'tag'
+        env:
+          DC_MAC_CERT_P12: ${{ secrets.DC_MAC_CERT_P12 }}
+          DC_MAC_CERT_PASSWORD: ${{ secrets.DC_MAC_CERT_PASSWORD }}
+          DC_MAC_SIGN_IDENTITY: ${{ secrets.DC_MAC_SIGN_IDENTITY }}
+          DC_MAC_NOTARY_APPLE_ID: ${{ secrets.DC_MAC_NOTARY_APPLE_ID }}
+          DC_MAC_NOTARY_PASSWORD: ${{ secrets.DC_MAC_NOTARY_PASSWORD }}
+          DC_MAC_NOTARY_TEAM: ${{ secrets.DC_MAC_NOTARY_TEAM }}
+        run: bash tools/mac_notarise.sh out_mapkit/*.zip
+      - name: upload MapKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-MapKit-mac-${{ github.sha }}
+          path: out_mapkit/*.zip
+          if-no-files-found: error
+          retention-days: 90
+
+  windows-mapkit:
+    name: MapKit package (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc && rustup default stable
+      - name: build settings
+        shell: bash
+        # self-contained exes without a runtime to install (the user's machine has no build tools)
+        run: bash tools/ci_env.sh --crt-static
+      - name: build the five binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --bins --all-features -p dc-mapkit --target x86_64-pc-windows-msvc
+          cargo build --locked --release -p dc-lobby-server -p dc-dserver -p dc-client --bin dc-lobby-server --bin dc-dserver --bin dc-client --target x86_64-pc-windows-msvc
+      - name: package the MapKit zip
+        shell: bash
+        run: python tools/mapkit_pack_win.py --bin-dir target/x86_64-pc-windows-msvc/release --name "DeCombat-MapKit-win-$LABEL" --commit "$SHORT_SHA"
+      - name: upload MapKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-MapKit-win-${{ github.sha }}
+          path: out_mapkit/*.zip
+          if-no-files-found: error
+          retention-days: 90
+
+  linux-servers:
+    name: servers (linux x86_64)
+    # 22.04: binaries linked against its glibc 2.35 also run on a 24.04 VPS (not the reverse)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-gnu && rustup default stable
+      - name: build settings
+        run: bash tools/ci_env.sh
+      - name: build release servers
+        run: cargo build --locked --release --bins --target x86_64-unknown-linux-gnu -p dc-lobby-server -p dc-dserver -p dc-rez -p dc-botclient -p dc-config -p dc-host
+      - name: package release servers
+        run: bash tools/package_servers.sh --bin-dir target/x86_64-unknown-linux-gnu/release --name "decombat-servers-linux-x86_64-$LABEL" --out dist --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: upload release servers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: decombat-servers-linux-x86_64-${{ github.sha }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 90
+
+  # All or nothing: this job runs only when every build above succeeded, checks that each asset is there exactly once,
+  # builds the release as a draft and publishes it last. The token's write right is given to this job alone.
+  publish:
+    name: publish the GitHub Release
+    needs: [mac-client, windows-client, ios, mac-mapkit, windows-mapkit, linux-servers]
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: the tag must be on master
+        run: |
+          set -euo pipefail
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_SHA" --jq .status)
+          case "$status" in
+            identical|behind) ;;
+            *) echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on master (compare: $status)"; exit 1 ;;
+          esac
+      - name: download the packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: DeCombat-*
+          path: dist
+          merge-multiple: true
+      - name: download the server tarball
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: decombat-servers-linux-x86_64-*
+          path: dist
+          merge-multiple: true
+      - name: every asset, exactly once, and SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          for want in "DeCombat-win-$GITHUB_REF_NAME.zip" "DeCombat-win-$GITHUB_REF_NAME-bots.zip" "DeCombat-mac-$GITHUB_REF_NAME.zip" \
+                      "DeCombat-MapKit-win-$GITHUB_REF_NAME.zip" "DeCombat-MapKit-mac-$GITHUB_REF_NAME.zip" \
+                      "decombat-servers-linux-x86_64-$GITHUB_REF_NAME.tar.gz"; do
+            [ -s "$want" ] || { echo "::error::missing asset $want; nothing is published"; exit 1; }
+          done
+          ipas=0
+          for f in "DeCombat-iOS-$GITHUB_REF_NAME.ipa" "DeCombat-iOS-$GITHUB_REF_NAME-unsigned.ipa"; do
+            if [ -s "$f" ]; then ipas=$((ipas + 1)); fi
+          done
+          [ "$ipas" -eq 1 ] || { echo "::error::expected one .ipa, found $ipas; nothing is published"; exit 1; }
+          [ "$(ls | wc -l)" -eq 7 ] || { echo "::error::expected 7 assets; nothing is published"; exit 1; }
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+          cat SHA256SUMS
+      - name: create the draft, attach everything, publish
+        run: |
+          set -euo pipefail
+          R="$GITHUB_REPOSITORY"; TAG="$GITHUB_REF_NAME"
+          # a published release stays as it is (delete it first to replace it); a draft of a failed run goes
+          if state=$(gh release view "$TAG" --repo "$R" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$state" = false ]; then echo "::error::the release $TAG is already published"; exit 1; fi
+            gh release delete "$TAG" --repo "$R" --yes
+          fi
+          signed="The macOS zips and the iOS .ipa are as the build's signing secrets allowed; see docs/RELEASES.md."
+          if ls dist/*-unsigned.ipa >/dev/null 2>&1; then
+            signed="The iOS .ipa is unsigned: a sideloading tool signs it with your own Apple ID. See docs/RELEASES.md."
+          fi
+          printf '%s\n\n%s\n\nDeCombat runs on your own copy of the original Combat Arms EU client files (2009). We do not provide them or link to them. Check a download against SHA256SUMS (Get-FileHash in PowerShell, shasum -a 256 on macOS). The Windows exe is not code-signed: SmartScreen may say Windows protected your PC (More info, Run anyway) and Defender may flag it as Trojan:Win32/Wacatac.B!ml, a known false positive for new unsigned programs; the build has been submitted to Microsoft. The macOS app is not notarised (System Settings, Privacy and Security, Open Anyway). This is a beta: accounts and progress may be reset before the full launch. Discord: https://discord.gg/hNWcXpTST . Built from %s.\n' \
+            "DeCombat $TAG." "$signed" "$GITHUB_SHA" > notes.md
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          # shellcheck disable=SC2086
+          gh release create "$TAG" --repo "$R" --verify-tag --draft $pre --title "DeCombat $TAG" --notes-file notes.md --generate-notes
+          gh release upload "$TAG" --repo "$R" dist/*
+          want=$(ls dist | sort)
+          got=$(gh release view "$TAG" --repo "$R" --json assets --jq '.assets[].name' | sort)
+          [ "$want" = "$got" ] || { echo "::error::the draft's assets differ from the build's; it stays a draft"; echo "$got"; exit 1; }
+          gh release edit "$TAG" --repo "$R" --draft=false

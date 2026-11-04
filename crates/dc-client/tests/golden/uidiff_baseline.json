@@ -1,0 +1,252 @@
+{
+ "dynamic_fill": [
+  "p3/r10/Text/w2/id3",
+  "p3/r14/Text/w2/id7",
+  "p3/r22/Text/w2/id15",
+  "p3/r30/Text/w3/id3",
+  "p3/r32/Text/w3/id5",
+  "p3/r34/Text/w3/id7",
+  "p3/r36/Text/w3/id9",
+  "p3/r38/Text/w3/id11",
+  "p3/r40/Text/w3/id13",
+  "p3/r42/Text/w3/id15",
+  "p4/r4/Text/w5/id3",
+  "p5/r18/Text/w1/id16",
+  "p5/r19/Text/w1/id17",
+  "p6/r10/Text/w5/id9",
+  "p6/r11/Text/w5/id10",
+  "p6/r37/Text/w6/id10",
+  "p6/r39/Text/w6/id14",
+  "p6/r42/Text/w6/id17",
+  "p6/r44/Text/w6/id19",
+  "p6/r46/Text/w6/id21",
+  "p7/r52/Text/w2/id10",
+  "p7/r53/Text/w2/id11",
+  "p7/r54/Text/w2/id12",
+  "p8/r22/Text/w7/id3",
+  "p8/r23/Text/w7/id4",
+  "p8/r24/Text/w7/id5",
+  "p8/r26/Text/w7/id7",
+  "p8/r28/Text/w7/id9",
+  "p8/r30/Text/w7/id11",
+  "p8/r32/Text/w7/id13",
+  "p8/r34/Text/w7/id15"
+ ],
+ "note": "gate T3 (uidiff.py): per size and screen, structural mismatch counts by class of the front-end draw list against the ROM layout pages; ratchets down only. EMPTY and undocumented FILL are gated together as a per-screen set of layout keys (\"EMPTY|FILL\"). dynamic_fill: text records without a string of their own that the screens fill on purpose (server info, character info, room info (with the weapon limit p6/r46, CLI-478), result values, create values); p8/r16 (the lobby user list count, L10 stray number) is deliberately not listed. run_colour (w2-gaterows, CLI-537): text records whose colour the screen sets at run time with evidence (Character Info: NX prepaid / NX credit / GP numbers 0xffffffff and the grade name in the grade row's colour, cshell+0x126fa0, OBSERVED R10_lobby.png); a COLOUR row of any other key is counted. 2026-10-28 shop-pane CLI-740: FACE raised shop 12->16, storage/inbox 0->4: the left pane row names use font 0x15 as the cells do (EVIDENCE cshell+0xda950 font 0x15 via cshell+0x2c07b0; same unloaded font-21 file as the cells' 12). CLI-741: market FACE 0->1, the function list row name in font 0x15 (EVIDENCE cshell+0x1496e0 -> cshell+0xda950). 2026-10-28 shop-polish2 CLI-760: tuning FACE 12->15, the socket labels in font 0x15 (EVIDENCE cshell+0xda950); tuning POS 0->1, the weapon picture (image 6) placed at TuningScreenIMGPOS x scale, sized REC x scale (EVIDENCE cshell+0x155d30).",
+ "run_colour": [
+  "p8/r28/Text/w7/id9",
+  "p8/r30/Text/w7/id11",
+  "p8/r32/Text/w7/id13",
+  "p8/r34/Text/w7/id15"
+ ],
+ "sizes": {
+  "1024x768": {
+   "channels": {},
+   "clan": {},
+   "create": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "help": {},
+   "inbox": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 4
+   },
+   "lobby": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "login": {},
+   "market": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 1
+   },
+   "messenger": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "options": {},
+   "popup": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "report": {},
+   "result": {
+    "EMPTY|FILL": [
+     "p7/r12/Text/w0/id11",
+     "p7/r14/Text/w0/id13",
+     "p7/r19/Text/w0/id18",
+     "p7/r21/Text/w0/id20"
+    ]
+   },
+   "room": {},
+   "servers": {
+    "EMPTY|FILL": [
+     "p3/r11/Text/w2/id4",
+     "p3/r16/Text/w2/id9",
+     "p3/r18/Text/w2/id11",
+     "p3/r20/Text/w2/id13",
+     "p3/r23/Text/w2/id16",
+     "p3/r24/Text/w2/id17",
+     "p3/r25/Text/w2/id18"
+    ]
+   },
+   "shop": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 16
+   },
+   "storage": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 4
+   },
+   "tuning": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p10/r43/Text/w-1/id30",
+     "p10/r44/Text/w-1/id31",
+     "p10/r45/Text/w-1/id32",
+     "p10/r47/Text/w-1/id34",
+     "p10/r5/Text/w2/id4"
+    ],
+    "FACE": 15,
+    "POS": 1
+   }
+  },
+  "2560x1440": {
+   "channels": {},
+   "clan": {},
+   "create": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "help": {},
+   "inbox": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 4
+   },
+   "lobby": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "login": {},
+   "market": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 1
+   },
+   "messenger": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "options": {},
+   "popup": {
+    "EMPTY|FILL": [
+     "p8/r16/Text/w6/id0",
+     "p8/r6/Text/w5/id5"
+    ]
+   },
+   "report": {},
+   "result": {
+    "EMPTY|FILL": [
+     "p7/r12/Text/w0/id11",
+     "p7/r14/Text/w0/id13",
+     "p7/r19/Text/w0/id18",
+     "p7/r21/Text/w0/id20"
+    ]
+   },
+   "room": {},
+   "servers": {
+    "EMPTY|FILL": [
+     "p3/r11/Text/w2/id4",
+     "p3/r16/Text/w2/id9",
+     "p3/r18/Text/w2/id11",
+     "p3/r20/Text/w2/id13",
+     "p3/r23/Text/w2/id16",
+     "p3/r24/Text/w2/id17",
+     "p3/r25/Text/w2/id18"
+    ]
+   },
+   "shop": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 16
+   },
+   "storage": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p11/r57/Text/w9/id7",
+     "p11/r58/Text/w9/id8",
+     "p11/r59/Text/w9/id9",
+     "p11/r61/Text/w9/id11"
+    ],
+    "FACE": 4
+   },
+   "tuning": {
+    "COLOUR": 4,
+    "EMPTY|FILL": [
+     "p10/r43/Text/w-1/id30",
+     "p10/r44/Text/w-1/id31",
+     "p10/r45/Text/w-1/id32",
+     "p10/r47/Text/w-1/id34",
+     "p10/r5/Text/w2/id4"
+    ],
+    "FACE": 15,
+    "POS": 1
+   }
+  }
+ }
+}

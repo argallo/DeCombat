@@ -1,0 +1,50 @@
+name: DeCombat website
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'web/landing/**'
+      - 'web/beta/**'
+      - 'community/community.json'
+      - '.github/workflows/website.yml'
+  release:
+    types: [published, edited, deleted]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: decombat-website
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test && node scripts/sync-releases.mjs && npm run build
+        working-directory: web/landing
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decombat-website
+          path: web/landing/dist
+          retention-days: 7
+  deploy:
+    # Enable after configuring FIREBASE_SERVICE_ACCOUNT_DECOMBAT in repository secrets.
+    if: vars.DC_WEBSITE_DEPLOY_ENABLED == 'true'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: decombat-website
+          path: web/landing/dist
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_DECOMBAT }}'
+          projectId: decombat
+          channelId: live
+          entryPoint: web/landing

@@ -1,0 +1,22 @@
+[package]
+name = "dc-xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Dev-only tooling: Tier-1 differential dump of the ROM through the Rust crates"
+
+[lib]
+name = "dc_xtask"
+path = "src/lib.rs"
+
+[[bin]]
+name = "refdump"
+path = "src/main.rs"
+
+[dependencies]
+dc-rom = { path = "../dc-rom" }
+dc-rez = { path = "../dc-rez" }
+dc-bute = { path = "../dc-bute" }
+# serde_json: canonical JSON writer (sorted object keys, compact, UTF-8); vetted in CLEANROOM.md 4a
+serde_json = "1"

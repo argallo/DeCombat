@@ -1,0 +1,12 @@
+[package]
+name = "dc-ios-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The iPad app's static library: the C entry the Xcode wrapper (ios/) calls into dc-client"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+dc-client = { path = "../dc-client" }

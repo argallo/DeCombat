@@ -1,0 +1,49 @@
+# systemd unit for a DeCombat server on a Linux host (docs/VPS.md, docs/SERVER.md section 9). WRITTEN ON WINDOWS,
+# NEVER RUN: check every line on the host. tools/vps/bootstrap.sh installs it; by hand:
+#   sudo cp decombat-lobby.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now decombat-lobby       # start now and at boot
+#   sudo systemctl stop decombat-lobby               # graceful stop (LG-130): SIGTERM, matches end, DB closed
+#   journalctl -u decombat-lobby -f                  # console output
+# Layout (tools/vps/bootstrap.sh): /opt/decombat/bin/{dc-lobby-server,dc-dserver,dc-config,dc-server-rom,
+# dc-botclient}, /opt/decombat/rom (the server ROM, docs/SERVER_ROM.md), /opt/decombat/config/{server.toml,
+# decombat.env} (from examples/server-vps.toml and examples/decombat.env), /opt/decombat/data (ca.db),
+# /opt/decombat/logs; everything owned by the system user `decombat`.
+# Flags (examples/server-vps.toml explains each): --public with the advertised address from decombat.env, passwords
+# checked, no auto-created accounts, registration with invite codes, game servers on every interface, the dc-dserver
+# next to the lobby (LG-126), the operator endpoint on loopback only.
+
+[Unit]
+Description=DeCombat lobby server (starts one dc-dserver per match)
+After=network-online.target
+Wants=network-online.target
+# A refused start (for example --public without DC_SERVER__ADVERTISE_IP) must not restart forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=decombat
+Group=decombat
+WorkingDirectory=/opt/decombat
+EnvironmentFile=/opt/decombat/config/decombat.env
+ExecStart=/opt/decombat/bin/dc-lobby-server --config /opt/decombat/config/server.toml --public --check-password --no-auto-create --register "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver --admin 127.0.0.1:10090 --stop-grace 10
+# LG-130: SIGTERM runs the graceful stop. Only the lobby gets it (KillMode=mixed): the lobby ends each match through
+# its game server's pipe (`quit`, the result is stored); whatever is still running after the lobby exits gets
+# SIGKILL. With the default KillMode=control-group the game servers would get SIGTERM too and die without a result.
+KillSignal=SIGTERM
+KillMode=mixed
+# Keep it above --stop-grace plus a few seconds for the connections and the DB checkpoint.
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+# LG-326: the lobby closes new connections at 4000; each takes up to three descriptors
+LimitNOFILE=16384
+NoNewPrivileges=yes
+# Hardening that leaves the layout above writable: the ROM and the binaries are read-only for the service.
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/decombat/data /opt/decombat/logs
+
+[Install]
+WantedBy=multi-user.target

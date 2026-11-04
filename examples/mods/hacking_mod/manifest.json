@@ -1,0 +1,17 @@
+{
+  "id": "hacking_mod",
+  "name": "Hacking Mod",
+  "version": "1.1.1",
+  "kind": "shared",
+  "capabilities": ["content.text", "hooks.render", "world.full_visibility", "combat.no_recoil"],
+  "description": "Everyone on this server hacks, in the open. See players through walls as boxes, chams or skeletons in the colours you pick. Enemy nametags are always on, with health bars, and team mates get their own colours. Rooms can also turn recoil off. The server lists this mod, so nobody is surprised.",
+  "author": "DeCombat",
+  "tags": ["wallhack", "chams", "no-recoil", "nametags", "demo"],
+  "screenshots": ["screenshots/main.png"],
+  "commands": [
+    { "command": "/wallhack", "description": "Next see-through style: box, chams, skeleton." },
+    { "command": "/nametags", "description": "Enemy nametags on or off." },
+    { "command": "/health", "description": "Health bars on or off (also /healthbars)." },
+    { "command": "/teammates", "description": "Team mates' see-through colours on or off." }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "mods": [
+    {
+      "id": "hacking_mod",
+      "name": "Hacking Mod",
+      "version": "1.1.1",
+      "author": "DeCombat",
+      "category": "gameplay",
+      "status": "reference",
+      "image": "assets/junk-flea.webp",
+      "description": "See through walls. Server-wide rules, declared up front.",
+      "details": "Everyone on this server hacks, in the open. See players through walls as boxes, chams or skeletons in the colours you pick. Enemy nametags are always on, with health bars, and team mates get their own colours. Rooms can also turn recoil off. The server lists this mod, so nobody is surprised.",
+      "capabilities": [
+        "content.text",
+        "hooks.render",
+        "world.full_visibility",
+        "combat.no_recoil"
+      ],
+      "sourcePath": "examples/mods/hacking_mod"
+    },
+    {
+      "id": "drawn_crosshair",
+      "name": "Custom Crosshair",
+      "version": "1.1.0",
+      "author": "DeCombat",
+      "category": "visual",
+      "status": "reference",
+      "image": "assets/snow-valley.webp",
+      "description": "Your shape, colour and recoil style. Your sightline.",
+      "details": "A cosmetic crosshair drawn by the game at any resolution: length, thickness, gap (also negative), centre dot, T shape, black outline, any colour and opacity, and five styles. It can stay fixed, grow with the spread like the original, or kick only on a shot, with its own recoil scale. Share your setup as a code. Only you see it; it never loads on a vanilla server.",
+      "capabilities": [
+        "content.hud"
+      ],
+      "sourcePath": "examples/mods/drawn_crosshair"
+    }
+  ]
+}

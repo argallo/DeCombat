@@ -1,0 +1,14 @@
+[package]
+name = "dc-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reader/writer for the 2009 model container (.ltb), from rust/specs/FMT_LTB.md"
+
+# No third-party dependencies: the parser is pure std.
+[dependencies]
+
+[dev-dependencies]
+# ROM-gated validation test walks every .ltb entry of every .rez through the VFS (read-only).
+dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }

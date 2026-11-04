@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "shipping_container",
+      "version": "0.1.3",
+      "sha256": "047b499fa80a8a12ea35baed172d907be852409a735b3856229f286877e8f55e",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Shipping Container, a close-quarters cargo deck map built with dc-mapkit from the owner's top view. Owner approved 2026-11-02. Adds only a map. Surfaces are ROM texture paths; the pack's pictures are plain name cards with no ROM pixels. Source stays outside this repository (CLEANROOM.md section 4)."
+    }
+  ]
+}

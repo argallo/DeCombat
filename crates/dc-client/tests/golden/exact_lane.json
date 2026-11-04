@@ -1,0 +1,2739 @@
+{
+ "contract": "dc-render-determinism/1",
+ "lanes": {
+  "Vulkan|0x10de:0x2b85|NVIDIA|617.42|i686-pc-windows-msvc|debug opt-level 0|wgpu 25.0.2": {
+   "recorded_with": {
+    "adapter": {
+     "backend": "Vulkan",
+     "device": "0x2b85",
+     "device_type": "DiscreteGpu",
+     "driver": "NVIDIA",
+     "driver_info": "617.42",
+     "name": "NVIDIA GeForce RTX 5090",
+     "vendor": "0x10de"
+    },
+    "os": "windows Microsoft Windows [Version 10.0.26300.9711]",
+    "software": {
+     "dc_client": "0.1.0",
+     "git_commit": "3a7e740e9c2607b90c441457eec17c771fa62e4c",
+     "profile": "debug opt-level 0",
+     "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+     "target": "i686-pc-windows-msvc",
+     "wgpu": "25.0.2"
+    }
+   },
+   "scenes": {
+    "hud_fallback": {
+     "code_digest": "5718b41f0fd13ec186214bdbbd07ce2b37e0611c249dc920d9ac38c7b3921b02",
+     "frames": [
+      {
+       "frame": 0,
+       "height": 240,
+       "sha256": "c7e17405c9e1c63d62b2e76d0a2eb4689c2df256d9a06acc57f680c85e1f114a",
+       "width": 320
+      },
+      {
+       "frame": 1,
+       "height": 240,
+       "sha256": "c7e17405c9e1c63d62b2e76d0a2eb4689c2df256d9a06acc57f680c85e1f114a",
+       "width": 320
+      },
+      {
+       "frame": 2,
+       "height": 240,
+       "sha256": "c7e17405c9e1c63d62b2e76d0a2eb4689c2df256d9a06acc57f680c85e1f114a",
+       "width": 320
+      },
+      {
+       "frame": 3,
+       "height": 240,
+       "sha256": "c7e17405c9e1c63d62b2e76d0a2eb4689c2df256d9a06acc57f680c85e1f114a",
+       "width": 320
+      },
+      {
+       "frame": 4,
+       "height": 240,
+       "sha256": "c7e17405c9e1c63d62b2e76d0a2eb4689c2df256d9a06acc57f680c85e1f114a",
+       "width": 320
+      },
+      {
+       "frame": 5,
+       "height": 240,
+       "sha256": "c7e17405c9e1c63d62b2e76d0a2eb4689c2df256d9a06acc57f680c85e1f114a",
+       "width": 320
+      },
+      {
+       "frame": 6,
+       "height": 240,
+       "sha256": "8de0d2077398068713220ccaffc956604a84aa445ff1d1be3807af9f89473671",
+       "width": 320
+      },
+      {
+       "frame": 7,
+       "height": 240,
+       "sha256": "8de0d2077398068713220ccaffc956604a84aa445ff1d1be3807af9f89473671",
+       "width": 320
+      },
+      {
+       "frame": 8,
+       "height": 240,
+       "sha256": "8de0d2077398068713220ccaffc956604a84aa445ff1d1be3807af9f89473671",
+       "width": 320
+      },
+      {
+       "frame": 9,
+       "height": 240,
+       "sha256": "8de0d2077398068713220ccaffc956604a84aa445ff1d1be3807af9f89473671",
+       "width": 320
+      },
+      {
+       "frame": 10,
+       "height": 240,
+       "sha256": "18e69601c957f087be199d001dd1450c9af8d6ab5ac34bf0a2c4f174e5394114",
+       "width": 320
+      },
+      {
+       "frame": 11,
+       "height": 240,
+       "sha256": "18e69601c957f087be199d001dd1450c9af8d6ab5ac34bf0a2c4f174e5394114",
+       "width": 320
+      },
+      {
+       "frame": 12,
+       "height": 240,
+       "sha256": "18e69601c957f087be199d001dd1450c9af8d6ab5ac34bf0a2c4f174e5394114",
+       "width": 320
+      },
+      {
+       "frame": 13,
+       "height": 240,
+       "sha256": "18e69601c957f087be199d001dd1450c9af8d6ab5ac34bf0a2c4f174e5394114",
+       "width": 320
+      },
+      {
+       "frame": 14,
+       "height": 240,
+       "sha256": "1186fe62cf9f059af7e712a5add73227ae0bfa292a9acbc1a1e6ec207b833abb",
+       "width": 320
+      },
+      {
+       "frame": 15,
+       "height": 240,
+       "sha256": "f549dff3890f1330385b2e4b6272320d23cef41a1f4d36101f4e2a5bcdf96e6e",
+       "width": 320
+      },
+      {
+       "frame": 16,
+       "height": 240,
+       "sha256": "3b7db68b1160f9dcb06a7fb4f40beffdc2ae7d3cbb1a8722b1230149c1f60bbc",
+       "width": 320
+      },
+      {
+       "frame": 17,
+       "height": 240,
+       "sha256": "d68b85fc7c4e2023b0ea763470ba1050420406909f42fa443df8355fe780a390",
+       "width": 320
+      },
+      {
+       "frame": 18,
+       "height": 240,
+       "sha256": "88e7270dcd38d83c9624c144c833acfb2d5db2a8e8ed2ff19d48a4cb77e7c61e",
+       "width": 320
+      },
+      {
+       "frame": 19,
+       "height": 240,
+       "sha256": "fa55b341009effc18bafd102a20b508dc4a5c76975f8b92c29809ea2792323c3",
+       "width": 320
+      },
+      {
+       "frame": 20,
+       "height": 240,
+       "sha256": "034872ee9894472b1bc7359a008865af4bbefcee7a883aebd6e93d8152ced26b",
+       "width": 320
+      },
+      {
+       "frame": 21,
+       "height": 240,
+       "sha256": "908808d6dfe3ec4a70c78f41e28457d8de57a50fa85ad9d4dbc4871887340148",
+       "width": 320
+      },
+      {
+       "frame": 22,
+       "height": 240,
+       "sha256": "58119095cd371cfbffc466974fc8b74f9ce6f08d311086e4e7d1130d63645a55",
+       "width": 320
+      },
+      {
+       "frame": 23,
+       "height": 240,
+       "sha256": "6bb1019fb770559af8186bae8e519a21f4046fb2a3b60352ca9d08041b1962ca",
+       "width": 320
+      },
+      {
+       "frame": 24,
+       "height": 240,
+       "sha256": "9022a7ab951a1297e5057ae1314264fe59dec23f555e41217abb837438f91fc3",
+       "width": 320
+      },
+      {
+       "frame": 25,
+       "height": 240,
+       "sha256": "713a780c146a116a5e3033a8751be91e5b1aacd3a04d0b4e254cdbccea0eb0f0",
+       "width": 320
+      },
+      {
+       "frame": 26,
+       "height": 240,
+       "sha256": "b443a4e06ffa50f67ebc80cab49a08cdba58b035ef9e18f93080ef93e6878c60",
+       "width": 320
+      },
+      {
+       "frame": 27,
+       "height": 240,
+       "sha256": "c4f49b0b696ee8084e3459ee573ce0c3085b30753d11456f1358b40e7623e202",
+       "width": 320
+      },
+      {
+       "frame": 28,
+       "height": 240,
+       "sha256": "c1b57f7dacc77f31305c485645d4675d5e8568181804b257709a0fa657749644",
+       "width": 320
+      },
+      {
+       "frame": 29,
+       "height": 240,
+       "sha256": "604727618743d596ec9ea14895ce0030cc8356a98cc7844c25fd668e413d6491",
+       "width": 320
+      },
+      {
+       "frame": "cpu_hud",
+       "height": 240,
+       "sha256": "f5f6a1e4419e1341ed90f080222075dfe1c54ecd3756d79303533b283a12f706",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "828f5854c30a5fcb35290719ee190785a62804002efa81e795c008499bf7c804",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "5718b41f0fd13ec186214bdbbd07ce2b37e0611c249dc920d9ac38c7b3921b02",
+       "pipelines": [
+        {
+         "label": "debug boxes",
+         "sha256": "0038d01591861160faa76614ad9098a52135c5b4136835b04c5d4feae134e094"
+        },
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "0f707b6d23426682c4b37e29e16d40a072f4ecf41385efd3252fa0886359a969"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "1268e833eb4d5ea040bbdd2f5ed9c2107ba4f8b61996aa625946aa6c25df26a3"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "46b3374852cbab00bd539e0d70cebc87eee0711e52944a5f64662b533640547e"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "480b2fbd298b88acc755a168658ae1b12bee43696f38fb2630ff08b895be2e9d"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "82b5ae91e7fd327611522e9121b3f1df765756934ccb8786665e2e73b1e57a62"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "f24c4da472962fe6ec1abcdf3566bbaa8d5b92f91d9b391afc81770fc8885b68"
+        },
+        {
+         "label": "overlay",
+         "sha256": "8f05b258e0f484cdba6e3cbfe5287eafcdb798518da4a0d467e743ec16ece571"
+        },
+        {
+         "label": "overlay quads",
+         "sha256": "8011e362beecf9a05297bc842b9ce9cab71ef6653b6b9611d71b9485294fd6d5"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reads": 0
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "fx sampler",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "overlay",
+         "sha256": "503885f25d6560744e73672e99f7f0134df90b426aef590052f7b337a2f710dd"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "debug_boxes.wgsl",
+         "sha256": "c1a3855ff9bb367f803ada4168ae8425e377cd6a4bf097a7cb2b0dd166463a10"
+        },
+        {
+         "label": "fx.wgsl",
+         "sha256": "9a5c485f61960fe6489633b10c39213dfa7f97f84349196d6fe7ea4675687760"
+        },
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "overlay quads.wgsl",
+         "sha256": "6191401e7afdcbdec6db8f9d98985d4daec12facb140ec6bfd54d757ed7da542"
+        },
+        {
+         "label": "overlay.wgsl",
+         "sha256": "82fba8470da738493f17ae41413ccbe915742d1d72dda277030918e85d13c9e9"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5936341285705566,
+       "fov_y_rad": 1.3089969158172607,
+       "frame_us": 20000,
+       "frames": 30,
+       "gamma": 1.2200000286102295,
+       "height": 240,
+       "hud": "fallback layout",
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "hud_only": true,
+        "input": "still",
+        "world": "testkit synth"
+       },
+       "tick_hz": 50,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rom_characters": {
+     "code_digest": "d3c8851e612d8e111a0e0f5764287d2fb1449de05cb9f8b0f9a8ac8340dd843e",
+     "frames": [
+      {
+       "frame": 0,
+       "height": 240,
+       "sha256": "45f3eae354613c09e762e38b083d75a3ccb5ed9974a903fdff1237e45050c375",
+       "width": 320
+      },
+      {
+       "frame": 1,
+       "height": 240,
+       "sha256": "6cd9c408d5bea961ad8e178f1217ab233aaef0a252d84f556627acc04bdf5241",
+       "width": 320
+      },
+      {
+       "frame": 2,
+       "height": 240,
+       "sha256": "c30538236cbba14874205563269bb74f8809538502a5f11d8b4ac807db5a8076",
+       "width": 320
+      },
+      {
+       "frame": 3,
+       "height": 240,
+       "sha256": "b76f4abc1a7685302c96f4a7b55e42317658d910d278c15df705f6e671666bf1",
+       "width": 320
+      },
+      {
+       "frame": 4,
+       "height": 240,
+       "sha256": "c20c5c887c3f37a89d0050071ec5ca850147229c7a6ef6b4b31eb1756a520d3f",
+       "width": 320
+      },
+      {
+       "frame": 5,
+       "height": 240,
+       "sha256": "628f7b807032c8c1e21e4ece140f12732e1c85a87b61456c8e7b0111d180ec2c",
+       "width": 320
+      },
+      {
+       "frame": 6,
+       "height": 240,
+       "sha256": "1e5a9aee21b642ce96d03d63e2e0d73a30edf257d440c1de4f14cef0d2b33858",
+       "width": 320
+      },
+      {
+       "frame": 7,
+       "height": 240,
+       "sha256": "7cc9797411222e76117e3b8f932ca1170f9cb71d3e7fbe1eaefc57094ad8d1de",
+       "width": 320
+      },
+      {
+       "frame": 8,
+       "height": 240,
+       "sha256": "0e65d8ffb1a1c3467be8d260d98c583f96b3e2e215517419ba74f5b84c9511f0",
+       "width": 320
+      },
+      {
+       "frame": 9,
+       "height": 240,
+       "sha256": "2261b7578f84ca7fe3c90b45778d96518c7fa3943740c996e2d4e4ab77a09f6d",
+       "width": 320
+      },
+      {
+       "frame": 10,
+       "height": 240,
+       "sha256": "cee5289eaf0196235a92107c2bb922637dd21452e5f9ce3d4925d29f11adb35b",
+       "width": 320
+      },
+      {
+       "frame": 11,
+       "height": 240,
+       "sha256": "a71db6dff3196cfc6b66dd84227721600050dc95304e7cf746e69cff6063a194",
+       "width": 320
+      },
+      {
+       "frame": 12,
+       "height": 240,
+       "sha256": "aa149121dd948747b0f4be6ce2b5e9c919023852d9cef4b7920e82bbc1b06138",
+       "width": 320
+      },
+      {
+       "frame": 13,
+       "height": 240,
+       "sha256": "28f85bba29bfc744d3fc84eb8f03aa7a651f3b342a666e45cffe1eb00c55ae1b",
+       "width": 320
+      },
+      {
+       "frame": 14,
+       "height": 240,
+       "sha256": "5be4499181b5ae75dbf33af777fd9eb4025d28cd1ae14bc16c63d8b3edfd45e0",
+       "width": 320
+      },
+      {
+       "frame": 15,
+       "height": 240,
+       "sha256": "cada90d51d4535db242feecaa3f67f263ed299d401b18cf0c25b48ca12df0b1c",
+       "width": 320
+      },
+      {
+       "frame": 16,
+       "height": 240,
+       "sha256": "512b62405004326619288d61903a0c07c0c94014e0bb40adb48e21ceab560944",
+       "width": 320
+      },
+      {
+       "frame": 17,
+       "height": 240,
+       "sha256": "544726d4444ab06643efdb02774728004c9ced70d9a936f6c52abbdc2b93af25",
+       "width": 320
+      },
+      {
+       "frame": 18,
+       "height": 240,
+       "sha256": "bac654722c3e6ea32dc30af655ad0fd98ebbb8dac3e77738a796bcc8ddae784f",
+       "width": 320
+      },
+      {
+       "frame": 19,
+       "height": 240,
+       "sha256": "f382e739e95cd6961ac44599f11f249b2589004e2755eb21c3b148bd37b9916d",
+       "width": 320
+      },
+      {
+       "frame": 20,
+       "height": 240,
+       "sha256": "9ce901e106ec5586e4d00d94db0e2c459f51e96d48dafa2730f73ef4cde76dc8",
+       "width": 320
+      },
+      {
+       "frame": 21,
+       "height": 240,
+       "sha256": "48d2493aca56faff32cd18106838c945020814f02a3bccd3a78b6b1c9f564052",
+       "width": 320
+      },
+      {
+       "frame": 22,
+       "height": 240,
+       "sha256": "f515ca24d82bc69508a6a8f6a44cc01d3a5ab17712659a18be499a68761f3c96",
+       "width": 320
+      },
+      {
+       "frame": 23,
+       "height": 240,
+       "sha256": "b34026a2d2c1633ed80f39421ecc0a20b1495c76799abea58e04d017dd3fc165",
+       "width": 320
+      },
+      {
+       "frame": 24,
+       "height": 240,
+       "sha256": "e4e78f8966b71083f26e0cc82c6afec8b8b13cf396cc43114bbb18688ee37df8",
+       "width": 320
+      },
+      {
+       "frame": 25,
+       "height": 240,
+       "sha256": "23d10bc8f6336da5c59a7824f0ea12eb92acafbc0e5814e44a126f006f58ecfc",
+       "width": 320
+      },
+      {
+       "frame": 26,
+       "height": 240,
+       "sha256": "d9995bf8ca642b0ba649f606953d2b8a970c7b0534ff95d573e9421de188331d",
+       "width": 320
+      },
+      {
+       "frame": 27,
+       "height": 240,
+       "sha256": "93523e795f6e18d94c9de13f5b33aeae8429bef89f8c00fc0b0ee593267d81a9",
+       "width": 320
+      },
+      {
+       "frame": 28,
+       "height": 240,
+       "sha256": "7aa079536a28a918ed76e28f25b38d6ca2a5f084cc46702c6947e47838c00ff2",
+       "width": 320
+      },
+      {
+       "frame": 29,
+       "height": 240,
+       "sha256": "dfb79742563a1d4cb188ecd62d0297f28699a23ad6eb22727b1a6bdb6e197987",
+       "width": 320
+      },
+      {
+       "frame": "cpu_hud",
+       "height": 240,
+       "sha256": "aa42bad21cd421b2a9b99e0f3889b4f8ac07e0ae88d5ed8b0355f7c8eee963cd",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "04583b5ba267e808ce5eb558075e042eb2aae90d9a4ee9f2d45aa319a16a1b44",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "d3c8851e612d8e111a0e0f5764287d2fb1449de05cb9f8b0f9a8ac8340dd843e",
+       "pipelines": [
+        {
+         "label": "debug boxes",
+         "sha256": "0038d01591861160faa76614ad9098a52135c5b4136835b04c5d4feae134e094"
+        },
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "0f707b6d23426682c4b37e29e16d40a072f4ecf41385efd3252fa0886359a969"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "1268e833eb4d5ea040bbdd2f5ed9c2107ba4f8b61996aa625946aa6c25df26a3"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "46b3374852cbab00bd539e0d70cebc87eee0711e52944a5f64662b533640547e"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "480b2fbd298b88acc755a168658ae1b12bee43696f38fb2630ff08b895be2e9d"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "82b5ae91e7fd327611522e9121b3f1df765756934ccb8786665e2e73b1e57a62"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "f24c4da472962fe6ec1abcdf3566bbaa8d5b92f91d9b391afc81770fc8885b68"
+        },
+        {
+         "label": "model",
+         "sha256": "0e26f6cb536fa11b20eacdb8096d9e730f35264f642f2001e409a66edda06eb2"
+        },
+        {
+         "label": "overlay",
+         "sha256": "8f05b258e0f484cdba6e3cbfe5287eafcdb798518da4a0d467e743ec16ece571"
+        },
+        {
+         "label": "overlay quads",
+         "sha256": "8011e362beecf9a05297bc842b9ce9cab71ef6653b6b9611d71b9485294fd6d5"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "3015dc29522710582f3c595ea86279bb886c5dba46f25eb9da0b95ab1685e7f8",
+        "reads": 357
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "fx sampler",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "model stage",
+         "sha256": "80b38416d680553d03714f1b2561ce2b2b710b4dc6667ab56caae4674a899df9"
+        },
+        {
+         "label": "model stage",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        },
+        {
+         "label": "overlay",
+         "sha256": "503885f25d6560744e73672e99f7f0134df90b426aef590052f7b337a2f710dd"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "debug_boxes.wgsl",
+         "sha256": "c1a3855ff9bb367f803ada4168ae8425e377cd6a4bf097a7cb2b0dd166463a10"
+        },
+        {
+         "label": "fx.wgsl",
+         "sha256": "9a5c485f61960fe6489633b10c39213dfa7f97f84349196d6fe7ea4675687760"
+        },
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "overlay quads.wgsl",
+         "sha256": "6191401e7afdcbdec6db8f9d98985d4daec12facb140ec6bfd54d757ed7da542"
+        },
+        {
+         "label": "overlay.wgsl",
+         "sha256": "82fba8470da738493f17ae41413ccbe915742d1d72dda277030918e85d13c9e9"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5936341285705566,
+       "fov_y_rad": 1.3089969158172607,
+       "frame_us": 20000,
+       "frames": 30,
+       "gamma": 1.1557090282440186,
+       "height": 240,
+       "hud": "ROM layout",
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "drops": 2,
+        "map": "scene map",
+        "remotes": 3,
+        "view_weapon": true
+       },
+       "tick_hz": 50,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "3015dc29522710582f3c595ea86279bb886c5dba46f25eb9da0b95ab1685e7f8"
+    },
+    "rom_fx": {
+     "code_digest": "fa299f041a11c45e3b3346f774f7a038c52ade1a7364c1d7a6c30d690b428ff4",
+     "frames": [
+      {
+       "frame": 0,
+       "height": 240,
+       "sha256": "390e3ec9103f59de339640bfb87015a47d24d9f30e45032299e7fde84545ba07",
+       "width": 320
+      },
+      {
+       "frame": 1,
+       "height": 240,
+       "sha256": "2da1036faa80ce1cf49f816e18728b2a59cb0b500d1a1c4939077c1bc5c6db36",
+       "width": 320
+      },
+      {
+       "frame": 2,
+       "height": 240,
+       "sha256": "6a6c0f52d3a48a38e6cc24bd2b1692cc809108395d169a85671c149b6f7fd042",
+       "width": 320
+      },
+      {
+       "frame": 3,
+       "height": 240,
+       "sha256": "1fbf9cf8d95c61bd3c04482381e54f4ff33be7aa3a852be3e6e4d66cb48ec4b5",
+       "width": 320
+      },
+      {
+       "frame": 4,
+       "height": 240,
+       "sha256": "9cd8000e871d24b9fbc4afcd68c8c6258f898717d402121bba5b458bd239b1c8",
+       "width": 320
+      },
+      {
+       "frame": 5,
+       "height": 240,
+       "sha256": "3f8b037efe33dad117e115679b8c0e604c58a565b9af05526c13c84fcbc41d1b",
+       "width": 320
+      },
+      {
+       "frame": 6,
+       "height": 240,
+       "sha256": "290dcde658d58e618bd6a77677f3bf4eda5d799f0d4de9bdaea127d1ed96cc8c",
+       "width": 320
+      },
+      {
+       "frame": 7,
+       "height": 240,
+       "sha256": "6fe36903ec29fad3198ff0144f992eed695c97c14df5cee361ed6dd1982480d7",
+       "width": 320
+      },
+      {
+       "frame": 8,
+       "height": 240,
+       "sha256": "6cbcc4227daf89d15edacb0778250d783e0f6bb85ba265d29dfd13041d376f2b",
+       "width": 320
+      },
+      {
+       "frame": 9,
+       "height": 240,
+       "sha256": "65c9acf27d0389004563ed71c713348220062969c541ede1cf2314f488c6ee36",
+       "width": 320
+      },
+      {
+       "frame": 10,
+       "height": 240,
+       "sha256": "f2bd4f5b5bb5c022df99b38bd9cfd739066432f4f23d1641063e760799e76a04",
+       "width": 320
+      },
+      {
+       "frame": 11,
+       "height": 240,
+       "sha256": "665dde065d6c5c2d875017f45d259ef471383769fdc4337b4cc7500e452e68ed",
+       "width": 320
+      },
+      {
+       "frame": 12,
+       "height": 240,
+       "sha256": "532c836dcfae1644c5187c410b6ed3c8102f416fffbd92ba3c781282a18ee952",
+       "width": 320
+      },
+      {
+       "frame": 13,
+       "height": 240,
+       "sha256": "3b999704ac1a9a56787293fbe9e604a95b81fad6338f6554e5c30efd7158893f",
+       "width": 320
+      },
+      {
+       "frame": 14,
+       "height": 240,
+       "sha256": "cfd4019f9798adfce5ab642563cb40c176668859281d3881ca4d40ff79df6d07",
+       "width": 320
+      },
+      {
+       "frame": 15,
+       "height": 240,
+       "sha256": "4c60f463ac1f8ce0f3d585d079628e8a105baf359754bf1d7252aae1a751910c",
+       "width": 320
+      },
+      {
+       "frame": 16,
+       "height": 240,
+       "sha256": "c0b6544789bb501fa9c68433e440f41fdb7896541d1384ac0f3478a8dc7492a4",
+       "width": 320
+      },
+      {
+       "frame": 17,
+       "height": 240,
+       "sha256": "efc70461e642f9e6a1fdf56d359ad41826301de2d80efc116c906cfd9af12b67",
+       "width": 320
+      },
+      {
+       "frame": 18,
+       "height": 240,
+       "sha256": "4c8ac6bafd46c958c86eeae8c959990188427ed07a6c049dd0d72bb2e0cd56df",
+       "width": 320
+      },
+      {
+       "frame": 19,
+       "height": 240,
+       "sha256": "2c107d448705c17f731827cd3e72804c14302a4dede85cc06aac2d2d677c3e7c",
+       "width": 320
+      },
+      {
+       "frame": 20,
+       "height": 240,
+       "sha256": "e9d9110431e848c5299610143e8cc7386f2e92cd07e37d03556eb336dd075d1c",
+       "width": 320
+      },
+      {
+       "frame": 21,
+       "height": 240,
+       "sha256": "e9777a3fec1e0c40071cdfc248acd59ec5f4702cc90d01e567b0fa2fb97b802c",
+       "width": 320
+      },
+      {
+       "frame": 22,
+       "height": 240,
+       "sha256": "0ba23f5ebd285f2aac775274231bfca1c520d54c0bed19c41d03e3fea863eab5",
+       "width": 320
+      },
+      {
+       "frame": 23,
+       "height": 240,
+       "sha256": "8447409091d06f02ad815d11eebb0691bd9af8884190d207d5d2e2b8b1a379c5",
+       "width": 320
+      },
+      {
+       "frame": 24,
+       "height": 240,
+       "sha256": "47b2db01e9a6495a04adc7daa27fb256ef5b938a3dcf1d16ebfc34ace9b632ee",
+       "width": 320
+      },
+      {
+       "frame": 25,
+       "height": 240,
+       "sha256": "62df00e5e8f825c6c706cab51d23aa4755c3a17db70cce2284cd2b9e9a5a96ad",
+       "width": 320
+      },
+      {
+       "frame": 26,
+       "height": 240,
+       "sha256": "1e5bb3ad9b1ddfa8550db5f63841f602fd3c434e3186ec5099a12f751e715b49",
+       "width": 320
+      },
+      {
+       "frame": 27,
+       "height": 240,
+       "sha256": "00e5638c03eda463d17cb890ff0cfde19a6304b27ff4cf72772ca596f6f1d28b",
+       "width": 320
+      },
+      {
+       "frame": 28,
+       "height": 240,
+       "sha256": "52aee1a67b25d7a46e3510967e1744fa3c974aadc70c2ffd8b183113262460fa",
+       "width": 320
+      },
+      {
+       "frame": 29,
+       "height": 240,
+       "sha256": "b0078c3c6e8ff54f68dccf2ab2c3571c8c1f2a46568b2bed83eef4b1e1c0cb03",
+       "width": 320
+      },
+      {
+       "frame": 30,
+       "height": 240,
+       "sha256": "e77b983c351bdd54603a96c2bf8c5d1e43f8ae3dd564b90069721329150bb414",
+       "width": 320
+      },
+      {
+       "frame": 31,
+       "height": 240,
+       "sha256": "b3c147e60d20861e5a6d7753305d72d98f0715088b46159228bd8818b73ccbfd",
+       "width": 320
+      },
+      {
+       "frame": 32,
+       "height": 240,
+       "sha256": "30e823fbe049841b4716af07f594c3684765d05981939693eedf3b8e8fef9d3a",
+       "width": 320
+      },
+      {
+       "frame": 33,
+       "height": 240,
+       "sha256": "0825af1588ef28fcc9f0b9715de4ba3e71ee3e0680118eec888ed2e90ce59ec4",
+       "width": 320
+      },
+      {
+       "frame": 34,
+       "height": 240,
+       "sha256": "8fdc1e8ee8f2b2485d3a18a6f5234ce94992640bfb944d1d3b53809e89120798",
+       "width": 320
+      },
+      {
+       "frame": 35,
+       "height": 240,
+       "sha256": "b4ebb731fdc34c512d5d1ace1ae15ea53fb0bc0931a26f264c7b438af1bc792a",
+       "width": 320
+      },
+      {
+       "frame": 36,
+       "height": 240,
+       "sha256": "5c3a313fa3a399dff3de78fe89e0007a9b4b5c020acdd33ae5baa7e3b3770ee9",
+       "width": 320
+      },
+      {
+       "frame": 37,
+       "height": 240,
+       "sha256": "ccc30f4534dbe373ba38fa3d709f1ab3a2c0514a7d126240321307cd2a0acf85",
+       "width": 320
+      },
+      {
+       "frame": 38,
+       "height": 240,
+       "sha256": "544ce71e46ba9f5eac58722bab9af4766a33e191e38f066d99532978a728d128",
+       "width": 320
+      },
+      {
+       "frame": 39,
+       "height": 240,
+       "sha256": "5f14cf3b2a10cc21a10ba2066bc0ec06588c1190ccaa1f83776249d4bc9a16db",
+       "width": 320
+      },
+      {
+       "frame": 40,
+       "height": 240,
+       "sha256": "40a90ae4448982e78ba48b805d72635d694620beff368f11e02a8f2b63beb1f1",
+       "width": 320
+      },
+      {
+       "frame": 41,
+       "height": 240,
+       "sha256": "3dc8f32fe453619a8ead8487ca3db49bde69c6808b08c82aa1daeaeda09550de",
+       "width": 320
+      },
+      {
+       "frame": 42,
+       "height": 240,
+       "sha256": "9b32977d125bee93bd6cdb16b155a356c36fcdb3de3f46f93af40b5f516b80fe",
+       "width": 320
+      },
+      {
+       "frame": 43,
+       "height": 240,
+       "sha256": "9caa195b3a07e20ffd8f9fe93bdbb6682d1ed4b6095d9706083203f398eac179",
+       "width": 320
+      },
+      {
+       "frame": 44,
+       "height": 240,
+       "sha256": "ecbbe3f022839edeb10fefb9ef06b7c33106f295962043bf4f7c42a25e9e01cc",
+       "width": 320
+      },
+      {
+       "frame": 45,
+       "height": 240,
+       "sha256": "044790b243a10e8a76539b96dcc716e08c9a66eddcf33ccf0460688cda7f7ed2",
+       "width": 320
+      },
+      {
+       "frame": 46,
+       "height": 240,
+       "sha256": "36063336e5e76e2a1117585d4dba61aa6468f9512eb4f7561ec8d30b2408d306",
+       "width": 320
+      },
+      {
+       "frame": 47,
+       "height": 240,
+       "sha256": "8fb84d0b94169b1da753825758ffb6771096d60a4726a1ccb0b13d35b153b208",
+       "width": 320
+      },
+      {
+       "frame": 48,
+       "height": 240,
+       "sha256": "365e02b592021572f6aefe610feb7ccda43b4a790f009a78ca69af7f5f45ddd6",
+       "width": 320
+      },
+      {
+       "frame": 49,
+       "height": 240,
+       "sha256": "b9db3c762c14dce614c1c1709eb1fa0101a1e87c9a8d8dce425d4ef7f8af76ee",
+       "width": 320
+      },
+      {
+       "frame": 50,
+       "height": 240,
+       "sha256": "f51cfc6824081fddecf233783e7bece1fbca9f893d6002fe95ea4c8f1e96eca1",
+       "width": 320
+      },
+      {
+       "frame": 51,
+       "height": 240,
+       "sha256": "6f5cc6e8d8bd3fa913b2394dd0c977573a03bb0573f711464f67b0275f1645f8",
+       "width": 320
+      },
+      {
+       "frame": 52,
+       "height": 240,
+       "sha256": "1bd48b2002af2fce5bff27fa61c12234b0b8106637a6087d74e633752eacb48c",
+       "width": 320
+      },
+      {
+       "frame": 53,
+       "height": 240,
+       "sha256": "42987a4038afa0706f746eea02e4e741c83171042f4e5e2a7501f5bc85dd12e2",
+       "width": 320
+      },
+      {
+       "frame": 54,
+       "height": 240,
+       "sha256": "0596f9fae118f3ad8d910a42b5d116f2a14b0b0b46185f81528057dfd54bc8a4",
+       "width": 320
+      },
+      {
+       "frame": 55,
+       "height": 240,
+       "sha256": "deb36c4d4b793b44544918b8594a67c5233224376d6b5ade121e27fa8e1e83b7",
+       "width": 320
+      },
+      {
+       "frame": 56,
+       "height": 240,
+       "sha256": "920680a7a5bf762fbe959c610f61f00e962d4b8db27d1d6ae14b1fcaca94b244",
+       "width": 320
+      },
+      {
+       "frame": 57,
+       "height": 240,
+       "sha256": "cd7fbbf29977a3e502c802c2a6fc28c9ca9e8bb07ea750d5ad21f5eaec1d041c",
+       "width": 320
+      },
+      {
+       "frame": 58,
+       "height": 240,
+       "sha256": "f6c3fe4c153be25432c25d8c2f0041629da8ee5fb830dfc771bdd2a20cee37ff",
+       "width": 320
+      },
+      {
+       "frame": 59,
+       "height": 240,
+       "sha256": "ca4be4417311c28d8c88b0ebf858abc4f7ce2dda6cd0656d3766ec6e017d0c19",
+       "width": 320
+      },
+      {
+       "frame": 60,
+       "height": 240,
+       "sha256": "3742ae65181503aa2553f19055df4a212665710a27083bf0f249518b93a381ac",
+       "width": 320
+      },
+      {
+       "frame": 61,
+       "height": 240,
+       "sha256": "6e04f4473c1824324d5fe4047a02c7241e101da1dfb190d3b3a558280ef1b909",
+       "width": 320
+      },
+      {
+       "frame": 62,
+       "height": 240,
+       "sha256": "220d30ef08764bedd0395876fdafe57e75ce214df6030484e7b74e2289a69577",
+       "width": 320
+      },
+      {
+       "frame": 63,
+       "height": 240,
+       "sha256": "95aaf472b32c02340b5508f73f1f2fc61c6d8b045cb5e30b2f4819e11c941cce",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "a0e59f3f8d171ea10f9eee5962551a3bae224f9609bcbaf20e28616b4ff47152",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "fa299f041a11c45e3b3346f774f7a038c52ade1a7364c1d7a6c30d690b428ff4",
+       "pipelines": [
+        {
+         "label": "debug boxes",
+         "sha256": "0038d01591861160faa76614ad9098a52135c5b4136835b04c5d4feae134e094"
+        },
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "0f707b6d23426682c4b37e29e16d40a072f4ecf41385efd3252fa0886359a969"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "1268e833eb4d5ea040bbdd2f5ed9c2107ba4f8b61996aa625946aa6c25df26a3"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "46b3374852cbab00bd539e0d70cebc87eee0711e52944a5f64662b533640547e"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "480b2fbd298b88acc755a168658ae1b12bee43696f38fb2630ff08b895be2e9d"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "82b5ae91e7fd327611522e9121b3f1df765756934ccb8786665e2e73b1e57a62"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "f24c4da472962fe6ec1abcdf3566bbaa8d5b92f91d9b391afc81770fc8885b68"
+        },
+        {
+         "label": "model",
+         "sha256": "0e26f6cb536fa11b20eacdb8096d9e730f35264f642f2001e409a66edda06eb2"
+        },
+        {
+         "label": "overlay",
+         "sha256": "8f05b258e0f484cdba6e3cbfe5287eafcdb798518da4a0d467e743ec16ece571"
+        },
+        {
+         "label": "overlay quads",
+         "sha256": "8011e362beecf9a05297bc842b9ce9cab71ef6653b6b9611d71b9485294fd6d5"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "dc844874ab28762b83b5f987e55da5fe387117b34ca7d7f1dbac6cd3ea7a7f7c",
+        "reads": 331
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "fx sampler",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "model stage",
+         "sha256": "80b38416d680553d03714f1b2561ce2b2b710b4dc6667ab56caae4674a899df9"
+        },
+        {
+         "label": "model stage",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        },
+        {
+         "label": "overlay",
+         "sha256": "503885f25d6560744e73672e99f7f0134df90b426aef590052f7b337a2f710dd"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "debug_boxes.wgsl",
+         "sha256": "c1a3855ff9bb367f803ada4168ae8425e377cd6a4bf097a7cb2b0dd166463a10"
+        },
+        {
+         "label": "fx.wgsl",
+         "sha256": "9a5c485f61960fe6489633b10c39213dfa7f97f84349196d6fe7ea4675687760"
+        },
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "overlay quads.wgsl",
+         "sha256": "6191401e7afdcbdec6db8f9d98985d4daec12facb140ec6bfd54d757ed7da542"
+        },
+        {
+         "label": "overlay.wgsl",
+         "sha256": "82fba8470da738493f17ae41413ccbe915742d1d72dda277030918e85d13c9e9"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5936341285705566,
+       "fov_y_rad": 1.3089969158172607,
+       "frame_us": 20000,
+       "frames": 64,
+       "gamma": 1.1557090282440186,
+       "height": 240,
+       "hud": "off",
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "break_at": 24,
+        "map": "scene map",
+        "phases": "own shots, world camera"
+       },
+       "tick_hz": 50,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "dc844874ab28762b83b5f987e55da5fe387117b34ca7d7f1dbac6cd3ea7a7f7c"
+    },
+    "rom_hud": {
+     "code_digest": "f2021d0ee3d05a46b783ca40f0029c8df82f8a74cd7ce480e22639d5df65c4b6",
+     "frames": [
+      {
+       "frame": 0,
+       "height": 240,
+       "sha256": "f417e3cd089c3b76dac9d4043029c1a6750a87972481a2f8c0c4ab85380b3de8",
+       "width": 320
+      },
+      {
+       "frame": 1,
+       "height": 240,
+       "sha256": "88c1437eb090175e89e038b01375d07f82e4b218aad601acc6c8e86b633a4871",
+       "width": 320
+      },
+      {
+       "frame": 2,
+       "height": 240,
+       "sha256": "88c1437eb090175e89e038b01375d07f82e4b218aad601acc6c8e86b633a4871",
+       "width": 320
+      },
+      {
+       "frame": 3,
+       "height": 240,
+       "sha256": "88c1437eb090175e89e038b01375d07f82e4b218aad601acc6c8e86b633a4871",
+       "width": 320
+      },
+      {
+       "frame": 4,
+       "height": 240,
+       "sha256": "88c1437eb090175e89e038b01375d07f82e4b218aad601acc6c8e86b633a4871",
+       "width": 320
+      },
+      {
+       "frame": 5,
+       "height": 240,
+       "sha256": "88c1437eb090175e89e038b01375d07f82e4b218aad601acc6c8e86b633a4871",
+       "width": 320
+      },
+      {
+       "frame": 6,
+       "height": 240,
+       "sha256": "3ad6f3900fc541f1e553071deb7476e9c20e8a5f08dd9fbbd55e85d3ccc78cec",
+       "width": 320
+      },
+      {
+       "frame": 7,
+       "height": 240,
+       "sha256": "3ad6f3900fc541f1e553071deb7476e9c20e8a5f08dd9fbbd55e85d3ccc78cec",
+       "width": 320
+      },
+      {
+       "frame": 8,
+       "height": 240,
+       "sha256": "3ad6f3900fc541f1e553071deb7476e9c20e8a5f08dd9fbbd55e85d3ccc78cec",
+       "width": 320
+      },
+      {
+       "frame": 9,
+       "height": 240,
+       "sha256": "3ad6f3900fc541f1e553071deb7476e9c20e8a5f08dd9fbbd55e85d3ccc78cec",
+       "width": 320
+      },
+      {
+       "frame": 10,
+       "height": 240,
+       "sha256": "ef00faffeebd2cd9f3df1292112235c69130270f03ef77a831d2dbf09d6a0389",
+       "width": 320
+      },
+      {
+       "frame": 11,
+       "height": 240,
+       "sha256": "ef00faffeebd2cd9f3df1292112235c69130270f03ef77a831d2dbf09d6a0389",
+       "width": 320
+      },
+      {
+       "frame": 12,
+       "height": 240,
+       "sha256": "ef00faffeebd2cd9f3df1292112235c69130270f03ef77a831d2dbf09d6a0389",
+       "width": 320
+      },
+      {
+       "frame": 13,
+       "height": 240,
+       "sha256": "ef00faffeebd2cd9f3df1292112235c69130270f03ef77a831d2dbf09d6a0389",
+       "width": 320
+      },
+      {
+       "frame": 14,
+       "height": 240,
+       "sha256": "1fd5116d982c9d7f3903761b3685a8fd6eecb48233a0d2e8779562d7db4cdfe3",
+       "width": 320
+      },
+      {
+       "frame": 15,
+       "height": 240,
+       "sha256": "fa4b36e8c57bbdc43e88aa53f368c1d39f1a9c295ab517f1361b3bd63a47191f",
+       "width": 320
+      },
+      {
+       "frame": 16,
+       "height": 240,
+       "sha256": "7e665d700372b617da511d1a52bd4d731fb3ebe6d5aceee8030ff1ec122a9c13",
+       "width": 320
+      },
+      {
+       "frame": 17,
+       "height": 240,
+       "sha256": "ae8b5f030c9cab1289cde49e0ecf99206628bd68fa5c4904ef743ff1fa2e45e2",
+       "width": 320
+      },
+      {
+       "frame": 18,
+       "height": 240,
+       "sha256": "d628c5e2f571e3aa5b1d05603919d3c9b67049bb46b3253fec648a5bd98ec1c3",
+       "width": 320
+      },
+      {
+       "frame": 19,
+       "height": 240,
+       "sha256": "41825b054487c4a9ae2168b7d64d201d3580462adf71b362683ee0c7b8f826a4",
+       "width": 320
+      },
+      {
+       "frame": 20,
+       "height": 240,
+       "sha256": "2e7c6d7f8a30de17b3e5cd6ea0c7ea07d1d226f90241f40f5d8edc8770a8242a",
+       "width": 320
+      },
+      {
+       "frame": 21,
+       "height": 240,
+       "sha256": "07617f05263437f331ca1f71b12866117ca69d777c13e6b80a255d5eb6f54219",
+       "width": 320
+      },
+      {
+       "frame": 22,
+       "height": 240,
+       "sha256": "f1c29f5d1fe614eec197015cd3ce607747777c78a21ef636d5f40f6c36834d24",
+       "width": 320
+      },
+      {
+       "frame": 23,
+       "height": 240,
+       "sha256": "1f7630ae21e8e398358291cf6e0e5412c7b9f0bdc2068e552c68d4ef68a4ac64",
+       "width": 320
+      },
+      {
+       "frame": 24,
+       "height": 240,
+       "sha256": "d60bba9b972301fc989ac61319b1e65a5d4cbf70a6f60b0b41b3fff84e141e67",
+       "width": 320
+      },
+      {
+       "frame": 25,
+       "height": 240,
+       "sha256": "f2dedddd3a9788c2a862f699c40319f7f1483255ae9fbe87bf6b8ce16537a3ef",
+       "width": 320
+      },
+      {
+       "frame": 26,
+       "height": 240,
+       "sha256": "4e0c99bd787293c21e53dfb7835f2530f85be682c58bde78e613a583ed8af4ef",
+       "width": 320
+      },
+      {
+       "frame": 27,
+       "height": 240,
+       "sha256": "6fd2f9e60318f5c3afb0e3103979456dae32b6c9d5c74b52c0d10ac4e0eab306",
+       "width": 320
+      },
+      {
+       "frame": 28,
+       "height": 240,
+       "sha256": "95b7cda2deba7cb9c61b390f54d86a8629374d0c33c2f5128fea204dfc96f7fd",
+       "width": 320
+      },
+      {
+       "frame": 29,
+       "height": 240,
+       "sha256": "a876a26cdac658d0a7d7aa1e6fd7bee67e22c5c7c877a11ed1a2ae8f0e4253f6",
+       "width": 320
+      },
+      {
+       "frame": "cpu_hud",
+       "height": 240,
+       "sha256": "b9d53273647cb5cb43e21664ccfc9485762187eebbd0d06e87537c0245f0fb73",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "8f4717b57416ae316e354b10d823fa47bdd6780111ff477c43b87cf1768c1726",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "f2021d0ee3d05a46b783ca40f0029c8df82f8a74cd7ce480e22639d5df65c4b6",
+       "pipelines": [
+        {
+         "label": "debug boxes",
+         "sha256": "0038d01591861160faa76614ad9098a52135c5b4136835b04c5d4feae134e094"
+        },
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "0f707b6d23426682c4b37e29e16d40a072f4ecf41385efd3252fa0886359a969"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "1268e833eb4d5ea040bbdd2f5ed9c2107ba4f8b61996aa625946aa6c25df26a3"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "46b3374852cbab00bd539e0d70cebc87eee0711e52944a5f64662b533640547e"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "480b2fbd298b88acc755a168658ae1b12bee43696f38fb2630ff08b895be2e9d"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "82b5ae91e7fd327611522e9121b3f1df765756934ccb8786665e2e73b1e57a62"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "f24c4da472962fe6ec1abcdf3566bbaa8d5b92f91d9b391afc81770fc8885b68"
+        },
+        {
+         "label": "overlay",
+         "sha256": "8f05b258e0f484cdba6e3cbfe5287eafcdb798518da4a0d467e743ec16ece571"
+        },
+        {
+         "label": "overlay quads",
+         "sha256": "8011e362beecf9a05297bc842b9ce9cab71ef6653b6b9611d71b9485294fd6d5"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "2f4a2657d23518bb10b030304f24e33484c93233b9e0201680984119f0028230",
+        "reads": 41
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "fx sampler",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "overlay",
+         "sha256": "503885f25d6560744e73672e99f7f0134df90b426aef590052f7b337a2f710dd"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "debug_boxes.wgsl",
+         "sha256": "c1a3855ff9bb367f803ada4168ae8425e377cd6a4bf097a7cb2b0dd166463a10"
+        },
+        {
+         "label": "fx.wgsl",
+         "sha256": "9a5c485f61960fe6489633b10c39213dfa7f97f84349196d6fe7ea4675687760"
+        },
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "overlay quads.wgsl",
+         "sha256": "6191401e7afdcbdec6db8f9d98985d4daec12facb140ec6bfd54d757ed7da542"
+        },
+        {
+         "label": "overlay.wgsl",
+         "sha256": "82fba8470da738493f17ae41413ccbe915742d1d72dda277030918e85d13c9e9"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5936341285705566,
+       "fov_y_rad": 1.3089969158172607,
+       "frame_us": 20000,
+       "frames": 30,
+       "gamma": 1.2200000286102295,
+       "height": 240,
+       "hud": "ROM layout",
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "hud_only": true,
+        "input": "still",
+        "world": "testkit synth"
+       },
+       "tick_hz": 50,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "2f4a2657d23518bb10b030304f24e33484c93233b9e0201680984119f0028230"
+    },
+    "rom_world_views": {
+     "code_digest": "2437614ad990a338146b70025df6aa8b525e83beb41a84725d82336abdd7eb3b",
+     "frames": [
+      {
+       "frame": "map0_view0",
+       "height": 240,
+       "sha256": "99306184715f625305f5067bba1e0a9663a890fdef68315b7e8a9da9ac1cf7b4",
+       "width": 320
+      },
+      {
+       "frame": "map0_view1",
+       "height": 240,
+       "sha256": "27d712b566cbc267526ef3a3d5ddd3600de96bf5c26daf9f885802b67e03a0cf",
+       "width": 320
+      },
+      {
+       "frame": "map1_view0",
+       "height": 240,
+       "sha256": "248de9b1639172e79495101fba0a9f0e44e566e4f4dd87f98d58dc8c03e0046d",
+       "width": 320
+      },
+      {
+       "frame": "map1_view1",
+       "height": 240,
+       "sha256": "f3ea20c569ebd1205c2213038bfcd1495f692e036c583fcbe74c7b22917487f5",
+       "width": 320
+      },
+      {
+       "frame": "map2_view0",
+       "height": 240,
+       "sha256": "87d7332bd30db6e2075ee49631babc3cf1f5c120b88fd135137c7a403b9fec73",
+       "width": 320
+      },
+      {
+       "frame": "map2_view1",
+       "height": 240,
+       "sha256": "206e6cedb07e40368445dbaaaaaef3bacec59db82f8996941699b7b52a570f1e",
+       "width": 320
+      },
+      {
+       "frame": "map3_view0",
+       "height": 240,
+       "sha256": "474ed8b8c8d88d8e772d7827796c565cf42d425556ed634c7961c98e65b580be",
+       "width": 320
+      },
+      {
+       "frame": "map3_view1",
+       "height": 240,
+       "sha256": "2a67831c3861501ce7cca2c2c2d1fa987e785a63fb0e52af6e69520b9f4e3870",
+       "width": 320
+      },
+      {
+       "frame": "map4_view0",
+       "height": 240,
+       "sha256": "713ca84e70de9059ed6b27d27103dfce2e8aafc30ce7ce78c1e5c8f48c12cb79",
+       "width": 320
+      },
+      {
+       "frame": "map4_view1",
+       "height": 240,
+       "sha256": "d776b6bf38d9a0a66ea478b20220f7177bcc88e70678de5285fd33f235ca259e",
+       "width": 320
+      },
+      {
+       "frame": "map5_view0",
+       "height": 240,
+       "sha256": "77f698c6433cc44ac0dc8f0350463c8a56388a0964f3bfa2359a089d53116295",
+       "width": 320
+      },
+      {
+       "frame": "map5_view1",
+       "height": 240,
+       "sha256": "1b3943c53b9749e9c5fdeaa32277a392ed88e64e28192095db12baf971197eb0",
+       "width": 320
+      },
+      {
+       "frame": "map6_view0",
+       "height": 240,
+       "sha256": "a1f7c5c257cb72e390a0655c929e556a4066cfd77b93cb57f9e75eed06d5790d",
+       "width": 320
+      },
+      {
+       "frame": "map6_view1",
+       "height": 240,
+       "sha256": "fdac4785f8d0df3b3b05e93ce37a9727996466406eb126a1b4c20199ab58bd57",
+       "width": 320
+      },
+      {
+       "frame": "map7_view0",
+       "height": 240,
+       "sha256": "430e2bae565d429fc2aa39bc7944b56c29ea5d5dee90dd2a583648b60863ae94",
+       "width": 320
+      },
+      {
+       "frame": "map7_view1",
+       "height": 240,
+       "sha256": "8c7693bf1e17e0c08f9a03465ca39aeb024ba05c8bb53609e75cf90d2ee8a488",
+       "width": 320
+      },
+      {
+       "frame": "map8_view0",
+       "height": 240,
+       "sha256": "a4c8d9968663d8255131467abbd4394d85169783f8dea5e25425a301b4c924ae",
+       "width": 320
+      },
+      {
+       "frame": "map8_view1",
+       "height": 240,
+       "sha256": "0486098c59caea19cb8566614b21ef47a15e5f9ab822588752b55c752299b90d",
+       "width": 320
+      },
+      {
+       "frame": "map9_view0",
+       "height": 240,
+       "sha256": "ccdd7a3d5b9ee433fea48443b0746e1da9a8a6d5b0a85ab0b60970e0f098919c",
+       "width": 320
+      },
+      {
+       "frame": "map9_view1",
+       "height": 240,
+       "sha256": "4188fa02bbdcbd1109358a715acb3f296b509307f0bb2ae7d609639679c9d7b4",
+       "width": 320
+      },
+      {
+       "frame": "map10_view0",
+       "height": 240,
+       "sha256": "0edc1644a61415792cd6451074621e6839be23f77e37df9fe3153a1d182e8f9d",
+       "width": 320
+      },
+      {
+       "frame": "map10_view1",
+       "height": 240,
+       "sha256": "11ff683c7d787c7ebfee5a053146c5384304c1140dc68af3e3da18db478b4d21",
+       "width": 320
+      },
+      {
+       "frame": "map11_view0",
+       "height": 240,
+       "sha256": "03582711505ef885180a25684cb3647bfbdbbb60aec6df1c03fc10efd1995935",
+       "width": 320
+      },
+      {
+       "frame": "map11_view1",
+       "height": 240,
+       "sha256": "a854c3d4491e35953e7db056be7aea7f9956a206da73f9b4062a73c2d0e122d1",
+       "width": 320
+      },
+      {
+       "frame": "map12_view0",
+       "height": 240,
+       "sha256": "14659007c59151be1611615efc26a9fa720620c742c9d3f0da619f00b531bc56",
+       "width": 320
+      },
+      {
+       "frame": "map12_view1",
+       "height": 240,
+       "sha256": "5bc281e6239e11636327601e4f8bcf9c62cd30a933acffd1692640750976aa18",
+       "width": 320
+      },
+      {
+       "frame": "map13_view0",
+       "height": 240,
+       "sha256": "e9976f55aedbe607a3c88258d15c636561df81f8aa9af3597aa595ae93fb703b",
+       "width": 320
+      },
+      {
+       "frame": "map13_view1",
+       "height": 240,
+       "sha256": "f4ab8de4f9bcb93c9ec6f194e8c7dde449662b12eaf174b2cb20573bbd026d5e",
+       "width": 320
+      },
+      {
+       "frame": "map14_view0",
+       "height": 240,
+       "sha256": "11052daa23fe5cc7a88cc1278a6829401bde3d3b19a4c649e35501865420ccde",
+       "width": 320
+      },
+      {
+       "frame": "map14_view1",
+       "height": 240,
+       "sha256": "25c7b194dca5e615c1b4aa3c4204d992a91528183ae4200ba54810283c61b570",
+       "width": 320
+      },
+      {
+       "frame": "map15_view0",
+       "height": 240,
+       "sha256": "add9459656dd71653e10b7b359ab247e8255b13d92769f1fd2388ab46c877902",
+       "width": 320
+      },
+      {
+       "frame": "map15_view1",
+       "height": 240,
+       "sha256": "76c55eefd46202ae9dfa57a4bb98d3043f6fc0facaf9c612e48be2d6b191a5bd",
+       "width": 320
+      },
+      {
+       "frame": "map16_view0",
+       "height": 240,
+       "sha256": "cb59482ab72e95380ff21e48c936a89b4a2a519089076cd903c346e59cbb22ed",
+       "width": 320
+      },
+      {
+       "frame": "map16_view1",
+       "height": 240,
+       "sha256": "677576e6337b96f83c39ce0a38c9a59b33340d7afbd2cf5d0f07230626ab99ab",
+       "width": 320
+      },
+      {
+       "frame": "map17_view0",
+       "height": 240,
+       "sha256": "65595be4cc252f4f77343fc23e7de387015d7a965bd3a39fa580cbe59adfcda2",
+       "width": 320
+      },
+      {
+       "frame": "map17_view1",
+       "height": 240,
+       "sha256": "149f9a744b361a3149ab62f3e8d510bc65ef315279f7b0968df7d30bfe04468d",
+       "width": 320
+      },
+      {
+       "frame": "map18_view0",
+       "height": 240,
+       "sha256": "518396e18df75acab39dbfbba0fedb648783cb67a7761a32779d1aff923d9d75",
+       "width": 320
+      },
+      {
+       "frame": "map18_view1",
+       "height": 240,
+       "sha256": "c9b83a8a78d35a2a6618b8933affb57c10a801c215587be404f71705f2b4cb6f",
+       "width": 320
+      },
+      {
+       "frame": "map19_view0",
+       "height": 240,
+       "sha256": "026de3b511cd6ee9848a25c6dce822f97324260ef68fd78e369c687f714c6b5f",
+       "width": 320
+      },
+      {
+       "frame": "map19_view1",
+       "height": 240,
+       "sha256": "e5d550d5e9d5681b283db49801f177ed33dbdbe01afc3100c265e2c5653ee2ec",
+       "width": 320
+      },
+      {
+       "frame": "map20_view0",
+       "height": 240,
+       "sha256": "129953f46606551c83ba398e5cecc7d1c227902586677b2ec56ad2dbf25b8b87",
+       "width": 320
+      },
+      {
+       "frame": "map20_view1",
+       "height": 240,
+       "sha256": "1dbbb0e63a43bbdfdbc37a8dc2c82e8f3e96362d95306c712784ac6a30e38163",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "dd9943ded7623b2b676eaef84b8783bb099f7f70ec77a24828369c7f62df2d1e",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "2437614ad990a338146b70025df6aa8b525e83beb41a84725d82336abdd7eb3b",
+       "pipelines": [
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "f5080973cf8a13d6bfd28da2786fe06aecfd556795453464f81a2f3f36e89c68",
+        "reads": 2346
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5936341285705566,
+       "fov_y_rad": 1.3089969158172607,
+       "frame_us": 0,
+       "gamma": 1.1557090282440186,
+       "height": 240,
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "maps": 21,
+        "views_per_map": 2
+       },
+       "tick_hz": 0,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "f5080973cf8a13d6bfd28da2786fe06aecfd556795453464f81a2f3f36e89c68"
+    },
+    "synth_frame_loop": {
+     "code_digest": "c1dbf3324d51144cdc6b12548cffb21a27a436f5c89cd0e0db4ee68ba65f0e2c",
+     "frames": [
+      {
+       "frame": 0,
+       "height": 240,
+       "sha256": "83bac30dee9154a36d2a8526bef069d69a24c612158ed7c49b4d02e03930a6d4",
+       "width": 320
+      },
+      {
+       "frame": 1,
+       "height": 240,
+       "sha256": "696f9e9482b7a3e326530d83ced60e76c0c13e8878d6751b6c164aeeb7e869b0",
+       "width": 320
+      },
+      {
+       "frame": 2,
+       "height": 240,
+       "sha256": "0ab1e3cc4ea857406d0e876d21651d127bfd27f6135e631a18ef36713d7d3427",
+       "width": 320
+      },
+      {
+       "frame": 3,
+       "height": 240,
+       "sha256": "8a4f3eb243c017ae4f6580674d19926dd228f49e979f89ad7c0c46dfdc13612d",
+       "width": 320
+      },
+      {
+       "frame": 4,
+       "height": 240,
+       "sha256": "23f430d917790e0e3f2fa48fcb8660d705a99382b09f4ab6d8dd2d56e4d7dca4",
+       "width": 320
+      },
+      {
+       "frame": 5,
+       "height": 240,
+       "sha256": "ca51c87454fe9519f80b9755bba131831a4a99340130260996a40f65fa26d2a8",
+       "width": 320
+      },
+      {
+       "frame": 6,
+       "height": 240,
+       "sha256": "8b7a7961c2d90eafda0c78ab7ad6b256100b290b1d1f8e455586f4586cfc5fb5",
+       "width": 320
+      },
+      {
+       "frame": 7,
+       "height": 240,
+       "sha256": "12d450b9603a735dfb5e0bc08b53105b9aa43c27e1573088af20653ea30e6b7c",
+       "width": 320
+      },
+      {
+       "frame": 8,
+       "height": 240,
+       "sha256": "ffb20f0ed9fe2227cc2aaef4c2386d5049ae89bc42a15d1d54339b361d785866",
+       "width": 320
+      },
+      {
+       "frame": 9,
+       "height": 240,
+       "sha256": "1a1b573878a7a4b597df18b09d647e6f6f234baf58f50bce67bf21b64aee0e10",
+       "width": 320
+      },
+      {
+       "frame": 10,
+       "height": 240,
+       "sha256": "7a54630f9505e9b33dbab722175e42e1201e5e7b052f293c622d0f9ee83a8e2b",
+       "width": 320
+      },
+      {
+       "frame": 11,
+       "height": 240,
+       "sha256": "894e738198aa26ea92dbdcb677d176e38c152c4ae20f50cc6ca5e04c1a7de01f",
+       "width": 320
+      },
+      {
+       "frame": 12,
+       "height": 240,
+       "sha256": "f03dac5984f9a8607a4d882f06e2873a1ad8d1ea03942fd84ddbc76095086615",
+       "width": 320
+      },
+      {
+       "frame": 13,
+       "height": 240,
+       "sha256": "b6f850d5e58be5205d4497d532844e6fef69baf0bd0a0c0cfd4146556b28c2b1",
+       "width": 320
+      },
+      {
+       "frame": 14,
+       "height": 240,
+       "sha256": "8733b6701dad07f912f46fe644f17033f2fcb1ff370c3a6937bf6ecac2aa0845",
+       "width": 320
+      },
+      {
+       "frame": 15,
+       "height": 240,
+       "sha256": "a0e34bc7d0dbfe4074c03a18656ef433bdc2859bc35b1d5e1618c5e6ceb84c01",
+       "width": 320
+      },
+      {
+       "frame": 16,
+       "height": 240,
+       "sha256": "c0ad18f5512138a2b9879c9c58f6df7351c72828278b207fbb6e4010ea69907c",
+       "width": 320
+      },
+      {
+       "frame": 17,
+       "height": 240,
+       "sha256": "eab2dbc20d6d902540207932fc6ee0e2737ffb00863a3c82b9f4081033eb606f",
+       "width": 320
+      },
+      {
+       "frame": 18,
+       "height": 240,
+       "sha256": "353d53b72f0ac10d220a2a5f4d30ec19f5609d6e5a94b370211732c1e05d4dc5",
+       "width": 320
+      },
+      {
+       "frame": 19,
+       "height": 240,
+       "sha256": "6134c32e8fbcb9e70d74d3abf3abbd0df1555cd4d982c20ef1c1072eccfb7ba0",
+       "width": 320
+      },
+      {
+       "frame": 20,
+       "height": 240,
+       "sha256": "3ad93198f70b9ff975128d32ee888eb0adbfe36076d50929840999f6434a6cf3",
+       "width": 320
+      },
+      {
+       "frame": 21,
+       "height": 240,
+       "sha256": "620d32f3a6ea586aee0816ab0db1c4826ae4de6c10c6014e80a0184be9df7b8f",
+       "width": 320
+      },
+      {
+       "frame": 22,
+       "height": 240,
+       "sha256": "fb33a4dfa63c2cb7dfafa0f76d71db2ec79aeb6db23596f9c82041ea2f3c3874",
+       "width": 320
+      },
+      {
+       "frame": 23,
+       "height": 240,
+       "sha256": "a3be819cf52f996066be155ae5f8925a889ed00a6a3f9e2c5a9fd9b8b4d262f1",
+       "width": 320
+      },
+      {
+       "frame": 24,
+       "height": 240,
+       "sha256": "4e7bc8e508ddf9b109864c78a1d7a30931b564fcd3353f823974c33f7ec1253d",
+       "width": 320
+      },
+      {
+       "frame": 25,
+       "height": 240,
+       "sha256": "5151ea61152c0ae1c1cbfe252209bd04001dc97e7443d60780beceb5d720916d",
+       "width": 320
+      },
+      {
+       "frame": 26,
+       "height": 240,
+       "sha256": "e43fb74d0146817af779d657afc1b5d305032d881670a8cd7fe211d58f958831",
+       "width": 320
+      },
+      {
+       "frame": 27,
+       "height": 240,
+       "sha256": "18e17330863e2a140c77860fc4bac2216a7359ba0cd811232cde3d8a6d39271f",
+       "width": 320
+      },
+      {
+       "frame": 28,
+       "height": 240,
+       "sha256": "48f57c940f350064507ed1167039e9dcdc7531c14ecfa2c618288dc5f1b5727d",
+       "width": 320
+      },
+      {
+       "frame": 29,
+       "height": 240,
+       "sha256": "9dd6a840631fcbcf35ff7ab19a9f7b3bcc70d017dd33cbc52397bbec194448dc",
+       "width": 320
+      },
+      {
+       "frame": 30,
+       "height": 240,
+       "sha256": "057c5ae82522b0f9d9184068c22f07847acfc4e27537fb050ffce00fb3f80a96",
+       "width": 320
+      },
+      {
+       "frame": 31,
+       "height": 240,
+       "sha256": "13709524499b05ddfa4016229451357c0d1f64eac6c7c496942590ca167ae7a8",
+       "width": 320
+      },
+      {
+       "frame": 32,
+       "height": 240,
+       "sha256": "c84c6f64d85f12fc84ed5d838f14c28818d69707512f7f93c01bac3a446d1e17",
+       "width": 320
+      },
+      {
+       "frame": 33,
+       "height": 240,
+       "sha256": "daa72fc309a5a588fdaae2da6b82f3ce47d0334afe3abf1c092b15d5fd05ca6c",
+       "width": 320
+      },
+      {
+       "frame": 34,
+       "height": 240,
+       "sha256": "e457593dcab00d1d31fdbf1c256488102db14e1bfb6d801ad5e32754058246c9",
+       "width": 320
+      },
+      {
+       "frame": 35,
+       "height": 240,
+       "sha256": "604abc1e31f726ad645098ef3d51a1810e471c5a979477cfb90c34600609c1b4",
+       "width": 320
+      },
+      {
+       "frame": 36,
+       "height": 240,
+       "sha256": "dc5509887495f20647b1e35d6e734934407b20339a0185877ee61f3f2e3baaf9",
+       "width": 320
+      },
+      {
+       "frame": 37,
+       "height": 240,
+       "sha256": "8776c077ab46dcf9d3b961456c73cacec9222296bfa85f44123653a7d9c40d85",
+       "width": 320
+      },
+      {
+       "frame": 38,
+       "height": 240,
+       "sha256": "f84dbccb6b57e01299c67e42c616e3daab07e5be671e653945ea7bf6fdb812f0",
+       "width": 320
+      },
+      {
+       "frame": 39,
+       "height": 240,
+       "sha256": "ff12ac1417f117717abcab07bd09682f8da451912641609945d7d758bfdcedfc",
+       "width": 320
+      },
+      {
+       "frame": "cpu_hud",
+       "height": 240,
+       "sha256": "4784cccef5115d92246f3d348cd82c17f84f215a3ed9e1bf2be51bd57b8bb7d7",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "b4928e68199cb956498f406792eb3f9edc0cd6181bcaf048a2dc78e1c114497f",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "c1dbf3324d51144cdc6b12548cffb21a27a436f5c89cd0e0db4ee68ba65f0e2c",
+       "pipelines": [
+        {
+         "label": "debug boxes",
+         "sha256": "0038d01591861160faa76614ad9098a52135c5b4136835b04c5d4feae134e094"
+        },
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "0f707b6d23426682c4b37e29e16d40a072f4ecf41385efd3252fa0886359a969"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "1268e833eb4d5ea040bbdd2f5ed9c2107ba4f8b61996aa625946aa6c25df26a3"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "46b3374852cbab00bd539e0d70cebc87eee0711e52944a5f64662b533640547e"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "480b2fbd298b88acc755a168658ae1b12bee43696f38fb2630ff08b895be2e9d"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "82b5ae91e7fd327611522e9121b3f1df765756934ccb8786665e2e73b1e57a62"
+        },
+        {
+         "label": "fx quads",
+         "sha256": "f24c4da472962fe6ec1abcdf3566bbaa8d5b92f91d9b391afc81770fc8885b68"
+        },
+        {
+         "label": "overlay",
+         "sha256": "8f05b258e0f484cdba6e3cbfe5287eafcdb798518da4a0d467e743ec16ece571"
+        },
+        {
+         "label": "overlay quads",
+         "sha256": "8011e362beecf9a05297bc842b9ce9cab71ef6653b6b9611d71b9485294fd6d5"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reads": 0
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "fx sampler",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "overlay",
+         "sha256": "503885f25d6560744e73672e99f7f0134df90b426aef590052f7b337a2f710dd"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "debug_boxes.wgsl",
+         "sha256": "c1a3855ff9bb367f803ada4168ae8425e377cd6a4bf097a7cb2b0dd166463a10"
+        },
+        {
+         "label": "fx.wgsl",
+         "sha256": "9a5c485f61960fe6489633b10c39213dfa7f97f84349196d6fe7ea4675687760"
+        },
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "overlay quads.wgsl",
+         "sha256": "6191401e7afdcbdec6db8f9d98985d4daec12facb140ec6bfd54d757ed7da542"
+        },
+        {
+         "label": "overlay.wgsl",
+         "sha256": "82fba8470da738493f17ae41413ccbe915742d1d72dda277030918e85d13c9e9"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5936341285705566,
+       "fov_y_rad": 1.3089969158172607,
+       "frame_us": 20000,
+       "frames": 40,
+       "gamma": 1.2200000286102295,
+       "height": 240,
+       "hud": "fallback layout",
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "input": "ScriptedInput",
+        "remotes": 3,
+        "world": "testkit synth"
+       },
+       "tick_hz": 50,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "synth_order": {
+     "code_digest": "4535e4a586501be575aa02df49c9fa89cd2ba67bad8363f948c9da12db1e1e8a",
+     "frames": [
+      {
+       "frame": "view0",
+       "height": 240,
+       "sha256": "ee3470c1b61e3782276ebad2b12fdcc4b6fcd3a3360f76c6cdc445bf471f698c",
+       "width": 320
+      },
+      {
+       "frame": "view1",
+       "height": 240,
+       "sha256": "1c6d79178353fd01e90cdd5e3bf03454fed9f20aeb5b92674aa2bce9c06d6a3d",
+       "width": 320
+      }
+     ],
+     "inputs_digest": "a14c00f9b926eed231b28668b4fca1216484ff29155d64a0f1991860f03b77c6",
+     "manifest": {
+      "contract": "dc-render-determinism/1",
+      "inputs": {
+       "code_digest": "4535e4a586501be575aa02df49c9fa89cd2ba67bad8363f948c9da12db1e1e8a",
+       "pipelines": [
+        {
+         "label": "fs_blend_lightmapped",
+         "sha256": "8d3c12078d7dbfed93547cc1f66fd3af596ec45ab1766e8dcf9268eb480799fc"
+        },
+        {
+         "label": "fs_blend_vertex_lit",
+         "sha256": "36503eca56a55d4cd7a764c1a8f8eace6ae118827b97b8ea2bfcee1ade21e5c5"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "0314fb69c6d6ec7e3a38e7817fce41af023c1a26f49d73f535231db353f51c88"
+        },
+        {
+         "label": "fs_blend_vertex_lit_blend",
+         "sha256": "2258e4a2aff478949e6d67326faf0bfb32bc1cdba0a8ef18e1c3a616ac574263"
+        },
+        {
+         "label": "fs_flat",
+         "sha256": "32ec4bf72a7e90ebe537a0adfc07a4ff212c17557e28ef0212a5da2d6e0f41b0"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "13c31cacbd391a4c9e35c87e8bbad108500ae338e243b75c3599ab6a932970bf"
+        },
+        {
+         "label": "fs_flat_blend",
+         "sha256": "8c819720b7ad33be4b072328c0d20c947b458a685432e8057380e8082cf726ca"
+        },
+        {
+         "label": "fs_lightmap",
+         "sha256": "aae038b00cdeea6aa59210b4d0611ba7574c445f3c673fa8ba471371c6f05402"
+        },
+        {
+         "label": "fs_lightmapped_texture",
+         "sha256": "9cfad4610c8054c2ab0b0de6c77fbb518a373f9ad404d042ec9e491d57c92dce"
+        },
+        {
+         "label": "fs_vertex_lit",
+         "sha256": "0c834429d0f0dc8799f59a990889aec797548e15314f16cd9651307d1dae5f2b"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "711a9037ca21a51110fb213125afeae36958e0bd3c27450c95f6ba8967483fcb"
+        },
+        {
+         "label": "fs_vertex_lit_blend",
+         "sha256": "bb4461ec3df73d59fcd9deef457c7e052d560b9881addf2f7c37bd8193c2e289"
+        },
+        {
+         "label": "sky",
+         "sha256": "3663e89b00045ca8715be1ea05847759f785d0e771f342a98551f2b84fed67d1"
+        },
+        {
+         "label": "sky",
+         "sha256": "4f852d75723bba0e20153883ee601cbf9b7e7dfb0e6967fb0e2ce3dc0e7724c7"
+        },
+        {
+         "label": "sky",
+         "sha256": "9d023ba0704bf0e3cb0586b7f82793c174034502b69503168471d39fe6776061"
+        },
+        {
+         "label": "sky",
+         "sha256": "bd709310e4be8f93bb8206db0aa09a73482f8f9e107b6dac6e06be0dac8ff8dd"
+        },
+        {
+         "label": "sky",
+         "sha256": "f1c8c0b2c39a839c81d0383291e7841342019feb20cf6cc34434801b1e525f02"
+        },
+        {
+         "label": "sky",
+         "sha256": "fba586815d9d79441a4d8a283f050cae977ae11eafd155c735bcf6ae74e22281"
+        }
+       ],
+       "rom": {
+        "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reads": 0
+       },
+       "samplers": [
+        {
+         "label": "clamp",
+         "sha256": "7f7df1252b43cbc583f00212e23d2e8c91caf201540cf7dc5634512d0ca50c46"
+        },
+        {
+         "label": "wrap",
+         "sha256": "ff10c646631d0fa8f65116b525fb344d8ca1fd1afdcb5116cb0e0d075ddb44a2"
+        }
+       ],
+       "shaders": [
+        {
+         "label": "model.wgsl",
+         "sha256": "6836224eca47a1537297ab9743fddaa16a495c17dae2d3d0ef8732c08733e253"
+        },
+        {
+         "label": "world.wgsl",
+         "sha256": "3ab8e23bdfaf6ea2e6a68e502a240445b2314f41a19109c03ad0407e0cd0c399"
+        }
+       ]
+      },
+      "render_settings": {
+       "fog": "world settings object (SceneOptions::fog on)",
+       "format": "Rgba8Unorm",
+       "fov_x_rad": 1.5707963705062866,
+       "fov_y_rad": 1.2870022058486938,
+       "frame_us": 0,
+       "gamma": 1.0,
+       "height": 240,
+       "msaa": 1,
+       "present_mode": "offscreen (none)",
+       "renderer": "RenderSettings { lightmaps: true, draw_flat: false, lightmaps_only: false, detail_textures: true, env_maps: true, env_bump: true, dot3_bump: true, dot3_env_bump: true, saturate: true, full_bright: false, lightmap_tfactor: 0, far_z: 12000.0, mip_bias: -1.0, bilinear: true, trilinear: true, anisotropy: 0 }",
+       "scene": {
+        "views": 2,
+        "world": "synthetic coplanar quads"
+       },
+       "tick_hz": 0,
+       "width": 320
+      },
+      "texel_contract": "dc-texels/1",
+      "texel_layout": "RGBA8 unorm, rows top to bottom, no row padding, alpha forced to 255, client gamma ramp applied; SHA-256 over 'dc-texels/1 rgba8 <w>x<h>\\n' + texels"
+     },
+     "rom_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+   }
+  }
+ },
+ "note": "Exact-lane golden hashes (docs/RENDER_DETERMINISM_CONTRACT.md). Written only by tools/exact_golden.py --update; hashes and manifests only, no ROM data or names."
+}

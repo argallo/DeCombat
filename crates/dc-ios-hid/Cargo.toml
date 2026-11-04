@@ -1,0 +1,14 @@
+[package]
+name = "dc-ios-hid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "iPadOS keyboard and mouse through Apple's GameController framework (GCKeyboard / GCMouse), the pointer lock and the app's Documents folder; portable key maps"
+
+[dependencies]
+# the KeyCode enum the client's input layer speaks (winit builds on iOS; no window is opened here)
+winit = { version = "0.30", default-features = false }
+
+[build-dependencies]
+# the Objective-C bridge (src/hid.m) is compiled for iOS targets only (build.rs)
+cc = "1"

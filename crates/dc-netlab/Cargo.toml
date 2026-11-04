@@ -1,0 +1,25 @@
+[package]
+name = "dc-netlab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Network lab: runs matches of headless bots over impaired paths (loss bursts, latency, jitter, NAT rebinding, firewalls) against a local lobby + game server and reports pass / fail (docs/NETLAB.md)"
+
+[[bin]]
+name = "dc-netlab"
+path = "src/main.rs"
+
+[lib]
+name = "dc_netlab"
+path = "src/lib.rs"
+
+[dependencies]
+# dc-net-engine: the impairment profiles (dc_net_engine::impair) the bots run, for the thresholds of each bot.
+dc-net-engine = { path = "../dc-net-engine" }
+# dc-bute: the user's ROM room table (modes, maps, which map plays which mode), read at run time.
+dc-bute = { path = "../dc-bute" }
+# dc-world: the synthetic world file of a run without the ROM (no ROM content).
+dc-world = { path = "../dc-world" }
+# serde_json (vetted, CLEANROOM.md §4a): the bots' event logs and reports, and the JSON report.
+serde_json = "1"

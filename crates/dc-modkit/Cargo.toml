@@ -1,0 +1,24 @@
+[package]
+name = "dc-modkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "dc_modkit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dc-modkit"
+path = "src/main.rs"
+
+[dependencies]
+dc-mod-lua = { path = "../dc-mod-lua" }
+dc-bute = { path = "../dc-bute" }
+dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }
+# dc-world: `validate` parses a map mod's world file (MAP-5) and the `map` scaffold writes a placeholder world
+# with its synth writer. Workspace crate, MIT OR Apache-2.0; dc-world depends on dc-rom only (no cycle).
+dc-world = { path = "../dc-world" }
+# dc-config: the mode-name vocabulary the generated dc_mod_api.d.lua lists for map records (MAP-6).
+dc-config = { path = "../dc-config" }

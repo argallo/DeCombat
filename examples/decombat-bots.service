@@ -1,0 +1,36 @@
+# systemd unit for headless bots on the VPS next to the lobby (docs/VPS.md "Bots"). WRITTEN ON WINDOWS, NEVER RUN:
+# check every line on the host. tools/vps/bootstrap.sh installs it (not enabled); by hand:
+#   sudo cp decombat-bots.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now decombat-bots        # 3 bots now and at boot (after the lobby)
+#   sudo systemctl stop decombat-bots
+# The number of bots and their names: `sudo systemctl edit decombat-bots`, then a drop-in with
+#   [Service]
+#   ExecStart=
+#   ExecStart=/bin/bash /opt/decombat/tools/bots.sh run 2 --prefix VpsBot
+# The bots log in through loopback (no account, no password: LG-32 / LG-187), read the server ROM (BOT-82), join the
+# first listed room and start again after every exit. Logs: /opt/decombat/logs/bots/.
+
+[Unit]
+Description=DeCombat bots (dc-botclient players on this host's lobby)
+After=decombat-lobby.service
+Wants=decombat-lobby.service
+
+[Service]
+Type=simple
+User=decombat
+Group=decombat
+WorkingDirectory=/opt/decombat
+ExecStart=/bin/bash /opt/decombat/tools/bots.sh run 3 --prefix VpsBot
+KillSignal=SIGTERM
+KillMode=control-group
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/decombat/logs
+
+[Install]
+WantedBy=multi-user.target

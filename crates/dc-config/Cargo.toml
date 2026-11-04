@@ -1,0 +1,22 @@
+[package]
+name = "dc-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat server.toml schema, env overrides, validation and community directory validator"
+
+[lib]
+name = "dc_config"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dc-config"
+path = "src/main.rs"
+
+[dependencies]
+# serde (derive): typed schema for server.toml and the community directory JSON.
+serde = { version = "1", features = ["derive"] }
+# toml: parse/serialise server.toml; its Value tree also drives env overrides and the DC_DEFAULTS key coverage test.
+toml = "0.8"
+# serde_json: the community directory document (shared with the landing page and the in-client browser).
+serde_json = "1"

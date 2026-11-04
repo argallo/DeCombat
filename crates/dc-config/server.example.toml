@@ -1,0 +1,302 @@
+# DeCombat server.toml: example with every hosting key and the gameplay keys that most operators change.
+# Every key is optional; the values below are the defaults. Validate with:  dc-config check server.toml
+# Overrides: environment DC_<SECTION>__<KEY> (double underscore between path segments), for example
+#   DC_SERVER__PUBLIC=true  DC_DSERVER__TICK_HZ=30  DC_ECONOMY__EXP__KILL=5
+# Precedence: defaults < this file < environment < command line (--rom, --public, ...).
+
+[server]
+name = "DeCombat Server"        # shown in the server list
+bind = "127.0.0.1"              # loopback by default
+public = false                  # true (or --public) binds 0.0.0.0 so other machines can connect
+auth_port = 10000
+lobby_port = 0                  # 0 = auth_port + 2
+clan_port = 0                   # 0 = lobby_port + 1
+http_port = 0                   # clan pages and /mods/<sha256>.zip; 0 = auth_port + 8080
+http_enabled = true             # a modded server needs this
+game_port = 27888               # UDP port in the game-start packet (single-port mode)
+advertise_ip = "127.0.0.1"      # what clients are told to connect to; set to your public address
+all_in_one = true               # lobby and dedicated-server roles in one process
+
+[paths]
+rom = ""                        # your 2009 client folder (or --rom <folder>); read-only
+mods_dir = "mods"               # holds <sha256>.zip files for the mods declared below
+db = "decombat.db"              # SQLite file (WAL)
+log_dir = ""                    # empty = stderr only
+
+[log]
+format = "text"                 # "text" or "json"
+level = "info"
+
+[metrics]
+enabled = false                 # Prometheus text endpoint (--metrics)
+bind = "127.0.0.1"
+port = 9464
+
+[directory]
+register = false                # heartbeat to a live directory (dc-directory); off by default
+urls = []                       # for example ["https://directory.example.invalid/api"]
+public_address = ""             # host:port players join, required when register = true
+region = "lan"                  # na sa eu as oc af lan
+description = ""
+website = ""
+heartbeat_secs = 60
+
+# Mod-set declaration. "vanilla" means no mods at all and requires an empty set.
+# For a modded server set policy = "modded" and list the mods in load order:
+#   [[mods.set]]
+#   id = "example-hud"
+#   version = "1.0.0"
+#   sha256 = "<64 lowercase hex digits of the packed zip>"
+[mods]
+policy = "vanilla"              # "vanilla" or "modded"
+client_visual_allowed = false   # must stay false when vanilla
+max_zip_bytes = 16777216
+
+# --- DeCombat gameplay defaults (DC_DEFAULTS.md); change only what you want to differ ---
+
+[auth]
+file_check = "off"              # CD-13
+auto_create = true              # CD-14
+session_ttl_secs = 60           # CD-19
+first_account_no = 1001         # AUTH-1 (proposed): number of the first account of an empty database
+
+[names]
+case_insensitive = true         # CD-16
+referrer = "optional"           # CD-17
+
+[lobby]
+single_session = true           # CD-55
+# servers = [{ name = "Server 1", capacity = 1000 }]            # CD-21; empty = one default server
+#   an entry also takes host = "" (this machine; or a [[hosts.agents]] name, CD-88) and channels = 3 (its block of
+#   channel ids when the list has two or more entries; one entry keeps the lobby.channels count)
+#   features = ["gun_game", "hardcore", "possession"] on an entry: Gun Game, Hardcore and Possession rooms there (LG-304, LG-307, LG-305, LG-306); add a new entry AFTER the existing ones
+#   (ids and channel blocks follow config order).
+# channels = [{ name = "Channel 1", capacity = 200 }]           # CD-21; empty = three default channels
+
+[room]
+countdown_ticks = 5             # CD-23
+countdown_ms = 1000             # CD-23
+allow_late_join = true          # CD-24
+max_per_channel = 100           # CD-25
+default_mid_join = 1            # CD-49
+entry_team_balance = true       # CD-51
+max_players_cap = 16            # CD-56
+handover_any_state = true       # CD-57
+settings_change_clears_ready = true   # RM-1 (proposed): a host settings change clears the others' ready
+blast_damage_scale = 1.0        # DSV-165: multiplier of grenade / blast damage to players (1.0 = the 2009 values)
+
+[room.round_secs]               # GMD-2 (project decision: every room has a time limit) when the mode file gives none
+fallback = true                 # false = no fallback: such rooms get time=0 (no clock, DSV-20)
+default = 600                   # seconds for a mode class the built-in table does not list
+# 1 = 900                       # <ROM mode class> = seconds; unlisted classes keep the built-in table
+
+[economy]
+case_odds = [[1, 60], [3, 25], [7, 10], [30, 4], [0, 1]]   # CD-01: [days, weight]; 0 days = permanent
+case_split_on_purchase = true   # CD-02
+gp_case_open_on_buy = true      # CD-68 (proposed)
+hisec_case_odds = [[7, 50], [30, 35], [0, 15]]   # HS-8 (proposed): HiSec case award [days, weight]
+ranks = ""                      # CD-05: path of a ranks.toml, empty = generated table
+rank_bonus = true               # CD-41: a rank-up adds the ROM level table's Bonus GP (LG-303)
+trust_server_rewards = false    # CD-54
+
+[economy.exp]                   # CD-03
+finish = 10
+kill = 4
+assist = 0
+win_percent = 25
+objective = 15
+team_kill_penalty = -1          # -1 = same as kill
+agent_win = 30                  # CD-86 Spy Hunt agent win extra
+
+[economy.gp]                    # CD-04
+finish = 20
+kill = 6
+assist = 0
+win_percent = 25
+objective = 25
+team_kill_penalty = -1
+agent_win = 0                   # CD-86 (GP: none)
+
+[rewards]
+pay_leavers = false             # REW-1: true = a player who left before the round end is paid too
+# Promotions (LG-303, CD-89): a match result that raises a character to a rank delivers to its inbox, once per
+# character and rank: the GP shop products whose GP_Unlock that rank first reaches (one row per item, the variant of
+# rank_unlock_days, else the shortest period; default and permanently owned items skipped), or, when the rank
+# unlocks nothing, one NX supply case at random. The 0x185f "items in the Inbox" box shows only when rows were
+# delivered.
+rank_unlock_days = 7            # 1..=3650
+rank_case_products = []         # NX supply case pool (ProductIDs); [] = every NX "Supply Case ..." of the ROM
+# NX is earned, not bought (LG-310, LG-311), in the prepaid balance of this instance's own ledger. With the ROM's prices
+# (a 7-day NX gun 2900, 30 days 5900-6900, permanent 24900) the daily bonus alone buys a 30-day gun in about 3.5 weeks.
+nx_enabled = true
+nx_daily = 250                  # first lobby login of a UTC day, bots excluded; 0 = none
+nx_clan_win = 200               # per member of the winning side of a clan match; 0 = none
+nx_clan_win_daily_cap = 3       # paid clan wins per account and UTC day
+nx_clan_min_players = 2         # clan members who played to the end on EACH side, bots not counted
+nx_clan_min_seconds = 180       # draws and forfeits (too few left on a side) pay nothing either
+# A [[rewards.rank_gifts]] entry replaces the rule for its rank (rank = the ROM level table's row, 1 = the first
+# rank above the recruit; products = SHOP_ITEM_LIST.TXT ProductIDs, each with its own period):
+# [[rewards.rank_gifts]]
+# rank = 5
+# products = [1234]
+
+[inventory]
+expiry_scan_secs = 60           # CD-06
+starter = true                  # CD-18
+starter_backpack = true         # CD-48
+default_repair = "weapons"      # CD-52: "weapons", "all" or "off"
+period_activation = true        # CD-53
+# starter_items = [101, 102]    # CD-18: ROM item ids; empty = chosen from the ROM item table
+max_items = 100                 # CD-69 (proposed)
+backpack_kinds = [0, 1, 2, 3]   # CD-77 (proposed)
+
+[gm]
+mute_server_side = true         # CD-33
+test_commands = "loopback"      # OPS-1 (proposed): "gm", "all" or "loopback"
+default_mute_minutes = 60       # OPS-4 (proposed)
+max_mute_minutes = 525600       # OPS-4 (proposed)
+permanent_ban_days = 0          # OPS-3 (proposed)
+lookup_shows_address = true     # OPS-5 (proposed)
+flag_moderators_to_game = true  # CD-64
+admin_max_nx = 100000           # LG-395 (proposed): the most one dashboard change adds or takes
+admin_max_gp = 1000000          # LG-395 (proposed)
+admin_max_exp = 10000000        # LG-395 (proposed)
+
+[shop]
+new_days = 30                   # CD-09
+hot_percent = 10                # CD-09
+sale_list = []                  # CD-09: product ids on sale
+lists = "rom"                   # CD-35
+credit_to_inbox = true          # CD-36
+# [shop.coupons]                # CD-39: code = product id
+# SUMMER = 1234
+# [shop.coupon_uses]            # CD-39: total redemptions per code, absent = unlimited
+# SUMMER = 100
+# [shop.list_override]          # CD-35: replaces a computed list; present = overridden (view, hot, new, sale)
+# hot = [1001, 1002]
+# [shop.price_override]         # CD-70 (proposed): product id = price
+# 1001 = 500
+extend = true                   # CD-71 (proposed)
+notify_offline_receiver = true  # CD-73 (proposed)
+
+[megaphone]
+secs = 30                       # CD-40
+max_chars = 65                  # CD-83 (proposed)
+
+[inbox]
+max_rows = 141                  # CD-74 (proposed)
+
+[notice]
+ticker_period_secs = 30         # OPS-2 (proposed)
+ticker_repeat = 3               # OPS-2 (proposed)
+case_announce = "permanent"     # OPS-9 (proposed): "off", "permanent" or "all"
+login_ticker = ""               # OPS-10 (proposed)
+login_box = ""                  # OPS-10 (proposed)
+expiry_boxes = true             # OPS-12 (proposed)
+
+[reports]
+per_hour = 20                   # OPS-7 (proposed)
+
+[monitor]
+retention_days = 14             # MON-2 (proposed): days the operator dashboard keeps matches, link windows and events; 0 = forever
+
+[messenger]
+max_friends = 50                # OPS-8 (proposed)
+whisper_friends_only = false    # OPS-8 (proposed)
+
+[clan]
+basic_point_default = 0         # CD-11
+winner_point_default = 0        # CD-11
+web_port = 0                    # CD-47: 0 = server.http_port
+channel_members_only = true     # CLN-1 (proposed)
+start_min_per_side = 2          # CLN-3 (proposed)
+level_steps = [0, 2000, 8000, 25000, 70000, 180000]   # CLN-5 (proposed)
+member_limits = [20, 40, 60, 80, 100, 120]            # CLN-6 (proposed)
+web_requires_session = true     # CLN-8 (proposed)
+chat_commands = true            # CLN-9 (proposed)
+# [clan.mode_weight]            # CD-11: <MODE_KEY> = weight, absent = 1.0
+
+[dserver]
+port_range = "29901-29999"      # CD-10: one UDP port per room
+quit_grace_secs = 5             # CD-50
+host_rate_bps = 5120000         # CD-58
+file_info = "size"              # CD-59
+hello_match = "name"            # CD-60
+startup_deadline_secs = 120     # CD-61
+sound_full_desc = true          # CD-62
+tick_hz = 10                    # CD-63: compatibility default, to be raised after live tests
+remote_console = "moderators"   # CD-64: "moderators" or "off"
+send_budget_bits = 0            # CD-65: 0 = transport window share
+echo_own_rotation = false       # CD-67
+loadout_tokens = true           # LDO-1 (proposed): `user` line carries loadout= / face=
+send_gain_lines = true          # DSV-35 (proposed): lobby sends `gain <uid> <exp> <gp>` after a stored @result
+
+[combat]                        # DSV-30 / DSV-34 (proposed): damage and tuning of dc-dserver; `-combat k=v` wins
+head_factor = 2.0               # multiplier of a hit in the head fraction (when no ROM node factor applies)
+body_factor = 1.0
+head_fraction = 0.2             # top share of the victim's box that counts as head (max 1)
+zone_factors = "rom"            # "rom": ROM skeleton node factors; "off": head/body factors only
+armor_absorb = "rom"            # number (0..1) or "rom" (the worn armour's share by damage type and hit zone)
+armor_gear = "worn"             # armour rows of body, head gear, goggle (row 0 without gear), a row, "items" or "off"
+armor_cost = "base"             # "base": armour pays its share of the ammunition damage; "hit": of the zoned damage
+start_armor = "rom"             # number or "rom"
+max_armor = "rom"               # number or "rom"
+start_health = 100.0
+max_health = 100.0
+default_damage = 25.0           # when the ROM has no value for the ammunition
+hit_tolerance = 48.0
+origin_tolerance = 160.0
+trace = "on"                    # "on": refuse hits through walls; "off"
+trace_slack = 16.0
+blast_inner = 0.25              # DSV-39 (amendment, proposed): full blast damage inside this share of the radius
+
+[spy]                           # DSV-451 (proposed, amended 2026-10-30): Spy Hunt rules of dc-dserver
+agent_health = 1000.0           # the agent's health and its maximum (DC_SPY__AGENT_HEALTH)
+agent_armor = 500.0             # the agent's armour and its maximum (DC_SPY__AGENT_ARMOR)
+
+[evars]                         # DSV-47 / DSV-60 (proposed): server variables before the world load; -evars wins
+mode = "world"                  # "world" (world settings and world north) or "off"
+# [evars.extra]                 # -evar name=value: extra variables, sent after the built-in ones
+# SomeVariable = "1.000000"
+
+[bots]                          # LG-318, LG-319 (proposed): see docs/BOTS.md
+pool_size = 100                 # accounts a stock bot takes at login, made at the start; 0 = no pool
+pool_per_ip = 7                 # seats per address; this machine has no limit
+keep_seat_online_players = 8    # people online (bots not counted) from which rooms keep a seat open; 0 = never
+managed = false                 # LG-388: run the dashboard's bot groups as child processes of this lobby
+managed_max_total = 21          # LG-388: most managed bots of all groups together (a group holds 1..7)
+
+[hisec]                         # HS-6..HS-9 (proposed): the lobby side of the HiSec case
+case_product = 0                # HS-6: product a picked-up case becomes; 0 = from the ROM tables
+announce = "all"                # HS-9: who hears a HiSec opening (0x3013): "all", "channel" or "off"
+no_key_reason = 153             # HS-7: 0x32f reason (0x99) when no usable key is owned
+
+[client]                        # LG-322 (proposed): what clients are told before their login (GET /client_version.json)
+latest = ""                     # newest release, "0.3.0"; an older client shows a notice and goes on; "" = no notice
+min_version = ""                # oldest client this lobby takes; an older one shows why and does not log in; "" = no refusal
+update_url = "decombat.com"     # where to get the client, as the notice shows it
+
+[mail]                          # LG-240..LG-245 (proposed): password-recovery mail of the lobby; empty host = off
+smtp_host = ""                  # e.g. "smtp.example.org"
+smtp_port = 587                 # 587 = STARTTLS, 465 = TLS from the first byte
+user = ""                       # SMTP login
+password = ""                   # better: DC_MAIL__PASSWORD in the environment; never printed
+from = ""                       # sender, e.g. "DeCombat <noreply@example.org>"
+subject_prefix = "[DeCombat]"
+dry_run = false                 # true: write the mails to the lobby log instead of sending them
+reports_to = ""                 # LG-316: your address for in-game bug and player reports; empty = they stay in the DB
+reports_per_hour = 20           # LG-316: report mails per hour for the whole lobby; the rest wait in the DB and go later
+
+[identity]                      # LG-68 / LG-69 (proposed): identity tokens (one identity, many ledgers); all empty = off
+issue = false                   # true: sign tokens, POST /identity/token on the web port (needs issuer)
+issuer = ""                     # own issuer id when issuing, else the trusted one, e.g. "decombat.vps"
+public_key = ""                 # the trusted issuer's public key (base64, from `dc-lobby-server identity`)
+token_hours = 24                # lifetime of an issued token
+key_file = ""                   # issuing key pair; empty = identity_key.pem next to the DB
+
+[hosts]                         # CD-88 (proposed): remote game hosts (dc-host, specs/HOST_AGENT.md); no agent = no host port
+port = 0                        # TLS port the agents dial; 0 = auth_port + 5
+# [[hosts.agents]]
+# name = "us-west"              # the agent's hello name; a [[lobby.servers]] entry's host
+# token = "..."                 # shared secret, at least 24 characters
+# public_address = ""           # advertised for its game servers; "" = the address the agent connects from

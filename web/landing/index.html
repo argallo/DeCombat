@@ -1,0 +1,1103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#10120f" />
+    <meta name="color-scheme" content="dark" />
+    <title>DeCombat — Back to the battlefield.</title>
+    <meta
+      name="description"
+      content="The 2009 Combat Arms experience, rebuilt for a new era. An independent emulator with community servers, Lua mods, Windows, macOS and an experimental iPad build."
+    />
+    <meta property="og:title" content="DeCombat — Back to the battlefield." />
+    <meta
+      property="og:description"
+      content="Same memories. New possibilities. Discover the independent emulator for the 2009 Combat Arms EU client."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://decombat.com/" />
+    <meta
+      property="og:image"
+      content="https://decombat.com/assets/social.jpg"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="assets/logo.webp" type="image/webp" />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="beta.css" />
+    <link
+      rel="preload"
+      href="assets/fonts/BarlowCondensed-Bold.ttf"
+      as="font"
+      type="font/ttf"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/hero.webp"
+      as="image"
+      fetchpriority="high"
+    />
+    <script type="module" src="app.js"></script>
+    <script type="module" src="beta.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="header">
+      <div class="nav-shell">
+        <a class="brand" href="#" aria-label="DeCombat home"
+          ><img
+            src="assets/logo.webp"
+            width="44"
+            height="44"
+            alt="DeCombat helmeted computer mascot"
+          /><span
+            >DE<span class="accent">COMBAT</span
+            ><small>COMMUNITY BUILT. BATTLE READY.</small></span
+          ></a
+        >
+        <button
+          class="menu-toggle"
+          aria-expanded="false"
+          aria-controls="nav"
+          aria-label="Open navigation"
+        >
+          ☰
+        </button>
+        <nav id="nav" aria-label="Main navigation">
+          <a href="#about">The project</a><a href="#features">Features</a
+          ><a href="#workshop">Mods & maps</a><a href="#community">Community</a
+          ><a href="github/" data-repo="" class="nav-github"
+            >GitHub <span aria-hidden="true">↗</span></a
+          ><a class="button small" href="#beta"
+            >Join beta <span aria-hidden="true">↗</span></a
+          >
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-image" aria-hidden="true"></div>
+        <div class="hero-grain" aria-hidden="true"></div>
+        <div class="wrap hero-content">
+          <p class="eyebrow">
+            <span class="status-dot"></span> THE 2009 EXPERIENCE. A NEW CHAPTER.
+          </p>
+          <h1 id="hero-title">BACK TO THE<br /><span>BATTLEFIELD.</span></h1>
+          <p class="hero-sub">
+            You remember the maps.<br />You remember the feeling.
+          </p>
+          <p class="hero-description">
+            The 2009 Combat Arms EU experience, rebuilt for modern hardware.
+          </p>
+          <div class="hero-actions">
+            <a class="button" href="#about"
+              >Gear up <span aria-hidden="true">↗</span></a
+            ><a class="button ghost" href="#field-report"
+              ><span class="play-icon" aria-hidden="true">▶</span> Watch
+              gameplay</a
+            >
+          </div>
+          <p class="hero-fine">
+            BRING YOUR OWN GAME FILES <span> / </span> IN ACTIVE DEVELOPMENT
+          </p>
+        </div>
+        <div class="hero-bottom wrap">
+          <span><b>EST. 2009</b> <i></i> REBUILT FOR WHAT’S NEXT</span
+          ><a href="#about"
+            >SCROLL TO RECON <span aria-hidden="true">↓</span></a
+          >
+        </div>
+        <span class="art-credit">DECOMBAT CONCEPT ART</span>
+      </section>
+      <div class="signal-strip">
+        <div class="wrap">
+          <span
+            ><i class="status-dot"></i> PROJECT STATUS: PLAYABLE · IN
+            DEVELOPMENT</span
+          ><a href="#platforms"
+            >Explore platforms <span aria-hidden="true">↗</span></a
+          >
+        </div>
+      </div>
+      <section id="about" class="section wrap">
+        <div class="section-heading heading-row">
+          <div>
+            <p class="eyebrow">01 / THE MISSION · READY UP</p>
+            <h2>
+              SAME MEMORIES.<br /><span class="muted-title"
+                >NEW POSSIBILITIES.</span
+              >
+            </h2>
+          </div>
+          <p>
+            DeCombat is an independent Rust emulator. Bring your legitimate 2009
+            EU client folder. We bring the new engine.
+          </p>
+        </div>
+        <ol class="mission-flow">
+          <li>
+            <span class="step-id">01 / YOUR FILES</span>
+            <div class="mission-art folder-art">
+              <svg
+                class="ui-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 7h7l2 3h9v11H3z" />
+                <path d="M3 7V4h7l2 3h6v3" />
+              </svg>
+            </div>
+            <h3>BRING THE CLASSICS.</h3>
+            <p>Your original maps, textures & sounds.</p>
+            <span class="tag">READ ONLY</span
+            ><span class="flow-arrow" aria-hidden="true">→</span>
+          </li>
+          <li class="mission-core">
+            <span class="step-id">02 / THE EMULATOR</span>
+            <div class="mission-art">
+              <img
+                src="assets/logo.webp"
+                width="96"
+                height="96"
+                alt="DeCombat mascot"
+              />
+            </div>
+            <h3>GEAR UP.</h3>
+            <p>A new client, engine & servers. Built in Rust.</p>
+            <a class="text-link" href="github/" data-repo="">Get DeCombat ↗</a
+            ><span class="flow-arrow" aria-hidden="true">→</span>
+          </li>
+          <li>
+            <span class="step-id">03 / YOUR NEXT ROUND</span>
+            <div class="mission-art">
+              <svg
+                class="ui-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="7" r="3" />
+                <path
+                  d="M6 21v-4a6 6 0 0 1 12 0v4M3 7a3 3 0 0 0 0 6m18-6a3 3 0 0 1 0 6M1 21v-4m22 4v-4"
+                />
+              </svg>
+            </div>
+            <h3>FIND YOUR SQUAD.</h3>
+            <p>Community servers. Classic or modded.</p>
+            <a class="text-link" href="#community">Join the community ↗</a>
+          </li>
+        </ol>
+        <div class="mission-footer">
+          <p class="fine">
+            Your game files stay untouched. Original executables are never run.
+          </p>
+          <a class="text-link" href="github/" data-repo="blob/master/HOSTING.md"
+            >Host a server ↗</a
+          >
+        </div>
+      </section>
+      <section id="field-report" class="field-section section">
+        <div class="wrap">
+          <div class="section-heading heading-row">
+            <div>
+              <p class="eyebrow">02 / EYES ON THE ACTION</p>
+              <h2>THIS SHOULD<br />LOOK FAMILIAR.</h2>
+            </div>
+            <span class="tag">CAPTURED IN DECOMBAT</span>
+          </div>
+          <div class="footage-layout">
+            <div class="gameplay-frame">
+              <div class="frame-top">
+                <span
+                  ><i class="record-dot"></i> FIELD RECORDING / SNOW
+                  VALLEY</span
+                ><span>IN-ENGINE GAMEPLAY</span>
+              </div>
+              <video
+                id="gameplay"
+                controls
+                playsinline
+                preload="none"
+                poster="assets/snow-valley.webp"
+                aria-label="DeCombat gameplay on Snow Valley, silent 24 second capture"
+              >
+                <source src="assets/gameplay.mp4" type="video/mp4" />
+              </video>
+              <div class="frame-bottom">
+                <span>2009 EU ROM · DECOMBAT CLIENT</span
+                ><span>00:24 / SILENT CAPTURE</span>
+              </div>
+            </div>
+            <div class="trailer-panel">
+              <span class="tag amber">INCOMING TRANSMISSION</span>
+              <div class="trailer-symbol" aria-hidden="true">▶</div>
+              <h3>LAUNCH TRAILER.<br />COMING SOON.</h3>
+              <p>Your first look lands here.</p>
+              <a id="trailer-link" href="#community" class="text-link"
+                >Follow the launch <span aria-hidden="true">↗</span></a
+              ><span class="mono trailer-footer"
+                >LAUNCH TRAILER / COMING SOON</span
+              >
+            </div>
+          </div>
+          <div class="loop-toolbar">
+            <span class="mono">THREE MOMENTS. SAME ADRENALINE.</span
+            ><button
+              id="motion-toggle"
+              type="button"
+              class="text-link"
+              aria-pressed="false"
+            >
+              Play loops
+            </button>
+          </div>
+          <div class="map-strip">
+            <figure>
+              <div class="loop-frame">
+                <img
+                  class="gameplay-loop"
+                  src="assets/junk-flea-action.webp"
+                  data-still="assets/junk-flea-action.webp"
+                  data-loop="assets/junk-flea-action-loop.webp"
+                  alt="Sniper firefight on Junk Flea"
+                  loading="lazy"
+                  width="640"
+                  height="360"
+                /><span class="loop-badge" aria-hidden="true"
+                  >06 SEC / LOOP</span
+                >
+              </div>
+              <figcaption>
+                <span>JUNK FLEA</span><small>ONE SHOT. MAKE IT COUNT.</small>
+              </figcaption>
+            </figure>
+            <figure>
+              <div class="loop-frame">
+                <img
+                  class="gameplay-loop"
+                  src="assets/one-man-army-action.webp"
+                  data-still="assets/one-man-army-action.webp"
+                  data-loop="assets/one-man-army-action-loop.webp"
+                  alt="Rapid close-range kills in One Man Army"
+                  loading="lazy"
+                  width="640"
+                  height="360"
+                /><span class="loop-badge" aria-hidden="true"
+                  >06 SEC / LOOP</span
+                >
+              </div>
+              <figcaption>
+                <span>ONE MAN ARMY</span><small>KEEP THE STREAK ALIVE.</small>
+              </figcaption>
+            </figure>
+            <figure>
+              <div class="loop-frame">
+                <img
+                  class="gameplay-loop"
+                  src="assets/close-quarters-action.webp"
+                  data-still="assets/close-quarters-action.webp"
+                  data-loop="assets/close-quarters-action-loop.webp"
+                  alt="Automatic weapon firefight on Junk Flea"
+                  loading="lazy"
+                  width="640"
+                  height="360"
+                /><span class="loop-badge" aria-hidden="true"
+                  >06 SEC / LOOP</span
+                >
+              </div>
+              <figcaption>
+                <span>CLOSE QUARTERS</span><small>NO TIME TO RELOAD.</small>
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+      <section id="features" class="section wrap">
+        <div class="section-heading">
+          <p class="eyebrow">03 / YOUR LOADOUT</p>
+          <div class="heading-row">
+            <h2>
+              THE CLASSICS ARE HERE.<br /><span class="muted-title"
+                >SO IS WHAT’S NEXT.</span
+              >
+            </h2>
+            <span class="tag">CLASSIC MODES · PUBLIC & CLAN</span>
+          </div>
+        </div>
+        <div class="loadout-grid">
+          <article class="mode-panel">
+            <div class="capability-title">
+              <span class="eyebrow">PICK YOUR FIGHT</span>
+              <h3><b>09</b> WAYS TO PLAY.</h3>
+            </div>
+            <ul class="mode-grid">
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="7" />
+                  <path d="M12 1v7m0 8v7M1 12h7m8 0h7" /></svg
+                ><span>Team Deathmatch</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 16a9 9 0 1 1 12 0v5H6zM9 17v4m6-4v4" />
+                  <circle cx="8" cy="10" r="1" />
+                  <circle cx="16" cy="10" r="1" />
+                  <path d="m10 14 2-2 2 2" /></svg
+                ><span>One Man Army</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6zM8 12l3 3 5-6"
+                  /></svg
+                ><span>Elimination</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m3 9 9-6 9 6M3 15l9-6 9 6M3 21l9-6 9 6" /></svg
+                ><span>Elimination Pro</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="11" cy="14" r="8" />
+                  <path d="m16 7 3-4m-1-1 3 3M7 12l2-2M20 1l2-1m0 8 2 1" /></svg
+                ><span>Search & Destroy</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M5 23V2m0 1c5-4 9 4 15 0v10c-6 4-10-4-15 0" /></svg
+                ><span>Capture the Flag</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" />
+                  <circle cx="12" cy="12" r="3" /></svg
+                ><span>Spy Hunt</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path
+                    d="M10 9C3 8 5 2 8 2m6 7c7-1 5-7 2-7M9 13c-5 5-9 0-7-3m10 5c-2 7-8 5-8 2m11-4c5 5 9 0 7-3m-10 5c2 7 8 5 8 2"
+                  /></svg
+                ><span>Quarantine</span>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M13 2c1 7 9 8 7 15-2 9-18 6-16-3 1-4 4-5 5-9 3 4 1 7 3 8 3-3 3-5 1-11z"
+                  /></svg
+                ><span>Fireteam</span>
+              </li>
+            </ul>
+          </article>
+          <div class="capability-stack">
+            <article class="capability-card">
+              <div class="capability-title">
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="3" width="7" height="7" />
+                  <rect x="14" y="3" width="7" height="7" />
+                  <rect x="3" y="14" width="7" height="7" />
+                  <rect x="14" y="14" width="7" height="7" />
+                </svg>
+                <h3>THE WHOLE LOADOUT.</h3>
+              </div>
+              <ul class="inventory-grid">
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m4 12 5 5L21 5" />
+                  </svg>
+                  Lobby
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m4 12 5 5L21 5" />
+                  </svg>
+                  Shop
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m4 12 5 5L21 5" />
+                  </svg>
+                  Storage
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m4 12 5 5L21 5" />
+                  </svg>
+                  Clans
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m4 12 5 5L21 5" />
+                  </svg>
+                  Inbox
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m4 12 5 5L21 5" />
+                  </svg>
+                  Options
+                </li>
+              </ul>
+            </article>
+            <article class="capability-card">
+              <div class="capability-title">
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="3" width="18" height="7" rx="1" />
+                  <rect x="3" y="14" width="18" height="7" rx="1" />
+                  <path d="M7 6h.01M7 17h.01M12 6h5m-5 11h5" />
+                </svg>
+                <h3>YOUR SERVER. YOUR RULES.</h3>
+              </div>
+              <div
+                class="server-visual"
+                aria-label="Play solo with bots, or with friends on a dedicated server"
+              >
+                <span
+                  ><svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="7" r="3" />
+                    <path
+                      d="M6 21v-4a6 6 0 0 1 12 0v4M3 7a3 3 0 0 0 0 6m18-6a3 3 0 0 1 0 6M1 21v-4m22 4v-4"
+                    /></svg
+                  >FRIENDS</span
+                ><i aria-hidden="true">⇄</i
+                ><span
+                  ><svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="3" width="18" height="7" rx="1" />
+                    <rect x="3" y="14" width="18" height="7" rx="1" />
+                    <path d="M7 6h.01M7 17h.01M12 6h5m-5 11h5" /></svg
+                  >DEDICATED</span
+                ><i aria-hidden="true">⇄</i
+                ><span
+                  ><svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="7" />
+                    <path d="M12 1v7m0 8v7M1 12h7m8 0h7" /></svg
+                  >BOTS</span
+                >
+              </div>
+              <div class="capability-bottom">
+                <span class="tag">VANILLA / MODDED</span
+                ><a
+                  class="text-link"
+                  href="github/"
+                  data-repo="blob/master/HOSTING.md"
+                  >Hosting guide ↗</a
+                >
+              </div>
+            </article>
+            <article class="capability-card">
+              <div class="capability-title">
+                <svg
+                  class="ui-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m12 2 10 5v10l-10 5-10-5V7zM2 7l10 5 10-5M12 12v10M7 4l10 5"
+                  />
+                </svg>
+                <h3>OPEN TO YOUR IDEAS.</h3>
+              </div>
+              <div class="mod-pipeline">
+                <span>LUA 5.4</span><span>→</span><span>SANDBOX</span
+                ><span>→</span><span>VERIFIED HASH</span>
+              </div>
+              <a
+                class="text-link"
+                href="github/"
+                data-repo="blob/master/docs/MODDING_GUIDE.md"
+                >Build a mod ↗</a
+              >
+            </article>
+          </div>
+        </div>
+        <div id="platforms" class="platform-panel">
+          <div class="platform-heading">
+            <p class="eyebrow">CHOOSE YOUR PLATFORM</p>
+            <p>One project. More places to play.</p>
+          </div>
+          <div class="platforms">
+            <article>
+              <span class="platform-symbol" aria-hidden="true">⊞</span>
+              <h3>Windows</h3>
+              <p>x86_64</p>
+              <span class="status-label">PLAYABLE</span>
+            </article>
+            <article>
+              <span class="platform-symbol" aria-hidden="true">⌘</span>
+              <h3>macOS</h3>
+              <p>Apple Silicon · Intel build</p>
+              <span class="status-label">PLAYABLE ON APPLE SILICON</span>
+            </article>
+            <article>
+              <span class="platform-symbol" aria-hidden="true">▯</span>
+              <h3>iPadOS</h3>
+              <p>Bluetooth keyboard + mouse</p>
+              <span class="status-label amber-text">EXPERIMENTAL</span>
+            </article>
+            <article>
+              <span class="platform-symbol" aria-hidden="true">&gt;_</span>
+              <h3>Linux</h3>
+              <p>x86_64 dedicated servers</p>
+              <span class="status-label">SERVER HOSTING</span>
+            </article>
+          </div>
+          <details class="platform-notes">
+            <summary>Development build details</summary>
+            <p>
+              Intel Mac: cross-built; hardware validation pending. iPadOS:
+              tested on M4 iPad Pro with Bluetooth keyboard and mouse; install
+              through Xcode. Linux: dedicated servers.
+            </p>
+          </details>
+        </div>
+      </section>
+      <section id="workshop" class="section workshop">
+        <div class="wrap">
+          <div class="section-heading">
+            <p class="eyebrow">04 / THE COMMUNITY WORKSHOP</p>
+            <div class="heading-row">
+              <h2>
+                YOUR GAME.<br /><span class="amber-text"
+                  >YOUR WAY TO PLAY.</span
+                >
+              </h2>
+              <p>New rules. New sights. Built by the community.</p>
+            </div>
+          </div>
+          <div class="catalog-toolbar">
+            <div class="filters" role="group" aria-label="Filter mods">
+              <button
+                class="filter active"
+                data-filter="all"
+                aria-pressed="true"
+              >
+                All mods</button
+              ><button
+                class="filter"
+                data-filter="verified"
+                aria-pressed="false"
+              >
+                Verified</button
+              ><button
+                class="filter"
+                data-filter="gameplay"
+                aria-pressed="false"
+              >
+                Gameplay</button
+              ><button class="filter" data-filter="visual" aria-pressed="false">
+                Visuals
+              </button>
+            </div>
+            <label class="search"
+              ><span aria-hidden="true">⌕</span
+              ><input
+                type="search"
+                id="mod-search"
+                placeholder="Find a mod…"
+                aria-label="Search community mods"
+            /></label>
+          </div>
+          <div id="mod-list" class="mod-grid" aria-live="polite">
+            <p class="empty-state">Loading the workshop…</p>
+          </div>
+          <p class="catalog-note" id="catalog-note">
+            Verified = reviewed ID + version + SHA-256. Reference demos are
+            labeled separately.
+          </p>
+          <div class="mapkit-panel">
+            <div class="mapkit-art">
+              <div class="mapkit-art-top">
+                <span>DC-MAPKIT / WORK IN PROGRESS</span
+                ><span>+ X &nbsp; + Z</span>
+              </div>
+              <img
+                src="assets/map-plan.svg"
+                width="620"
+                height="420"
+                loading="lazy"
+                alt="Conceptual map layout showing two spawn zones, buildings, routes and an objective"
+              /><span class="mapkit-art-bottom"
+                >WORKFLOW CONCEPT · NOT AN EDITOR SCREENSHOT</span
+              >
+            </div>
+            <div class="mapkit-copy">
+              <div class="mapkit-identity">
+                <img
+                  src="assets/mapkit.webp"
+                  width="54"
+                  height="54"
+                  alt="MapKit logo"
+                /><span class="tag amber">IN DEVELOPMENT</span>
+              </div>
+              <h3>BUILD THE NEXT<br />FAVORITE MAP.</h3>
+              <p>
+                <strong>MapKit</strong> · Community map builder<br />Windows +
+                macOS · In development
+              </p>
+              <ol class="mapkit-workflow">
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m2 21 9-18 11 18zM7 11l4 3 4-4" /></svg
+                  ><span>Shape</span>
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M19 9c0 5-7 13-7 13S5 14 5 9a7 7 0 1 1 14 0z" />
+                    <circle cx="12" cy="9" r="2" /></svg
+                  ><span>Place</span>
+                </li>
+                <li>
+                  <svg
+                    class="ui-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m12 2 10 5v10l-10 5-10-5V7zM2 7l10 5 10-5M12 12v10M7 4l10 5"
+                    /></svg
+                  ><span>Export</span>
+                </li>
+              </ol>
+              <p class="mapkit-note">
+                Templates · Terrain · Spawns · Objectives · AI-assisted tools
+              </p>
+              <a
+                class="text-link"
+                href="github/"
+                data-repo="blob/master/docs/MAPKIT_PLAN.md"
+                >Follow MapKit development <span aria-hidden="true">↗</span></a
+              >
+            </div>
+          </div>
+          <div class="workshop-footer">
+            <p><b>Your next idea belongs here.</b></p>
+            <a
+              class="button ghost small"
+              href="github/"
+              data-repo="blob/master/docs/MODDING_GUIDE.md"
+              >Enter the workshop ↗</a
+            >
+          </div>
+        </div>
+      </section>
+      <section id="beta" class="beta-section" aria-labelledby="beta-title">
+        <div class="wrap beta-inner">
+          <div class="beta-copy">
+            <p class="eyebrow">CLOSED BETA</p>
+            <h2 id="beta-title">
+              GET IN <span class="amber-text">EARLY.</span>
+            </h2>
+            <p>
+              We are letting players in a few at a time so we can fix what
+              breaks before everyone arrives. Leave your e-mail address and we
+              will send you an invite code when your spot opens.
+            </p>
+            <p class="fine">
+              You confirm your address first with a link we mail you. We use it
+              only for beta invites and updates. Every mail has an unsubscribe
+              link.
+            </p>
+          </div>
+          <form
+            id="beta-form"
+            class="beta-form"
+            method="post"
+            action="https://beta.decombat.com/beta/signup"
+            novalidate
+          >
+            <label class="beta-field"
+              ><span class="eyebrow">E-MAIL</span>
+              <input
+                id="beta-email"
+                name="email"
+                type="email"
+                autocomplete="email"
+                maxlength="254"
+                required
+                placeholder="you@example.com"
+              />
+            </label>
+            <label class="beta-field"
+              ><span class="eyebrow">PLATFORM</span>
+              <select id="beta-platform" name="platform">
+                <option value="">Not sure yet</option>
+                <option value="windows">Windows</option>
+                <option value="mac">macOS</option>
+                <option value="ipad">iPad</option>
+              </select>
+              <span class="fine">Windows and macOS first; iPad later.</span>
+            </label>
+            <label class="beta-check">
+              <input
+                id="beta-consent"
+                name="consent"
+                type="checkbox"
+                value="1"
+                required
+              />
+              <span
+                >Store my address to send beta invites and updates.
+                <a href="privacy">Privacy</a></span
+              >
+            </label>
+            <button type="submit" id="beta-submit" class="button">
+              Request an invite <span aria-hidden="true">↗</span>
+            </button>
+            <p
+              id="beta-status"
+              class="beta-status fine"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </form>
+        </div>
+      </section>
+
+      <section id="community" class="community-section">
+        <div class="wrap community-inner">
+          <img
+            src="assets/logo.webp"
+            alt=""
+            width="100"
+            height="100"
+            loading="lazy"
+          />
+          <p class="eyebrow">THE BEST PART WAS ALWAYS THE PEOPLE.</p>
+          <h2>SQUAD UP.<br /><span class="amber-text">COME HOME.</span></h2>
+          <p>Find your squad. Share your builds.</p>
+          <div class="community-actions">
+            <a id="discord-link" href="https://discord.gg/hNWcXpTST" class="button"
+              rel="noopener noreferrer"
+              >Join the Discord <span aria-hidden="true">↗</span></a
+            ><a class="button ghost" href="github/" data-repo=""
+              >Explore GitHub ↗</a
+            >
+          </div>
+          <p id="discord-status" class="fine">
+            The community is open. You’re invited.
+          </p>
+        </div>
+      </section>
+      <section class="faq section wrap" aria-labelledby="faq-title">
+        <div>
+          <p class="eyebrow">BEFORE YOU DROP IN</p>
+          <h2 id="faq-title">GOOD TO KNOW.</h2>
+        </div>
+        <div>
+          <details>
+            <summary>Is this the original Combat Arms client?</summary>
+            <p>
+              DeCombat is a new, independent emulator for the 2009 Combat Arms
+              EU client folder. Its own Rust code handles the client and
+              servers; it never runs the original executable or libraries.
+            </p>
+          </details>
+          <details>
+            <summary>Where do I get the original game files?</summary>
+            <p>
+              You must supply a legitimate copy of the supported 2009 EU client
+              yourself. This site and the DeCombat packages do not distribute
+              the original game files.
+            </p>
+          </details>
+          <details>
+            <summary>How are mods approved and verified?</summary>
+            <p>
+              The community directory records reviewed mod IDs, versions and
+              package hashes. A verified badge is an exact match to that record,
+              not a guarantee for every version of a mod. Other packages require
+              explicit consent in the client. Vanilla servers load no mods.
+            </p>
+          </details>
+          <details>
+            <summary>Can I play on a Mac or iPad?</summary>
+            <p>
+              Apple Silicon Mac builds are playable. Intel Mac builds exist but
+              hardware validation is pending. The experimental iPadOS port has
+              been play-tested on an M4 iPad Pro with a Bluetooth keyboard and
+              mouse; installation currently requires Xcode. There is no App
+              Store release.
+            </p>
+          </details>
+          <details>
+            <summary>Is DeCombat affiliated with Nexon or Valofe?</summary>
+            <p>
+              No. DeCombat is an independent community project, not affiliated
+              with, endorsed by or sponsored by Nexon, Valofe, or the owners of
+              the original game and technology.
+            </p>
+          </details>
+        </div>
+      </section>
+    </main>
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-top">
+          <a class="brand" href="#"
+            ><img src="assets/logo.webp" width="34" height="34" alt="" /><span
+              >DE<span class="accent">COMBAT</span></span
+            ></a
+          ><span class="mono">BUILT BY THE COMMUNITY. FOR THE COMMUNITY.</span
+          ><a href="#main" class="text-link">Back to top ↑</a>
+        </div>
+        <p>
+          DeCombat is an unofficial, independent project,
+          <span>not affiliated with, endorsed by or sponsored by</span> Nexon or
+          Valofe. Combat Arms and its game content belong to their respective
+          owners. You must supply your own legitimate 2009 EU client. Original
+          game files are never redistributed.
+        </p>
+        <div class="footer-bottom">
+          <span>© 2026 DeCombat contributors · Code: MIT / Apache-2.0</span>
+          <div>
+            <a href="privacy">Privacy</a
+            ><a href="github/" data-repo="blob/master/NOTICE.md"
+              >Project notice ↗</a
+            ><a href="github/" data-repo="blob/master/CONTRIBUTING.md"
+              >Contribute ↗</a
+            >
+          </div>
+        </div>
+      </div>
+    </footer>
+    <dialog id="mod-dialog" aria-labelledby="mod-dialog-title">
+      <div class="dialog-top">
+        <p class="eyebrow">WORKSHOP / PACKAGE INTEL</p>
+        <button
+          id="close-mod"
+          class="close-button"
+          aria-label="Close mod details"
+        >
+          ✕
+        </button>
+      </div>
+      <div id="mod-detail"></div>
+    </dialog>
+    <noscript
+      ><div class="noscript">
+        Enable JavaScript to browse the mod catalog and play gameplay loops. The
+        project overview and gameplay remain available.
+      </div></noscript
+    >
+  </body>
+</html>

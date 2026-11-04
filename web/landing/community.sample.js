@@ -1,0 +1,83 @@
+// Offline fallback for file:// review (browsers block fetch of local files). Same content as community.json.
+window.DC_COMMUNITY_SAMPLE = {
+  "schema_version": 1,
+  "updated": "2026-10-24T12:00:00Z",
+  "servers": [
+    {
+      "id": "example-vanilla",
+      "name": "Example Vanilla (fictional)",
+      "description": "Placeholder entry for review. Stock rules, no mods at all.",
+      "region": "eu",
+      "address": "vanilla.example.invalid:10000",
+      "policy": "vanilla",
+      "client_visual_allowed": false,
+      "players": {
+        "current": 12,
+        "max": 64
+      },
+      "website": "https://example.invalid/vanilla",
+      "mods": []
+    },
+    {
+      "id": "example-modded",
+      "name": "Example Modded (fictional)",
+      "description": "Placeholder entry for review. Custom reward rules plus a HUD pack and an x-ray view mode.",
+      "region": "na",
+      "address": "modded.example.invalid:10000",
+      "policy": "modded",
+      "client_visual_allowed": true,
+      "players": {
+        "current": 5,
+        "max": 32
+      },
+      "website": "https://example.invalid/modded",
+      "fingerprint": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "mods": [
+        {
+          "id": "example-rules",
+          "version": "2.0.0",
+          "sha256": "2053969c01feb503070dd3ceaaa9929a1c2aa3a004c162532f358f71c769be95"
+        },
+        {
+          "id": "example-hud",
+          "version": "1.2.0",
+          "sha256": "b6de5656fa4239ed04f46974b3f80d241f470a78cb3120221b62f166c13928e0"
+        },
+        {
+          "id": "example-xray",
+          "version": "0.3.1",
+          "sha256": "ddc13597bf04ab88e8178a5ecbea0cc8ce83e32602b056cf956ebb742eac7cee"
+        }
+      ]
+    }
+  ],
+  "known_mods": [
+    {
+      "id": "example-rules",
+      "name": "Example Rules",
+      "version": "2.0.0",
+      "sha256": "2053969c01feb503070dd3ceaaa9929a1c2aa3a004c162532f358f71c769be95",
+      "source_repo": "https://example.invalid/src/example-rules",
+      "author": "Example Author",
+      "description": "Server-rule mod: alternative reward formulas.",
+      "capabilities": [
+        "hooks:lobby.calc_exp_gp",
+        "content:economy"
+      ],
+      "manifest_url": "https://example.invalid/src/example-rules/manifest.json"
+    },
+    {
+      "id": "example-hud",
+      "name": "Example HUD",
+      "version": "1.2.0",
+      "sha256": "b6de5656fa4239ed04f46974b3f80d241f470a78cb3120221b62f166c13928e0",
+      "source_repo": "https://example.invalid/src/example-hud",
+      "author": "Example Author",
+      "description": "Client-visual HUD skin and crosshair set.",
+      "capabilities": [
+        "hooks:hud.draw"
+      ],
+      "manifest_url": "https://example.invalid/src/example-hud/manifest.json"
+    }
+  ]
+};

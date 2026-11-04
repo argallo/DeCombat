@@ -1,0 +1,96 @@
+[package]
+name = "dc-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat client slice: a first-person world walker over dc-render and dc-sim that joins a lobby and a game server"
+
+[features]
+default = ["window", "audio"]
+# On-screen mode (winit window + wgpu surface). The headless path and every test work without it.
+window = ["dep:winit", "dep:arboard"]
+# Sound output through the default device (dc-audio's cpal layer). Only a window run opens the device; headless runs
+# and every test use the null backend.
+audio = ["dc-audio/device"]
+# The frame profiler (`--profile`) also counts heap allocations per frame: a counting global allocator in the binary.
+# Off by default (the profiler itself is a run-time switch and needs no feature).
+prof-alloc = []
+# perf-g1: the profiler's GPU-memory readings through wgpu's own counters (every backend; see dc-render's feature).
+prof-gpu-mem = ["dc-render/gpu-counters"]
+
+[[bin]]
+name = "dc-client"
+path = "src/main.rs"
+
+[dependencies]
+# Our own crates: simulation (MOVEMENT_2009 law, collision, FixedStep), renderer (RENDER_2009 world passes),
+# world reader (FMT_DAT85), UI data (FMT_CRES_UI font records and the font archive resolver), model reader
+# (FMT_LTB, for the stand box of MOVEMENT_2009 §9.2), archive and ROM access (read-only).
+dc-sim = { path = "../dc-sim" }
+dc-render = { path = "../dc-render" }
+dc-world = { path = "../dc-world" }
+dc-ui-data = { path = "../dc-ui-data" }
+dc-model = { path = "../dc-model" }
+# dc-config: the community directory document type (CLI-1615).
+dc-config = { path = "../dc-config" }
+dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }
+# The ROM weapon table (WEAPONS.TXT rows read at run time for the weapons: pellets, clip, spread, models).
+dc-bute = { path = "../dc-bute" }
+# The 2009 shot cone shared with dc-dserver's shot check and the bots (random table, counter, half-width, pellets).
+dc-cone = { path = "../dc-cone" }
+# The effect file readers (FMT_SPR_LTC_FX: the .fxf effect groups, .spr sprites) for the weapon effects.
+dc-fx-data = { path = "../dc-fx-data" }
+# The HUD textures of the ROM (DTX files of the HUD archives, decoded with dc-render's decoder).
+dc-tex = { path = "../dc-tex" }
+# CLEANROOM.md 4a: same wgpu as dc-render (the overlay pass and the window surface); MIT OR Apache-2.0.
+wgpu = "25"
+# Camera maths shared with dc-render's Camera; MIT OR Apache-2.0.
+glam = "0.30"
+# Plain-old-data casts for the overlay uniform and the debug-box instances; Zlib OR Apache-2.0 OR MIT. Same features
+# as dc-render's (derive).
+bytemuck = { version = "1", features = ["derive"] }
+# Network play (library use of our own crates): dc-botclient's 2009 lobby TCP flow, sans-IO UDP game session, object
+# and shell readers and the 0x64 writer; dc-wire for the session's bit stream.
+dc-botclient = { path = "../dc-botclient" }
+# Our own transport crate: the network lab's impairment shim around the match socket (`--netlab`, docs/NETLAB.md).
+dc-net-engine = { path = "../dc-net-engine" }
+dc-wire = { path = "../dc-wire" }
+# Our own sound core (AUDIO_2009 mixer, distance law, WAV decoding); its device output is the `audio` feature.
+dc-audio = { path = "../dc-audio" }
+# serde_json (vetted, CLEANROOM.md §4a; already in the lock through dc-botclient): the client's own events in the
+# session's JSONL log (dc-botclient's Recorder takes JSON values).
+serde_json = "1"
+# Window mode only (feature `window`); Apache-2.0. Same version as dc-render's optional window mode.
+winit = { version = "0.30", optional = true }
+# Our own mod sandbox (Lua 5.4 through mlua, vendored): the client loads the mod set of the server it joins
+# (src/mods.rs, CLI-1608 / CLI-1609).
+dc-mod-lua = { path = "../dc-mod-lua" }
+# Our own hang diagnostics (thread stacks, minidump) for the frame watchdog (src/watchdog.rs).
+dc-hangdump = { path = "../dc-hangdump" }
+# PNG decoding of mod screenshots on the Mods screen (CLI-1617; already in the lock through dc-render, same version
+# and features); MIT OR Apache-2.0.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# CLI-1840: the diagnostic report is gzip-compressed (flate2, already in the lock through png; MIT OR Apache-2.0).
+flate2 = "1"
+
+# Window mode only: the system clipboard for the menu text boxes' copy / paste (CLI-1510); MIT OR Apache-2.0. No
+# UIKit backend: iPadOS keeps an in-app clipboard (CLI-1604).
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+arboard = { version = "3", optional = true, default-features = false }
+
+# iPadOS: the Bluetooth keyboard and mouse (GameController), the pointer lock and the Documents folder (our own
+# crate; winit's iOS backend delivers touches only). The iPad driver is src/ios (CLI-1604).
+[target.'cfg(target_os = "ios")'.dependencies]
+dc-ios-hid = { path = "../dc-ios-hid" }
+
+[dev-dependencies]
+# Our own mod packer: the mod-delivery tests pack their fixture mods with it (src/mods_tests.rs).
+dc-modkit = { path = "../dc-modkit" }
+# Our own transport state machine (sans-IO host and simulated channels) for the scripted-server life-cycle test.
+dc-net-engine = { path = "../dc-net-engine" }
+# Our own game server's world-object planner (the per-mode object set of DSV-37) for the ROM-gated world-object
+# pictures of world-objects; tests only.
+dc-dserver = { path = "../dc-dserver" }
+# The iPad input bridge's tests (src/ios/bridge.rs) run on the Mac against the portable key maps of our own crate.
+dc-ios-hid = { path = "../dc-ios-hid" }

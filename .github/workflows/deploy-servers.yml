@@ -1,0 +1,193 @@
+name: deploy-servers
+
+# Moves the servers to a commit (docs/RELEASES.md "Deploying the servers"). By hand only: Actions tab -> deploy-servers ->
+# Run workflow, from master. Builds the given ref, then, behind the `production` environment (set required reviewers
+# there), installs that build on the VPS and only then points the game hosts at it. Game hosts are never connected to:
+# they pull (tools/host/update.sh), which is why the hosts' step is publishing a pointer. No pull request and no fork can
+# reach this workflow: its only trigger is workflow_dispatch, which needs write access to the repository.
+#   secrets (in the environment)  DC_VPS_HOST, DC_VPS_SSH_KEY, DC_VPS_KNOWN_HOSTS, DC_VPS_USER (optional, default root)
+#   variable                      DC_VPS_REQUIRED_INSTANCES  lobby instances that must be enabled (default: modded)
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "the tag or commit to deploy; must be on master"
+        required: true
+        type: string
+      targets:
+        description: "all = VPS first, then the hosts; vps; hosts"
+        required: true
+        type: choice
+        default: all
+        options: [all, vps, hosts]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CA_ROM: ""
+
+concurrency:
+  group: deploy-servers
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: the ref is on master
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: resolve and check
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF" = refs/heads/master ] || { echo "::error::run this workflow from master; the input ref chooses what is deployed"; exit 1; }
+          printf '%s' "$INPUT_REF" | grep -Eqx '[0-9A-Za-z._/-]+' || { echo "::error::not a tag or commit: $INPUT_REF"; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$INPUT_REF" --jq .sha) || { echo "::error::no such ref: $INPUT_REF"; exit 1; }
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$sha" --jq .status)
+          case "$status" in
+            identical|behind) ;;
+            *) echo "::error::$INPUT_REF ($sha) is not on master (compare: $status); nothing is deployed"; exit 1 ;;
+          esac
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "deploying $INPUT_REF = $sha"
+
+  build:
+    name: build that commit
+    needs: gate
+    # 22.04: binaries linked against its glibc 2.35 also run on a 24.04 machine (not the reverse)
+    runs-on: ubuntu-22.04
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    env:
+      DC_SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: this commit knows how to deploy
+        run: |
+          for f in tools/ci_env.sh tools/package_servers.sh tools/host/update.sh tools/vps/deploy_remote.sh; do
+            [ -f "$f" ] || { echo "::error::$DC_SHA is older than this workflow (no $f); deploy a later commit"; exit 1; }
+          done
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-gnu && rustup default stable
+      - name: build settings
+        run: bash tools/ci_env.sh
+      - name: build release servers
+        run: cargo build --locked --release --bins --target x86_64-unknown-linux-gnu -p dc-lobby-server -p dc-dserver -p dc-rez -p dc-botclient -p dc-config -p dc-host
+      - name: package release servers
+        id: pack
+        run: |
+          set -euo pipefail
+          name="decombat-servers-linux-x86_64-$SHORT_SHA"
+          bash tools/package_servers.sh --bin-dir target/x86_64-unknown-linux-gnu/release --name "$name" --out dist --commit "$DC_SHA" \
+            --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo "tarball=$name.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deploy-${{ needs.gate.outputs.sha }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # One job so that one approval of the environment covers the whole rollout, in order: a failed VPS step stops the job
+  # before the pointer moves, so the hosts stay on the build that matches the lobby.
+  deploy:
+    name: roll out (${{ inputs.targets }})
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+    env:
+      COMMIT: ${{ needs.gate.outputs.sha }}
+      TARBALL: ${{ needs.build.outputs.tarball }}
+      TARBALL_SHA256: ${{ needs.build.outputs.sha256 }}
+      TARGETS: ${{ inputs.targets }}
+      INPUT_REF: ${{ inputs.ref }}
+      REQUIRED_INSTANCES: ${{ vars.DC_VPS_REQUIRED_INSTANCES || 'modded' }}
+      GH_TOKEN: ${{ github.token }}
+      POINTER_RELEASE: server-deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: download the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deploy-${{ needs.gate.outputs.sha }}
+          path: dist
+      - name: check the build
+        run: |
+          set -euo pipefail
+          [ "$(sha256sum "dist/$TARBALL" | cut -d' ' -f1)" = "$TARBALL_SHA256" ] || { echo "::error::the artifact differs from the build"; exit 1; }
+      - name: ssh to the VPS (host key pinned from a secret)
+        env:
+          DC_VPS_HOST: ${{ secrets.DC_VPS_HOST }}
+          DC_VPS_USER: ${{ secrets.DC_VPS_USER }}
+          DC_VPS_SSH_KEY: ${{ secrets.DC_VPS_SSH_KEY }}
+          DC_VPS_KNOWN_HOSTS: ${{ secrets.DC_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          bash tools/ci_vps_ssh.sh
+          user=$(ssh dc-vps id -un)
+          sudo_cmd=""; [ "$user" = root ] || sudo_cmd="sudo -n"
+          echo "SUDO_CMD=$sudo_cmd" >> "$GITHUB_ENV"
+          # root runs this commit's scripts from the upload. A deploy user's sudoers (tools/vps/migrate_nonroot.sh, OPS-22)
+          # allows only the root-owned copy on the box, which each install refreshes from its tarball.
+          tools='~/decombat-upload/ci'; [ "$user" = root ] || tools=/opt/decombat/tools
+          echo "REMOTE_TOOLS=$tools" >> "$GITHUB_ENV"
+          ssh dc-vps 'mkdir -p ~/decombat-upload/ci'
+          scp -q tools/vps/*.sh tools/vps/*.py dc-vps:decombat-upload/ci/
+      - name: VPS - install, restart every lobby instance, report
+        if: env.TARGETS != 'hosts'
+        run: |
+          set -euo pipefail
+          scp -q "dist/$TARBALL" "dc-vps:decombat-upload/$TARBALL"
+          # shellcheck disable=SC2029,SC2086
+          ssh dc-vps "$SUDO_CMD bash $REMOTE_TOOLS/deploy_remote.sh install ~/decombat-upload/$TARBALL $TARBALL_SHA256 $COMMIT $REQUIRED_INSTANCES" | tee vps.txt
+          { echo "### VPS"; echo '```'; grep -E '^(NOT )?running:' vps.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: hosts - publish the tarball, then the pointer they pull
+        if: env.TARGETS != 'vps'
+        run: |
+          set -euo pipefail
+          R="$GITHUB_REPOSITORY"; P="$POINTER_RELEASE"
+          if ! gh release view "$P" --repo "$R" >/dev/null 2>&1; then
+            gh release create "$P" --repo "$R" --target "$COMMIT" --prerelease --latest=false --title "Server deploy pointer" \
+              --notes "Not a release. What the game hosts pull (docs/RELEASES.md): desired.txt names the build, and this page holds that build and the one before it."
+          fi
+          previous=""
+          if gh release download "$P" --repo "$R" --pattern desired.txt --output old.txt --clobber 2>/dev/null; then
+            previous=$(sed -n 's/^tarball=//p' old.txt)
+          fi
+          # the tarball goes first: a host that sees the new pointer finds its download
+          gh release upload "$P" --repo "$R" "dist/$TARBALL" --clobber
+          printf 'commit=%s\ntarball=%s\nsha256=%s\nref=%s\nrun=%s\n' "$COMMIT" "$TARBALL" "$TARBALL_SHA256" "$INPUT_REF" "$GITHUB_RUN_ID" > desired.txt
+          gh release upload "$P" --repo "$R" desired.txt --clobber
+          for a in $(gh release view "$P" --repo "$R" --json assets --jq '.assets[].name'); do
+            case "$a" in
+              desired.txt|"$TARBALL"|"$previous") ;;
+              *) gh release delete-asset "$P" "$a" --repo "$R" --yes ;;
+            esac
+          done
+          { echo "### Pointer"; echo "desired commit \`$COMMIT\`"; } >> "$GITHUB_STEP_SUMMARY"
+      - name: which commit each server runs
+        if: always()
+        run: |
+          # hosts check every five minutes and wait for their matches, so this waits a while and fails nothing
+          wait=0; [ "$TARGETS" = vps ] || wait=420
+          # shellcheck disable=SC2029
+          out=$(ssh dc-vps "echo vps: \$(sed -n 1p /opt/decombat/bin/COMMIT.txt); $SUDO_CMD bash $REMOTE_TOOLS/deploy_remote.sh hosts $COMMIT $wait" 2>&1) || true
+          printf '%s\n' "$out"
+          { echo "### Now running (desired $COMMIT)"; echo '```'; printf '%s\n' "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

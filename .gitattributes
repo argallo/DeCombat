@@ -1,0 +1,15 @@
+tools/hooks/* text eol=lf
+*.sh text eol=lf
+# copied to a Linux host as they are (tools/vps/push.ps1, docs/VPS.md)
+examples/*.service text eol=lf
+examples/*.env text eol=lf
+examples/server-vps.toml text eol=lf
+# mod packages hash their bytes (dc-modkit pack is deterministic): one line ending on every checkout
+examples/mods/** text eol=lf
+examples/mods/**/*.png binary
+examples/mods/**/*.jpg binary
+examples/mods/**/*.jpeg binary
+# community maps (dc-mapkit): world files, textures and heightmaps are bytes (MAPKIT_PLAN.md 6.3)
+examples/mods/**/*.dat binary
+examples/mods/**/*.dtx binary
+examples/mods/**/*.r16 binary

@@ -1,0 +1,39 @@
+[package]
+name = "dc-dserver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat dedicated game server: DSERVER_PIPE control channel, UDP_SESSION_2009 start-up, in-world object stream and a Team Deathmatch round"
+
+[[bin]]
+name = "dc-dserver"
+path = "src/main.rs"
+
+[dependencies]
+# dc-wire: bit stream and the compact field encodings (pos48, vec72) of the session messages.
+dc-wire = { path = "../dc-wire" }
+# dc-net-engine: the transport delivery state machine (links, out-of-band join).
+dc-net-engine = { path = "../dc-net-engine" }
+# dc-rez: reads the room's world file out of the user's own ROM archive at run time.
+dc-rez = { path = "../dc-rez" }
+# dc-world: parses the world (box, spawn points by role) on the server side.
+dc-world = { path = "../dc-world" }
+# dc-bute: reads the ROM weapon and team tables at run time (game rules of slice 2).
+dc-bute = { path = "../dc-bute" }
+# dc-config: `--config server.toml` / `DC_CONFIG` for the standalone launch (same layered chain as the lobby).
+dc-config = { path = "../dc-config" }
+# dc-model: reads the user's own body model files at run time (child models, clip list, sockets) for the
+# character create records.
+dc-model = { path = "../dc-model" }
+# dc-sim: the BSP ray of its collision module traces each reported shot against the world (slice 4).
+dc-sim = { path = "../dc-sim" }
+# dc-cone: the 2009 shot cone (random table, reads, half-width, pellet direction, inverse) the shot check rebuilds.
+dc-cone = { path = "../dc-cone" }
+# dc-fx-data: the effect group names of the user's ROM (the planted bomb's indicator and blast groups, DSV-220).
+dc-fx-data = { path = "../dc-fx-data" }
+
+[dev-dependencies]
+# serde_json (vetted, CLEANROOM.md §4a): reads the captap-format reference captures in the gated replay test.
+serde_json = "1"
+# dc-botclient: its object-group reader (objects.rs) cross-checks the replayed reference records and our own records.
+dc-botclient = { path = "../dc-botclient" }

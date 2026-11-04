@@ -1,0 +1,32 @@
+/target/
+*.pdb
+*.db
+*.db-journal
+*.db-wal
+__pycache__/
+# ROM / vendor data and binaries: never committed (CLEANROOM.md section 4)
+*.rez
+/rom/
+/extracted/
+*.dll
+*.exe
+*.sqlite
+.env
+.vscode/
+.idea/
+*.log
+/out*/
+/specs/_staging/
+
+# macOS local play (tools/play_local_mac.sh)
+/local_play/
+
+# macOS Finder metadata
+.DS_Store
+
+# iPad app: the generated Xcode project and its build products (tools/ios_run.sh)
+ios/DeCombat.xcodeproj/
+build/ios/
+/.claude/worktrees/
+# dc-netlab reports (docs/NETLAB.md)
+netlab-out/

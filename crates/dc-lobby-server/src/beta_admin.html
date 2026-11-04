@@ -1,0 +1,383 @@
+<!doctype html>
+<!-- The beta list of dc-lobby-server (betaweb.rs, LG-375): signups, invites, feedback mail, delete. Served on the loopback
+     admin port and, behind a security-key session, on the admin web. Same look as the dashboard. Provenance: ORIGINAL -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf" content="__CSRF__">
+<title>DeCombat beta list</title>
+<style>
+:root {
+  --paper: #e8ebe6; --sheet: #f6f7f3; --ink: #19201b; --ink-2: #4b564e; --quiet: #6f7a72; --rule: #cdd3cc;
+  --track: #dde2dc; --good: #2e7a4c; --warn: #a86a12; --bad: #bf3426; --idle: #98a199; --press: #19201b; --press-ink: #f6f7f3;
+  --pick: #dfe6dc;
+  --display: Bahnschrift, "DIN Alternate", "DIN Condensed", "Barlow Semi Condensed", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --text: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light dark;
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%234b564e' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #121613; --sheet: #1a1f1b; --ink: #e3e7df; --ink-2: #aab3ab; --quiet: #838d85; --rule: #2b332d;
+          --track: #252c27; --good: #63b981; --warn: #d9a441; --bad: #ec6a5b; --idle: #59625b; --press: #e3e7df; --press-ink: #121613;
+          --pick: #232b25; --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23aab3ab' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 14px/1.45 var(--text); }
+a { color: inherit; text-decoration-color: var(--quiet); text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* LG-400: the lobby instance switcher of the admin web; a further instance's pages carry a coloured rule on top */
+.inst { display: flex; align-items: center; }
+.inst select { font-size: 13px; font-weight: 600; padding-top: 5px; padding-bottom: 5px; min-width: 11rem; }
+.other-lobby .top { box-shadow: inset 0 4px 0 var(--warn); }
+.other-lobby .mark span { color: var(--warn); font-weight: 600; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; padding: 0 20px; background: var(--sheet);
+       border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 3; }
+.mark { font: 600 18px/1 var(--display); letter-spacing: .01em; padding: 14px 0; white-space: nowrap; }
+.mark span { color: var(--quiet); font-weight: 400; }
+nav { display: flex; flex-wrap: wrap; gap: 2px; align-self: stretch; }
+nav a { display: flex; align-items: center; padding: 0 11px; color: var(--ink-2); text-decoration: none;
+        border-bottom: 3px solid transparent; margin-bottom: -1px; min-height: 46px; }
+nav a:hover { color: var(--ink); }
+nav a.on { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+
+main { padding: 26px 20px 120px; max-width: 1320px; margin: 0 auto; }
+h1 { font: 600 clamp(26px, 3.6vw, 36px)/1.1 var(--display); margin: 0 0 6px; text-wrap: balance; }
+h2 { font: 600 17px/1.2 var(--display); margin: 0 0 10px; }
+p { margin: 6px 0; }
+.lede { color: var(--ink-2); max-width: 80ch; margin-bottom: 22px; }
+.quiet { color: var(--quiet); }
+.bad { color: var(--bad); } .ok { color: var(--good); }
+
+/* today's mail: a sentence and a thin meter */
+.budget { display: grid; gap: 7px; max-width: 640px; margin: 0 0 26px; }
+.meter { height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; display: flex; }
+.meter span { display: block; height: 100%; }
+.meter .used { background: var(--ink-2); } .meter .kept { background: repeating-linear-gradient(90deg, var(--idle) 0 3px, transparent 3px 6px); }
+
+/* status filter: one button per status, with its count */
+.filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.filter button { background: var(--sheet); color: var(--ink-2); border: 1px solid var(--rule); font-weight: 500; padding: 6px 12px; }
+.filter button[aria-pressed=true] { background: var(--press); color: var(--press-ink); border-color: var(--press); }
+.filter button b { font-weight: 600; margin-left: 6px; font-variant-numeric: tabular-nums; }
+form.more { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin: 0 0 18px; }
+label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--quiet); }
+.picks { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
+
+input, select, textarea, button { font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule);
+                                  border-radius: 4px; padding: 6px 10px; }
+textarea { width: 100%; min-height: 11rem; line-height: 1.5; }
+button { cursor: pointer; font-weight: 600; }
+/* every dropdown: our own chevron, inset from the edge, the same in every browser and both themes */
+select { -webkit-appearance: none; appearance: none; background-image: var(--chev); background-repeat: no-repeat;
+         background-position: right 11px center; background-size: 10px 6px; padding-right: 32px; cursor: pointer; }
+select::-ms-expand { display: none; }
+button.go { background: var(--press); color: var(--press-ink); border-color: var(--press); }
+button.plain { background: transparent; }
+button.danger { color: var(--bad); border-color: var(--bad); background: transparent; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input[type=checkbox] { padding: 0; width: 16px; height: 16px; accent-color: var(--ink); vertical-align: middle; }
+input[type=number] { width: 4.5rem; }
+
+.sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--rule); vertical-align: middle; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+th { color: var(--quiet); font-weight: 500; font-size: 12.5px; }
+tr.sel td { background: var(--pick); }
+td.pick { width: 1%; padding-right: 0; }
+td.addr { font-weight: 500; }
+.note { width: 9.5rem; padding: 4px 8px; }
+td.acct { white-space: normal; min-width: 11rem; }
+.empty { padding: 18px 12px; color: var(--quiet); }
+
+.st { display: inline-flex; align-items: center; gap: 7px; }
+.st::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--idle); flex: none; }
+.st.confirmed::before { background: var(--good); } .st.invited::before { background: var(--warn); }
+.st.registered::before { background: var(--ink); } .st.unsubscribed { color: var(--quiet); }
+
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 16px 18px; margin: 0 0 20px; max-width: 900px; }
+.panel .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#results { margin: 8px 0 0; padding-left: 18px; }
+#results li { margin: 2px 0; }
+
+/* the actions for the ticked rows: pinned to the bottom once something is ticked */
+.act { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; background: var(--sheet); border-top: 1px solid var(--rule);
+       box-shadow: 0 -4px 14px rgb(0 0 0 / .08); }
+.act > div { max-width: 1320px; margin: 0 auto; padding: 11px 20px; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+.act .n { font: 600 16px/1 var(--display); margin-right: 8px; }
+.act .sp { flex: 1; }
+@media (max-width: 700px) {
+  .top { padding: 0 16px; } main { padding: 18px 16px 170px; } .act > div { padding: 10px 16px; } .act .sp { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="mark">DeCombat <span>operations</span></div>
+  <nav id="nav">
+    <a href="/ops#live">Live</a><a href="/ops#problems">Problems</a><a href="/ops#matches">Matches</a><a href="/ops#timeline">Players</a><a href="/ops#alerts">Alerts</a><a href="/ops#bots">Bots</a><a href="/ops/beta" class="on" aria-current="page">Beta list</a>
+  </nav>
+</div>
+<main>
+  <noscript><p class="bad">This page needs JavaScript.</p></noscript>
+  <h1>Beta list</h1>
+  <p class="lede" id="sub">Loading...</p>
+  <div class="budget" id="budget"></div>
+
+  <div class="filter" id="chips" role="group" aria-label="Show"></div>
+  <form class="more" id="filters">
+    <select id="f-status" hidden><option value=""></option><option>pending</option><option>confirmed</option><option>invited</option><option>registered</option><option>unsubscribed</option></select>
+    <label class="f">Platform
+      <select id="f-platform"><option value="">Any</option><option value="windows">Windows</option><option value="mac">macOS</option><option value="ipad">iPad</option></select></label>
+    <label class="f">Signed up after<input type="date" id="f-after"></label>
+    <label class="f">Signed up before<input type="date" id="f-before"></label>
+    <label class="f">Address contains<input type="search" id="f-q" placeholder="part of an address"></label>
+    <button type="submit" id="apply" class="plain">Filter</button>
+  </form>
+
+  <div class="picks">
+    <button type="button" class="plain" id="pick-next">Tick the oldest</button>
+    <input type="number" id="n" min="1" max="500" value="5" aria-label="How many">
+    <span class="quiet">confirmed</span>
+    <button type="button" class="plain" id="pick-all">Tick all shown</button>
+    <button type="button" class="plain" id="pick-none">Untick all</button>
+  </div>
+
+  <div class="panel" id="fb" hidden>
+    <h2>Feedback request</h2>
+    <p class="quiet">Goes to the ticked people who are invited or registered. <code>{name}</code> becomes their login (or the part of the
+      address before the @) and <code>{email}</code> their address. Every mail ends with an unsubscribe link.</p>
+    <label class="f">Subject<input type="text" id="fb-subject" maxlength="120"></label>
+    <label class="f" style="margin-top:10px">Message<textarea id="fb-body"></textarea></label>
+    <div class="row"><button type="button" class="plain" id="fb-prev">Preview, send nothing</button><button type="button" class="go" id="fb-send">Send feedback request</button></div>
+  </div>
+
+  <div class="panel" id="res" hidden aria-live="polite">
+    <h2 id="res-h">Result</h2>
+    <p id="res-msg"></p>
+    <ul id="results"></ul>
+  </div>
+
+  <div class="sheet">
+    <table>
+      <thead><tr><th><span hidden>Tick</span></th><th>#</th><th>Address</th><th>Platform</th><th>Status</th><th>Signed up</th><th>Invited</th><th>Account</th><th>Last mail</th><th>Note</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="empty" id="empty" hidden>No sign-ups match. Clear the filters to see everyone.</p>
+  </div>
+</main>
+
+<div class="act" id="act" hidden>
+  <div>
+    <span class="n" id="count">0 ticked</span>
+    <button type="button" class="go" id="inv-send">Send invites</button>
+    <button type="button" class="plain" id="inv-prev">Preview invites</button>
+    <button type="button" class="plain" id="fb-open">Feedback request</button>
+    <span class="sp"></span>
+    <button type="button" class="plain" id="del-prev">Preview delete</button>
+    <button type="button" class="danger" id="del-do">Delete</button>
+  </div>
+</div>
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const CSRF = document.querySelector('meta[name="csrf"]').content;
+const $ = (id) => document.getElementById(id);
+const state = { rows: [], selected: new Set(), data: null };
+// the lobby switcher of the admin web (adminfwd.rs adds it)
+document.addEventListener("change", (e) => { if (e.target.matches && e.target.matches("select[data-inst]")) location.href = e.target.value; });
+// LG-400: on the admin web a further lobby instance's pages sit under /i/<name>; requests and links go below the same
+// base (empty on the loopback admin port and for the admin web's own lobby)
+const BASE = (location.pathname.match(/^\/i\/[a-z0-9][a-z0-9-]*(?=\/ops(\/|$))/) || [""])[0];
+for (const a of document.querySelectorAll("nav a")) {
+  const [path, hash] = a.getAttribute("href").split("#");
+  if (!path.startsWith("/ops")) continue;
+  a.href = BASE + path + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "") + (hash ? "#" + hash : "");
+}
+// on the admin web (a security-key session) the key page is one more place to go
+if (location.protocol === "https:") $("nav").appendChild(Object.assign(document.createElement("a"), { href: "/keys", textContent: "Security keys" }));
+
+function el(tag, props, kids) {
+  const e = document.createElement(tag);
+  for (const k of Object.keys(props || {})) {
+    if (k === "text") e.textContent = props[k]; else if (k === "class") e.className = props[k]; else e.setAttribute(k, props[k]);
+  }
+  for (const c of kids || []) if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  return e;
+}
+const day = (t) => t ? new Date(t * 1000).toISOString().slice(0, 10) : "-";
+const stamp = (t) => t ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ") : "-";
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + "s")}`;
+const PLATFORM = { windows: "Windows", mac: "macOS", ipad: "iPad" };
+const STATUS = [["", "Everyone"], ["pending", "Not confirmed"], ["confirmed", "Confirmed"], ["invited", "Invited"],
+                ["registered", "Registered"], ["unsubscribed", "Unsubscribed"]];
+const STATUS_WORD = Object.fromEntries(STATUS);
+
+async function api(path, body) {
+  const headers = {};
+  if (TOKEN) headers["X-Admin-Token"] = TOKEN;
+  const opt = { headers, cache: "no-store" };
+  if (body !== undefined) {
+    opt.method = "POST";
+    headers["Content-Type"] = "application/json";
+    headers["X-Beta-CSRF"] = CSRF;
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(BASE + path, opt);
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = { ok: false, message: "HTTP " + r.status }; }
+  j.status = r.status;
+  return j;
+}
+
+function query() {
+  const q = new URLSearchParams();
+  for (const [k, id] of [["status", "f-status"], ["platform", "f-platform"], ["after", "f-after"], ["before", "f-before"], ["q", "f-q"]]) {
+    const v = $(id).value.trim();
+    if (v) q.set(k, v);
+  }
+  return q.toString();
+}
+
+function showBudget(b, d) {
+  const box = $("budget");
+  box.textContent = "";
+  box.appendChild(el("p", { text: `Mail today: ${b.used} of ${b.max} sent. Invites and feedback can use ${b.admin_remaining} more; ` +
+    `${b.reserve} stay free for confirmation emails.` }));
+  const m = el("div", { class: "meter", role: "img", "aria-label": `${b.used} of ${b.max} mails used today` });
+  const used = el("span", { class: "used" }), kept = el("span", { class: "kept" });
+  used.style.width = Math.min(100, (b.used / Math.max(1, b.max)) * 100) + "%";
+  kept.style.width = Math.min(100, (b.reserve / Math.max(1, b.max)) * 100) + "%";
+  kept.style.marginLeft = "auto";
+  m.append(used, kept);
+  box.appendChild(m);
+  if (d && !d.mail_on) box.appendChild(el("p", { class: "bad", text: "Mail is not set up on this lobby, so nothing can be sent." }));
+  if (d && !d.signups_on) box.appendChild(el("p", { class: "quiet", text: "The sign-up form is switched off ([beta] enabled = false)." }));
+}
+
+function summary(c) {
+  const total = Object.values(c).reduce((a, b) => a + b, 0);
+  const parts = [];
+  if (c.confirmed) parts.push(`${c.confirmed} confirmed and ready to invite`);
+  if (c.pending) parts.push(`${c.pending} not confirmed yet`);
+  if (c.invited) parts.push(`${c.invited} invited`);
+  if (c.registered) parts.push(`${c.registered} registered`);
+  if (c.unsubscribed) parts.push(`${c.unsubscribed} unsubscribed`);
+  if (!total) return "Nobody has signed up yet. Sign-ups from decombat.com appear here once they confirm their address.";
+  const last = parts.pop();
+  return `${plural(total, "sign-up")}: ${parts.length ? parts.join(", ") + " and " + last : last}.`;
+}
+
+function render() {
+  const d = state.data;
+  $("sub").textContent = summary(d.counts || {});
+  showBudget(d.budget, d);
+  const chips = $("chips");
+  chips.textContent = "";
+  const total = Object.values(d.counts || {}).reduce((a, b) => a + b, 0);
+  for (const [s, word] of STATUS) {
+    const b = el("button", { type: "button", "aria-pressed": String($("f-status").value === s) },
+      [word, el("b", { text: String(s ? (d.counts[s] || 0) : total) })]);
+    b.onclick = () => { $("f-status").value = s; load(); };
+    chips.appendChild(b);
+  }
+  const tb = $("rows");
+  tb.textContent = "";
+  for (const r of state.rows) {
+    const cb = el("input", { type: "checkbox", "aria-label": "Tick " + r.email });
+    cb.checked = state.selected.has(r.id);
+    const a = r.account;
+    const acct = a ? `${a.login}, ${plural(a.matches || 0, "match", "matches")}, last on ${day(a.last_login)}` : "-";
+    let mail = "-", mailCls = "";
+    if (r.mail) {
+      mail = r.mail.kind + " " + ["queued", "sent", "failed"][r.mail.state] + " " + stamp(r.mail.at);
+      mailCls = r.mail.state === 2 ? "bad" : r.mail.state === 1 ? "" : "quiet";
+    }
+    const note = el("input", { class: "note", type: "text", maxlength: "300", value: r.note, placeholder: "note", "aria-label": "Note for " + r.email });
+    note.onchange = async () => {
+      const j = await api("/ops/beta/note", { id: r.id, note: note.value });
+      note.style.borderColor = j.ok ? "" : "var(--bad)";
+    };
+    const tr = el("tr", { class: cb.checked ? "sel" : "" }, [
+      el("td", { class: "pick" }, [cb]), el("td", { class: "quiet", text: String(r.id) }), el("td", { class: "addr", text: r.email }),
+      el("td", { text: PLATFORM[r.platform] || "-" }), el("td", {}, [el("span", { class: "st " + r.status, text: STATUS_WORD[r.status] || r.status })]),
+      el("td", { text: day(r.created) }), el("td", { text: day(r.invited) }), el("td", { class: "acct", text: acct }),
+      el("td", { class: mailCls, text: mail }), el("td", {}, [note]),
+    ]);
+    cb.onchange = () => { cb.checked ? state.selected.add(r.id) : state.selected.delete(r.id); tr.className = cb.checked ? "sel" : ""; count(); };
+    tb.appendChild(tr);
+  }
+  $("empty").hidden = state.rows.length > 0;
+  count();
+}
+
+function count() {
+  const n = state.selected.size;
+  $("count").textContent = n + " ticked";
+  $("act").hidden = n === 0;
+  for (const id of ["inv-prev", "inv-send", "fb-open", "del-prev", "del-do"]) $(id).disabled = n === 0;
+}
+
+async function load() {
+  const j = await api("/ops/beta/list?" + query());
+  if (!j.ok) { $("sub").textContent = "The list did not load: " + (j.message || "error"); return; }
+  state.data = j;
+  state.rows = j.rows;
+  const ids = new Set(j.rows.map((r) => r.id));
+  for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
+  if (!$("fb-subject").value) { $("fb-subject").value = j.feedback_default.subject; $("fb-body").value = j.feedback_default.body; }
+  render();
+}
+
+function showResult(title, j) {
+  $("res").hidden = false;
+  $("res-h").textContent = title;
+  const msg = $("res-msg");
+  msg.className = j.ok ? "ok" : "bad";
+  msg.textContent = j.ok ? (j.dry_run ? "Preview only: nothing was " + (j.deleting ? "changed" : "sent") + ". " : "") +
+    j.sent + " of " + j.results.length + (j.deleting ? (j.dry_run ? " would be deleted." : " deleted.") : (j.dry_run ? " would go out." : " sent.")) :
+    (j.message || "Refused.");
+  const ul = $("results");
+  ul.textContent = "";
+  for (const r of j.results || []) {
+    const row = state.rows.find((x) => x.id === r.id);
+    ul.appendChild(el("li", { class: r.ok ? "" : "bad", text: "#" + r.id + " " + (row ? row.email : "") + ": " + r.message }));
+  }
+  if (j.budget) showBudget(j.budget, state.data);
+  $("res").scrollIntoView({ block: "nearest" });
+}
+
+async function send(path, extra, title, what, prompt) {
+  const ids = [...state.selected];
+  if (!extra.dry_run && !confirm(prompt || ("Send " + what + " to " + plural(ids.length, "ticked person", "ticked people") + "?"))) return;
+  const j = await api(path, Object.assign({ ids }, extra));
+  if (path === "/ops/beta/delete") j.deleting = true;
+  showResult(title, j);
+  if (!j.dry_run) { await load(); setTimeout(load, 3000); setTimeout(load, 12000); }
+}
+
+$("filters").onsubmit = (e) => { e.preventDefault(); load(); };
+$("pick-next").onclick = () => {
+  const n = Math.max(1, parseInt($("n").value, 10) || 1);
+  const c = state.rows.filter((r) => r.status === "confirmed").sort((a, b) => (a.confirmed - b.confirmed) || (a.id - b.id)).slice(0, n);
+  state.selected = new Set(c.map((r) => r.id));
+  render();
+};
+$("pick-all").onclick = () => { state.selected = new Set(state.rows.map((r) => r.id)); render(); };
+$("pick-none").onclick = () => { state.selected.clear(); render(); };
+$("inv-prev").onclick = () => send("/ops/beta/invite", { dry_run: true }, "Invite preview", "invites");
+$("inv-send").onclick = () => send("/ops/beta/invite", {}, "Invites", "an invite code by email");
+$("del-prev").onclick = () => send("/ops/beta/delete", { dry_run: true }, "Delete preview", "");
+$("del-do").onclick = () => send("/ops/beta/delete", {}, "Delete", "", "Delete " + plural(state.selected.size, "ticked sign-up") +
+  " for good? Their addresses are removed, and an unused invite code goes with them. An account someone already made from an invite stays. This cannot be undone.");
+$("fb-open").onclick = () => { $("fb").hidden = !$("fb").hidden; if (!$("fb").hidden) $("fb-subject").focus(); };
+const fbBody = () => ({ subject: $("fb-subject").value, body: $("fb-body").value });
+$("fb-prev").onclick = () => send("/ops/beta/feedback", Object.assign(fbBody(), { dry_run: true }), "Feedback preview", "the feedback request");
+$("fb-send").onclick = () => send("/ops/beta/feedback", fbBody(), "Feedback request", "the feedback request");
+load();
+</script>
+</body>
+</html>

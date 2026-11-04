@@ -1,0 +1,43 @@
+[package]
+name = "dc-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic player movement and collision simulation shared by the DeCombat server and client, written from rust/specs/MOVEMENT_2009.md"
+
+[features]
+default = ["std", "world", "rom"]
+# std: hardware square root (bit-identical to the software one, see src/fmath.rs) and std::error::Error impls.
+std = []
+# world: build the collision world from a parsed dc-world `World` (FMT_DAT85.md section 5 / 9.1).
+world = ["std", "dep:dc-world"]
+# rom: read the speed rows of the loadout (weapon / body / figure / gear MovePenalty and DashSpeed) from the user's
+# ROM at run time (src/loadout.rs; MOVEMENT_2009.md section 3).
+rom = ["std", "dep:dc-bute", "dep:dc-rez"]
+# serde: derive Serialize/Deserialize for MovementParams so a server.toml / mod table can override any field.
+serde = ["dep:serde"]
+
+[dependencies]
+# dc-world: the BSP models and blocker polygons the sweep runs against (optional so the core stays no_std).
+dc-world = { path = "../dc-world", optional = true }
+# serde (vetted, CLEANROOM 4a): optional derive for config overrides of the tunables; no runtime use otherwise.
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+# dc-bute / dc-rez (feature rom): the attribute tables are Bute text inside ATTRIBUTES.rez of the user's ROM.
+dc-bute = { path = "../dc-bute", optional = true }
+dc-rez = { path = "../dc-rez", optional = true }
+
+[dev-dependencies]
+# dc-rez: the ROM-gated test reads the world files out of the user's own archive at run time.
+dc-rez = { path = "../dc-rez" }
+# dc-bute: the ROM-gated speed test parses the attribute tables.
+dc-bute = { path = "../dc-bute" }
+# serde_json (vetted): proves the serde override path in a unit test.
+serde_json = "1"
+# dc-model: the ROM-gated test reads the standing box from the user's own player models (MOVEMENT_2009.md 9.2).
+dc-model = { path = "../dc-model" }
+
+# The edge-catch harness reads the user's ROM worlds (CA_ROM) at run time: needs the dc-world bridge.
+[[example]]
+name = "edge_harness"
+required-features = ["world"]

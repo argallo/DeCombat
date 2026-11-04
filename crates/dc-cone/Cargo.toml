@@ -1,0 +1,14 @@
+[package]
+name = "dc-cone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The 2009 shot cone shared by the DeCombat client, server and bot: the random table (ROM entry or its generator), the shot counter, the row bounds, half-width, pellet direction and its inverse, in binary32"
+
+[dependencies]
+# dc-bute: parses the ROM attribute entries (the random table, the weapon and mod rows' cone keys) at run time.
+dc-bute = { path = "../dc-bute" }
+# dc-rez: opens the user's ROM archive (read-only) and its SHA-256 for the table identity.
+dc-rez = { path = "../dc-rez" }
+# dc-sim (no default features: only the control-word bit names): ANY_MOVE / RUN of the movement factor choice.
+dc-sim = { path = "../dc-sim", default-features = false }

@@ -1,0 +1,2 @@
+# Deliberate differences between PktWriter and the Python reference frames (wire_vectors.jsonl).
+# Format: seed_index<TAB>reason. Empty: every reference frame is reproduced byte for byte.

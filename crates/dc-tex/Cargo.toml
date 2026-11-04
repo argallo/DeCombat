@@ -1,0 +1,13 @@
+[package]
+name = "dc-tex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Texture container (DTX) parser and RGBA8 decoder, written from rust/specs/FMT_DTX.md"
+
+# No runtime dependencies. dc-rom and dc-rez are used by the ROM-gated census test only.
+[dependencies]
+
+[dev-dependencies]
+dc-rom = { path = "../dc-rom" }
+dc-rez = { path = "../dc-rez" }

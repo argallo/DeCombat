@@ -1,0 +1,49 @@
+[package]
+name = "dc-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "First wgpu world renderer slice and offline world viewer, written from rust/specs/RENDER_2009.md"
+
+[features]
+default = []
+# Optional on-screen mode of the viewer (borderless window on the primary monitor). Off by default so the
+# library and the headless PNG path never pull in a windowing stack.
+window = ["dep:winit"]
+# perf-g1: wgpu's internal resource counters (GPU memory held by buffers and textures on every backend) for the
+# profiler's GPU-memory high-water marks; off by default (a few atomic adds per resource create / destroy).
+gpu-counters = ["wgpu/counters"]
+
+[[bin]]
+name = "worldview"
+path = "src/bin/worldview.rs"
+
+[dependencies]
+# Our own crates: world reader (FMT_DAT85), texture reader (FMT_DTX), archive index (ROM model, read-only).
+dc-world = { path = "../dc-world" }
+dc-tex = { path = "../dc-tex" }
+dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }
+# Model container reader (FMT_LTB) for the model passes; attribute-table reader for the character body rows
+# (the ROM model table names each body's model file and skins).
+dc-model = { path = "../dc-model" }
+dc-bute = { path = "../dc-bute" }
+# CLEANROOM.md 4a: wgpu is the client graphics API (DX12 / Metal / Vulkan, WARP fallback on Windows);
+# MIT OR Apache-2.0. Default features keep the WGSL front end and the native backends.
+wgpu = "25"
+# Blocks on wgpu's async adapter/device requests in a headless tool; MIT OR Apache-2.0 OR BSL-1.0, no deps.
+pollster = "0.4"
+# Plain-old-data casts for vertex and uniform buffers (vetted with wgpu); Zlib OR Apache-2.0 OR MIT.
+bytemuck = { version = "1", features = ["derive"] }
+# Vector/matrix maths for the camera of RENDER_2009 section 4; MIT OR Apache-2.0.
+glam = "0.30"
+# PNG encoding of the offscreen frame only (no decoders); MIT OR Apache-2.0.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Window mode only (feature `window`); Apache-2.0.
+winit = { version = "0.30", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS window calls that winit does not expose (src/macwin.rs): NSCursor hide / unhide for a captured cursor
+# (dc-client CLI-1284) and the window's animation behaviour (CLI-1288). Same version as winit's (in the lock); MIT.
+objc2-app-kit = { version = "0.2.2", features = ["NSCursor", "NSWindow", "NSView", "NSResponder"] }
+objc2 = "0.5"

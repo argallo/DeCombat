@@ -1,0 +1,99 @@
+# DeCombat server.toml for a Linux VPS (docs/VPS.md). WRITTEN ON WINDOWS, NEVER RUN ON LINUX YET.
+# tools/vps/bootstrap.sh copies it to /opt/decombat/config/server.toml (only when that file does not exist yet).
+# Started by examples/decombat-lobby.service:
+#   dc-lobby-server --config /opt/decombat/config/server.toml --public --check-password --no-auto-create --register
+#     "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver
+#     --admin 127.0.0.1:10090 --stop-grace 10
+# The switches above are command-line flags only (no toml key exists for them): --public (LG-31: every interface,
+# refuses a loopback advertised address), --check-password (passwords are checked), --no-auto-create (an unknown
+# login is refused), --register (registration page with invite codes on the web port, LG-145), --admin (loopback
+# operator endpoint, LG-131), --stop-grace. The game server is the dc-dserver next to dc-lobby-server (LG-126), so
+# no --dserver-exe is passed. "-bindip 0.0.0.0" makes every game server listen on every interface: on a cloud host
+# whose public address is NOT on the network interface (NAT'd providers) the default -bindip <advertised address>
+# would fail to bind (game.rs bindip_for, DSERVER_PIPE addendum e2e B2).
+# Check it on the host:  /opt/decombat/bin/dc-config check /opt/decombat/config/server.toml --fs
+# Precedence: command-line flag > DC_<SECTION>__<KEY> environment (/opt/decombat/config/decombat.env) > this file.
+
+[server]
+name = "US Central"             # the server list's first entry (the clan entry is "<name> Clan"; CD-21): the VPS is in Chicago
+bind = "0.0.0.0"                # every interface (the --public flag forces the same)
+public = true
+# The address clients are told to connect to: the VPS public IPv4 address. Do NOT write it here: bootstrap.sh
+# --public-ip <address> writes DC_SERVER__ADVERTISE_IP=<address> into /opt/decombat/config/decombat.env, which
+# overrides this value. Left at loopback, --public refuses to start (LG-31), so a forgotten address cannot go out.
+advertise_ip = "127.0.0.1"
+auth_port = 10000               # TCP: login and server list
+lobby_port = 0                  # 0 = auth_port + 2 = 10002 (TCP)
+clan_port = 0                   # 0 = lobby_port + 1 = 10003 (TCP)
+http_port = 0                   # 0 = auth_port + 8080 = 18080 (TCP): registration page /register, clan pages
+http_enabled = true             # needed for the registration page
+game_port = 27015               # UDP port of the first room's game server
+
+[paths]
+rom = "/opt/decombat/rom"       # the server ROM (docs/SERVER_ROM.md), read-only
+db = "/opt/decombat/data/ca.db" # SQLite file (WAL); created on the first start
+log_dir = "/opt/decombat/logs"  # dc-lobby-server.log goes here (and to the journal)
+mods_dir = "/opt/decombat/data/mods"
+
+[dserver]
+port_range = "27016-27100"      # UDP ports of the further rooms that play at the same time (CD-10)
+tick_hz = 30                    # game-server tick; the schema default 10 Hz costs ~130 ms of felt latency (docs/NET_LATENCY.md)
+
+[auth]
+auto_create = false             # an unknown login is refused; accounts come from the account CLI or /register
+
+# Identity tokens (LG-68 / LG-69, docs/VPS.md section 7a). The authority (our VPS) issues them; a community lobby
+# that trusts it sets issuer + public_key instead. Uncomment one block.
+# [identity]
+# issue = true                  # sign tokens: POST /identity/token on the web port (http_port)
+# issuer = "decombat.vps"       # this lobby's issuer id
+# token_hours = 24              # token lifetime
+# key_file = ""                 # empty = /opt/decombat/data/identity_key.pem next to the DB (made on the first start)
+#
+# [identity]                    # on a community host instead:
+# issuer = "decombat.vps"       # the authority's id
+# public_key = "<44 characters from: dc-lobby-server identity --db /opt/decombat/data/ca.db>"
+
+# Remote game host "US West" (specs/HOST_AGENT.md, CD-88; tools/host/push.sh installs the agent): the second entry's
+# matches run at the house through dc-host, accounts stay on this VPS. Uncomment together; the token must match the
+# agent's host.toml. The agent dials TCP 10005 (auth_port + 5, TLS with this lobby's certificate): open it in the
+# firewall. Without [[hosts.agents]] the lobby opens no host port.
+# [[lobby.servers]]
+# name = "US Central"
+# capacity = 1000
+# host = ""                     # this VPS
+# channels = 3                  # channel ids 1..3
+# [[lobby.servers]]
+# name = "US West"
+# capacity = 1000
+# host = "us-west"
+# channels = 3                  # channel ids 4..6; the clan entry ("US Central Clan") becomes the third entry
+# [hosts]
+# port = 0                      # 0 = auth_port + 5 = 10005 (TCP, TLS only)
+# [[hosts.agents]]
+# name = "us-west"
+# token = "<at least 24 random characters>"
+# public_address = ""           # the house's public address; "" = the address the agent connects from
+
+# The modded instance in the post-login server list (LG-272; docs/VPS.md "Several instances on one box"): an entry
+# with `lobby` names ANOTHER lobby instance (here `instance.sh modded create --auth-port 11000`, which prints these
+# lines). It is no server of this lobby (no id, no channels): our clients list it under this lobby's entries with a
+# MODDED badge, its name and region (never the address), and log into it with the identity token; the 2009 client
+# does not see it. fingerprint: that instance's own certificate (`dc-lobby-server tls --db
+# /opt/decombat/instances/modded/data/ca.db`); "" = trust on first use. Keep this lobby's own entries as they are.
+# [[lobby.servers]]
+# name = "DeCombat Modded"
+# region = "US Central"
+# lobby = "<VPS public IPv4 address>:11000"
+# policy = "modded"
+# fingerprint = ""
+
+# Promotions (LG-303, CD-89): a rank reached in a match puts the GP shop products that rank unlocks into the inbox
+# (the rank_unlock_days variant, else the shortest period), or one random NX supply case when it unlocks nothing;
+# once per character and rank.
+# [rewards]
+# rank_unlock_days = 7          # 1..=3650
+# rank_case_products = []       # NX supply case pool (ProductIDs); [] = every NX "Supply Case ..." of the ROM
+# [[rewards.rank_gifts]]        # replaces the rule for one rank
+# rank = 5                      # the ROM level table's row: 1 = the first rank above the recruit
+# products = [1234]

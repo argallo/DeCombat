@@ -1,0 +1,26 @@
+[package]
+name = "dc-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Audible-behaviour core of the 2009 client's sound system (mixer, laws, BGM, attribute records), written from rust/specs/AUDIO_2009.md"
+
+[features]
+default = []
+# Real-time output through the operating system's audio device. Off by default so tests never open a device.
+device = ["dep:cpal"]
+
+[dependencies]
+dc-rom = { path = "../dc-rom" }
+dc-bute = { path = "../dc-bute" }
+# hound: public WAV reader, the ROM's 1,529 effects are all PCM16 RIFF/WAVE.
+hound = "3.5.1"
+# dc-hangdump (ours): lock-free breadcrumbs at the blocking points, read by the hang gate (T1).
+dc-hangdump = { path = "../dc-hangdump" }
+# symphonia (mp3 only): pure-Rust MPEG-1/2 Layer III decoder for the 14 BGM files, handles ID3v2.
+symphonia = { version = "0.5.4", default-features = false, features = ["mp3"] }
+# cpal: cross-platform output device (Windows WASAPI, macOS CoreAudio); optional.
+cpal = { version = "0.15.3", optional = true }
+
+[dev-dependencies]
+dc-rez = { path = "../dc-rez" }

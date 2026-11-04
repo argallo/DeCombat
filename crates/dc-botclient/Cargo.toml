@@ -1,0 +1,46 @@
+[package]
+name = "dc-botclient"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless 2009-protocol test client: lobby TCP flow, UDP game session on dc-net-engine, player updates; the reference for the transport and a stand-in second player"
+
+[[bin]]
+name = "dc-botclient"
+path = "src/main.rs"
+
+[dependencies]
+# dc-wire: lobby TCP framing (PktWriter / PktReader), the UDP bit stream and the compact field encodings.
+dc-wire = { path = "../dc-wire" }
+# dc-net-engine: the 2009 transport delivery state machine (Joiner, Link), sans-IO with injected time.
+dc-net-engine = { path = "../dc-net-engine" }
+# dc-sim: the shared movement simulation that walks the bot (flat floor, or the ROM world's collision).
+dc-sim = { path = "../dc-sim" }
+# dc-world: parses the announced world from the user's ROM (box for pos48, spawn floor, collision).
+dc-world = { path = "../dc-world" }
+# dc-rez: resolves the announced world name in the user's own ROM archive at run time (the client's 0x29 check).
+dc-rez = { path = "../dc-rez" }
+# dc-model + dc-rom: the weapon first-person clip lengths (the shot cycle, shotcycle.rs) and the clip name hash.
+dc-model = { path = "../dc-model" }
+dc-rom = { path = "../dc-rom" }
+# dc-bute: the ROM weapon table (pellets, clip, ammunition row) the shooter reads at run time, as the client does.
+dc-bute = { path = "../dc-bute" }
+# dc-cone: the 2009 shot cone (ROM random table, shot counter, half-width, pellet direction) the shooter fires.
+dc-cone = { path = "../dc-cone" }
+# dc-hangdump (ours): lock-free breadcrumbs at the blocking points, read by the hang gate (T1).
+dc-hangdump = { path = "../dc-hangdump" }
+# serde_json (vetted, CLEANROOM.md §4a): JSONL event log and captap-format capture lines.
+serde_json = "1"
+# CLEANROOM.md 4a: the TLS client of the auth and web connections (CLI-1470..1475, our own deviation from 2009):
+# rustls (Apache-2.0 OR ISC OR MIT) with the `ring` provider, TLS 1.3 only; the server is pinned by its SHA-256
+# fingerprint or trusted on first use (src/tls.rs).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+# CLEANROOM.md 4a: the operating system's trusted roots, so a lobby with a real certificate (a VPS with a CA-issued
+# certificate) is accepted without a pin. Chosen over webpki-roots: it follows the trust store the user's OS and
+# browsers already use (no bundled list that goes stale) and its licence (Apache-2.0 OR ISC OR MIT) is in the 4a set,
+# where webpki-roots' CA data is CDLA-Permissive-2.0.
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+# src/tls_tests.rs: a throw-away certificate for the test's own TLS server (already in the lock via dc-lobby-server).
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem", "crypto"] }

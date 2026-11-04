@@ -1,0 +1,64 @@
+# DeCombat server.toml for a stand-alone server (docs/SERVER.md). Load it with:
+#   dc-lobby-server --config examples/server.toml --dserver --dserver-exe <dir>\dc-dserver.exe --admin 127.0.0.1:10090
+# Check it first with:  dc-config check examples/server.toml --fs   or   dc-lobby-server doctor --config examples/server.toml
+# Precedence: command-line flag > DC_<SECTION>__<KEY> environment > this file > <db dir>/lobby.json > built-in.
+# Relative paths are taken from the working directory the server is started in.
+# Every key of crates/dc-config/server.example.toml may be added here; only the hosting keys are shown.
+
+[server]
+name = "DeCombat Server"        # shown in the server list
+bind = "127.0.0.1"              # loopback: only this machine can connect
+public = false                  # true (or --public) listens on 0.0.0.0; then set advertise_ip below
+advertise_ip = "127.0.0.1"      # the address clients are told (your router's public address when public = true)
+auth_port = 10000               # the client's login port
+lobby_port = 0                  # 0 = auth_port + 2
+clan_port = 0                   # 0 = lobby_port + 1
+http_port = 0                   # clan pages and mod downloads; 0 = auth_port + 8080
+http_enabled = true
+game_port = 27015               # UDP port of the first room's game server
+
+[paths]
+rom = 'C:\Games\CombatArms'     # your own 2009 client folder (read-only); CA_ROM in the environment also works
+db = 'server\ca.db'             # SQLite file (WAL); created on the first start
+log_dir = 'server\logs'         # dc-lobby-server.log goes here (empty = console only)
+
+[dserver]
+port_range = "27016-27100"      # UDP ports of the further rooms that play at the same time (CD-10)
+
+[auth]
+auto_create = false             # an unknown login is refused; make accounts with --add-account NAME:PASSWORD
+
+# Remote game hosts (specs/HOST_AGENT.md, CD-88): a second server-list entry whose matches run on another machine
+# through its dc-host agent, while every account stays here. Without [[hosts.agents]] no host port is opened.
+# [[lobby.servers]]
+# name = "Home"                 # first entry: this machine (host = "")
+# capacity = 1000
+# channels = 3                  # channel ids 1..3
+# [[lobby.servers]]
+# name = "Away"
+# capacity = 1000
+# host = "away"                 # the [[hosts.agents]] name below
+# channels = 3                  # channel ids 4..6; the clan entry follows as the third entry
+# [hosts]
+# port = 0                      # TLS port the agents dial; 0 = auth_port + 5
+# [[hosts.agents]]
+# name = "away"
+# token = "<at least 24 random characters>"
+# public_address = ""           # "" = the address the agent connects from
+
+# Promotions (LG-303, CD-89): a rank reached in a match puts the GP shop products that rank unlocks into the inbox
+# (the rank_unlock_days variant, else the shortest period), or one random NX supply case when it unlocks nothing;
+# once per character and rank.
+# [rewards]
+# rank_unlock_days = 7          # 1..=3650
+# rank_case_products = []       # NX supply case pool (ProductIDs); [] = every NX "Supply Case ..." of the ROM
+# [[rewards.rank_gifts]]        # replaces the rule for one rank
+# rank = 5                      # the ROM level table's row: 1 = the first rank above the recruit
+# products = [1234]
+
+# Optional cosmetic mods offered on the Mods screen (MOD-25); on any policy, not part of the set or its hash:
+# [mods]
+# [[mods.catalog]]
+# id = "drawn_crosshair"
+# version = "1.0.0"
+# sha256 = "<sha256 of the zip, stored as <mods_dir>/<sha256>.zip>"

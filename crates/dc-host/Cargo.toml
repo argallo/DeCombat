@@ -1,0 +1,36 @@
+[package]
+name = "dc-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat remote game host agent: dials the lobby over TLS and runs one dc-dserver per match (specs/HOST_AGENT.md)"
+
+[[bin]]
+name = "dc-host"
+path = "src/main.rs"
+
+[lib]
+name = "dc_host"
+path = "src/lib.rs"
+
+[dependencies]
+# dc-rom (ours): the SHA-256 of the lobby certificate, the same code the lobby prints its fingerprint with.
+dc-rom = { path = "../dc-rom" }
+# dc-modkit (ours): `read_stored_zip`, the reader the lobby and the client unpack a map pack with (MAP-84).
+dc-modkit = { path = "../dc-modkit" }
+# serde (derive) + toml: host.toml, the same versions and features as dc-config.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# serde_json: the `start <gid> <json>` request of the control protocol (HOST_AGENT.md §3).
+serde_json = "1"
+# CLEANROOM.md 4a: the TLS client of the control connection, as the lobby and the client use it: rustls with the
+# `ring` provider, TLS 1.3 only, the lobby pinned by its SHA-256 fingerprint and nothing else (src/tls.rs).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+
+# the process-group kill of a game server after the quit grace (libc is already in the lock); MIT OR Apache-2.0.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# tests/agent.rs: a throw-away certificate for the fake lobby (already in the lock via dc-lobby-server).
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem", "crypto"] }

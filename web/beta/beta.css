@@ -1,0 +1,106 @@
+/* DeCombat beta signup section; uses the site's own tokens (--panel, --amber, ...). Provenance: ORIGINAL */
+.beta-section {
+  padding: 96px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.beta-inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 72px;
+  align-items: center;
+}
+.beta-copy h2 {
+  font-size: clamp(48px, 5.5vw, 76px);
+  line-height: 0.92;
+  margin: 18px 0 24px;
+}
+.beta-copy > p:not(.eyebrow):not(.fine) {
+  color: #b6c0aa;
+  font-size: 14px;
+  line-height: 1.8;
+  max-width: 52ch;
+}
+.beta-copy .fine {
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1.7;
+  margin-top: 18px;
+  max-width: 60ch;
+}
+.beta-form {
+  display: grid;
+  gap: 18px;
+  padding: 32px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+}
+.beta-field {
+  display: grid;
+  gap: 8px;
+}
+.beta-field input,
+.beta-field select {
+  min-height: 48px;
+  padding: 0 14px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  font: 15px var(--body);
+}
+.beta-field input:focus,
+.beta-field select:focus {
+  outline: none;
+  border-color: var(--amber);
+}
+.beta-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.beta-check a {
+  color: var(--amber);
+  text-decoration: underline;
+}
+.beta-check input {
+  margin-top: 3px;
+  accent-color: var(--amber);
+}
+.beta-form .button {
+  justify-self: start;
+}
+.beta-form .button[disabled] {
+  opacity: 0.6;
+  transform: none;
+  cursor: progress;
+}
+.beta-status {
+  min-height: 1.5em;
+  font-size: 11px;
+  color: var(--muted);
+}
+.beta-status.ok {
+  color: var(--green);
+}
+.beta-status.err {
+  color: var(--amber);
+}
+@media (max-width: 860px) {
+  .beta-section {
+    padding: 64px 0;
+  }
+  .beta-inner {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  .beta-form {
+    padding: 22px;
+  }
+  .beta-form .button {
+    justify-self: stretch;
+  }
+}

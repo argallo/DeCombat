@@ -1,0 +1,176 @@
+{
+ "schema": "dc-perf-caps/1",
+ "note": "Caps of the RENDER_PERF_GATES.md budget ledger, one per counter of tools/perf_report.py (value in the unit given). null = not pinned: the report shows the measured high-water only. Pinned at G1 sign-off from the quiet-machine baseline on the min-spec target: cap = worst measured high-water of the G1 scenarios x (1 + headroom), the headroom stated per row in reports/perf-g1.md. ORIGINAL (perf-g1).",
+ "caps": {
+  "system_ram.rss_peak_bytes": {
+   "cap": null,
+   "unit": "MB",
+   "row": "System RAM"
+  },
+  "system_ram.decoded_image_pool_high_bytes": {
+   "cap": null,
+   "unit": "MB",
+   "row": "System RAM"
+  },
+  "system_ram.loader_jobs_high": {
+   "cap": null,
+   "unit": "requests",
+   "row": "System RAM"
+  },
+  "gpu_static.gpu_allocated_at_level_bytes": {
+   "cap": null,
+   "unit": "MB",
+   "row": "GPU static"
+  },
+  "gpu_static.created_during_load_bytes": {
+   "cap": null,
+   "unit": "MB",
+   "row": "GPU static"
+  },
+  "gpu_static.gpu_allocated_peak_bytes": {
+   "cap": null,
+   "unit": "MB",
+   "row": "GPU static"
+  },
+  "gpu_dynamic_frame.buffer_write_bytes_max": {
+   "cap": null,
+   "unit": "MB/frame",
+   "row": "GPU dynamic/frame"
+  },
+  "gpu_dynamic_frame.buffer_write_bytes_p95": {
+   "cap": null,
+   "unit": "MB/frame",
+   "row": "GPU dynamic/frame"
+  },
+  "gpu_dynamic_frame.bones_per_frame_max": {
+   "cap": null,
+   "unit": "bones",
+   "row": "GPU dynamic/frame"
+  },
+  "gpu_dynamic_frame.fx_quads_max": {
+   "cap": null,
+   "unit": "quads",
+   "row": "GPU dynamic/frame"
+  },
+  "gpu_dynamic_frame.hud_quads_max": {
+   "cap": null,
+   "unit": "quads",
+   "row": "GPU dynamic/frame"
+  },
+  "staging_in_flight.bytes_max": {
+   "cap": null,
+   "unit": "MB",
+   "row": "Staging in-flight"
+  },
+  "staging_in_flight.ops_max": {
+   "cap": null,
+   "unit": "copies",
+   "row": "Staging in-flight"
+  },
+  "upload_traffic.bytes_p95": {
+   "cap": null,
+   "unit": "MB/frame",
+   "row": "Upload traffic"
+  },
+  "upload_traffic.bytes_max": {
+   "cap": null,
+   "unit": "MB/frame",
+   "row": "Upload traffic"
+  },
+  "upload_traffic.ops_p95": {
+   "cap": null,
+   "unit": "copies/frame",
+   "row": "Upload traffic"
+  },
+  "upload_traffic.ops_max": {
+   "cap": null,
+   "unit": "copies/frame",
+   "row": "Upload traffic"
+  },
+  "cpu_frame.frame_ms_p95": {
+   "cap": null,
+   "unit": "ms",
+   "row": "CPU frame"
+  },
+  "cpu_frame.frame_ms_p99": {
+   "cap": null,
+   "unit": "ms",
+   "row": "CPU frame"
+  },
+  "cpu_frame.encode_submit_ms_p95": {
+   "cap": null,
+   "unit": "ms",
+   "row": "CPU frame"
+  },
+  "cpu_frame.encode_submit_ms_p99": {
+   "cap": null,
+   "unit": "ms",
+   "row": "CPU frame"
+  },
+  "cpu_frame.hot_loop_allocs_max": {
+   "cap": null,
+   "unit": "allocs/frame",
+   "row": "CPU frame"
+  },
+  "cpu_frame.loader_jobs_high": {
+   "cap": null,
+   "unit": "jobs",
+   "row": "CPU frame"
+  },
+  "gpu_frame.span_ms_p95": {
+   "cap": null,
+   "unit": "ms",
+   "row": "GPU frame"
+  },
+  "gpu_frame.span_ms_p99": {
+   "cap": null,
+   "unit": "ms",
+   "row": "GPU frame"
+  },
+  "pipelines.created_at_load": {
+   "cap": null,
+   "unit": "pipelines",
+   "row": "Pipelines"
+  },
+  "pipelines.load_ms": {
+   "cap": null,
+   "unit": "ms",
+   "row": "Pipelines"
+  },
+  "pipelines.runtime_creates": {
+   "cap": null,
+   "unit": "pipelines",
+   "row": "Pipelines"
+  },
+  "draw_bind.draws_max": {
+   "cap": null,
+   "unit": "draws",
+   "row": "Draw/bind state"
+  },
+  "draw_bind.bind_sets_max": {
+   "cap": null,
+   "unit": "binds",
+   "row": "Draw/bind state"
+  },
+  "draw_bind.dynamic_offsets_max": {
+   "cap": null,
+   "unit": "offsets",
+   "row": "Draw/bind state"
+  },
+  "streaming.time_to_resident_frames_p95": {
+   "cap": null,
+   "unit": "frames",
+   "row": "Streaming"
+  },
+  "streaming.time_to_resident_ms_p95": {
+   "cap": null,
+   "unit": "ms",
+   "row": "Streaming"
+  },
+  "streaming.worst_frame_with_load_ms": {
+   "cap": null,
+   "unit": "ms",
+   "row": "Streaming"
+  }
+ }
+}
