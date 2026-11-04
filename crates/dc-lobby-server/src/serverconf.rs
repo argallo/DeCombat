@@ -326,7 +326,11 @@ impl ServerConf {
             "shop.hot_percent",
             num(s.hot_percent.into()),
         );
-        put("shop.seasonal", "shop.seasonal", JsonValue::Bool(s.seasonal));
+        put(
+            "shop.seasonal",
+            "shop.seasonal",
+            JsonValue::Bool(s.seasonal),
+        );
         put("shop.sale_list", "shop.sale_list", list(&s.sale_list));
         let mut lists = std::collections::BTreeMap::new();
         for (name, ids) in [
@@ -717,8 +721,10 @@ pub fn rom_dir(conf: Option<&ServerConf>) -> Option<PathBuf> {
 pub fn mods_dir(opts: &crate::cli::Options, conf: Option<&ServerConf>) -> Option<PathBuf> {
     opts.mods_dir.clone().or_else(|| {
         // LG-313: a vanilla lobby's featured entries keep their zips there too
-        conf.filter(|c| c.cfg.mods.policy == "modded" || c.cfg.lobby.servers.iter().any(|e| !e.mods.is_empty()))
-            .map(|c| PathBuf::from(&c.cfg.paths.mods_dir))
+        conf.filter(|c| {
+            c.cfg.mods.policy == "modded" || c.cfg.lobby.servers.iter().any(|e| !e.mods.is_empty())
+        })
+        .map(|c| PathBuf::from(&c.cfg.paths.mods_dir))
     })
 }
 
@@ -912,12 +918,13 @@ nx_clan_min_seconds = 66
         };
         let mut r = Rules::default();
         assert!(conf.apply_rules(&mut r).is_empty());
+        assert_eq!((r.nx_enabled, r.nx_daily, r.nx_clan_win), (false, 11, 22));
         assert_eq!(
-            (r.nx_enabled, r.nx_daily, r.nx_clan_win),
-            (false, 11, 22)
-        );
-        assert_eq!(
-            (r.nx_clan_win_daily_cap, r.nx_clan_min_players, r.nx_clan_min_seconds),
+            (
+                r.nx_clan_win_daily_cap,
+                r.nx_clan_min_players,
+                r.nx_clan_min_seconds
+            ),
             (4, 5, 66)
         );
     }

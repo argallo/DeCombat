@@ -382,7 +382,13 @@ pub fn is_identity_linked(c: &Connection, user_no: u32) -> DbResult<bool> {
 }
 
 /// Links a local account to (issuer, remote account).
-pub fn link_identity(c: &Connection, issuer: &str, remote_no: u32, user_no: u32, now: i64) -> DbResult<()> {
+pub fn link_identity(
+    c: &Connection,
+    issuer: &str,
+    remote_no: u32,
+    user_no: u32,
+    now: i64,
+) -> DbResult<()> {
     c.execute(
         "INSERT INTO identity_links (issuer, remote_no, user_no, linked) VALUES (?1, ?2, ?3, ?4)",
         params![issuer, remote_no as i64, user_no as i64, now],
@@ -841,7 +847,12 @@ pub fn expired_items(c: &Connection, now_ticks: i64, user: Option<u32>) -> DbRes
 
 /// CD-87: remembers the item numbers of expired items the owner was not online to be told about (one row each);
 /// the next lobby login takes them.
-pub fn add_expiry_notes(c: &Connection, user: u32, item_nos: &[u32], now_ticks: i64) -> DbResult<()> {
+pub fn add_expiry_notes(
+    c: &Connection,
+    user: u32,
+    item_nos: &[u32],
+    now_ticks: i64,
+) -> DbResult<()> {
     let mut st =
         c.prepare("INSERT INTO expiry_notes (user_no, item_no, created) VALUES (?1, ?2, ?3)")?;
     for n in item_nos {
@@ -859,7 +870,10 @@ pub fn take_expiry_notes(c: &Connection, user: u32) -> DbResult<Vec<u32>> {
         .into_iter()
         .map(|n| n.clamp(0, u32::MAX as i64) as u32)
         .collect();
-    c.execute("DELETE FROM expiry_notes WHERE user_no = ?1", params![user as i64])?;
+    c.execute(
+        "DELETE FROM expiry_notes WHERE user_no = ?1",
+        params![user as i64],
+    )?;
     Ok(nos)
 }
 

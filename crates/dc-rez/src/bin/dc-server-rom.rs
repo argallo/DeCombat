@@ -22,7 +22,10 @@ fn main() -> ExitCode {
         return match dc_rez::dc_rom::identify_rom(&dir) {
             Ok(id) => {
                 let n = dc_rez::dc_rom::server_rom::verify(&dir).unwrap_or(0);
-                println!("dc-server-rom: {} OK ({id:?}, {n} files match the manifest)", dir.display());
+                println!(
+                    "dc-server-rom: {} OK ({id:?}, {n} files match the manifest)",
+                    dir.display()
+                );
                 ExitCode::SUCCESS
             }
             Err(e) => {

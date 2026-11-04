@@ -81,7 +81,10 @@ impl Launch for BotExe {
         let out = self.dir.join(format!("{name}.out"));
         rotate(&out);
         rotate(&self.dir.join(format!("{name}.events.jsonl")));
-        let log = std::fs::OpenOptions::new().create(true).append(true).open(&out)?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&out)?;
         let err = log.try_clone()?;
         let mut cmd = Command::new(&self.exe);
         cmd.args(args).stdin(Stdio::piped()).stdout(log).stderr(err);
@@ -173,7 +176,8 @@ impl Supervisor {
 
     fn retire(&mut self, name: &str, mut c: Child, now: Instant) {
         drop(c.stdin.take());
-        self.dying.push((name.to_string(), c, now + self.timing.stop_grace));
+        self.dying
+            .push((name.to_string(), c, now + self.timing.stop_grace));
     }
 
     fn reap(&mut self, now: Instant) {
@@ -209,7 +213,12 @@ impl Supervisor {
         }
         self.reap(now);
         let names: BTreeSet<String> = wants.iter().map(|w| w.name.clone()).collect();
-        let gone: Vec<String> = self.procs.keys().filter(|n| !names.contains(*n)).cloned().collect();
+        let gone: Vec<String> = self
+            .procs
+            .keys()
+            .filter(|n| !names.contains(*n))
+            .cloned()
+            .collect();
         for n in gone {
             if let Some(mut p) = self.procs.remove(&n) {
                 if let Some(c) = p.child.take() {
@@ -227,7 +236,10 @@ impl Supervisor {
                     p.next_start = now;
                     p.fast_exits = 0;
                     if let Some(c) = p.child.take() {
-                        lines.push(format!("{name} restarts for its new settings (pid {})", c.id()));
+                        lines.push(format!(
+                            "{name} restarts for its new settings (pid {})",
+                            c.id()
+                        ));
                         self.retire(&name, c, now);
                     }
                 }
@@ -288,7 +300,10 @@ impl Supervisor {
             .map(|(n, _)| n.clone())
             .collect();
         for n in due {
-            if self.last_start.is_some_and(|t| now < t + self.timing.stagger) {
+            if self
+                .last_start
+                .is_some_and(|t| now < t + self.timing.stagger)
+            {
                 break;
             }
             let args = self.procs[&n].want.args.clone();
@@ -297,7 +312,11 @@ impl Supervisor {
             let p = self.procs.get_mut(&n).expect("listed");
             match r {
                 Ok(c) => {
-                    lines.push(format!("{n} started (pid {}, channel {})", c.id(), p.want.channel));
+                    lines.push(format!(
+                        "{n} started (pid {}, channel {})",
+                        c.id(),
+                        p.want.channel
+                    ));
                     p.child = Some(c);
                     p.started = now;
                     self.last_start = Some(now);
@@ -474,7 +493,8 @@ pub fn facts(st: &Core, dir: &Path) -> Facts {
         lobby: lobby_addr(&st.opts.bind, st.opts.port),
         rom: st.rom.dir.clone(),
         mod_cache: cache,
-        mods: (*m != crate::state::ExpectedMods::default()).then(|| (m.set.clone(), m.content.clone())),
+        mods: (*m != crate::state::ExpectedMods::default())
+            .then(|| (m.set.clone(), m.content.clone())),
         dir: dir.to_path_buf(),
     }
 }
@@ -536,9 +556,15 @@ pub fn bot_args(f: &Facts, g: &Group, name: &str, channel: u32) -> Vec<String> {
     }
     add(
         "--log",
-        f.dir.join(format!("{name}.events.jsonl")).display().to_string(),
+        f.dir
+            .join(format!("{name}.events.jsonl"))
+            .display()
+            .to_string(),
     );
-    add("--known-servers", f.dir.join("known_servers.txt").display().to_string());
+    add(
+        "--known-servers",
+        f.dir.join("known_servers.txt").display().to_string(),
+    );
     a
 }
 
@@ -582,12 +608,19 @@ pub struct Loadouts {
 
 impl Loadouts {
     /// Returns the bots to restart and each wanted bot's loadout note.
-    pub fn apply(&mut self, st: &Core, groups: &[Group], wants: &[Want]) -> (Vec<String>, Vec<(String, String)>) {
+    pub fn apply(
+        &mut self,
+        st: &Core,
+        groups: &[Group],
+        wants: &[Want],
+    ) -> (Vec<String>, Vec<(String, String)>) {
         let mut restart = Vec::new();
         let mut notes = Vec::new();
         let by_id: BTreeMap<i64, &Group> = groups.iter().map(|g| (g.id, g)).collect();
         for w in wants {
-            let Some(g) = by_id.get(&w.group) else { continue };
+            let Some(g) = by_id.get(&w.group) else {
+                continue;
+            };
             let spec = g.loadout.as_str();
             if spec.is_empty() {
                 notes.push((w.name.clone(), String::new()));
@@ -611,12 +644,20 @@ impl Loadouts {
                 .and_then(|a| crate::db::character(&st.db, a.user_no).ok().flatten())
                 .is_some();
             if !has_char {
-                notes.push((w.name.clone(), format!("loadout {spec} after the first login")));
+                notes.push((
+                    w.name.clone(),
+                    format!("loadout {spec} after the first login"),
+                ));
                 continue;
             }
             match crate::accounts::equip_loadout(&st.db, &st.rom, &login, spec, None) {
                 Ok(line) => {
-                    let _ = botgroups::set_applied_loadout(&st.db, &login, spec, crate::clock::unix_now());
+                    let _ = botgroups::set_applied_loadout(
+                        &st.db,
+                        &login,
+                        spec,
+                        crate::clock::unix_now(),
+                    );
                     self.done.insert(login, spec.to_string());
                     st.note(&format!("bots: {line}"));
                     notes.push((w.name.clone(), format!("loadout {spec}")));
@@ -705,20 +746,25 @@ pub fn spawn(shared: &Shared) {
         ));
     }
     let sup: Handle = Arc::new(Mutex::new(Supervisor::new(
-        Box::new(BotExe { exe, dir: dir.clone() }),
+        Box::new(BotExe {
+            exe,
+            dir: dir.clone(),
+        }),
         Timing::default(),
     )));
     crate::net::lock(shared).bot_sup = Some(Arc::clone(&sup));
     let shared = Arc::clone(shared);
-    let _ = std::thread::Builder::new().name("bots".into()).spawn(move || {
-        let mut lo = Loadouts::default();
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-            if !tick(&shared, &sup, &mut lo, &dir) {
-                break;
+    let _ = std::thread::Builder::new()
+        .name("bots".into())
+        .spawn(move || {
+            let mut lo = Loadouts::default();
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                if !tick(&shared, &sup, &mut lo, &dir) {
+                    break;
+                }
             }
-        }
-    });
+        });
 }
 
 /// The graceful stop's part (LG-130): every managed bot ends before the matches do.

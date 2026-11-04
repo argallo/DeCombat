@@ -458,7 +458,9 @@ pub fn resolve_with(m: &ArgMatches, conf: Option<&ServerConf>) -> Options {
             .and_then(|d| nonempty_path(&d)),
         identity_issue: m.get_flag("identity")
             || cv(conf, "identity.issue", |c| c.identity.issue).unwrap_or(false),
-        identity_issuer: id_s("identity-issuer", "identity.issuer", |c| c.identity.issuer.clone()),
+        identity_issuer: id_s("identity-issuer", "identity.issuer", |c| {
+            c.identity.issuer.clone()
+        }),
         identity_public_key: id_s("identity-key", "identity.public_key", |c| {
             c.identity.public_key.clone()
         }),
@@ -669,7 +671,9 @@ pub fn public_refusals(opts: &Options) -> Vec<String> {
         .collect();
     // DC-DEFAULT: LG-325 (proposed) --lenient lets a lobby login name any account without a key: never on a public lobby
     if opts.lenient {
-        out.push("--public with --lenient: anybody could log in as any account; remove --lenient".into());
+        out.push(
+            "--public with --lenient: anybody could log in as any account; remove --lenient".into(),
+        );
     }
     out
 }
@@ -1066,14 +1070,22 @@ capacity = 55
         let c = conf(toml, &[]);
         let o = with(&["--port", "20000"], c.as_ref());
         assert_eq!((o.server_name.as_str(), o.server_max), ("US Central", 55));
-        assert_eq!(o.servers.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["US Central"]);
+        assert_eq!(
+            o.servers
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["US Central"]
+        );
         assert_eq!(o.other_lobbies.len(), 1);
         assert_eq!(o.other_lobbies[0].lobby, "203.0.113.7:11000");
         let cfg: dc_config::Config = toml::from_str(toml).unwrap();
         let errors = |cfg: &dc_config::Config| {
             dc_config::check(cfg, dc_config::CheckOptions::default())
                 .into_iter()
-                .filter(|i| i.severity == dc_config::Severity::Error && i.path.starts_with("lobby.servers"))
+                .filter(|i| {
+                    i.severity == dc_config::Severity::Error && i.path.starts_with("lobby.servers")
+                })
                 .map(|i| i.path)
                 .collect::<Vec<_>>()
         };

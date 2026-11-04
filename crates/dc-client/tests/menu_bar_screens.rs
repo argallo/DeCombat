@@ -153,6 +153,11 @@ fn the_option_report_and_help_buttons_open_on_every_page_that_has_them() {
 
 #[test]
 fn the_chat_combos_open_their_lists_and_take_a_pick() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     use dc_client::menu::chatdrop;
     let (mut m, _) = menu();
     m.open(Go::Lobby);
@@ -210,6 +215,11 @@ fn the_chat_combos_open_their_lists_and_take_a_pick() {
 /// the filter on one kind of line the keys do nothing.
 #[test]
 fn f2_and_f3_switch_the_chat_target() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     use dc_client::menu::{chatdrop, MenuKey};
     for go in [Go::Lobby, Go::Room] {
         let (mut m, _) = menu();
@@ -241,6 +251,11 @@ fn f2_and_f3_switch_the_chat_target() {
 /// CLI-941: the waiting room's chat combos open their lists and take a pick like the lobby's (they were drawn only).
 #[test]
 fn the_waiting_room_chat_combos_open_their_lists_and_take_a_pick() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     use dc_client::menu::chatdrop;
     let (mut m, _) = menu();
     m.open(Go::Room);

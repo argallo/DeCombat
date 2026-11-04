@@ -844,12 +844,13 @@ fn a_plant_turns_the_site_indicator_from_green_to_red_until_the_next_round() {
         planted_command: b"msg SiteA lock;
 msg GreenA off;
 msg RedA on;
-".to_vec(),
+"
+        .to_vec(),
     }];
     let fx = |name: &[u8], fx: &[u8], on: bool| EffectInfo {
         name: name.to_vec(),
         pos: RED,
-        rot: [-1.570796, 0.0, 0.0],
+        rot: [-std::f32::consts::FRAC_PI_2, 0.0, 0.0],
         fx: fx.to_vec(),
         looped: true,
         start_on: on,
@@ -889,7 +890,11 @@ msg RedA on;
         .map(|i| effect_at(&net, i, GREEN_FX).expect("the green indicator at load"))
         .collect();
     for i in 0..2 {
-        assert_eq!(effect_at(&net, i, RED_FX), None, "client {i}: no red indicator at load");
+        assert_eq!(
+            effect_at(&net, i, RED_FX),
+            None,
+            "client {i}: no red indicator at load"
+        );
     }
     let plant_point = net
         .c(0)
@@ -905,24 +910,41 @@ msg RedA on;
     net.run_for(PLANT_MS + 500);
     assert!(net.logs.iter().any(|l| l.contains("bomb: planted")));
     let mut red = Vec::new();
-    for i in 0..2 {
-        assert!(net.c(i).seen.removed.contains(&green[i]), "client {i}: the green indicator goes");
+    for (i, g) in green.iter().enumerate().take(2) {
+        assert!(
+            net.c(i).seen.removed.contains(g),
+            "client {i}: the green indicator goes"
+        );
         assert_eq!(effect_at(&net, i, GREEN_FX), None);
         red.push(effect_at(&net, i, RED_FX).expect("the red indicator at the plant"));
     }
     // the blast ends the round; the red indicator stays through the round end, the next round restores
     net.run_for(BOMB_SECS * 1000);
     assert!(net.logs.iter().any(|l| l.contains("bomb: exploded")));
-    for i in 0..2 {
-        assert_eq!(effect_at(&net, i, RED_FX), Some(red[i]), "client {i}: red during the round end");
+    for (i, r) in red.iter().enumerate().take(2) {
+        assert_eq!(
+            effect_at(&net, i, RED_FX),
+            Some(*r),
+            "client {i}: red during the round end"
+        );
     }
     let t = net.now;
     assert!(net.run_until(t + 15_000, |n| n.server.game().round_no() == 2));
     net.run_for(500);
-    assert!(net.logs.iter().any(|l| l.contains("world effects restored: 1 back, 1 removed")));
+    assert!(net
+        .logs
+        .iter()
+        .any(|l| l.contains("world effects restored: 1 back, 1 removed")));
     for i in 0..2 {
-        assert!(net.c(i).seen.removed.contains(&red[i]), "client {i}: the red indicator goes");
-        assert_eq!(effect_at(&net, i, GREEN_FX), Some(green[i]), "client {i}: green again");
+        assert!(
+            net.c(i).seen.removed.contains(&red[i]),
+            "client {i}: the red indicator goes"
+        );
+        assert_eq!(
+            effect_at(&net, i, GREEN_FX),
+            Some(green[i]),
+            "client {i}: green again"
+        );
     }
     net.errors();
 }

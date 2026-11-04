@@ -934,7 +934,11 @@ fn rom_world_objects_match_the_reference_tdm2() {
         brushes.len(),
         our_brushes.len()
     );
-    assert_eq!(zone_hits, zones.len(), "zone blobs equal the reference stack's");
+    assert_eq!(
+        zone_hits,
+        zones.len(),
+        "zone blobs equal the reference stack's"
+    );
     assert_eq!(
         flag_hits,
         flags.len(),
@@ -1552,8 +1556,8 @@ fn rom_step_height_variable_matches_the_reference() {
                     _ => {}
                 }
             }
-            let theirs =
-                theirs.unwrap_or_else(|| panic!("{label} conn {conn}: the reference stack's variable"));
+            let theirs = theirs
+                .unwrap_or_else(|| panic!("{label} conn {conn}: the reference stack's variable"));
             assert!(
                 before_load,
                 "{label} conn {conn}: sent before the world load"
@@ -1767,7 +1771,11 @@ fn rom_garage_shutters_open_only_by_their_levers() {
             // DSV-500: one rotating door is player-activated; the five others (the spawn gate in front of a fall
             // volume, the hatches and their zero-turn boxes) are message doors: created, closed until a script
             let count = |b: OpenBy| turns.iter().filter(|t| **t == b).count();
-            assert_eq!((count(OpenBy::Use), count(OpenBy::Message)), (1, 5), "{turns:?}");
+            assert_eq!(
+                (count(OpenBy::Use), count(OpenBy::Message)),
+                (1, 5),
+                "{turns:?}"
+            );
             warhead += 1;
         }
     }
@@ -1845,8 +1853,16 @@ fn rom_bomb_sites_switch_their_indicator_effects_at_the_plant() {
                 fx.len() - on.len()
             );
             for name in on {
-                let e = w.effects.iter().find(|e| e.name.eq_ignore_ascii_case(name)).unwrap();
-                assert!(!e.start_on, "world {}: the switched-on effect starts off", &w.sha256[..16]);
+                let e = w
+                    .effects
+                    .iter()
+                    .find(|e| e.name.eq_ignore_ascii_case(name))
+                    .unwrap();
+                assert!(
+                    !e.start_on,
+                    "world {}: the switched-on effect starts off",
+                    &w.sha256[..16]
+                );
             }
         }
     }
@@ -1872,7 +1888,8 @@ fn rom_warhead_spawn_gate_stands_closed_in_tdm_and_open_in_quarantine() {
         return;
     };
     let arg = lobby_arg(listed);
-    let gate_of = |key: &str| -> Option<(Vec<u8>, f32, Option<(bool, u8)>, bool)> {
+    type Gate = (Vec<u8>, f32, Option<(bool, u8)>, bool);
+    let gate_of = |key: &str| -> Option<Gate> {
         let trig = room_trig(&rom, listed, key)?;
         let w = load_from_rom(&rom, &arg, NameForm::Listed, None).expect("WarHead");
         let kills = w.kill_shapes.clone();
@@ -1984,7 +2001,8 @@ fn rom_bots_fall_through_what_the_players_fall_through() {
         }
         let mut bot = worlds.load(listed).expect("bot world");
         let file = bot.collision.clone();
-        bot.follow_server(&t).expect("the server's objects change the set");
+        bot.follow_server(&t)
+            .expect("the server's objects change the set");
         let solid = bot.solid.clone().unwrap();
         let (mut dropped, mut kept) = (0, 0);
         for (l, s) in bot.linked.iter().zip(&solid) {
@@ -2001,7 +2019,11 @@ fn rom_bots_fall_through_what_the_players_fall_through() {
             let mid = [0.5 * (lo.x + hi.x), hi.y, 0.5 * (lo.z + hi.z)];
             let a = dc_sim::V3::new(mid[0], mid[1] + 1.0, mid[2]);
             let b = dc_sim::V3::new(mid[0], mid[1] - 1.0, mid[2]);
-            assert_eq!(bot.collision.models[l.index].face_count(), 0, "{listed}: out of the bots' set");
+            assert_eq!(
+                bot.collision.models[l.index].face_count(),
+                0,
+                "{listed}: out of the bots' set"
+            );
             if file.ray(a, b).is_some() && bot.collision.ray(a, b).is_none() {
                 dropped += 1;
             }

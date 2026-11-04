@@ -60,7 +60,10 @@ pub fn forwardable(inner: &str) -> bool {
 /// plain (no percent escapes, no `.` / `..` / empty segments, so it is the path the admin web checked); the query
 /// passes as sent. `None` for anything else.
 pub fn inner_target(raw: &str, name: &str) -> Option<String> {
-    if !raw.bytes().all(|b| (0x21..0x7f).contains(&b) && b != b'#' && b != b'\\') {
+    if !raw
+        .bytes()
+        .all(|b| (0x21..0x7f).contains(&b) && b != b'#' && b != b'\\')
+    {
         return None;
     }
     let rest = raw.strip_prefix(PREFIX)?.strip_prefix(name)?;
@@ -88,7 +91,8 @@ pub fn inner_target(raw: &str, name: &str) -> Option<String> {
 
 /// `DC_ADMIN_TOKEN` of a `KEY=VALUE` file (`export` and quotes allowed); `Ok(None)` when the file does not set it.
 pub fn token_from_env_file(path: &str) -> Result<Option<String>, String> {
-    let f = std::fs::File::open(path).map_err(|e| format!("cannot read the instance's env_file: {e}"))?;
+    let f = std::fs::File::open(path)
+        .map_err(|e| format!("cannot read the instance's env_file: {e}"))?;
     let mut text = String::new();
     f.take(MAX_ENV_FILE)
         .read_to_string(&mut text)
@@ -121,18 +125,29 @@ pub fn page_token(html: &str) -> Option<&str> {
     let i = html.find(META)? + META.len();
     let t = html[i..].split('"').next()?;
     let ok = (1..=128).contains(&t.len())
-        && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'=' | b'+' | b'/'));
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'=' | b'+' | b'/'));
     ok.then_some(t)
 }
 
 /// A header value as sent: control characters dropped, at most 160 characters.
 pub fn clean_via(v: &str) -> String {
-    v.chars().filter(|c| !c.is_control()).take(160).collect::<String>().trim().to_string()
+    v.chars()
+        .filter(|c| !c.is_control())
+        .take(160)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// One request to the instance's admin port and its answer.
 fn exchange(addr: SocketAddr, head: &str, body: &[u8]) -> Result<Answer, (u16, String)> {
-    let down = |e: std::io::Error| (502, format!("the instance's admin port {addr} does not answer: {e}"));
+    let down = |e: std::io::Error| {
+        (
+            502,
+            format!("the instance's admin port {addr} does not answer: {e}"),
+        )
+    };
     let mut s = TcpStream::connect_timeout(&addr, CONNECT_WAIT).map_err(down)?;
     let until = Instant::now() + ANSWER_DEADLINE;
     s.set_write_timeout(Some(ANSWER_DEADLINE)).map_err(down)?;
@@ -144,7 +159,10 @@ fn exchange(addr: SocketAddr, head: &str, body: &[u8]) -> Result<Answer, (u16, S
     loop {
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err((504, format!("the instance at {addr} took too long to answer")));
+            return Err((
+                504,
+                format!("the instance at {addr} took too long to answer"),
+            ));
         }
         s.set_read_timeout(Some(left)).map_err(down)?;
         match s.read(&mut chunk) {
@@ -155,8 +173,16 @@ fn exchange(addr: SocketAddr, head: &str, body: &[u8]) -> Result<Answer, (u16, S
                     return Err((502, "the instance's answer is too large".into()));
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                return Err((504, format!("the instance at {addr} took too long to answer")));
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err((
+                    504,
+                    format!("the instance at {addr} took too long to answer"),
+                ));
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(down(e)),
@@ -219,7 +245,10 @@ pub fn parse_answer(buf: &[u8]) -> Result<Answer, (u16, String)> {
 fn address(inst: &AdminWebInstance) -> Result<SocketAddr, (u16, String)> {
     match inst.admin.trim().parse::<SocketAddr>() {
         Ok(a) if a.ip().is_loopback() => Ok(a),
-        _ => Err((502, format!("instance {}: admin must be a loopback ADDR:PORT", inst.name))),
+        _ => Err((
+            502,
+            format!("instance {}: admin must be a loopback ADDR:PORT", inst.name),
+        )),
     }
 }
 
@@ -265,7 +294,10 @@ pub fn forward(
         _ => {
             return Err((
                 502,
-                format!("the instance's dashboard did not give its page token (answer {})", page.status),
+                format!(
+                    "the instance's dashboard did not give its page token (answer {})",
+                    page.status
+                ),
             ))
         }
     };
@@ -282,7 +314,13 @@ pub fn forward(
 /// A dashboard or beta page as the admin web serves it (`current`: the instance, `None` the default lobby): the page
 /// token is the session's; with instances configured, the top bar names the lobby and switches between them; on a
 /// further instance the Updates tab is gone; the dashboard links the key page.
-pub fn dress(html: &str, cfg: &AdminWebSection, current: Option<&AdminWebInstance>, csrf: &str, beta: bool) -> String {
+pub fn dress(
+    html: &str,
+    cfg: &AdminWebSection,
+    current: Option<&AdminWebInstance>,
+    csrf: &str,
+    beta: bool,
+) -> String {
     let mut out = match page_token(html) {
         Some(t) => html.replacen(&format!("{META}{t}\""), &format!("{META}{csrf}\""), 1),
         None => html.to_string(),
@@ -322,7 +360,11 @@ pub fn dress(html: &str, cfg: &AdminWebSection, current: Option<&AdminWebInstanc
         ),
         1,
     );
-    out = out.replacen("<title>DeCombat ", &format!("<title>{} | DeCombat ", esc(label)), 1);
+    out = out.replacen(
+        "<title>DeCombat ",
+        &format!("<title>{} | DeCombat ", esc(label)),
+        1,
+    );
     if current.is_some() {
         out = out.replacen("<body>", "<body class=\"other-lobby\">", 1);
         out = out.replacen("<a href=\"#updates\">Updates</a>", "", 1);
@@ -341,11 +383,18 @@ mod tests {
         assert_eq!(split("/i/"), None);
         assert_eq!(split("/ops"), None);
         assert!(forwardable("/ops") && forwardable("/ops/") && forwardable("/ops/player/ban"));
-        assert!(!forwardable("/ops/updates") && !forwardable("/ops/updates/deploy") && !forwardable("/opsx"));
+        assert!(
+            !forwardable("/ops/updates")
+                && !forwardable("/ops/updates/deploy")
+                && !forwardable("/opsx")
+        );
         assert!(!forwardable("/status") && !forwardable(""));
         let t = |raw: &str| inner_target(raw, "modded");
         assert_eq!(t("/i/modded/ops/live").as_deref(), Some("/ops/live"));
-        assert_eq!(t("/i/modded/ops/players?q=a%20b&limit=5").as_deref(), Some("/ops/players?q=a%20b&limit=5"));
+        assert_eq!(
+            t("/i/modded/ops/players?q=a%20b&limit=5").as_deref(),
+            Some("/ops/players?q=a%20b&limit=5")
+        );
         assert_eq!(t("/i/modded/ops/").as_deref(), Some("/ops/"));
         for bad in [
             "/i/modded/status",
@@ -365,10 +414,15 @@ mod tests {
 
     #[test]
     fn answers_are_taken_only_as_json_or_html_and_never_as_redirects() {
-        let a = parse_answer(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}junk")
-            .unwrap();
+        let a = parse_answer(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}junk",
+        )
+        .unwrap();
         assert_eq!((a.status, a.html, a.body.as_str()), (200, false, "{}"));
-        let a = parse_answer(b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>").unwrap();
+        let a = parse_answer(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>",
+        )
+        .unwrap();
         assert_eq!((a.status, a.html), (403, true));
         for bad in [
             &b"HTTP/1.1 302 Found\r\nLocation: http://192.0.2.1/\r\nContent-Type: text/html\r\n\r\n"[..],
@@ -389,14 +443,25 @@ mod tests {
             std::fs::write(&p, text).unwrap();
             token_from_env_file(&p.to_string_lossy())
         };
-        assert_eq!(read("DC_ADMIN=127.0.0.1:10091\nDC_ADMIN_TOKEN=abc\n").unwrap().as_deref(), Some("abc"));
-        assert_eq!(read("export DC_ADMIN_TOKEN='q-1'\n").unwrap().as_deref(), Some("q-1"));
+        assert_eq!(
+            read("DC_ADMIN=127.0.0.1:10091\nDC_ADMIN_TOKEN=abc\n")
+                .unwrap()
+                .as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            read("export DC_ADMIN_TOKEN='q-1'\n").unwrap().as_deref(),
+            Some("q-1")
+        );
         assert_eq!(read("DC_ADMIN=127.0.0.1:10091\n").unwrap(), None);
         assert_eq!(read("DC_ADMIN_TOKEN=\n").unwrap(), None);
         assert!(read("DC_ADMIN_TOKEN=a b\n").is_err());
         let _ = std::fs::remove_file(&p);
         assert!(token_from_env_file(&p.to_string_lossy()).is_err());
-        assert_eq!(page_token("<meta name=\"csrf\" content=\"Ab-_9\">"), Some("Ab-_9"));
+        assert_eq!(
+            page_token("<meta name=\"csrf\" content=\"Ab-_9\">"),
+            Some("Ab-_9")
+        );
         assert_eq!(page_token("<meta name=\"csrf\" content=\"\">"), None);
         assert_eq!(page_token("<meta name=\"csrf\" content=\"a<b\">"), None);
         assert_eq!(clean_via("key #1\r\nX-Evil: 1"), "key #1X-Evil: 1");
@@ -424,7 +489,12 @@ mod tests {
             env_file: String::new(),
         }];
         let other = dress(page, &cfg, Some(&cfg.instances[0]), "new", false);
-        assert!(other.contains("DeCombat <span>operations</span>") && other.contains("<option value=\"/i/modded/ops\" selected>Hacking &amp; Mod</option>"));
+        assert!(
+            other.contains("DeCombat <span>operations</span>")
+                && other.contains(
+                    "<option value=\"/i/modded/ops\" selected>Hacking &amp; Mod</option>"
+                )
+        );
         assert!(other.contains("<option value=\"/ops\">Vanilla &lt;b&gt;</option>"));
         assert!(other.contains("<title>Hacking &amp; Mod | DeCombat ops</title>"));
         assert!(other.contains("<body class=\"other-lobby\">") && !other.contains("#updates"));

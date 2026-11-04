@@ -691,12 +691,11 @@ impl WeaponTable {
             .iter()
             .filter(|p| **p >= 0)
             .map(|p| *p as u16)
-            .filter(|m| {
+            .rfind(|m| {
                 self.mods
                     .get(m)
                     .is_some_and(|r| r.socket == Some(SOCKET_MAGAZINE))
-            })
-            .last();
+            });
         let Some(m) = magazine else {
             return (0, 0);
         };

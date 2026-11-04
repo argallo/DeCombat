@@ -58,7 +58,10 @@ pub fn parse(d: &[u8]) -> Option<bool> {
 
 /// The move message's body after the shell id.
 pub fn write_move(w: &mut BitWriter, to: [f32; 3], ms: u16) {
-    w.write_f32(to[0]).write_f32(to[1]).write_f32(to[2]).write_u16(ms);
+    w.write_f32(to[0])
+        .write_f32(to[1])
+        .write_f32(to[2])
+        .write_u16(ms);
 }
 
 /// Reads a body written by [`write_move`]; `None` when it is cut short or not finite.

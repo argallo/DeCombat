@@ -1287,7 +1287,8 @@ pub fn plan_scene(
         // DC-DEFAULT: DSV-200 (amended by DSV-222, proposed) a bomb room gets the plant point of every site; the
         // defuse point is made at the planted bomb only (session `on_bomb_shown`)
         if z.kind == ZoneKind::BombSite && matches!(room_class, 2 | 3) {
-            for point in [ZONE_SUB_PLANT] {
+            {
+                let point = ZONE_SUB_PLANT;
                 out.push(WorldObject::Zone {
                     obj: next_id(),
                     zone: z.clone(),
@@ -1575,7 +1576,8 @@ delay 7 (msg Box1 (solid 1))"
             triggers: vec![(
                 b"Level01StartTrigger".to_vec(),
                 vec![b"msg SkypointerBox on;
-msg SkypointerBox_Q off;".to_vec()],
+msg SkypointerBox_Q off;"
+                    .to_vec()],
             )],
             ..WorldScripts::default()
         };

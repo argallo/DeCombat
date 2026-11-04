@@ -346,7 +346,10 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
         if m.set.iter().any(|d| d.id == r.id) {
             out.push(Issue::error(
                 format!("mods.catalog[{i}].id"),
-                format!("mod '{}' is in the declared set; the catalogue is for optional mods", r.id),
+                format!(
+                    "mod '{}' is in the declared set; the catalogue is for optional mods",
+                    r.id
+                ),
             ));
         }
         if !s.http_enabled {
@@ -457,7 +460,12 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             100,
         ),
         ("rewards.nx_clan_min_players", r.nx_clan_min_players, 1, 8),
-        ("rewards.nx_clan_min_seconds", r.nx_clan_min_seconds, 0, 3600),
+        (
+            "rewards.nx_clan_min_seconds",
+            r.nx_clan_min_seconds,
+            0,
+            3600,
+        ),
     ] {
         if !(low..=high).contains(&value) {
             out.push(Issue::error(key, format!("must be {low}..={high}")));
@@ -742,22 +750,36 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
         ("client.min_version", &cfg.client.min_version),
     ] {
         if !v.is_empty() && version(v).is_none() {
-            out.push(Issue::error(key, "must be MAJOR.MINOR.PATCH, for example 0.3.0"));
+            out.push(Issue::error(
+                key,
+                "must be MAJOR.MINOR.PATCH, for example 0.3.0",
+            ));
         }
     }
-    if let (Some(lo), Some(hi)) = (version(&cfg.client.min_version), version(&cfg.client.latest)) {
+    if let (Some(lo), Some(hi)) = (
+        version(&cfg.client.min_version),
+        version(&cfg.client.latest),
+    ) {
         if lo > hi {
             out.push(Issue::error("client.min_version", "is above client.latest"));
         }
     }
-    if cfg.client.update_url.chars().count() > 100 || cfg.client.update_url.chars().any(char::is_control) {
-        out.push(Issue::error("client.update_url", "at most 100 characters, no control characters"));
+    if cfg.client.update_url.chars().count() > 100
+        || cfg.client.update_url.chars().any(char::is_control)
+    {
+        out.push(Issue::error(
+            "client.update_url",
+            "at most 100 characters, no control characters",
+        ));
     }
     // DC-DEFAULT: LG-245 (proposed) a mail server needs a port and a sender address with an @
     let m = &cfg.mail;
     if !m.smtp_host.trim().is_empty() {
         if m.smtp_port == 0 {
-            out.push(Issue::error("mail.smtp_port", "must be 1..=65535 (587 or 465)"));
+            out.push(Issue::error(
+                "mail.smtp_port",
+                "must be 1..=65535 (587 or 465)",
+            ));
         }
         if !m.from.contains('@') {
             out.push(Issue::error(
@@ -775,8 +797,15 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     // DC-DEFAULT: LG-316 (proposed) one plain address, and a way to send to it
     let to = m.reports_to.trim();
     if !to.is_empty() {
-        if to.matches('@').count() != 1 || to.chars().any(|c| c.is_whitespace() || c.is_control() || c == ',') {
-            out.push(Issue::error("mail.reports_to", "must be one address (name@domain)"));
+        if to.matches('@').count() != 1
+            || to
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == ',')
+        {
+            out.push(Issue::error(
+                "mail.reports_to",
+                "must be one address (name@domain)",
+            ));
         }
         if m.smtp_host.trim().is_empty() && !m.dry_run {
             out.push(Issue::warning(
@@ -812,13 +841,22 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             ));
         }
         if !b.download_url.is_empty() && !origin_ok(b.download_url.trim_end_matches('/')) {
-            out.push(Issue::error("beta.download_url", "must be an http(s) address without spaces"));
+            out.push(Issue::error(
+                "beta.download_url",
+                "must be an http(s) address without spaces",
+            ));
         }
         let rt = b.reply_to.trim();
         if !rt.is_empty()
-            && (rt.matches('@').count() != 1 || rt.chars().any(|c| c.is_whitespace() || c.is_control() || c == ','))
+            && (rt.matches('@').count() != 1
+                || rt
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || c == ','))
         {
-            out.push(Issue::error("beta.reply_to", "must be one address (name@domain)"));
+            out.push(Issue::error(
+                "beta.reply_to",
+                "must be one address (name@domain)",
+            ));
         }
         if m.smtp_host.trim().is_empty() && !m.dry_run {
             out.push(Issue::warning(
@@ -827,7 +865,10 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             ));
         }
         if b.max_mail_per_day == 0 {
-            out.push(Issue::warning("beta.max_mail_per_day", "0: no beta mail ever goes out"));
+            out.push(Issue::warning(
+                "beta.max_mail_per_day",
+                "0: no beta mail ever goes out",
+            ));
         } else if b.confirm_reserve >= b.max_mail_per_day {
             out.push(Issue::warning(
                 "beta.confirm_reserve",
@@ -835,7 +876,10 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             ));
         }
         if b.ip_per_hour == 0 || b.global_per_hour == 0 {
-            out.push(Issue::warning("beta.ip_per_hour", "0: every signup is refused"));
+            out.push(Issue::warning(
+                "beta.ip_per_hour",
+                "0: every signup is refused",
+            ));
         }
     }
     // DC-DEFAULT: LG-388 (proposed) the managed bots' total cap: at least one group's worth, at most 25 full groups
@@ -852,11 +896,16 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
                 "admin_web.bind",
                 "must be a loopback address (127.0.0.1:PORT): the tunnel connects locally",
             )),
-            Err(_) => out.push(Issue::error("admin_web.bind", "must be ADDR:PORT, for example 127.0.0.1:10096")),
+            Err(_) => out.push(Issue::error(
+                "admin_web.bind",
+                "must be ADDR:PORT, for example 127.0.0.1:10096",
+            )),
         }
         let host = a.public_origin.strip_prefix("https://").unwrap_or("");
         let host_ok = !host.is_empty()
-            && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'));
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'));
         if !host_ok {
             out.push(Issue::error(
                 "admin_web.public_origin",
@@ -873,13 +922,19 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             }
         }
         if a.idle_minutes == 0 || a.session_hours == 0 {
-            out.push(Issue::error("admin_web.idle_minutes", "the session lengths must be at least 1"));
+            out.push(Issue::error(
+                "admin_web.idle_minutes",
+                "the session lengths must be at least 1",
+            ));
         }
         if a.max_keys == 0 {
             out.push(Issue::error("admin_web.max_keys", "must be at least 1"));
         }
         if a.attempts_per_ip == 0 || a.attempts_global == 0 {
-            out.push(Issue::warning("admin_web.attempts_per_ip", "0: every sign-in is refused"));
+            out.push(Issue::warning(
+                "admin_web.attempts_per_ip",
+                "0: every sign-in is refused",
+            ));
         }
     }
     // DC-DEFAULT: LG-399 (proposed) further instances: a path-safe unique name, a label, a loopback admin port, at most
@@ -893,20 +948,27 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     for (i, inst) in a.instances.iter().enumerate() {
         let n = &inst.name;
         let name_ok = (1..=32).contains(&n.len())
-            && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && n.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             && !n.starts_with('-');
         if !name_ok {
             out.push(Issue::error(
                 "admin_web.instances.name",
-                &format!("instance {}: the name must be 1..32 of a-z 0-9 - (not starting with -)", i + 1),
+                format!(
+                    "instance {}: the name must be 1..32 of a-z 0-9 - (not starting with -)",
+                    i + 1
+                ),
             ));
         } else if a.instances[..i].iter().any(|o| o.name == *n) {
-            out.push(Issue::error("admin_web.instances.name", &format!("instance {n} is listed twice")));
+            out.push(Issue::error(
+                "admin_web.instances.name",
+                format!("instance {n} is listed twice"),
+            ));
         }
         if inst.label.trim().is_empty() || inst.label.chars().count() > 40 {
             out.push(Issue::error(
                 "admin_web.instances.label",
-                &format!("instance {}: the label must be 1..40 characters", i + 1),
+                format!("instance {}: the label must be 1..40 characters", i + 1),
             ));
         }
         match inst.admin.trim().parse::<std::net::SocketAddr>() {
@@ -914,33 +976,46 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
                 if a.bind.trim().parse::<std::net::SocketAddr>().ok() == Some(s) {
                     out.push(Issue::error(
                         "admin_web.instances.admin",
-                        &format!("instance {}: {s} is the admin web itself", i + 1),
+                        format!("instance {}: {s} is the admin web itself", i + 1),
                     ));
                 }
             }
             _ => out.push(Issue::error(
                 "admin_web.instances.admin",
-                &format!("instance {}: must be a loopback ADDR:PORT, for example 127.0.0.1:10091", i + 1),
+                format!(
+                    "instance {}: must be a loopback ADDR:PORT, for example 127.0.0.1:10091",
+                    i + 1
+                ),
             )),
         }
     }
     // DC-DEFAULT: LG-392 (proposed) the deploy folder is an absolute path (the root units name it so)
     let dd = cfg.deploy.dir.trim();
     if !dd.is_empty() && !(dd.starts_with('/') || std::path::Path::new(dd).is_absolute()) {
-        out.push(Issue::error("deploy.dir", "must be an absolute path, for example /opt/decombat/deploy"));
+        out.push(Issue::error(
+            "deploy.dir",
+            "must be an absolute path, for example /opt/decombat/deploy",
+        ));
     }
     // DC-DEFAULT: LG-68 (proposed) issuing needs its issuer id and a key pair path; accepting needs issuer + key
     let id = &cfg.identity;
     let issuer_ok = |s: &str| {
         (1..=64).contains(&s.len())
-            && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
     };
     if !id.issuer.is_empty() && !issuer_ok(&id.issuer) {
-        out.push(Issue::error("identity.issuer", "must be 1..64 of A-Z a-z 0-9 . _ : -"));
+        out.push(Issue::error(
+            "identity.issuer",
+            "must be 1..64 of A-Z a-z 0-9 . _ : -",
+        ));
     }
     if id.issue {
         if id.issuer.is_empty() {
-            out.push(Issue::error("identity.issuer", "identity.issue = true needs this lobby's issuer id"));
+            out.push(Issue::error(
+                "identity.issuer",
+                "identity.issue = true needs this lobby's issuer id",
+            ));
         }
         if id.key_file.trim().is_empty() && cfg.paths.db.trim().is_empty() {
             out.push(Issue::error(
@@ -959,7 +1034,9 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     }
     if !id.public_key.trim().is_empty() {
         let k = id.public_key.trim().trim_end_matches('=');
-        let b64 = k.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_'));
+        let b64 = k
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_'));
         if !b64 || k.len() != 43 {
             out.push(Issue::error(
                 "identity.public_key",
@@ -1030,19 +1107,31 @@ fn check_entry_mods(cfg: &Config, i: usize, c: &LobbyServerCfg, out: &mut Vec<Is
     }
     let path = format!("lobby.servers[{i}].mods");
     if c.is_remote() {
-        out.push(Issue::error(path.clone(), "is for an entry of this lobby only"));
+        out.push(Issue::error(
+            path.clone(),
+            "is for an entry of this lobby only",
+        ));
     }
     if cfg.mods.policy == "modded" {
-        out.push(Issue::error(path.clone(), "needs mods.policy = \"vanilla\": a modded lobby's set covers every entry"));
+        out.push(Issue::error(
+            path.clone(),
+            "needs mods.policy = \"vanilla\": a modded lobby's set covers every entry",
+        ));
     }
     if !cfg.server.http_enabled {
-        out.push(Issue::error(path.clone(), "needs server.http_enabled: clients download the set from the web port"));
+        out.push(Issue::error(
+            path.clone(),
+            "needs server.http_enabled: clients download the set from the web port",
+        ));
     }
     let mut seen = BTreeSet::new();
     for (j, m) in c.mods.iter().enumerate() {
         out.extend(check_mod_ref(&format!("{path}[{j}]"), m));
         if !seen.insert(m.id.as_str()) {
-            out.push(Issue::error(format!("{path}[{j}].id"), format!("mod '{}' listed twice", m.id)));
+            out.push(Issue::error(
+                format!("{path}[{j}].id"),
+                format!("mod '{}' listed twice", m.id),
+            ));
         }
     }
 }
@@ -1054,11 +1143,9 @@ fn check_remote_server(i: usize, c: &LobbyServerCfg, out: &mut Vec<Issue>) {
     if c.name.trim().is_empty() {
         out.push(Issue::error(path.clone(), "needs a non-empty name"));
     }
-    let port_ok = c
-        .lobby
-        .trim()
-        .rsplit_once(':')
-        .is_some_and(|(h, p)| !h.trim_matches(['[', ']']).is_empty() && p.parse::<u16>().is_ok_and(|p| p != 0));
+    let port_ok = c.lobby.trim().rsplit_once(':').is_some_and(|(h, p)| {
+        !h.trim_matches(['[', ']']).is_empty() && p.parse::<u16>().is_ok_and(|p| p != 0)
+    });
     if !port_ok || c.lobby.chars().any(char::is_whitespace) {
         out.push(Issue::error(
             format!("{path}.lobby"),
@@ -1073,7 +1160,10 @@ fn check_remote_server(i: usize, c: &LobbyServerCfg, out: &mut Vec<Issue>) {
         ));
     }
     if !matches!(c.policy.trim(), "" | "modded" | "vanilla") {
-        out.push(Issue::error(format!("{path}.policy"), "must be \"modded\" or \"vanilla\""));
+        out.push(Issue::error(
+            format!("{path}.policy"),
+            "must be \"modded\" or \"vanilla\"",
+        ));
     }
     if !c.host.is_empty() {
         out.push(Issue::error(
@@ -1188,7 +1278,11 @@ mod feature_tests {
     #[test]
     fn an_entry_set_is_checked() {
         use crate::schema::{LobbyServerCfg, ModRef};
-        let r = |id: &str, sha: &str| ModRef { id: id.into(), version: "1.0.0".into(), sha256: sha.into() };
+        let r = |id: &str, sha: &str| ModRef {
+            id: id.into(),
+            version: "1.0.0".into(),
+            sha256: sha.into(),
+        };
         let sha = "ab".repeat(32);
         let errors = |f: &dyn Fn(&mut LobbyServerCfg, &mut Config)| {
             let mut cfg = Config::default();
@@ -1232,7 +1326,10 @@ mod feature_tests {
                 .filter(|i| i.path == "bots.managed_max_total")
                 .count()
         };
-        assert_eq!((errors(0), errors(1), errors(21), errors(175), errors(176)), (1, 0, 0, 0, 1));
+        assert_eq!(
+            (errors(0), errors(1), errors(21), errors(175), errors(176)),
+            (1, 0, 0, 0, 1)
+        );
         assert!(!Config::default().bots.managed, "off by default");
     }
 

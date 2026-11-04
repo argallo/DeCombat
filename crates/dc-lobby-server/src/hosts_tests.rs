@@ -780,16 +780,24 @@ fn a_remote_match_carries_the_seat_ticket_to_the_agent_and_the_player() {
         (c, d, acc, guest)
     };
     let start = a.expect();
-    let gid: u64 = start["start ".len()..].split(' ').next().unwrap().parse().unwrap();
+    let gid: u64 = start["start ".len()..]
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(a.expect().starts_with(&format!("line {gid} room ")));
     let ticket_of = |line: &str, who: u32| -> String {
-        assert!(line.starts_with(&format!("line {gid} user {who} ")), "{line}");
+        assert!(
+            line.starts_with(&format!("line {gid} user {who} ")),
+            "{line}"
+        );
         line.split(' ')
             .find_map(|t| t.strip_prefix("ticket="))
             .expect("a ticket token")
             .to_string()
     };
-    let mut lines = vec![a.expect(), a.expect()];
+    let mut lines = [a.expect(), a.expect()];
     lines.sort_by_key(|l| !l.contains(&format!(" user {acc} ")));
     let (host_ticket, guest_ticket) = (ticket_of(&lines[0], acc), ticket_of(&lines[1], guest));
     assert_eq!(host_ticket.len(), 32);
@@ -799,7 +807,8 @@ fn a_remote_match_carries_the_seat_ticket_to_the_agent_and_the_player() {
     wait_until(&shared, "@ready", |st| {
         st.games.get(&gid).map(|g| g.ready).unwrap_or(false)
     });
-    let hex_of = |f: Vec<u8>| dc_wire::seatticket::to_hex(&dc_wire::seatticket::parse_push(&f).unwrap());
+    let hex_of =
+        |f: Vec<u8>| dc_wire::seatticket::to_hex(&dc_wire::seatticket::parse_push(&f).unwrap());
     assert_eq!(hex_of(c.take(dc_wire::seatticket::PUSH)), host_ticket);
     assert_eq!(hex_of(d.take(dc_wire::seatticket::PUSH)), guest_ticket);
     assert!(c.has(MATCH_ADDRESS_PUSH));
@@ -825,7 +834,9 @@ fn a_remote_match_carries_the_seat_ticket_to_the_agent_and_the_player() {
         a.send(&format!("event {gid} @seat_refused {guest} noticket"));
     }
     wait_until(&shared, "the refusal", |st| {
-        st.games.get(&gid).is_some_and(|g| g.seat_told.contains(&guest))
+        st.games
+            .get(&gid)
+            .is_some_and(|g| g.seat_told.contains(&guest))
     });
     std::thread::sleep(Duration::from_millis(200));
     d.got.extend(drain(&d.rx));
@@ -840,7 +851,12 @@ fn a_remote_match_carries_the_seat_ticket_to_the_agent_and_the_player() {
         d.send(&mut g, ROOM_INFO, &[]);
     }
     d.got.extend(drain(&d.rx));
-    let chats: Vec<Vec<u8>> = d.got.iter().filter(|f| f.0 == CHAT_PUSH).map(|f| f.1.clone()).collect();
+    let chats: Vec<Vec<u8>> = d
+        .got
+        .iter()
+        .filter(|f| f.0 == CHAT_PUSH)
+        .map(|f| f.1.clone())
+        .collect();
     assert_eq!(chats.len(), 1, "once");
     let text: Vec<u16> = chats[0][0x38..]
         .as_chunks::<2>()

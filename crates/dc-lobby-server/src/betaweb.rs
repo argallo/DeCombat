@@ -497,7 +497,8 @@ fn post_guard(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
     if !ct.starts_with("application/json") {
         return Err(jerr(415, "send application/json"));
     }
-    let ok_origin = header(head, "origin").is_some_and(|o| !origin.is_empty() && o.eq_ignore_ascii_case(origin));
+    let ok_origin = header(head, "origin")
+        .is_some_and(|o| !origin.is_empty() && o.eq_ignore_ascii_case(origin));
     if !ok_origin {
         return Err(jerr(
             403,
@@ -513,7 +514,13 @@ fn post_guard(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
 
 /// One operator request under `/ops/beta` (the caller has checked loopback, Host and the admin token, or the admin web
 /// session), with the write guard of another listener (`None`: the loopback admin port's own).
-pub fn admin_guarded(shared: &Shared, req: &Request, head: &str, body: &[u8], guard: Option<&WriteGuard>) -> Reply {
+pub fn admin_guarded(
+    shared: &Shared,
+    req: &Request,
+    head: &str,
+    body: &[u8],
+    guard: Option<&WriteGuard>,
+) -> Reply {
     admin_at_guarded(shared, req, head, body, crate::clock::unix_now(), guard)
 }
 
@@ -575,10 +582,16 @@ pub fn admin_at_guarded(
             // LG-375: on the loopback port the page's origin is http://<Host>; LG-387: the admin web's is its own
             let (origin, csrf) = match guard {
                 Some(w) => (w.origin.clone(), w.csrf.clone()),
-                None => (format!("http://{}", host_of(head)), st.beta.csrf(&mut st.keys)),
+                None => (
+                    format!("http://{}", host_of(head)),
+                    st.beta.csrf(&mut st.keys),
+                ),
             };
             if host_of(head).is_empty() && guard.is_none() {
-                return jerr(403, "the request does not come from the operator page (Origin)");
+                return jerr(
+                    403,
+                    "the request does not come from the operator page (Origin)",
+                );
             }
             if let Err(r) = post_guard(head, &origin, &csrf) {
                 return r;

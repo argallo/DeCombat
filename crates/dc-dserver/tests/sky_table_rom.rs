@@ -13,10 +13,10 @@ fn trig_for(rom: &std::path::Path, world: &str, key: &str) -> Option<String> {
     let vfs = dc_rez::RezVfs::new(rom);
     let gr = dc_bute::GameRoomData::from_vfs(&vfs).ok()?;
     let unq = |s: &str| s.trim().trim_matches('"').to_string();
-    let mode = gr
-        .modes(false)
-        .iter()
-        .position(|m| m.get("Key").is_some_and(|k| unq(k).eq_ignore_ascii_case(key)))?;
+    let mode = gr.modes(false).iter().position(|m| {
+        m.get("Key")
+            .is_some_and(|k| unq(k).eq_ignore_ascii_case(key))
+    })?;
     let base = |p: &str| {
         let n = p.replace('/', "\\").to_ascii_uppercase();
         let b = n.rsplit('\\').next().unwrap_or(&n).to_string();
@@ -66,7 +66,9 @@ fn slot0(
     );
     let (_, ids) = sky_table(&objs)?;
     let name = objs.iter().find_map(|o| match o {
-        WorldObject::Brush { obj, brush } if *obj == ids[0] => Some(brush.name.to_ascii_lowercase()),
+        WorldObject::Brush { obj, brush } if *obj == ids[0] => {
+            Some(brush.name.to_ascii_lowercase())
+        }
         _ => None,
     })?;
     w.brushes
@@ -80,9 +82,17 @@ fn rom_two_towers_rooms_show_the_day_sky() {
     let rom = dc_rez::dc_rom::rom_or_skip!();
     let (tables, _) = dc_dserver::rom_tables::RomTables::load(&rom);
     let w = load_from_rom(&rom, "TWOTOWERS", NameForm::Listed, None).expect("the world");
-    let skies = w.brushes.iter().filter(|b| b.class == BrushClass::Sky).count();
+    let skies = w
+        .brushes
+        .iter()
+        .filter(|b| b.class == BrushClass::Sky)
+        .count();
     assert_eq!(skies, 2, "a day sky and the quarantine sky");
-    assert_eq!(slot0(&w, &tables, None), Some(1), "without scripts the later model takes the slot");
+    assert_eq!(
+        slot0(&w, &tables, None),
+        Some(1),
+        "without scripts the later model takes the slot"
+    );
     let mut rooms = 0;
     for key in ["TDM", "CTF", "BNT", "TSV", "F", "CT", "SPY", "QRT"] {
         let Some(trig) = trig_for(&rom, "TWOTOWERS", key) else {

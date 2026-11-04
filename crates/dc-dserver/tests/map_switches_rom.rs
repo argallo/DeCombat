@@ -19,8 +19,8 @@
 // DC-DEFAULT: DSV-560, DSV-561, DSV-562, DSV-563 (proposed)
 
 use dc_dserver::doors::{
-    parse_statements, run_world, use_key, Door, DelayedStatements, OpenBy, TurnDoor, TurnKind,
-    Triggers,
+    parse_statements, run_world, use_key, DelayedStatements, Door, OpenBy, Triggers, TurnDoor,
+    TurnKind,
 };
 use dc_dserver::rom_tables::RomTables;
 use dc_dserver::session::{Output, Server, ServerTuning};
@@ -97,7 +97,10 @@ fn switched_models(w: &WorldInfo, text: &[u8]) -> Vec<(Vec<u8>, bool)> {
         for c in &t.cmds {
             for s in parse_statements(c) {
                 if let Some(v) = s.value {
-                    if w.brushes.iter().any(|b| b.name.eq_ignore_ascii_case(&s.target)) {
+                    if w.brushes
+                        .iter()
+                        .any(|b| b.name.eq_ignore_ascii_case(&s.target))
+                    {
                         out.push((s.target.clone(), v));
                     }
                 }
@@ -328,11 +331,20 @@ fn rom_sandhog_cp1_locked_doors_stay_shut_until_unlocked() {
         .expect("a gate with a locked command");
     let at = mid(turns[gate].info.lo, turns[gate].info.hi);
     let unlocked_before = turns.iter().filter(|t| !t.locked).count();
-    assert!(!use_key(&mut doors, &mut turns, at, 0), "a locked gate does not turn");
+    assert!(
+        !use_key(&mut doors, &mut turns, at, 0),
+        "a locked gate does not turn"
+    );
     assert!(!turns[gate].info.sounds.locked.is_empty());
-    assert_eq!(turns[gate].sounds_due, [turns[gate].info.sounds.locked.clone()]);
+    assert_eq!(
+        turns[gate].sounds_due,
+        [turns[gate].info.sounds.locked.clone()]
+    );
     run_world(&mut doors, &mut turns, &mut trig, &mut dl, Vec::new(), 0);
-    assert!(turns[gate].locked && !turns[gate].want, "still locked and shut");
+    assert!(
+        turns[gate].locked && !turns[gate].want,
+        "still locked and shut"
+    );
     let unlocked_after = turns.iter().filter(|t| !t.locked).count();
     assert!(
         unlocked_after > unlocked_before,

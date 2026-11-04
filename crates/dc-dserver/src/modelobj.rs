@@ -1350,7 +1350,11 @@ mod tests {
             anim_len_ms: 0,
         };
         let rec = projectile_create(&s);
-        assert_eq!(rec.cf() | 0x0080, 0x85bf, "the reference stack's create mask");
+        assert_eq!(
+            rec.cf() | 0x0080,
+            0x85bf,
+            "the reference stack's create mask"
+        );
         let b = projectile_blob(7, 9);
         assert_eq!(b.bit_len(), 32);
         let mut r = b.reader();

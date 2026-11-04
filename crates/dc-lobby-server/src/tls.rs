@@ -67,7 +67,9 @@ impl Slots {
 
     /// True for the 1st, 65th, ... refusal: the log line is not repeated for every closed socket.
     pub fn first_of_burst(&self) -> bool {
-        self.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 64 == 0
+        self.refused
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .is_multiple_of(64)
     }
 }
 
@@ -109,7 +111,12 @@ pub struct Identity {
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // never the key
-        write!(f, "Identity({}, {})", self.cert_path.display(), self.fingerprint)
+        write!(
+            f,
+            "Identity({}, {})",
+            self.cert_path.display(),
+            self.fingerprint
+        )
     }
 }
 
@@ -164,7 +171,9 @@ fn create_pair(dir: &Path, cert: &Path, key: &Path, names: &[String]) -> Result<
     let _ = (std::fs::remove_file(&tc), std::fs::remove_file(&tk));
     let r = write_private(&tk, ck.key_pair.serialize_pem().as_bytes())
         .map_err(|e| format!("{}: {e}", key.display()))
-        .and_then(|_| std::fs::write(&tc, ck.cert.pem()).map_err(|e| format!("{}: {e}", cert.display())))
+        .and_then(|_| {
+            std::fs::write(&tc, ck.cert.pem()).map_err(|e| format!("{}: {e}", cert.display()))
+        })
         .and_then(|_| std::fs::rename(&tc, cert).map_err(|e| format!("{}: {e}", cert.display())))
         .and_then(|_| std::fs::rename(&tk, key).map_err(|e| format!("{}: {e}", key.display())));
     if r.is_err() {
@@ -189,8 +198,20 @@ pub fn load_or_create(dir: &Path, names: &[String]) -> Result<Identity, String> 
             create_pair(dir, &cert, &key, names)?;
             true
         }
-        (true, false) => return Err(format!("{} exists but {} does not", cert.display(), key.display())),
-        (false, true) => return Err(format!("{} exists but {} does not", key.display(), cert.display())),
+        (true, false) => {
+            return Err(format!(
+                "{} exists but {} does not",
+                cert.display(),
+                key.display()
+            ))
+        }
+        (false, true) => {
+            return Err(format!(
+                "{} exists but {} does not",
+                key.display(),
+                cert.display()
+            ))
+        }
     };
     let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&cert)
         .map_err(|e| format!("{}: {e}", cert.display()))?
@@ -220,7 +241,10 @@ pub fn load_or_create(dir: &Path, names: &[String]) -> Result<Identity, String> 
 /// True for a loopback listen address (`127.x`, `::1`, `localhost`).
 pub fn is_loopback_bind(bind: &str) -> bool {
     let b = bind.trim().trim_start_matches('[').trim_end_matches(']');
-    b.eq_ignore_ascii_case("localhost") || b.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+    b.eq_ignore_ascii_case("localhost")
+        || b.parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 /// What one listener accepts.
@@ -237,7 +261,12 @@ pub struct Gate {
 impl Gate {
     /// The gate of the auth and web ports.
     // DC-DEFAULT: LG-224 public (or non-loopback bind) -> TLS from remote peers; LG-225 --tls loopback -> TLS from all
-    pub fn new(identity: Option<Arc<Identity>>, mode: TlsMode, public: bool, plain_public: bool) -> Gate {
+    pub fn new(
+        identity: Option<Arc<Identity>>,
+        mode: TlsMode,
+        public: bool,
+        plain_public: bool,
+    ) -> Gate {
         Gate {
             identity,
             tls_everywhere: mode == TlsMode::Loopback,
@@ -247,7 +276,9 @@ impl Gate {
 
     /// True when a plain connection from `peer` may go on.
     pub fn plain_ok(&self, peer: Option<SocketAddr>) -> bool {
-        let loopback = peer.map(|p| unmapped(p.ip()).is_loopback()).unwrap_or(false);
+        let loopback = peer
+            .map(|p| unmapped(p.ip()).is_loopback())
+            .unwrap_or(false);
         !self.tls_everywhere && (loopback || !self.tls_for_remote)
     }
 }
@@ -342,7 +373,10 @@ pub fn admit_within(s: TcpStream, gate: &Gate, limit: Duration, slot: Option<Slo
         } else {
             match c.read_tls(&mut sock) {
                 Ok(0) => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                Ok(_) => c.process_new_packets().map(|_| ()).map_err(io::Error::other),
+                Ok(_) => c
+                    .process_new_packets()
+                    .map(|_| ())
+                    .map_err(io::Error::other),
                 Err(e) => Err(e),
             }
         };
@@ -621,7 +655,10 @@ pub fn run_subcommand(args: &[String]) -> i32 {
     match load_or_create(&dir, &[]) {
         Ok(id) => {
             if id.created {
-                eprintln!("made a new self-signed certificate {}", id.cert_path.display());
+                eprintln!(
+                    "made a new self-signed certificate {}",
+                    id.cert_path.display()
+                );
             }
             println!("{}", id.fingerprint);
             0

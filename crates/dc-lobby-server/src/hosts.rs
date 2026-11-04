@@ -643,7 +643,12 @@ const UPDATE_STALL: Duration = Duration::from_secs(60);
 /// must be this lobby's own, or published after this lobby started (a deploy to the hosts alone): a lobby installed
 /// by hand since (deploy_all.sh) does not send its hosts back to an older build.
 pub fn offer_update(st: &mut Core, name: &str) {
-    let Some(b) = st.opts.deploy_dir.as_deref().and_then(crate::deploy::host_build) else {
+    let Some(b) = st
+        .opts
+        .deploy_dir
+        .as_deref()
+        .and_then(crate::deploy::host_build)
+    else {
         return;
     };
     let started = std::time::SystemTime::now().checked_sub(st.started.elapsed());
@@ -654,11 +659,19 @@ pub fn offer_update(st: &mut Core, name: &str) {
     let Some(a) = st.hosts.online.get_mut(name) else {
         return;
     };
-    if !a.takes_update || a.sending || a.version == "unknown" || crate::opsmon::same_build(&a.version, &b.commit) {
+    if !a.takes_update
+        || a.sending
+        || a.version == "unknown"
+        || crate::opsmon::same_build(&a.version, &b.commit)
+    {
         return;
     }
     let first = a.offered.as_ref().is_none_or(|(c, _)| *c != b.commit);
-    if !first && a.offered.as_ref().is_some_and(|(_, t)| t.elapsed() < OFFER_EVERY) {
+    if !first
+        && a.offered
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() < OFFER_EVERY)
+    {
         return;
     }
     let _ = a.tx.send(HostOut::Line(format!(
@@ -684,9 +697,15 @@ fn send_update(shared: &Shared, g: &mut Core, name: &str, tx: &Sender<HostOut>, 
     let no = |why: &str| {
         let _ = tx.send(HostOut::Line(format!("updateno {commit} {why}")));
     };
-    let b = g.opts.deploy_dir.as_deref().and_then(crate::deploy::host_build);
+    let b = g
+        .opts
+        .deploy_dir
+        .as_deref()
+        .and_then(crate::deploy::host_build);
     let Some(b) = b.filter(|b| b.commit == commit) else {
-        g.note(&format!("host {name}: asked for build {commit:?}, which is not the offered one"));
+        g.note(&format!(
+            "host {name}: asked for build {commit:?}, which is not the offered one"
+        ));
         return no("not the offered build");
     };
     let busy = g
@@ -715,10 +734,16 @@ fn send_update(shared: &Shared, g: &mut Core, name: &str, tx: &Sender<HostOut>, 
             let sent = stream_build(&b, &tx);
             let mut g = lock(&sh);
             match sent {
-                Ok(n) => g.note(&format!("host {name}: build {} sent ({n} bytes)", &b.commit[..8])),
+                Ok(n) => g.note(&format!(
+                    "host {name}: build {} sent ({n} bytes)",
+                    &b.commit[..8]
+                )),
                 Err(e) => {
                     let _ = tx.send(HostOut::Line(format!("updateno {} {e}", b.commit)));
-                    g.note(&format!("host {name}: build {} not sent: {e}", &b.commit[..8]));
+                    g.note(&format!(
+                        "host {name}: build {} not sent: {e}",
+                        &b.commit[..8]
+                    ));
                 }
             }
             if let Some(a) = g.hosts.online.get_mut(&name).filter(|a| a.conn == conn) {
@@ -753,7 +778,11 @@ fn stream_build(b: &crate::deploy::HostBuild, tx: &Sender<HostOut>) -> Result<u6
             return Err("the build changed on disk; a new deploy writes it again".into());
         }
         hash.update(&buf[..n]);
-        let line = format!("updpart {} {}", b.commit, crate::identity::b64std(&buf[..n]));
+        let line = format!(
+            "updpart {} {}",
+            b.commit,
+            crate::identity::b64std(&buf[..n])
+        );
         let since = Instant::now();
         while queued.load(Ordering::Acquire) > UPDATE_QUEUE {
             if since.elapsed() > UPDATE_STALL {

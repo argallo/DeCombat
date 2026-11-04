@@ -43,7 +43,6 @@ mod loadout;
 mod lobby;
 mod logs;
 mod mail;
-mod reportmail;
 mod maps;
 mod megaphone;
 mod messenger;
@@ -61,6 +60,7 @@ mod pwhash;
 mod pwpool;
 mod recover;
 mod register;
+mod reportmail;
 mod rewards;
 mod rom;
 mod room;
@@ -582,18 +582,15 @@ fn main() {
             catalog_shots: std::mem::take(&mut catalog.shots),
             max_mod_bytes,
             entry_sets: entry_docs,
-            client_version: conf.as_ref().and_then(|c| hosting::client_version_doc(&c.cfg.client)),
+            client_version: conf
+                .as_ref()
+                .and_then(|c| hosting::client_version_doc(&c.cfg.client)),
             folder_packs: Default::default(),
         };
         // diagnostic reports (LG-360..362): the upload endpoint, the UDP echo of the connection test, the mail pump
         diag::configure(opts.db.parent().unwrap_or(std::path::Path::new("")));
         let web_l = bind(web_port);
-        clanweb::spawn_with_tls(
-            Arc::clone(&shared),
-            web_l,
-            hosting,
-            Some(Arc::clone(&gate)),
-        );
+        clanweb::spawn_with_tls(Arc::clone(&shared), web_l, hosting, Some(Arc::clone(&gate)));
         diag::spawn_echo(&opts.bind, web_port, Arc::clone(&log));
         diag::spawn_background(Arc::clone(&shared));
         if opts.register {
@@ -640,7 +637,8 @@ fn main() {
                     "admin web on http://{} for {} (security keys only; dashboard and beta list)",
                     addr, opts.admin_web.public_origin
                 ));
-                let web = adminweb::Runtime::shared(opts.admin_web.clone(), webauthn::Trust::yubico());
+                let web =
+                    adminweb::Runtime::shared(opts.admin_web.clone(), webauthn::Trust::yubico());
                 adminweb::spawn(Arc::clone(&shared), web, l);
             }
             Err(e) => fail(1, &e),

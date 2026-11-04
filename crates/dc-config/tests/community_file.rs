@@ -3,7 +3,10 @@
 
 use dc_config::directory::{badges, load_community, validate_community, Badge};
 
-const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../community/community.json");
+const FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../community/community.json"
+);
 
 #[test]
 fn the_committed_directory_validates_and_its_mods_are_verified() {

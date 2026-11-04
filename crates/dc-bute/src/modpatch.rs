@@ -302,11 +302,14 @@ fn json_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
+/// One parsed row: its id, the operation and the field values.
+type PatchRow = (u16, PatchOp, BTreeMap<String, String>);
+
 fn parse_rows(
     v: Option<&serde_json::Value>,
     list: &str,
     id_key: &str,
-) -> Result<Vec<(u16, PatchOp, BTreeMap<String, String>)>, PatchError> {
+) -> Result<Vec<PatchRow>, PatchError> {
     let Some(v) = v else {
         return Ok(Vec::new());
     };
@@ -662,13 +665,11 @@ mod variant_tests {
     }
 
     fn doc() -> ButeDoc {
-        ButeDoc::parse(
-            concat!(
-                "[Weapon25]\nName = \"G\"\n",
-                "ShotsPerClip = 30\n",
-                "InstDamage = 20\nPVSkin1 = \"a.dtx\"\nHHSkin0 = \"b.dtx\"\n",
-            ),
-        )
+        ButeDoc::parse(concat!(
+            "[Weapon25]\nName = \"G\"\n",
+            "ShotsPerClip = 30\n",
+            "InstDamage = 20\nPVSkin1 = \"a.dtx\"\nHHSkin0 = \"b.dtx\"\n",
+        ))
     }
 
     fn variant(row: u16, fields: &[(&str, &str)]) -> WeaponContent {

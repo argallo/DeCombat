@@ -728,7 +728,9 @@ fn exec(
             let login = name(sm);
             let nick = sm.get_one::<String>("nick").cloned().unwrap_or_default();
             if !crate::auth::valid_nick(&nick) {
-                return Err(format!("{nick:?} is not a valid name (1..16 characters, no leading or trailing space)"));
+                return Err(format!(
+                    "{nick:?} is not a valid name (1..16 characters, no leading or trailing space)"
+                ));
             }
             let acc = db::account_by_login(c, &login)
                 .map_err(e)?
@@ -739,7 +741,11 @@ fn exec(
             // the row's key says how this lobby compares names (CD-16): a key equal to a mixed-case nick is the
             // case-sensitive mode, anything else the case-insensitive default
             let key: String = c
-                .query_row("SELECT nick_key FROM characters WHERE user_no = ?1", [acc.user_no as i64], |r| r.get(0))
+                .query_row(
+                    "SELECT nick_key FROM characters WHERE user_no = ?1",
+                    [acc.user_no as i64],
+                    |r| r.get(0),
+                )
                 .map_err(e)?;
             let ci = !(key == old.nick && old.nick != old.nick.to_lowercase());
             for case in [ci, true] {
@@ -876,19 +882,33 @@ mod tests {
                 .unwrap();
                 db::create_character(
                     &c,
-                    &db::NewCharacter { user_no: no, nick, face: 0, exp: 0, gp: 0, nx: 0, now: 0 },
+                    &db::NewCharacter {
+                        user_no: no,
+                        nick,
+                        face: 0,
+                        exp: 0,
+                        gp: 0,
+                        nx: 0,
+                        now: 0,
+                    },
                     true,
                 )
                 .unwrap();
             }
         }
-        assert!(cli(&p, &["rename", "kim", "quinn"]).unwrap_err().contains("held by account 2"));
+        assert!(cli(&p, &["rename", "kim", "quinn"])
+            .unwrap_err()
+            .contains("held by account 2"));
         assert!(cli(&p, &["rename", "kim", " bad"]).is_err());
         assert!(cli(&p, &["rename", "nobody", "Fine"]).is_err());
-        assert!(cli(&p, &["rename", "kim", "Quinnway"]).unwrap().contains("renamed to Quinnway"));
+        assert!(cli(&p, &["rename", "kim", "Quinnway"])
+            .unwrap()
+            .contains("renamed to Quinnway"));
         let c = db::open(&p).unwrap();
         assert_eq!(db::character(&c, 1).unwrap().unwrap().nick, "Quinnway");
-        assert!(db::character_by_nick(&c, "quinnway", true).unwrap().is_some());
+        assert!(db::character_by_nick(&c, "quinnway", true)
+            .unwrap()
+            .is_some());
         drop(c);
         remove(&p);
     }
@@ -1015,7 +1035,14 @@ mod tests {
         .unwrap();
         drop(c);
         let run = [
-            "event", "e1", "--nx", "500", "--label", "Launch", "--names", "Kim,Nobody",
+            "event",
+            "e1",
+            "--nx",
+            "500",
+            "--label",
+            "Launch",
+            "--names",
+            "Kim,Nobody",
         ];
         let out = cli(&p, &run).unwrap();
         assert!(
@@ -1030,14 +1057,31 @@ mod tests {
         let c = db::open(&p).unwrap();
         assert_eq!(db::character(&c, acc.user_no).unwrap().unwrap().nx, 500);
         drop(c);
-        assert!(cli(&p, &["event", "e2", "--nx", "0", "--label", "x", "--names", "Kim"]).is_err());
+        assert!(cli(
+            &p,
+            &["event", "e2", "--nx", "0", "--label", "x", "--names", "Kim"]
+        )
+        .is_err());
         assert!(cli(&p, &["event", "e2", "--nx", "5", "--label", "x"]).is_err());
         assert!(cli(
             &p,
-            &["event", "e2", "--nx", "5", "--label", "x", "--active-days", "0"]
+            &[
+                "event",
+                "e2",
+                "--nx",
+                "5",
+                "--label",
+                "x",
+                "--active-days",
+                "0"
+            ]
         )
         .is_err());
-        assert!(cli(&p, &["event", "e2", "--nx", "5", "--label", " ", "--names", "Kim"]).is_err());
+        assert!(cli(
+            &p,
+            &["event", "e2", "--nx", "5", "--label", " ", "--names", "Kim"]
+        )
+        .is_err());
         remove(&p);
     }
 

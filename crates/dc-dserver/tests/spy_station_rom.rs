@@ -71,7 +71,8 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
         .and_then(|m| m.get("Key").cloned())
         .expect("a class-9 row");
     for world in ["WARHEAD", "SANDHOG"] {
-        let w = load_from_rom(&rom, &format!("Worlds\\{world}"), NameForm::Listed, None).expect("world");
+        let w = load_from_rom(&rom, &format!("Worlds\\{world}"), NameForm::Listed, None)
+            .expect("world");
         let (lo, hi) = (w.extent_min, w.extent_max);
         let uplinks = w.spy.uplinks.clone();
         assert!(!uplinks.is_empty(), "{world}: an activation box");
@@ -79,9 +80,9 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
             .effects
             .iter()
             .filter(|e| {
-                uplinks.iter().any(|u| {
-                    (0..3).all(|i| (e.pos[i] - u.pos[i]).abs() < 400.0)
-                })
+                uplinks
+                    .iter()
+                    .any(|u| (0..3).all(|i| (e.pos[i] - u.pos[i]).abs() < 400.0))
             })
             .map(|e| e.fx.to_ascii_lowercase())
             .collect();
@@ -114,7 +115,10 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
             step(&mut server, &mut peers, &mut logs, now);
             now += 5;
         }
-        assert!(peers.iter().all(|p| p.client.life_state() == 1), "{world}: both alive");
+        assert!(
+            peers.iter().all(|p| p.client.life_state() == 1),
+            "{world}: both alive"
+        );
         // Dave walks onto the case
         let mut agent = false;
         let end = now + 20_000;
@@ -135,7 +139,12 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
                 .seen
                 .objects
                 .values()
-                .filter_map(|o| Some((effect_name(o)?.to_ascii_lowercase(), o.pos.unwrap_or(o.create_pos))))
+                .filter_map(|o| {
+                    Some((
+                        effect_name(o)?.to_ascii_lowercase(),
+                        o.pos.unwrap_or(o.create_pos),
+                    ))
+                })
                 .collect()
         };
         let before: Vec<Vec<u8>> = effects(&peers, 1).into_iter().map(|e| e.0).collect();
@@ -149,12 +158,23 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
                 .seen
                 .objects
                 .iter()
-                .filter_map(|(id, o)| Some((*id, effect_name(o)?.to_ascii_lowercase(), o.pos.unwrap_or(o.create_pos))))
+                .filter_map(|(id, o)| {
+                    Some((
+                        *id,
+                        effect_name(o)?.to_ascii_lowercase(),
+                        o.pos.unwrap_or(o.create_pos),
+                    ))
+                })
                 .filter(|e| station_fx.contains(&e.1) && !before.contains(&e.1))
                 .map(|(id, n, p)| {
-                    assert!((0..3).all(|k| p[k] > lo[k] && p[k] < hi[k]), "{world}: inside the world");
                     assert!(
-                        uplinks.iter().any(|u| (0..3).all(|k| (p[k] - u.pos[k]).abs() < 400.0)),
+                        (0..3).all(|k| p[k] > lo[k] && p[k] < hi[k]),
+                        "{world}: inside the world"
+                    );
+                    assert!(
+                        uplinks
+                            .iter()
+                            .any(|u| (0..3).all(|k| (p[k] - u.pos[k]).abs() < 400.0)),
                         "{world}: at the activation box"
                     );
                     (id, n)
@@ -163,7 +183,10 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
         };
         let first = station_now(&peers, 0);
         for i in 0..2 {
-            assert!(station_now(&peers, i).len() >= 2, "{world} client {i}: the station's model and particles");
+            assert!(
+                station_now(&peers, i).len() >= 2,
+                "{world} client {i}: the station's model and particles"
+            );
         }
         // 40 s later the box is open: the model leaves and the ready box comes, on the same id (freed and given
         // again in one tick: the client must see a new object there, CLI-1582)
@@ -172,16 +195,27 @@ fn rom_the_agent_brings_the_upload_station_to_every_client() {
             step(&mut server, &mut peers, &mut logs, now);
             now += 5;
         }
-        assert!(logs.iter().any(|l| l.contains("spy: the uplink") && l.contains("is open")), "{world}: open");
+        assert!(
+            logs.iter()
+                .any(|l| l.contains("spy: the uplink") && l.contains("is open")),
+            "{world}: open"
+        );
         let later = station_now(&peers, 1);
-        let ready: Vec<&(u16, Vec<u8>)> = later.iter().filter(|e| !first.iter().any(|f| f.1 == e.1)).collect();
+        let ready: Vec<&(u16, Vec<u8>)> = later
+            .iter()
+            .filter(|e| !first.iter().any(|f| f.1 == e.1))
+            .collect();
         assert_eq!(ready.len(), 1, "{world}: the ready box");
         assert!(
             first.iter().any(|f| f.0 == ready[0].0),
             "{world}: the ready box took the model's id"
         );
         for p in &peers {
-            assert!(p.client.seen.errors.is_empty(), "{world}: {:?}", p.client.seen.errors);
+            assert!(
+                p.client.seen.errors.is_empty(),
+                "{world}: {:?}",
+                p.client.seen.errors
+            );
         }
     }
 }

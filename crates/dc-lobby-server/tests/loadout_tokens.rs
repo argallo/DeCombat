@@ -165,7 +165,10 @@ fn accounts_start_at_the_configured_number() {
     let (_a, na) = player(&l, "alice", "Alice");
     let (_b, nb) = player(&l, "bob", "Bob");
     assert_eq!((na, nb), (1001, 1002));
-    let l = Lobby::start("auth1-custom", opts(r#"{"auth.first_account_no": 5000, "bots.pool_size": 0}"#));
+    let l = Lobby::start(
+        "auth1-custom",
+        opts(r#"{"auth.first_account_no": 5000, "bots.pool_size": 0}"#),
+    );
     let (_a, na) = player(&l, "carol", "Carol");
     assert_eq!(na, 5000);
 }

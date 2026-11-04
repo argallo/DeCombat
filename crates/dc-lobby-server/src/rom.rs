@@ -124,6 +124,7 @@ impl RankTable {
     }
 
     /// Rank held with `exp` experience.
+    #[cfg(test)]
     pub fn rank_of(&self, exp: i64) -> usize {
         self.need.iter().take_while(|&&n| exp >= n).count()
     }
@@ -322,7 +323,8 @@ pub const DEFAULT_KIND_HEAD: i64 = 9;
 // shows its empty-slot name) and the login repair removes the default head an older account was given
 pub fn body_defaults(doc: &ButeDoc) -> Vec<StarterItem> {
     let mut out = Vec::new();
-    for (tag, base, slot, kind) in [("CamoItem", 2000, 7, DEFAULT_KIND_UNIFORM)] {
+    {
+        let (tag, base, slot, kind) = ("CamoItem", 2000, 7, DEFAULT_KIND_UNIFORM);
         let has = doc.iter().any(|(t, sec)| {
             t.starts_with(tag)
                 && sec.get("ItemID").and_then(|v| v.trim().parse::<i64>().ok()) == Some(0)
@@ -778,7 +780,11 @@ GMS_COOP=c.gms
         };
         let r = RomData::load(&rom);
         assert!(!r.weapon_kinds.is_empty());
-        let taken: Vec<_> = r.weapon_kinds.keys().filter(|n| dc_bute::modpatch::is_pack_item(**n)).collect();
+        let taken: Vec<_> = r
+            .weapon_kinds
+            .keys()
+            .filter(|n| dc_bute::modpatch::is_pack_item(**n))
+            .collect();
         assert!(taken.is_empty(), "{taken:?}");
     }
 

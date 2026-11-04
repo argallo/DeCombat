@@ -83,12 +83,17 @@ impl RoomPick {
             "" | "any" => Ok(RoomPick::Any),
             "follow" => {
                 if !crate::auth::valid_nick(arg) {
-                    return Err("room: follow needs the player's character name (1..16 characters)".into());
+                    return Err(
+                        "room: follow needs the player's character name (1..16 characters)".into(),
+                    );
                 }
                 Ok(RoomPick::Follow(arg.to_string()))
             }
             "title" => {
-                if arg.is_empty() || arg.chars().count() > MAX_TITLE || arg.chars().any(char::is_control) {
+                if arg.is_empty()
+                    || arg.chars().count() > MAX_TITLE
+                    || arg.chars().any(char::is_control)
+                {
                     return Err(format!(
                         "room: title needs a part of the room's title (1..{MAX_TITLE} characters)"
                     ));
@@ -118,7 +123,9 @@ pub struct Group {
 impl Group {
     /// The bots' names, `<prefix>1..<prefix><count>`.
     pub fn names(&self) -> Vec<String> {
-        (1..=self.count).map(|i| format!("{}{i}", self.prefix)).collect()
+        (1..=self.count)
+            .map(|i| format!("{}{i}", self.prefix))
+            .collect()
     }
 
     /// The channel of bot `i` (1-based) of `channels`: round-robin.
@@ -151,7 +158,10 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Group> {
         prefix: r.get(1)?,
         count: r.get::<_, i64>(2)?.clamp(0, MAX_PER_GROUP as i64) as u32,
         server_id: r.get::<_, i64>(3)?.max(0) as u32,
-        channels: channels.split(',').filter_map(|c| c.trim().parse().ok()).collect(),
+        channels: channels
+            .split(',')
+            .filter_map(|c| c.trim().parse().ok())
+            .collect(),
         room: RoomPick::from_parts(&mode, &arg).unwrap_or(RoomPick::Any),
         skill: r.get(7)?,
         loadout: r.get(8)?,
@@ -159,7 +169,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Group> {
     })
 }
 
-const COLS: &str = "id, prefix, count, server_id, channels, room_mode, room_arg, skill, loadout, enabled";
+const COLS: &str =
+    "id, prefix, count, server_id, channels, room_mode, room_arg, skill, loadout, enabled";
 
 /// Every group, by id.
 pub fn list(c: &Connection) -> rusqlite::Result<Vec<Group>> {
@@ -170,8 +181,12 @@ pub fn list(c: &Connection) -> rusqlite::Result<Vec<Group>> {
 
 #[cfg(test)]
 pub fn get(c: &Connection, id: i64) -> rusqlite::Result<Option<Group>> {
-    c.query_row(&format!("SELECT {COLS} FROM bot_groups WHERE id = ?1"), [id], row)
-        .optional()
+    c.query_row(
+        &format!("SELECT {COLS} FROM bot_groups WHERE id = ?1"),
+        [id],
+        row,
+    )
+    .optional()
 }
 
 /// Inserts (`id` 0) or updates a group; returns its id.
@@ -214,14 +229,21 @@ pub fn remove(c: &Connection, id: i64) -> rusqlite::Result<bool> {
 
 /// The loadout spec last given to `login`'s account ("" = none).
 pub fn applied_loadout(c: &Connection, login: &str) -> rusqlite::Result<String> {
-    Ok(
-        c.query_row("SELECT spec FROM bot_loadouts WHERE login = ?1", [login], |r| r.get(0))
-            .optional()?
-            .unwrap_or_default(),
+    Ok(c.query_row(
+        "SELECT spec FROM bot_loadouts WHERE login = ?1",
+        [login],
+        |r| r.get(0),
     )
+    .optional()?
+    .unwrap_or_default())
 }
 
-pub fn set_applied_loadout(c: &Connection, login: &str, spec: &str, now: i64) -> rusqlite::Result<()> {
+pub fn set_applied_loadout(
+    c: &Connection,
+    login: &str,
+    spec: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
     c.execute(
         "INSERT INTO bot_loadouts (login, spec, at) VALUES (?1, ?2, ?3) \
          ON CONFLICT(login) DO UPDATE SET spec = excluded.spec, at = excluded.at",
@@ -317,8 +339,17 @@ pub fn parse(m: &Map<String, Value>, entries: &[Entry]) -> Result<Group, String>
         ));
     };
     let mut channels = Vec::new();
-    for v in m.get("channels").and_then(Value::as_array).into_iter().flatten() {
-        let Some(ch) = v.as_u64().filter(|c| *c <= u64::from(u32::MAX)).map(|c| c as u32) else {
+    for v in m
+        .get("channels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(ch) = v
+            .as_u64()
+            .filter(|c| *c <= u64::from(u32::MAX))
+            .map(|c| c as u32)
+        else {
             return Err("channels: a list of channel numbers".into());
         };
         if !entry.owns(ch) {
@@ -354,10 +385,14 @@ pub fn parse(m: &Map<String, Value>, entries: &[Entry]) -> Result<Group, String>
 /// The checks across groups: one prefix per group, and the bots of all enabled groups within `max_total`.
 pub fn check_against(g: &Group, all: &[Group], max_total: u32) -> Result<(), String> {
     let others = all.iter().filter(|o| o.id != g.id);
-    if let Some(o) = others.clone().find(|o| o.prefix.eq_ignore_ascii_case(&g.prefix)) {
+    if let Some(o) = others
+        .clone()
+        .find(|o| o.prefix.eq_ignore_ascii_case(&g.prefix))
+    {
         return Err(format!("prefix: group {} already uses {}", o.id, o.prefix));
     }
-    let total: u32 = others.filter(|o| o.enabled).map(|o| o.count).sum::<u32>() + if g.enabled { g.count } else { 0 };
+    let total: u32 = others.filter(|o| o.enabled).map(|o| o.count).sum::<u32>()
+        + if g.enabled { g.count } else { 0 };
     if total > max_total {
         return Err(format!(
             "that makes {total} bots running; this lobby runs at most {max_total} (bots.managed_max_total)"
@@ -409,12 +444,18 @@ pub fn admin_handles(path: &str) -> bool {
 
 /// LG-390: a JSON body, the page's own `Origin`, the page's token in `X-Admin-CSRF`.
 fn post_guard(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
-    let ct = header(head, "content-type").unwrap_or("").to_ascii_lowercase();
+    let ct = header(head, "content-type")
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if !ct.starts_with("application/json") {
         return Err(jerr(415, "send application/json"));
     }
-    if !header(head, "origin").is_some_and(|o| !origin.is_empty() && o.eq_ignore_ascii_case(origin)) {
-        return Err(jerr(403, "the request does not come from the dashboard (Origin)"));
+    if !header(head, "origin").is_some_and(|o| !origin.is_empty() && o.eq_ignore_ascii_case(origin))
+    {
+        return Err(jerr(
+            403,
+            "the request does not come from the dashboard (Origin)",
+        ));
     }
     let tok = header(head, "x-admin-csrf").unwrap_or("");
     if csrf.is_empty() || !crate::hosts::token_eq(tok, csrf) {
@@ -424,7 +465,13 @@ fn post_guard(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
 }
 
 /// One request under `/ops/bots` (the caller checked loopback, Host and the admin token, or the admin web session).
-pub fn admin(shared: &Shared, req: &Request, head: &str, body: &[u8], guard: Option<&WriteGuard>) -> Reply {
+pub fn admin(
+    shared: &Shared,
+    req: &Request,
+    head: &str,
+    body: &[u8],
+    guard: Option<&WriteGuard>,
+) -> Reply {
     let path = req.path.trim_end_matches('/');
     match (req.method.as_str(), path) {
         ("GET", "/ops/bots") => jok(status_json(shared)),
@@ -434,7 +481,9 @@ pub fn admin(shared: &Shared, req: &Request, head: &str, body: &[u8], guard: Opt
             let host = header(head, "host").unwrap_or("");
             let (origin, csrf) = match guard {
                 Some(w) => (w.origin.clone(), w.csrf.clone()),
-                None if host.is_empty() => return jerr(403, "the request does not come from the dashboard (Origin)"),
+                None if host.is_empty() => {
+                    return jerr(403, "the request does not come from the dashboard (Origin)")
+                }
                 None => (format!("http://{host}"), st.beta.csrf(&mut st.keys)),
             };
             if let Err(r) = post_guard(head, &origin, &csrf) {
@@ -445,9 +494,11 @@ pub fn admin(shared: &Shared, req: &Request, head: &str, body: &[u8], guard: Opt
             };
             write(st, path, &m, crate::clock::unix_now())
         }
-        (_, "/ops/bots" | "/ops/bots/group" | "/ops/bots/delete" | "/ops/bots/start" | "/ops/bots/stop") => {
-            jerr(405, "method not allowed")
-        }
+        (
+            _,
+            "/ops/bots" | "/ops/bots/group" | "/ops/bots/delete" | "/ops/bots/start"
+            | "/ops/bots/stop",
+        ) => jerr(405, "method not allowed"),
         _ => jerr(404, "not found"),
     }
 }
@@ -518,9 +569,15 @@ pub fn write(st: &mut Core, path: &str, m: &Map<String, Value>, now: i64) -> Rep
         let g = Group { id, ..g };
         ops_event(
             st,
-            &format!("group {id} {}: {}", if new { "added" } else { "changed" }, describe(&g)),
+            &format!(
+                "group {id} {}: {}",
+                if new { "added" } else { "changed" },
+                describe(&g)
+            ),
         );
-        return jok(json!({"ok": true, "message": format!("Group {} saved{off}.", g.prefix), "group": g.json()}));
+        return jok(
+            json!({"ok": true, "message": format!("Group {} saved{off}.", g.prefix), "group": g.json()}),
+        );
     }
     let id = m.get("id").and_then(Value::as_i64).unwrap_or(0);
     let Some(g) = all.iter().find(|g| g.id == id).cloned() else {
@@ -531,7 +588,10 @@ pub fn write(st: &mut Core, path: &str, m: &Map<String, Value>, now: i64) -> Rep
             if let Err(e) = remove(&st.db, id) {
                 return jerr(500, &format!("db: {e}"));
             }
-            ops_event(st, &format!("group {id} {} deleted ({} bots stop)", g.prefix, g.count));
+            ops_event(
+                st,
+                &format!("group {id} {} deleted ({} bots stop)", g.prefix, g.count),
+            );
             jok(json!({"ok": true, "message": format!("Group {} deleted.", g.prefix)}))
         }
         _ => {
@@ -550,7 +610,11 @@ pub fn write(st: &mut Core, path: &str, m: &Map<String, Value>, now: i64) -> Rep
             }
             ops_event(
                 st,
-                &format!("group {id} {} {}", g.prefix, if on { "started" } else { "stopped" }),
+                &format!(
+                    "group {id} {} {}",
+                    g.prefix,
+                    if on { "started" } else { "stopped" }
+                ),
             );
             jok(
                 json!({"ok": true, "message": format!("Group {} {}{off}.", g.prefix, if on { "started" } else { "stopped" }),
@@ -565,7 +629,11 @@ fn lobby_place(st: &Core, name: &str) -> Value {
     let login = name.to_ascii_lowercase();
     let acc: Option<i64> = st
         .db
-        .query_row("SELECT user_no FROM accounts WHERE login = ?1", [&login], |r| r.get(0))
+        .query_row(
+            "SELECT user_no FROM accounts WHERE login = ?1",
+            [&login],
+            |r| r.get(0),
+        )
         .optional()
         .ok()
         .flatten();

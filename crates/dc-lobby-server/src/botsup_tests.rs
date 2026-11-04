@@ -49,7 +49,10 @@ impl Launch for Fake {
 #[test]
 #[ignore = "the fake dc-botclient of the supervisor tests: does nothing when run by hand"]
 fn fake_bot() {
-    let (Ok(dir), Ok(name)) = (std::env::var("DC_FAKE_BOT_DIR"), std::env::var("DC_FAKE_BOT_NAME")) else {
+    let (Ok(dir), Ok(name)) = (
+        std::env::var("DC_FAKE_BOT_DIR"),
+        std::env::var("DC_FAKE_BOT_NAME"),
+    ) else {
         return;
     };
     let dir = PathBuf::from(dir);
@@ -100,7 +103,12 @@ fn want(name: &str, channel: u32) -> Want {
         name: name.into(),
         group: 1,
         channel,
-        args: vec!["--name".into(), name.into(), "--channel".into(), channel.to_string()],
+        args: vec![
+            "--name".into(),
+            name.into(),
+            "--channel".into(),
+            channel.to_string(),
+        ],
     }
 }
 
@@ -116,7 +124,11 @@ fn until(s: &mut Supervisor, wants: &[Want], mut done: impl FnMut(&Supervisor) -
         if done(s) {
             return;
         }
-        assert!(Instant::now() < end, "timed out: {:?}", s.status(Instant::now()));
+        assert!(
+            Instant::now() < end,
+            "timed out: {:?}",
+            s.status(Instant::now())
+        );
         std::thread::sleep(Duration::from_millis(30));
     }
 }
@@ -129,13 +141,20 @@ fn file_says(dir: &Path, f: &str) -> bool {
 fn the_supervisor_runs_count_bots_and_stops_the_extra_on_resize_down() {
     let dir = scratch("resize");
     let mut s = sup(&dir, &[]);
-    let w = vec![want("PlusBot1", 4), want("PlusBot2", 6), want("PlusBot3", 4)];
+    let w = vec![
+        want("PlusBot1", 4),
+        want("PlusBot2", 6),
+        want("PlusBot3", 4),
+    ];
     until(&mut s, &w, |_| {
         (1..=3).all(|i| file_says(&dir, &format!("PlusBot{i}.args")))
     });
     let st = s.status(Instant::now());
     assert_eq!(st.len(), 3);
-    assert!(st.values().all(|p| p.state == "running" && p.pid.is_some()), "{st:?}");
+    assert!(
+        st.values().all(|p| p.state == "running" && p.pid.is_some()),
+        "{st:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.join("PlusBot2.args")).unwrap(),
         "--name\nPlusBot2\n--channel\n6"
@@ -147,10 +166,15 @@ fn the_supervisor_runs_count_bots_and_stops_the_extra_on_resize_down() {
         file_says(&dir, "PlusBot3.end") && starts(&dir, "PlusBot2") == 2
     });
     until(&mut s, &w2, |s| {
-        s.status(Instant::now()).values().all(|p| p.state == "running")
+        s.status(Instant::now())
+            .values()
+            .all(|p| p.state == "running")
     });
     let st = s.status(Instant::now());
-    assert_eq!(st.keys().cloned().collect::<Vec<_>>(), vec!["PlusBot1", "PlusBot2"]);
+    assert_eq!(
+        st.keys().cloned().collect::<Vec<_>>(),
+        vec!["PlusBot1", "PlusBot2"]
+    );
     assert_eq!(st["PlusBot1"].pid, pid1, "an unchanged bot is not touched");
     assert_eq!((starts(&dir, "PlusBot1"), starts(&dir, "PlusBot3")), (1, 1));
     assert!(
@@ -175,8 +199,14 @@ fn a_bot_that_ends_starts_again_after_a_growing_wait() {
     let t0 = Instant::now();
     until(&mut s, &w, |_| starts(&dir, "QuitBot1") >= 3);
     // waits 150 ms, then 300 ms (fast exits in a row double it): at least 450 ms for three starts
-    assert!(t0.elapsed() >= Duration::from_millis(440), "{:?}", t0.elapsed());
-    until(&mut s, &w, |s| s.status(Instant::now())["QuitBot1"].state == "backoff");
+    assert!(
+        t0.elapsed() >= Duration::from_millis(440),
+        "{:?}",
+        t0.elapsed()
+    );
+    until(&mut s, &w, |s| {
+        s.status(Instant::now())["QuitBot1"].state == "backoff"
+    });
     let p = &s.status(Instant::now())["QuitBot1"];
     assert!(p.restarts >= 2, "{p:?}");
     assert!(p.last_exit.contains('3'), "the exit code is shown: {p:?}");
@@ -201,7 +231,10 @@ fn the_graceful_stop_ends_every_bot_and_kills_one_that_does_not_listen() {
         took >= Duration::from_millis(1400) && took < Duration::from_secs(8),
         "the deaf one waited out the grace: {took:?}"
     );
-    assert!(file_says(&dir, "PlusBot1.end"), "the listening bot ended by its pipe");
+    assert!(
+        file_says(&dir, "PlusBot1.end"),
+        "the listening bot ended by its pipe"
+    );
     assert!(!file_says(&dir, "DeafBot1.end"));
     assert!(s.status(Instant::now()).is_empty());
     // no start after the stop
@@ -249,7 +282,9 @@ fn group(prefix: &str, count: u32, server: u32, channels: &[u32], room: RoomPick
 }
 
 fn flag<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == k).map(|i| args[i + 1].as_str())
+    args.iter()
+        .position(|a| a == k)
+        .map(|i| args[i + 1].as_str())
 }
 
 #[test]
@@ -298,7 +333,9 @@ fn each_bot_gets_the_flags_of_bots_sh_and_its_groups_channel_round_robin() {
         assert_eq!(flag(p2, k), Some(v), "{k} in {p2:?}");
     }
     assert!(p2.contains(&"--shooter".to_string()) && p2.contains(&"--hunt".to_string()));
-    assert!(flag(p2, "--log").unwrap().ends_with("PlusBot2.events.jsonl"));
+    assert!(flag(p2, "--log")
+        .unwrap()
+        .ends_with("PlusBot2.events.jsonl"));
     assert_eq!(flag(p2, "--room-title"), None);
     assert_eq!(flag(&w[3].args, "--filler"), Some("=Zoe"));
     assert_eq!(flag(&w[4].args, "--room-title"), Some("fun"));
@@ -329,7 +366,10 @@ fn each_bot_gets_the_flags_of_bots_sh_and_its_groups_channel_round_robin() {
     modded.login_mods.content = "0".into();
     let mf = facts(&modded, &dir);
     let mw = wants(&modded, &groups[..1], &mf);
-    assert_eq!(flag(&mw[0].args, "--mod-set-hash"), Some("ab".repeat(32).as_str()));
+    assert_eq!(
+        flag(&mw[0].args, "--mod-set-hash"),
+        Some("ab".repeat(32).as_str())
+    );
     assert_eq!(flag(&mw[0].args, "--content-hash"), Some("0"));
     assert_eq!(lobby_addr("192.0.2.5", 10000), "192.0.2.5:10000");
     assert_eq!(lobby_addr("::", 10000), "127.0.0.1:10000");
@@ -370,7 +410,10 @@ fn loadouts_are_given_once_per_spec_after_the_first_login() {
     let (restart, notes) = lo.apply(&st, &groups, &w);
     assert_eq!(restart, vec!["PlusBot1"]);
     assert_eq!(notes[0].1, "loadout 0:27");
-    assert_eq!(crate::botgroups::applied_loadout(&st.db, "plusbot1").unwrap(), "0:27");
+    assert_eq!(
+        crate::botgroups::applied_loadout(&st.db, "plusbot1").unwrap(),
+        "0:27"
+    );
     // once only, also after a lobby restart (a new Loadouts reads the table)
     assert!(lo.apply(&st, &groups, &w).0.is_empty());
     assert!(Loadouts::default().apply(&st, &groups, &w).0.is_empty());
@@ -402,7 +445,10 @@ fn the_lobby_thread_runs_the_stored_groups_and_its_stop_ends_them() {
         std::thread::sleep(Duration::from_millis(30));
     }
     let a2 = std::fs::read_to_string(dir.join("PlusBot2.args")).unwrap();
-    assert!(a2.contains("--channel\n5") && a2.contains("--server-id\n2"), "{a2}");
+    assert!(
+        a2.contains("--channel\n5") && a2.contains("--server-id\n2"),
+        "{a2}"
+    );
     let v = crate::botgroups::status_json(&shared);
     let b = &v["groups"][0]["bots"];
     assert_eq!(

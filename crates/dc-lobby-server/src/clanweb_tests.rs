@@ -531,7 +531,7 @@ fn registration_page_rules_invites_and_accounts() {
     }
     assert!(db::account_by_login(&st.db, "Neo").unwrap().is_none());
     // a good form: lower case code with a space, the account is made, the code is used up
-    let typed = format!("{} {}", &invite[..6].to_lowercase(), &invite[6..]);
+    let typed = format!("{} {}", invite[..6].to_lowercase(), &invite[6..]);
     let (code, body) = post_form(
         &mut st,
         &peer(20),
@@ -542,10 +542,14 @@ fn registration_page_rules_invites_and_accounts() {
     );
     assert_eq!(code, 200, "{body}");
     assert!(
-        body.contains("Account created.") && body.contains("play.example.org"),
+        body.contains("Account created.") && body.contains("<td>Login</td><td><b>Neo</b></td>"),
         "{body}"
     );
-    assert!(body.contains(&format!("<td>Port</td><td><b>{}</b></td>", st.opts.port)));
+    // the downloads come set up for their server: no server or port to copy
+    assert!(
+        !body.contains("<td>Port</td>") && !body.contains("play.example.org"),
+        "{body}"
+    );
     let a = db::account_by_login(&st.db, "neo").unwrap().unwrap();
     assert_eq!(
         crate::auth::pw_verify(&a, "secret12"),
@@ -595,6 +599,34 @@ fn registration_page_rules_invites_and_accounts() {
         crate::auth::pw_verify(&k, "kimpass12"),
         crate::auth::PwCheck::Ok
     );
+    // LG-172: a GM-prefixed login registers only with the invite made for that GM account
+    let gm = db::create_account(&st.db, "GMKim", 0).unwrap();
+    st.db
+        .execute("UPDATE accounts SET gm = 1 WHERE user_no = ?1", [gm as i64])
+        .unwrap();
+    let gm_code = crate::accounts::new_invite(
+        &st.db,
+        &mut st.keys,
+        Some("GMKim"),
+        crate::clock::unix_now(),
+        7,
+    )
+    .unwrap();
+    let (_, body) = post_form(
+        &mut st,
+        &peer(26),
+        &format!("name=GMKim&pw=gmpass12&pw2=gmpass12&code={gm_code}"),
+    );
+    assert!(body.contains("Account created."), "{body}");
+    let plain =
+        crate::accounts::new_invite(&st.db, &mut st.keys, None, crate::clock::unix_now(), 7)
+            .unwrap();
+    let (_, body) = post_form(
+        &mut st,
+        &peer(27),
+        &format!("name=GMOther&pw=gmpass12&pw2=gmpass12&code={plain}"),
+    );
+    assert!(body.contains("reserved for game masters"), "{body}");
     // open registration: no code needed
     st.opts.register_open = true;
     let (_, body) = post_form(
@@ -654,7 +686,9 @@ fn registration_over_http() {
     assert!(head.starts_with("HTTP/1.1 200"), "{head}");
     let body = String::from_utf8_lossy(&body);
     assert!(
-        body.contains("Account created.") && body.contains("<b>lan-box</b>"),
+        body.contains("Account created.")
+            && body.contains("<b>Switch</b>")
+            && !body.contains("lan-box"),
         "{body}"
     );
     let st = shared.lock().unwrap();
@@ -675,7 +709,11 @@ fn registration_over_http() {
 }
 
 fn reg_json(st: &mut Core, method: &str, peer: &str, form: &str) -> (u16, String) {
-    let form = if method == "POST" { with_email(form) } else { form.to_string() };
+    let form = if method == "POST" {
+        with_email(form)
+    } else {
+        form.to_string()
+    };
     let mut out = (0, String::new());
     st.scope(|st| {
         out = crate::register::route_as(
@@ -700,7 +738,10 @@ fn registration_json_for_the_game() {
     let mut st = state();
     assert_eq!(
         reg_json(&mut st, "GET", "1.2.3.4:5", ""),
-        (404, "{\"open\":false,\"invite\":false,\"email\":true}".to_string())
+        (
+            404,
+            "{\"open\":false,\"invite\":false,\"email\":true}".to_string()
+        )
     );
     let (code, body) = reg_json(
         &mut st,
@@ -716,7 +757,10 @@ fn registration_json_for_the_game() {
     st.opts.register = true;
     assert_eq!(
         reg_json(&mut st, "GET", "1.2.3.4:5", ""),
-        (200, "{\"open\":true,\"invite\":true,\"email\":true}".to_string())
+        (
+            200,
+            "{\"open\":true,\"invite\":true,\"email\":true}".to_string()
+        )
     );
     let (code, body) = reg_json(
         &mut st,
@@ -855,15 +899,31 @@ fn registration_requires_and_stores_the_email() {
         Ok(())
     })
     .unwrap();
-    assert!(out.1.contains("type=\"email\" id=\"email\" name=\"email\""), "{}", out.1);
+    assert!(
+        out.1.contains("type=\"email\" id=\"email\" name=\"email\""),
+        "{}",
+        out.1
+    );
     let cases = [
         ("email=", "Cannot register: enter your e-mail address"),
         ("email=%20%20", "Cannot register: enter your e-mail address"),
         ("email=erika", "that is not a valid e-mail address"),
-        ("email=fr%20ank%40example.org", "that is not a valid e-mail address"),
-        ("email=a%40b%40example.org", "that is not a valid e-mail address"),
-        ("email=erika%40localhost", "that is not a valid e-mail address"),
-        ("email=erika%40example.", "that is not a valid e-mail address"),
+        (
+            "email=fr%20ank%40example.org",
+            "that is not a valid e-mail address",
+        ),
+        (
+            "email=a%40b%40example.org",
+            "that is not a valid e-mail address",
+        ),
+        (
+            "email=erika%40localhost",
+            "that is not a valid e-mail address",
+        ),
+        (
+            "email=erika%40example.",
+            "that is not a valid e-mail address",
+        ),
         ("email=%40example.org", "that is not a valid e-mail address"),
     ];
     for (i, (e, want)) in cases.iter().enumerate() {
@@ -873,26 +933,59 @@ fn registration_requires_and_stores_the_email() {
         assert!(body.contains(want), "{e}: {body}");
         let (code, body) = reg_json(&mut st, "POST", &format!("198.51.101.{i}:1"), &form);
         assert_eq!(code, 200);
-        assert!(body.starts_with("{\"ok\":false,\"message\":\"Cannot register: ") && body.contains(want), "{e}: {body}");
+        assert!(
+            body.starts_with("{\"ok\":false,\"message\":\"Cannot register: ")
+                && body.contains(want),
+            "{e}: {body}"
+        );
     }
     let long = format!("email={}%40example.org", "a".repeat(250));
-    let (_, body) = post_form(&mut st, "198.51.102.1:1", &format!("name=Neo&pw=secret12&pw2=secret12&{long}"));
+    let (_, body) = post_form(
+        &mut st,
+        "198.51.102.1:1",
+        &format!("name=Neo&pw=secret12&pw2=secret12&{long}"),
+    );
     assert!(body.contains("longer than 254"), "{body}");
     assert!(db::account_by_login(&st.db, "Neo").unwrap().is_none());
     // the form keeps the typed address after a refusal
-    let (_, body) = post_form(&mut st, "198.51.102.2:1", "name=Neo&pw=secret12&pw2=secret99&email=neo%40example.org");
+    let (_, body) = post_form(
+        &mut st,
+        "198.51.102.2:1",
+        "name=Neo&pw=secret12&pw2=secret99&email=neo%40example.org",
+    );
     assert!(body.contains("value=\"neo@example.org\""), "{body}");
     // a good form stores it trimmed, as typed
-    let (_, body) = post_form(&mut st, "198.51.102.3:1", "name=Neo&pw=secret12&pw2=secret12&email=%20Neo.A%40Example.org%20");
+    let (_, body) = post_form(
+        &mut st,
+        "198.51.102.3:1",
+        "name=Neo&pw=secret12&pw2=secret12&email=%20Neo.A%40Example.org%20",
+    );
     assert!(body.contains("Account created."), "{body}");
     let a = db::account_by_login(&st.db, "neo").unwrap().unwrap();
-    assert_eq!(db::account_email(&st.db, a.user_no).unwrap(), "Neo.A@Example.org");
-    assert_eq!(db::logins_by_email(&st.db, "neo.a@example.ORG").unwrap(), vec!["Neo".to_string()]);
-    let (_, body) = reg_json(&mut st, "POST", "198.51.102.4:1", "name=Trin&pw=secret12&pw2=secret12&email=trin%40example.org");
+    assert_eq!(
+        db::account_email(&st.db, a.user_no).unwrap(),
+        "Neo.A@Example.org"
+    );
+    assert_eq!(
+        db::logins_by_email(&st.db, "neo.a@example.ORG").unwrap(),
+        vec!["Neo".to_string()]
+    );
+    let (_, body) = reg_json(
+        &mut st,
+        "POST",
+        "198.51.102.4:1",
+        "name=Trin&pw=secret12&pw2=secret12&email=trin%40example.org",
+    );
     assert_eq!(body, "{\"ok\":true,\"login\":\"Trin\"}");
     let t = db::account_by_login(&st.db, "Trin").unwrap().unwrap();
-    assert_eq!(db::account_email(&st.db, t.user_no).unwrap(), "trin@example.org");
-    assert_eq!(crate::accounts::mask_email("trin@example.org"), "t***@example.org");
+    assert_eq!(
+        db::account_email(&st.db, t.user_no).unwrap(),
+        "trin@example.org"
+    );
+    assert_eq!(
+        crate::accounts::mask_email("trin@example.org"),
+        "t***@example.org"
+    );
     assert_eq!(crate::accounts::mask_email(""), "-");
 }
 
@@ -909,7 +1002,10 @@ fn recovery_json_over_http() {
         port,
         "GET /recover HTTP/1.1\r\nHost: x\r\nAccept: application/json\r\n\r\n",
     ));
-    assert!(head.starts_with("HTTP/1.1 200") && head.contains("application/json"), "{head}");
+    assert!(
+        head.starts_with("HTTP/1.1 200") && head.contains("application/json"),
+        "{head}"
+    );
     assert_eq!(body, b"{\"mail\":true}");
     let form = "name=Nobody&email=nobody%40example.org";
     let (head, body) = split_http(&raw_request(
@@ -926,7 +1022,10 @@ fn recovery_json_over_http() {
         "{\"ok\":true,\"message\":\"If the account and the address match, a code was sent.\"}"
     );
     let (head, body) = split_http(&raw_get(port, "GET", "/recover"));
-    assert!(head.contains("text/html") && String::from_utf8_lossy(&body).contains("Send me a code"), "{head}");
+    assert!(
+        head.contains("text/html") && String::from_utf8_lossy(&body).contains("Send me a code"),
+        "{head}"
+    );
 }
 
 /// LG-321: on a public lobby the page URLs' login name is no proof: only the address it logged in from may use it.
@@ -937,9 +1036,12 @@ fn a_public_lobby_takes_clan_pages_only_from_the_logged_in_address() {
     let carol = player(&mut st, 1, "carol", "Carol", true);
     st.sessions.get_mut(&1).unwrap().peer = "203.0.113.9:5000".into();
     let ask = |st: &mut Core, target: &str, peer: &str| {
-        let req = parse_request(&format!("GET {target} HTTP/1.1
+        let req = parse_request(&format!(
+            "GET {target} HTTP/1.1
 
-")).unwrap();
+"
+        ))
+        .unwrap();
         let mut out = (0, String::new());
         st.scope(|st| {
             out = route_from(st, &req, peer)?;
@@ -958,10 +1060,17 @@ fn a_public_lobby_takes_clan_pages_only_from_the_logged_in_address() {
     }
     assert!(crate::clan::clan_of(&st, carol).unwrap().is_none());
     // her own address, another port: works; the host's loopback tools too
-    let (code, page) = ask(&mut st, "/clan/create?p=carol&name=Wolves&emblem=1&bg=1", "203.0.113.9:6000");
+    let (code, page) = ask(
+        &mut st,
+        "/clan/create?p=carol&name=Wolves&emblem=1&bg=1",
+        "203.0.113.9:6000",
+    );
     assert_eq!(code, 200);
     assert!(page.contains("Clan Wolves created."), "{page}");
-    assert_eq!(ask(&mut st, "/clan?url=guild/list&p=carol", "127.0.0.1:6000").0, 200);
+    assert_eq!(
+        ask(&mut st, "/clan?url=guild/list&p=carol", "127.0.0.1:6000").0,
+        200
+    );
     // a page that names nobody stays open, and a lobby that is not public is not changed
     assert_eq!(ask(&mut st, "/clan", "198.51.100.1:7000").0, 200);
     st.opts.public = false;
@@ -983,6 +1092,13 @@ fn a_connection_that_never_logs_in_is_closed() {
     let t = std::time::Instant::now();
     let mut b = [0u8; 16];
     let r = s.read(&mut b);
-    assert!(matches!(r, Ok(0) | Err(_)) && !matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut), "{r:?}");
-    assert!(t.elapsed() < Duration::from_secs(8), "closed by the limit, not by the test's own timeout");
+    assert!(
+        matches!(r, Ok(0) | Err(_))
+            && !matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut),
+        "{r:?}"
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(8),
+        "closed by the limit, not by the test's own timeout"
+    );
 }

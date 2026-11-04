@@ -191,7 +191,10 @@ mod tests {
         let shape = |v: &[u32]| {
             assert_eq!(v.first(), Some(&1), "{v:?}");
             assert!(v.iter().all(|n| n.is_power_of_two()), "{v:?}");
-            assert!(v.windows(2).all(|w| w[0] < w[1]), "ascending, unique: {v:?}");
+            assert!(
+                v.windows(2).all(|w| w[0] < w[1]),
+                "ascending, unique: {v:?}"
+            );
             assert!(v.iter().all(|n| *n <= 8), "{v:?}");
         };
         shape(&counts_where(|_| true));

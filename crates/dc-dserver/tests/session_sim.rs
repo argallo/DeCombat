@@ -149,7 +149,11 @@ impl Net {
 
     fn pipe_lines(&self) -> Vec<String> {
         // MON-1 link summaries have their own tests; these checks are about the session events
-        self.pipe.iter().map(|p| p.1.clone()).filter(|l| !l.starts_with("@linksum")).collect()
+        self.pipe
+            .iter()
+            .map(|p| p.1.clone())
+            .filter(|l| !l.starts_with("@linksum"))
+            .collect()
     }
 }
 
@@ -924,7 +928,11 @@ fn tess(ticket: Option<[u8; 16]>) -> SynthConfig {
 fn refused(c: &SynthClient) -> bool {
     !matches!(
         c.state(),
-        ClientState::Joining | ClientState::Linked | ClientState::LoadingWorld | ClientState::WorldLoaded | ClientState::InWorld
+        ClientState::Joining
+            | ClientState::Linked
+            | ClientState::LoadingWorld
+            | ClientState::WorldLoaded
+            | ClientState::InWorld
     )
 }
 
@@ -944,7 +952,10 @@ fn the_right_ticket_is_seated_and_no_line_shows_it() {
     assert_eq!(joins_of(&net, 9), 1);
     let hex = dc_wire::seatticket::to_hex(&SEAT);
     assert!(
-        !net.logs.iter().chain(net.pipe_lines().iter()).any(|l| l.contains(&hex)),
+        !net.logs
+            .iter()
+            .chain(net.pipe_lines().iter())
+            .any(|l| l.contains(&hex)),
         "the ticket is never logged"
     );
 }
@@ -953,17 +964,38 @@ fn the_right_ticket_is_seated_and_no_line_shows_it() {
 fn a_wrong_or_missing_ticket_is_refused_and_only_a_missing_one_is_told() {
     let mut net = ticket_net();
     net.add(1, tess(Some(WRONG_SEAT)), Faults::clean(2));
-    assert!(net.run_until(20_000, |n| refused(n.client(0))), "{:?}", net.logs);
-    assert_eq!(net.client(0).state(), ClientState::Dropped(6), "the bye code of an unlisted name");
+    assert!(
+        net.run_until(20_000, |n| refused(n.client(0))),
+        "{:?}",
+        net.logs
+    );
+    assert_eq!(
+        net.client(0).state(),
+        ClientState::Dropped(6),
+        "the bye code of an unlisted name"
+    );
     assert_eq!(joins_of(&net, 9), 0);
-    assert!(!net.pipe_lines().iter().any(|l| l.starts_with("@seat_refused")));
+    assert!(!net
+        .pipe_lines()
+        .iter()
+        .any(|l| l.starts_with("@seat_refused")));
 
     let mut net = ticket_net();
     net.add(1, tess(None), Faults::clean(2));
-    assert!(net.run_until(20_000, |n| refused(n.client(0))), "{:?}", net.logs);
+    assert!(
+        net.run_until(20_000, |n| refused(n.client(0))),
+        "{:?}",
+        net.logs
+    );
     assert_eq!(joins_of(&net, 9), 0);
-    assert!(net.pipe_lines().iter().any(|l| l == "@seat_refused 9 noticket"));
-    assert!(net.logs.iter().any(|l| l.contains("seat of uid 9 refused (no ticket")));
+    assert!(net
+        .pipe_lines()
+        .iter()
+        .any(|l| l == "@seat_refused 9 noticket"));
+    assert!(net
+        .logs
+        .iter()
+        .any(|l| l.contains("seat of uid 9 refused (no ticket")));
 }
 
 /// A stranger with the name, on another address, does nothing to the player on the seat; the player's own new link
@@ -976,19 +1008,34 @@ fn a_stranger_leaves_the_seated_player_alone_and_a_reconnect_with_the_ticket_tak
     let at = net.now;
     net.add(2, tess(Some(WRONG_SEAT)), Faults::clean(2));
     net.add(3, tess(None), Faults::clean(2));
-    assert!(net.run_until(at + 20_000, |n| refused(n.client(1)) && refused(n.client(2))));
+    assert!(net.run_until(at + 20_000, |n| refused(n.client(1))
+        && refused(n.client(2))));
     net.run_until(net.now + 2000, |_| false);
-    assert_eq!(net.client(0).state(), ClientState::InWorld, "{:?}", net.logs);
+    assert_eq!(
+        net.client(0).state(),
+        ClientState::InWorld,
+        "{:?}",
+        net.logs
+    );
     assert_eq!(joins_of(&net, 9), 1);
     assert!(
-        !net.pipe_lines().iter().any(|l| l.starts_with("@seat_refused")),
+        !net.pipe_lines()
+            .iter()
+            .any(|l| l.starts_with("@seat_refused")),
         "a seat in use: nobody is told of an old client"
     );
     let at = net.now;
     net.add(4, tess(Some(SEAT)), Faults::clean(2));
-    assert!(net.run_until(at + 20_000, |n| n.client(3).state() == ClientState::InWorld), "{:?}", net.logs);
+    assert!(
+        net.run_until(at + 20_000, |n| n.client(3).state() == ClientState::InWorld),
+        "{:?}",
+        net.logs
+    );
     assert_eq!(joins_of(&net, 9), 2);
-    assert!(net.logs.iter().any(|l| l.contains("reconnected: closing the older link")));
+    assert!(net
+        .logs
+        .iter()
+        .any(|l| l.contains("reconnected: closing the older link")));
 }
 
 /// A `ticket=` that cannot be read seats nobody; a roster line without the token keeps the name-only check of a hand
@@ -996,7 +1043,9 @@ fn a_stranger_leaves_the_seated_player_alone_and_a_reconnect_with_the_ticket_tak
 #[test]
 fn an_unreadable_ticket_seats_nobody() {
     let mut net = Net::new(ServerTuning::default());
-    assert!(net.server.handle_line(0, "user 9 5 77 0 0 Tess ticket=nonsense"));
+    assert!(net
+        .server
+        .handle_line(0, "user 9 5 77 0 0 Tess ticket=nonsense"));
     net.add(1, tess(Some(SEAT)), Faults::clean(2));
     assert!(net.run_until(20_000, |n| refused(n.client(0))));
     assert_eq!(joins_of(&net, 9), 0);
@@ -1065,8 +1114,12 @@ fn nine_players_over_a_path_dropping_datagrams_over(limit: usize) {
         ..ServerTuning::default()
     };
     let mut net = Net::new(cfg);
-    let mut add = |net: &mut Net, i: u32| {
-        net.add(i, SynthConfig::named(&format!("Guest{i}")), Faults::clean(30));
+    let add = |net: &mut Net, i: u32| {
+        net.add(
+            i,
+            SynthConfig::named(&format!("Guest{i}")),
+            Faults::clean(30),
+        );
         let p = net.peers.last_mut().expect("peer");
         p.up.drop_over_bytes = Some(limit);
         p.down.drop_over_bytes = Some(limit);
@@ -1078,7 +1131,10 @@ fn nine_players_over_a_path_dropping_datagrams_over(limit: usize) {
         add(&mut net, i);
     }
     let all_in = |n: &Net| (0..9).all(|i| n.client(i).state() == ClientState::InWorld);
-    assert!(net.run_until(30_000, all_in), "limit {limit}: not all in the world");
+    assert!(
+        net.run_until(30_000, all_in),
+        "limit {limit}: not all in the world"
+    );
     net.run_until(net.now + 10_000, |_| false);
     assert!(all_in(&net), "limit {limit}: a client left the world");
     assert_eq!(net.server.clients().len(), 9, "limit {limit}");

@@ -126,8 +126,10 @@ fn figure() -> ModelFiles {
 
 /// A white wall at z = 60 over the whole view.
 fn wall(ctx: &GpuContext, r: &WorldRenderer) -> GpuScene {
-    let mut mesh = SceneMesh::default();
-    mesh.textures = vec![b"white".to_vec()];
+    let mut mesh = SceneMesh {
+        textures: vec![b"white".to_vec()],
+        ..Default::default()
+    };
     let v = |p: [f32; 3]| GpuVertex {
         pos: p,
         colour: [128, 128, 128, 255],

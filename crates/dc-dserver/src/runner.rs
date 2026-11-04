@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::cli::Args;
 use crate::rom_tables::RomTables;
-use dc_bute::modpatch::WeaponContent;
 use crate::session::{Output, Server};
 use crate::world::{self, WorldInfo};
+use dc_bute::modpatch::WeaponContent;
 use dc_net_engine::socket_reader::SocketReader;
 use dc_net_engine::time::since;
 use dc_net_engine::Millis;
@@ -114,7 +114,9 @@ pub fn load_tables(args: &Args) -> Result<(RomTables, Vec<String>), String> {
             }
             Ok((t, notes))
         }
-        None if content.is_some() => Err("content: no ROM, the patches have no weapon table".into()),
+        None if content.is_some() => {
+            Err("content: no ROM, the patches have no weapon table".into())
+        }
         None => Ok((
             RomTables::default(),
             vec!["no ROM: game tables empty, DeCombat defaults apply".into()],

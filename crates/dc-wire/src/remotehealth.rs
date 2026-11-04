@@ -73,8 +73,16 @@ mod tests {
     #[test]
     fn a_body_round_trips_and_a_cut_body_is_refused() {
         let es = [
-            HealthEntry { pid: 3, health: 57, max: 100 },
-            HealthEntry { pid: 9, health: 0, max: 1500 },
+            HealthEntry {
+                pid: 3,
+                health: 57,
+                max: 100,
+            },
+            HealthEntry {
+                pid: 9,
+                health: 0,
+                max: 1500,
+            },
         ];
         let mut w = BitWriter::new();
         write_body(&mut w, &es);

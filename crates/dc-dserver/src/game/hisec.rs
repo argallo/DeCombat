@@ -265,7 +265,15 @@ impl Game {
             .case_rows
             .iter()
             .copied()
-            .filter(|&(r, w)| w > 0 && self.tables.hisec.rows.get(&r).is_some_and(|x| x.model.is_some()))
+            .filter(|&(r, w)| {
+                w > 0
+                    && self
+                        .tables
+                        .hisec
+                        .rows
+                        .get(&r)
+                        .is_some_and(|x| x.model.is_some())
+            })
             .collect();
         let total: u64 = pool.iter().map(|&(_, w)| u64::from(w)).sum();
         if total == 0 {
@@ -484,7 +492,8 @@ impl Game {
             })
             .unwrap_or_default();
         // HS-13 / HS-15: the row the case dropped as, so the lobby delivers that case
-        self.out.push(GameOut::Pipe(crate::pipe::hisec_line(uid, row, key, &nick)));
+        self.out
+            .push(GameOut::Pipe(crate::pipe::hisec_line(uid, row, key, &nick)));
         self.log(format!("hisec: case {key} picked up by client {pid}"));
     }
 }
@@ -506,7 +515,10 @@ mod tests {
         h.set("expected_kills", "0").unwrap();
         assert_eq!(h.expected_kills, 1);
         // HS-15: the weighted case rows
-        assert_eq!(HisecTuning::default().case_rows, [(0, 80), (1, 20), (0, 0), (0, 0)]);
+        assert_eq!(
+            HisecTuning::default().case_rows,
+            [(0, 80), (1, 20), (0, 0), (0, 0)]
+        );
         h.set("case_rows", "0:50/1:30/2:20").unwrap();
         assert_eq!(h.case_rows, [(0, 50), (1, 30), (2, 20), (0, 0)]);
         h.set("hisec.case_rows", "none").unwrap();

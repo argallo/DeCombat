@@ -36,7 +36,8 @@ pub fn install_stop_handler() -> Result<(), String> {
 mod platform {
     use windows_sys::Win32::Foundation::BOOL;
     use windows_sys::Win32::System::Console::{
-        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_SHUTDOWN_EVENT,
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT,
+        CTRL_SHUTDOWN_EVENT,
     };
 
     unsafe extern "system" fn handler(kind: u32) -> BOOL {
@@ -209,7 +210,11 @@ pub fn shutdown(shared: &Shared, grace_secs: f64) -> ! {
     std::thread::sleep(Duration::from_millis(200));
     let mut g = crate::net::lock(shared);
     match g.db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
     }) {
         Ok((busy, log, done)) => g.note(&format!(
             "stopping: DB checkpoint (busy {}, wal frames {}, copied {})",
@@ -325,10 +330,7 @@ pub fn status_json(st: &Core) -> String {
         ro.insert("map_index".to_string(), num(r.map));
         let humans = r.members.iter().filter(|m| is_human(st, m.account)).count();
         ro.insert("players".to_string(), num(humans as f64));
-        ro.insert(
-            "bots".to_string(),
-            num((r.members.len() - humans) as f64),
-        );
+        ro.insert("bots".to_string(), num((r.members.len() - humans) as f64));
         ro.insert("max_players".to_string(), num(r.max_players));
         let g = r.game.and_then(|id| st.games.get(&id));
         ro.insert(
@@ -411,7 +413,10 @@ pub fn net_json(st: &Core) -> String {
             o.insert("tcp_age_secs".to_string(), tcp.unwrap_or(JsonValue::Null));
             match g.net.get(client) {
                 Some((at, n)) => {
-                    o.insert("report_age_secs".to_string(), r1(at.elapsed().as_secs_f64()));
+                    o.insert(
+                        "report_age_secs".to_string(),
+                        r1(at.elapsed().as_secs_f64()),
+                    );
                     o.insert("window_secs".to_string(), r1(n.window_ms as f64 / 1000.0));
                     let mut rtt = BTreeMap::new();
                     rtt.insert("mean".to_string(), r1(n.rtt_mean));
@@ -448,7 +453,13 @@ mod tests {
     fn status_lists_the_basics_on_an_empty_server() {
         let st = crate::state::testing::state();
         let s = status_json(&st);
-        for k in ["\"uptime_secs\"", "\"rooms\"", "\"lobby_logins\"", "\"db\"", "\"address\""] {
+        for k in [
+            "\"uptime_secs\"",
+            "\"rooms\"",
+            "\"lobby_logins\"",
+            "\"db\"",
+            "\"address\"",
+        ] {
             assert!(s.contains(k), "{k} missing in {s}");
         }
     }
@@ -460,7 +471,8 @@ mod tests {
         let now = 0;
         let a = crate::db::create_account(&st.db, "alice", now).unwrap();
         let b = crate::db::create_account(&st.db, "bot3", now).unwrap();
-        let h = crate::db::create_account(&st.db, &crate::auth::normalize_login("Helper"), now).unwrap();
+        let h = crate::db::create_account(&st.db, &crate::auth::normalize_login("Helper"), now)
+            .unwrap();
         assert!(is_human(&st, a));
         assert!(!is_human(&st, b));
         assert!(!is_human(&st, h));

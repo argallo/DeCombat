@@ -68,7 +68,9 @@ pub fn check_hud_override(key: &str, value: &LuaValue) -> Result<(), String> {
     };
     let ranged = |(lo, hi): (f64, f64)| match value.as_f64() {
         Some(n) if n.is_finite() && n >= lo && n <= hi => Ok(()),
-        _ => Err(format!("HUD override '{key}' must be a number from {lo} to {hi}, got {value:?}")),
+        _ => Err(format!(
+            "HUD override '{key}' must be a number from {lo} to {hi}, got {value:?}"
+        )),
     };
     match key {
         "crosshair" | "hitmarker" => texture(value),

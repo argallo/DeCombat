@@ -569,7 +569,10 @@ impl Game {
         let lifted = [fl.pos[0], fl.pos[1] + BLAST_RAY_LIFT, fl.pos[2]];
         // DC-DEFAULT: DSV-390 (amended; its spy clause replaced by DSV-450) the thrower's team at the blast, not at
         // the throw (left the match: the team of the throw)
-        let owner_team = self.players.get(&fl.owner).map_or(fl.owner_team, |p| p.team);
+        let owner_team = self
+            .players
+            .get(&fl.owner)
+            .map_or(fl.owner_team, |p| p.team);
         let victims: Vec<(u8, [f32; 3])> = self
             .players
             .values()
@@ -681,7 +684,10 @@ impl Game {
     // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] ProgDamage, ProgDamageType, ProgDamageDuration, ProgDamageRadius
     // DC-DEFAULT: DSV-455 (proposed)
     fn flame_burst(&mut self, fl: &Flight, prog: ProgDamage, now: Millis) {
-        let owner_team = self.players.get(&fl.owner).map_or(fl.owner_team, |p| p.team);
+        let owner_team = self
+            .players
+            .get(&fl.owner)
+            .map_or(fl.owner_team, |p| p.team);
         let lifted = [fl.pos[0], fl.pos[1] + BLAST_RAY_LIFT, fl.pos[2]];
         let blast_los = self.cfg.projectile.blast_los;
         let near: Vec<(u8, [f32; 3])> = self
@@ -754,7 +760,8 @@ impl Game {
                 continue;
             }
             self.burns[i].next = b.next.wrapping_add(BURN_STEP_MS);
-            let dmg = b.per_second * BURN_STEP_MS as f32 / 1000.0 * self.agent_damage_scale(b.owner);
+            let dmg =
+                b.per_second * BURN_STEP_MS as f32 / 1000.0 * self.agent_damage_scale(b.owner);
             let killer = self.players.contains_key(&b.owner).then_some(b.owner);
             let src = DamageSource {
                 weapon: b.weapon,

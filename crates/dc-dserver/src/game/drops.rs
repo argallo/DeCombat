@@ -220,7 +220,9 @@ pub fn use_of(
         return take_of(weapons, w, stock_cap);
     }
     if is_primary_slot(w.slot) {
-        if let Some(index) = current.filter(|&i| weapons.get(i).is_some_and(|h| is_primary_slot(h.slot))) {
+        if let Some(index) =
+            current.filter(|&i| weapons.get(i).is_some_and(|h| is_primary_slot(h.slot)))
+        {
             return Some(Take::Swap { index });
         }
     }

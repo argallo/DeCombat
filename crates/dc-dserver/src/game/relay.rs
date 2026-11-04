@@ -35,7 +35,13 @@ pub fn vitals_due(
     if !has_character {
         return None;
     }
-    let shown = |v: f32| if v.is_finite() { v.round().clamp(0.0, 999.0) as u16 } else { 0 };
+    let shown = |v: f32| {
+        if v.is_finite() {
+            v.round().clamp(0.0, 999.0) as u16
+        } else {
+            0
+        }
+    };
     let v = [shown(health), shown(armour)];
     match last {
         Some((was, at)) if was == v && since(now, at) < VITALS_REFRESH_MS => None,
@@ -147,7 +153,8 @@ impl Game {
         // DC-DEFAULT: DSV-483 (proposed) the end point of a move onto this player
         p.on_ground_report = t.on_ground();
         if t.on_ground()
-            && u.control().is_none_or(|c| c & dc_sim::player::bits::CROUCH == 0)
+            && u.control()
+                .is_none_or(|c| c & dc_sim::player::bits::CROUCH == 0)
         {
             p.stand_pos = Some(pos);
         }
@@ -205,8 +212,10 @@ impl Game {
         if let Some(v) = vitals {
             for t in self.introduced() {
                 for (sub, value) in [(gs::NOTE_HEALTH, v[0]), (gs::NOTE_ARMOUR, v[1])] {
-                    self.out
-                        .push(super::GameOut::Unreliable(t, gs::vitals_note(obj, sub, value)));
+                    self.out.push(super::GameOut::Unreliable(
+                        t,
+                        gs::vitals_note(obj, sub, value),
+                    ));
                 }
             }
         }
@@ -321,7 +330,11 @@ mod vitals_tests {
     /// DSV-521: the notes go out at once, again on a change, and otherwise every 2 s.
     #[test]
     fn vitals_go_out_on_a_change_and_every_two_seconds() {
-        assert_eq!(vitals_due(false, 100.0, 50.0, None, 0), None, "no character, no note");
+        assert_eq!(
+            vitals_due(false, 100.0, 50.0, None, 0),
+            None,
+            "no character, no note"
+        );
         assert_eq!(vitals_due(true, 99.6, 50.2, None, 0), Some([100, 50]));
         let last = Some(([100, 50], 1000));
         assert_eq!(vitals_due(true, 100.0, 50.0, last, 2999), None);
@@ -334,6 +347,9 @@ mod vitals_tests {
     #[test]
     fn the_vitals_note_layout() {
         let m = gs::vitals_note(0x0123, gs::NOTE_HEALTH, 87);
-        assert_eq!(m.as_bytes(), &[0x0d, 0xa6, 0x18, 0x23, 0x01, 0x14, 87, 0][..]);
+        assert_eq!(
+            m.as_bytes(),
+            &[0x0d, 0xa6, 0x18, 0x23, 0x01, 0x14, 87, 0][..]
+        );
     }
 }

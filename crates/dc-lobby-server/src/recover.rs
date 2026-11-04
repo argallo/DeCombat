@@ -33,8 +33,7 @@ pub const MSG_NOT_SET_UP: &str =
 pub const MSG_ID_NOT_SET_UP: &str =
     "Login ID recovery is not set up on this server. Ask the host for your login name.";
 pub const MSG_SENT: &str = "If the account and the address match, a code was sent.";
-pub const MSG_ID_SENT: &str =
-    "If accounts use this address, a mail with their login IDs was sent.";
+pub const MSG_ID_SENT: &str = "If accounts use this address, a mail with their login IDs was sent.";
 pub const MSG_CHANGED: &str = "Password changed. Log in with the new one.";
 pub const MSG_BAD_CODE: &str = "That code is wrong or has expired. Ask for a new one.";
 pub const MSG_SLOW: &str = "Too many attempts from your address. Try again in ten minutes.";
@@ -128,7 +127,13 @@ fn confirm_page(st: &Core, msg: Option<&str>, ok: bool, name: &str) -> String {
         pmax = accounts::PW_MAX_LEN,
         name = esc(name),
     );
-    reg_page("Set a new password", "Enter the code we mailed you.", msg, ok, &body)
+    reg_page(
+        "Set a new password",
+        "Enter the code we mailed you.",
+        msg,
+        ok,
+        &body,
+    )
 }
 
 // ------------------------------------------------------------------------------------------------- routing
@@ -143,7 +148,16 @@ pub fn route(
     now: Instant,
     json: bool,
 ) -> rusqlite::Result<(u16, String)> {
-    route_at(st, method, path, body, peer, now, crate::clock::unix_now(), json)
+    route_at(
+        st,
+        method,
+        path,
+        body,
+        peer,
+        now,
+        crate::clock::unix_now(),
+        json,
+    )
 }
 
 /// [`route`] at the unix time `unix` (tests move the clock).
@@ -185,7 +199,11 @@ pub fn route_at(
     }
     let id = path == "/recover/id";
     if !st.mail.enabled() {
-        let m = if id { MSG_ID_NOT_SET_UP } else { MSG_NOT_SET_UP };
+        let m = if id {
+            MSG_ID_NOT_SET_UP
+        } else {
+            MSG_NOT_SET_UP
+        };
         if json {
             return Ok((200, json_answer(false, m)));
         }
@@ -249,14 +267,24 @@ pub fn route_at(
 /// LG-242: a code for `name` when its address is `email`; nothing (and the same answer) otherwise.
 /// LG-242: mails a code when `name` and `email` match and the account is under the hourly cap; true when a mail was
 /// handed to the sender. Also the dashboard's "send a password reset mail" (playeradmin.rs, LG-396).
-pub(crate) fn send_code(st: &mut Core, name: &str, email: &str, ip: &str, unix: i64) -> rusqlite::Result<bool> {
+pub(crate) fn send_code(
+    st: &mut Core,
+    name: &str,
+    email: &str,
+    ip: &str,
+    unix: i64,
+) -> rusqlite::Result<bool> {
     let Some(acc) = crate::db::account_by_login(&st.db, name)? else {
-        st.note(&format!("recovery: code request from {ip}: no match, nothing sent"));
+        st.note(&format!(
+            "recovery: code request from {ip}: no match, nothing sent"
+        ));
         return Ok(false);
     };
     let stored = crate::db::account_email(&st.db, acc.user_no)?;
     if stored.is_empty() || !stored.eq_ignore_ascii_case(email) {
-        st.note(&format!("recovery: code request from {ip}: no match, nothing sent"));
+        st.note(&format!(
+            "recovery: code request from {ip}: no match, nothing sent"
+        ));
         return Ok(false);
     }
     let recent: i64 = st.db.query_row(
@@ -283,7 +311,12 @@ pub(crate) fn send_code(st: &mut Core, name: &str, email: &str, ip: &str, unix: 
     )?;
     st.db.execute(
         "INSERT INTO recovery_codes (user_no, code_hash, created, expires) VALUES (?1, ?2, ?3, ?4)",
-        params![acc.user_no as i64, code_hash(&code), unix, unix + CODE_TTL_SECS],
+        params![
+            acc.user_no as i64,
+            code_hash(&code),
+            unix,
+            unix + CODE_TTL_SECS
+        ],
     )?;
     let body = format!(
         "Hello,\n\n\
@@ -358,7 +391,10 @@ fn confirm_code(
 ) -> rusqlite::Result<(bool, String)> {
     let code = normalize_code(code);
     if name.is_empty() || code.is_empty() {
-        return Ok((false, "Enter your login name and the code from the mail.".into()));
+        return Ok((
+            false,
+            "Enter your login name and the code from the mail.".into(),
+        ));
     }
     // the password rules first: their answer says nothing about the code
     if let Err(e) = accounts::valid_password_for(name, pw) {

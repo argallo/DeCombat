@@ -19,7 +19,7 @@
 // cshell+0x1a3910 (30.0 written at physics creation)
 // OBSERVED: capture 20261025_002236_tdm4 (the reference stack sent this variable with the value text
 // `30.000000` on both links, conn 5 t 56.234 and conn 6 t 62.297 just before its `S2C_LOAD_WORLD`; the real client
-// ran up the SNOWVALLEY staircase on the ground, seq 3741-3777; REFERENCE); capture 
+// ran up the SNOWVALLEY staircase on the ground, seq 3741-3777; REFERENCE); capture
 // 20261025_095358_rust4 (no `S2C_EVAR` at all from our server: the same staircase blocked four times and needed
 // jumps, seq 39278-39936)
 // DC-DEFAULT: DSV-53 (proposed) send the step height 30 at every world load; `-stepheight <units>|off`

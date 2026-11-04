@@ -25,8 +25,9 @@ pub fn parse_addr(spec: &str) -> Result<SocketAddr, String> {
     if let Ok(port) = spec.parse::<u16>() {
         return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
     }
-    spec.parse::<SocketAddr>()
-        .map_err(|_| format!("--admin {spec}: give ADDR:PORT (for example 127.0.0.1:10090) or a port"))
+    spec.parse::<SocketAddr>().map_err(|_| {
+        format!("--admin {spec}: give ADDR:PORT (for example 127.0.0.1:10090) or a port")
+    })
 }
 
 /// The address to bind, or why the flags are refused.
@@ -39,7 +40,9 @@ pub fn resolve(spec: &str, public: bool, token: Option<&str>) -> Result<SocketAd
             ));
         }
         if token.is_none() {
-            return Err(format!("--admin {a} with --admin-public needs --admin-token"));
+            return Err(format!(
+                "--admin {a} with --admin-public needs --admin-token"
+            ));
         }
     }
     Ok(a)
@@ -129,7 +132,12 @@ pub fn room_key(id: &str) -> Option<RoomKey> {
 }
 
 /// One request: (status, JSON body).
-pub fn handle(shared: &Shared, head: &str, peer: Option<IpAddr>, token: Option<&str>) -> (u16, String) {
+pub fn handle(
+    shared: &Shared,
+    head: &str,
+    peer: Option<IpAddr>,
+    token: Option<&str>,
+) -> (u16, String) {
     let Some(req) = parse_request(head) else {
         return (400, msg(false, "bad request"));
     };
@@ -181,7 +189,8 @@ pub fn handle(shared: &Shared, head: &str, peer: Option<IpAddr>, token: Option<&
                     if !g.rooms.contains_key(&key) {
                         return (404, msg(false, &format!("no room {id}")));
                     }
-                    let r = g.scope(|st| crate::lifecycle::close_room_now(st, key, "admin request"));
+                    let r =
+                        g.scope(|st| crate::lifecycle::close_room_now(st, key, "admin request"));
                     crate::net::run_deferred(shared, &mut g);
                     match r {
                         Ok(()) => (200, msg(true, &format!("room {id} closed"))),
@@ -212,7 +221,11 @@ fn serve(shared: Shared, token: Option<String>, mut s: TcpStream) {
             match read_body(&mut s, &head, rest, crate::betaweb::ADMIN_MAX_BODY) {
                 Ok(b) => b,
                 Err(code) => {
-                    let _ = s.write_all(&reply(code, crate::opsweb::JSON, "{\"ok\": false, \"message\": \"bad or too large body\"}"));
+                    let _ = s.write_all(&reply(
+                        code,
+                        crate::opsweb::JSON,
+                        "{\"ok\": false, \"message\": \"bad or too large body\"}",
+                    ));
                     let _ = s.shutdown(std::net::Shutdown::Both);
                     return;
                 }
@@ -221,14 +234,20 @@ fn serve(shared: Shared, token: Option<String>, mut s: TcpStream) {
         _ => Vec::new(),
     };
     let tk = token.as_deref();
-    let (status, ctype, body) =
-        match crate::opsweb::handle_with_body(&shared, &head, &req_body, peer, tk, token_ok(&head, tk)) {
-            Some(r) => r,
-            None => {
-                let (status, body) = handle(&shared, &head, peer, tk);
-                (status, crate::opsweb::JSON, body)
-            }
-        };
+    let (status, ctype, body) = match crate::opsweb::handle_with_body(
+        &shared,
+        &head,
+        &req_body,
+        peer,
+        tk,
+        token_ok(&head, tk),
+    ) {
+        Some(r) => r,
+        None => {
+            let (status, body) = handle(&shared, &head, peer, tk);
+            (status, crate::opsweb::JSON, body)
+        }
+    };
     let _ = s.write_all(&reply(status, ctype, &body));
     let _ = s.flush();
     let _ = s.shutdown(std::net::Shutdown::Both);
@@ -283,25 +302,49 @@ mod tests {
         assert!(body.contains("\"rooms\""));
         assert_eq!(handle(&sh, "GET /nope HTTP/1.1\r\n\r\n", LO, None).0, 404);
         assert_eq!(handle(&sh, "GET /stop HTTP/1.1\r\n\r\n", LO, None).0, 405);
-        assert_eq!(handle(&sh, "POST /rooms/1-9/close HTTP/1.1\r\n\r\n", LO, None).0, 404);
-        assert_eq!(handle(&sh, "POST /rooms/x/close HTTP/1.1\r\n\r\n", LO, None).0, 400);
+        assert_eq!(
+            handle(&sh, "POST /rooms/1-9/close HTTP/1.1\r\n\r\n", LO, None).0,
+            404
+        );
+        assert_eq!(
+            handle(&sh, "POST /rooms/x/close HTTP/1.1\r\n\r\n", LO, None).0,
+            400
+        );
     }
 
     #[test]
     fn a_token_is_required_when_set_and_remote_peers_need_one() {
         let sh = shared();
         let remote = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)));
-        assert_eq!(handle(&sh, "GET /status HTTP/1.1\r\n\r\n", remote, None).0, 403);
+        assert_eq!(
+            handle(&sh, "GET /status HTTP/1.1\r\n\r\n", remote, None).0,
+            403
+        );
         let t = Some("s3cret");
         assert_eq!(handle(&sh, "GET /status HTTP/1.1\r\n\r\n", LO, t).0, 401);
         assert_eq!(
-            handle(&sh, "GET /status HTTP/1.1\r\nX-Admin-Token: s3cret\r\n\r\n", remote, t).0,
+            handle(
+                &sh,
+                "GET /status HTTP/1.1\r\nX-Admin-Token: s3cret\r\n\r\n",
+                remote,
+                t
+            )
+            .0,
             200
         );
         assert_eq!(
-            handle(&sh, "GET /status HTTP/1.1\r\nAuthorization: Bearer s3cret\r\n\r\n", LO, t).0,
+            handle(
+                &sh,
+                "GET /status HTTP/1.1\r\nAuthorization: Bearer s3cret\r\n\r\n",
+                LO,
+                t
+            )
+            .0,
             200
         );
-        assert_eq!(handle(&sh, "GET /status?token=s3cret HTTP/1.1\r\n\r\n", LO, t).0, 200);
+        assert_eq!(
+            handle(&sh, "GET /status?token=s3cret HTTP/1.1\r\n\r\n", LO, t).0,
+            200
+        );
     }
 }

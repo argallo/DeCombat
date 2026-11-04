@@ -138,7 +138,9 @@ impl ModSetting {
         let label = field("label")?;
         let n = label.trim().chars().count();
         if n == 0 || n > MAX_SETTING_LABEL_CHARS {
-            return Err(e(format!("label must be 1 to {MAX_SETTING_LABEL_CHARS} characters")));
+            return Err(e(format!(
+                "label must be 1 to {MAX_SETTING_LABEL_CHARS} characters"
+            )));
         }
         let kind = match field("type")?.as_str() {
             "colour" => SettingKind::Colour,
@@ -170,7 +172,9 @@ impl ModSetting {
                     .and_then(|x| x.as_array())
                     .ok_or_else(|| e("a choice needs an 'options' array".into()))?;
                 if list.len() < 2 || list.len() > MAX_SETTING_OPTIONS {
-                    return Err(e(format!("a choice needs 2 to {MAX_SETTING_OPTIONS} options")));
+                    return Err(e(format!(
+                        "a choice needs 2 to {MAX_SETTING_OPTIONS} options"
+                    )));
                 }
                 let mut seen = BTreeSet::new();
                 let mut options = Vec::new();
@@ -191,12 +195,17 @@ impl ModSetting {
                     }
                     let n = shown.trim().chars().count();
                     if n == 0 || n > MAX_SETTING_LABEL_CHARS {
-                        return Err(e(format!("the label of option '{value}' is empty or too long")));
+                        return Err(e(format!(
+                            "the label of option '{value}' is empty or too long"
+                        )));
                     }
                     if !seen.insert(value.clone()) {
                         return Err(e(format!("option '{value}' appears twice")));
                     }
-                    options.push(SettingOption { value, label: shown });
+                    options.push(SettingOption {
+                        value,
+                        label: shown,
+                    });
                 }
                 SettingKind::Choice(options)
             }
@@ -211,7 +220,9 @@ impl ModSetting {
             Some(g) => {
                 let g = g.as_str().map(str::trim).unwrap_or("");
                 if g.is_empty() || g.chars().count() > MAX_SETTING_LABEL_CHARS {
-                    return Err(e(format!("group must be 1 to {MAX_SETTING_LABEL_CHARS} characters")));
+                    return Err(e(format!(
+                        "group must be 1 to {MAX_SETTING_LABEL_CHARS} characters"
+                    )));
                 }
                 Some(g.to_string())
             }
@@ -285,17 +296,20 @@ pub fn parse_settings(val: Option<&JsonValue>) -> Result<Vec<ModSetting>, String
     let Some(v) = val else {
         return Ok(Vec::new());
     };
-    let list = v
-        .as_array()
-        .ok_or("Manifest 'settings' must be an array")?;
+    let list = v.as_array().ok_or("Manifest 'settings' must be an array")?;
     if list.len() > MAX_SETTINGS {
-        return Err(format!("Manifest 'settings' lists more than {MAX_SETTINGS} settings"));
+        return Err(format!(
+            "Manifest 'settings' lists more than {MAX_SETTINGS} settings"
+        ));
     }
     let mut out: Vec<ModSetting> = Vec::new();
     for (i, x) in list.iter().enumerate() {
         let s = ModSetting::from_json(i, x)?;
         if out.iter().any(|o| o.key == s.key) {
-            return Err(format!("Manifest 'settings': key '{}' appears twice", s.key));
+            return Err(format!(
+                "Manifest 'settings': key '{}' appears twice",
+                s.key
+            ));
         }
         out.push(s);
     }
@@ -359,7 +373,11 @@ fn share_layout(id: &str, decl: &[ModSetting]) -> u16 {
 
 /// All of `values` as a code the player can copy: `DCS-` and base-32 groups (no I, L, O, U). A missing or bad value
 /// counts as its default.
-pub fn encode_share_code(id: &str, decl: &[ModSetting], values: &BTreeMap<String, String>) -> String {
+pub fn encode_share_code(
+    id: &str,
+    decl: &[ModSetting],
+    values: &BTreeMap<String, String>,
+) -> String {
     let mut b = vec![SHARE_VERSION];
     b.extend_from_slice(&share_layout(id, decl).to_be_bytes());
     for d in decl {
@@ -370,7 +388,9 @@ pub fn encode_share_code(id: &str, decl: &[ModSetting], values: &BTreeMap<String
         match &d.kind {
             SettingKind::Colour => b.extend_from_slice(&parse_rgba_hex(&v).unwrap_or([255; 4])),
             SettingKind::Bool => b.push((v == "true") as u8),
-            SettingKind::Choice(o) => b.push(o.iter().position(|x| x.value == v).unwrap_or(0) as u8),
+            SettingKind::Choice(o) => {
+                b.push(o.iter().position(|x| x.value == v).unwrap_or(0) as u8)
+            }
             SettingKind::Number(r) => {
                 let n = v.parse().ok().and_then(|x| r.index(x)).unwrap_or(0);
                 b.extend_from_slice(&(n as u16).to_be_bytes());
@@ -422,7 +442,10 @@ pub fn decode_share_code(
     let mut b = Vec::with_capacity(body.len() * 5 / 8);
     let (mut acc, mut bits) = (0u32, 0u32);
     for c in body.bytes() {
-        let v = SHARE_ALPHABET.iter().position(|x| *x == c).ok_or(NOT_A_CODE)? as u32;
+        let v = SHARE_ALPHABET
+            .iter()
+            .position(|x| *x == c)
+            .ok_or(NOT_A_CODE)? as u32;
         acc = (acc << 5) | v;
         bits += 5;
         if bits >= 8 {
@@ -462,11 +485,7 @@ pub fn decode_share_code(
                 1 => "true".to_string(),
                 _ => return Err(NOT_A_CODE.into()),
             },
-            SettingKind::Choice(o) => o
-                .get(take(1)?[0] as usize)
-                .ok_or(NOT_A_CODE)?
-                .value
-                .clone(),
+            SettingKind::Choice(o) => o.get(take(1)?[0] as usize).ok_or(NOT_A_CODE)?.value.clone(),
             SettingKind::Number(r) => {
                 let c = take(2)?;
                 let n = u16::from_be_bytes([c[0], c[1]]) as u32;
@@ -512,31 +531,87 @@ mod tests {
         let s = parse(GOOD).unwrap();
         assert_eq!(s[0].default, "#4080ff");
         assert_eq!(s[2].default, "true");
-        let again = parse_settings(Some(&JsonValue::Array(s.iter().map(|x| x.to_json()).collect())));
+        let again = parse_settings(Some(&JsonValue::Array(
+            s.iter().map(|x| x.to_json()).collect(),
+        )));
         assert_eq!(again.unwrap(), s);
     }
 
     #[test]
     fn bad_declarations_are_refused() {
         for (bad, why) in [
-            (r#"[{"key":"A","label":"x","type":"bool","default":true}]"#, "key"),
-            (r#"[{"key":"a","label":"","type":"bool","default":true}]"#, "label"),
-            (r#"[{"key":"a","label":"x","type":"slider","default":"1"}]"#, "unknown type"),
-            (r#"[{"key":"a","label":"x","type":"bool","default":"true"}]"#, "wrong type"),
-            (r#"[{"key":"a","label":"x","type":"colour","default":"blue"}]"#, "default"),
-            (r#"[{"key":"a","label":"x","type":"choice","default":"a","options":["a"]}]"#, "2 to"),
-            (r#"[{"key":"a","label":"x","type":"choice","default":"z","options":["a","b"]}]"#, "default"),
-            (r#"[{"key":"a","label":"x","type":"choice","default":"a","options":["a","a"]}]"#, "twice"),
-            (r#"[{"key":"a","label":"x","type":"bool","default":true},{"key":"a","label":"y","type":"bool","default":true}]"#, "twice"),
-            (r#"[{"key":"a","label":"x","type":"number","default":1,"max":2,"step":1}]"#, "'min'"),
-            (r#"[{"key":"a","label":"x","type":"number","default":1,"min":2,"max":1,"step":1}]"#, "min < max"),
-            (r#"[{"key":"a","label":"x","type":"number","default":1,"min":0,"max":2,"step":0}]"#, "step > 0"),
-            (r#"[{"key":"a","label":"x","type":"number","default":1,"min":0,"max":2,"step":0.7}]"#, "whole number"),
-            (r#"[{"key":"a","label":"x","type":"number","default":1,"min":0,"max":100000,"step":1}]"#, "whole number"),
-            (r#"[{"key":"a","label":"x","type":"number","default":3,"min":0,"max":2,"step":1}]"#, "default"),
-            (r#"[{"key":"a","label":"x","type":"number","default":0.3,"min":0,"max":2,"step":0.5}]"#, "default"),
-            (r#"[{"key":"a","label":"x","type":"number","default":"1","min":0,"max":2,"step":1}]"#, "wrong type"),
-            (r#"[{"key":"a","label":"x","type":"bool","default":true,"group":""}]"#, "group"),
+            (
+                r#"[{"key":"A","label":"x","type":"bool","default":true}]"#,
+                "key",
+            ),
+            (
+                r#"[{"key":"a","label":"","type":"bool","default":true}]"#,
+                "label",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"slider","default":"1"}]"#,
+                "unknown type",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"bool","default":"true"}]"#,
+                "wrong type",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"colour","default":"blue"}]"#,
+                "default",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"choice","default":"a","options":["a"]}]"#,
+                "2 to",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"choice","default":"z","options":["a","b"]}]"#,
+                "default",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"choice","default":"a","options":["a","a"]}]"#,
+                "twice",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"bool","default":true},{"key":"a","label":"y","type":"bool","default":true}]"#,
+                "twice",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":1,"max":2,"step":1}]"#,
+                "'min'",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":1,"min":2,"max":1,"step":1}]"#,
+                "min < max",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":1,"min":0,"max":2,"step":0}]"#,
+                "step > 0",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":1,"min":0,"max":2,"step":0.7}]"#,
+                "whole number",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":1,"min":0,"max":100000,"step":1}]"#,
+                "whole number",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":3,"min":0,"max":2,"step":1}]"#,
+                "default",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":0.3,"min":0,"max":2,"step":0.5}]"#,
+                "default",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"number","default":"1","min":0,"max":2,"step":1}]"#,
+                "wrong type",
+            ),
+            (
+                r#"[{"key":"a","label":"x","type":"bool","default":true,"group":""}]"#,
+                "group",
+            ),
         ] {
             let e = parse(bad).unwrap_err();
             assert!(e.contains(why), "{bad}: {e}");
@@ -575,15 +650,24 @@ mod tests {
         assert_eq!(d[0].accept(" 7.0 ").as_deref(), Some("7"));
         assert_eq!(d[1].accept("-3.5").as_deref(), Some("-3.5"));
         assert_eq!(d[1].accept("0").as_deref(), Some("0"));
-        assert_eq!(d[2].accept("1.7").as_deref(), Some("1.7"), "a decimal step lands on its grid");
+        assert_eq!(
+            d[2].accept("1.7").as_deref(),
+            Some("1.7"),
+            "a decimal step lands on its grid"
+        );
         for bad in ["6.3", "0", "40.5", "NaN", "inf", "", "seven"] {
             assert_eq!(d[0].accept(bad), None, "{bad}");
         }
         assert_eq!(d[0].lua_value("6.5"), LuaValue::Number(6.5));
-        let again = parse_settings(Some(&JsonValue::Array(d.iter().map(|x| x.to_json()).collect())));
+        let again = parse_settings(Some(&JsonValue::Array(
+            d.iter().map(|x| x.to_json()).collect(),
+        )));
         assert_eq!(again.unwrap(), d);
         // a stored value out of range or off the grid reads as the default
-        let st = [("len".to_string(), "99".to_string()), ("gap".to_string(), "-3".to_string())];
+        let st = [
+            ("len".to_string(), "99".to_string()),
+            ("gap".to_string(), "-3".to_string()),
+        ];
         let r = resolve_settings(&d, Some(&st.into_iter().collect()));
         assert_eq!((r["len"].as_str(), r["gap"].as_str()), ("7", "-3"));
     }
@@ -603,9 +687,15 @@ mod tests {
         let code = encode_share_code("m", &d, &values);
         assert!(code.starts_with("DCS-") && code.len() < 40, "{code}");
         assert_eq!(decode_share_code("m", &d, &code).unwrap(), values);
-        assert_eq!(decode_share_code("m", &d, &format!(" {} ", code.to_ascii_lowercase())).unwrap(), values);
+        assert_eq!(
+            decode_share_code("m", &d, &format!(" {} ", code.to_ascii_lowercase())).unwrap(),
+            values
+        );
         let defaults = resolve_settings(&d, None);
-        assert_eq!(decode_share_code("m", &d, &encode_share_code("m", &d, &defaults)).unwrap(), defaults);
+        assert_eq!(
+            decode_share_code("m", &d, &encode_share_code("m", &d, &defaults)).unwrap(),
+            defaults
+        );
         // every changed character is caught
         for i in 4..code.len() {
             if code.as_bytes()[i] == b'-' {
@@ -616,14 +706,28 @@ mod tests {
             let bad = String::from_utf8(bad).unwrap();
             assert!(decode_share_code("m", &d, &bad).is_err(), "{bad}");
         }
-        for bad in ["", "hello", "DCS", "DCS-", "DCS-!!!!!", &code[..code.len() - 3], &format!("{code}00")] {
+        for bad in [
+            "",
+            "hello",
+            "DCS",
+            "DCS-",
+            "DCS-!!!!!",
+            &code[..code.len() - 3],
+            &format!("{code}00"),
+        ] {
             assert!(decode_share_code("m", &d, bad).is_err(), "{bad}");
         }
         let e = decode_share_code("other", &d, &code).unwrap_err();
         assert!(e.contains("another mod"), "{e}");
         // an index past a number's grid, with a good checksum, is refused
-        let short = parse(r#"[{"key":"n","label":"N","type":"number","min":0,"max":1,"step":1,"default":0}]"#).unwrap();
-        let wide = parse(r#"[{"key":"n","label":"N","type":"number","min":0,"max":9,"step":1,"default":0}]"#).unwrap();
+        let short = parse(
+            r#"[{"key":"n","label":"N","type":"number","min":0,"max":1,"step":1,"default":0}]"#,
+        )
+        .unwrap();
+        let wide = parse(
+            r#"[{"key":"n","label":"N","type":"number","min":0,"max":9,"step":1,"default":0}]"#,
+        )
+        .unwrap();
         let v = [("n".to_string(), "9".to_string())].into_iter().collect();
         assert!(decode_share_code("m", &short, &encode_share_code("m", &wide, &v)).is_err());
     }

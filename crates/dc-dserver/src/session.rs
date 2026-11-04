@@ -601,11 +601,12 @@ impl<A: Ord + Clone + Display> Server<A> {
             // DC-DEFAULT: DSV-501 (proposed) the doors in the state the room's start scripts leave them: `visible` /
             // `solid` as for every named brush (a door left with none of the three flags is not created), `on` opens
             // a door from the start (with `all` no scripts run)
-            let (ov, start_fired) = if self.cfg.world_objects == crate::worldobj::WorldObjects::World {
-                crate::worldobj::start_scripts_run(&self.world.scripts, trig.as_deref())
-            } else {
-                Default::default()
-            };
+            let (ov, start_fired) =
+                if self.cfg.world_objects == crate::worldobj::WorldObjects::World {
+                    crate::worldobj::start_scripts_run(&self.world.scripts, trig.as_deref())
+                } else {
+                    Default::default()
+                };
             let get = |name: &[u8]| {
                 ov.get(&name.to_ascii_lowercase())
                     .copied()
@@ -835,7 +836,11 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.doors
             .iter()
             .map(|d| (d.obj, d.activate()))
-            .chain(self.turns.iter().filter_map(|t| Some((t.obj, t.activate()?))))
+            .chain(
+                self.turns
+                    .iter()
+                    .filter_map(|t| Some((t.obj, t.activate()?))),
+            )
             .collect()
     }
 
@@ -1180,7 +1185,7 @@ impl<A: Ord + Clone + Display> Server<A> {
                 let st = self.host.stats();
                 let n = st.migrations_refused + st.migrations_limited;
                 if n > before.migrations_refused + before.migrations_limited
-                    && (n <= 5 || n % 1000 == 0)
+                    && (n <= 5 || n.is_multiple_of(1000))
                 {
                     self.log(format!(
                         "link move to {from} refused ({} unproven, {} over the move limit, NET-24)",
@@ -1624,7 +1629,10 @@ impl<A: Ord + Clone + Display> Server<A> {
             .cloned();
         // DC-DEFAULT: LG-327 (proposed, project decision) a roster name with a ticket is seated only with that ticket;
         // the refusal closes this link alone, and the rightful player's link is replaced only after this check
-        if let Some(e) = entry.as_ref().filter(|e| !e.ticket_accepts(hello.ticket.as_ref())) {
+        if let Some(e) = entry
+            .as_ref()
+            .filter(|e| !e.ticket_accepts(hello.ticket.as_ref()))
+        {
             let e = e.clone();
             self.refuse_seat(now, peer, client_id, &e, hello.ticket.is_some());
             return;
@@ -1686,7 +1694,7 @@ impl<A: Ord + Clone + Display> Server<A> {
     fn refuse_seat(&mut self, now: Millis, peer: &A, client_id: u16, e: &RosterEntry, sent: bool) {
         self.seat_refusals += 1;
         // a stranger may repeat this for as long as he likes: the log gets the first ones, then every hundredth
-        if self.seat_refusals <= SEAT_REFUSALS_LOGGED || self.seat_refusals % 100 == 0 {
+        if self.seat_refusals <= SEAT_REFUSALS_LOGGED || self.seat_refusals.is_multiple_of(100) {
             self.log(format!(
                 "client {client_id} from {peer}: seat of uid {} refused ({} ticket, refusal {}), bye code {}",
                 e.uid,
@@ -3285,7 +3293,9 @@ impl<A: Ord + Clone + Display> Server<A> {
     /// A planned world effect object of this name (CLI-1340).
     fn planned_effect(&self, name: &[u8]) -> Option<(u16, crate::world::EffectInfo)> {
         self.world_objects().iter().find_map(|o| match o {
-            crate::worldobj::WorldObject::Effect { obj, effect } if effect.name.eq_ignore_ascii_case(name) => {
+            crate::worldobj::WorldObject::Effect { obj, effect }
+                if effect.name.eq_ignore_ascii_case(name) =>
+            {
                 Some((*obj, effect.clone()))
             }
             _ => None,
@@ -3633,7 +3643,9 @@ impl<A: Ord + Clone + Display> Server<A> {
                 "client {} gone ({:?}, code {code}{}) after {} player updates",
                 c.client_id,
                 cause,
-                c.leave_how.map(|h| format!(", {}", h.token())).unwrap_or_default(),
+                c.leave_how
+                    .map(|h| format!(", {}", h.token()))
+                    .unwrap_or_default(),
                 c.updates
             ));
             self.log(format!("client {}: {}", c.client_id, c.watch.summary(now)));
@@ -3953,8 +3965,11 @@ impl<A: Ord + Clone + Display> Server<A> {
             for f in std::mem::take(&mut d.sounds_due) {
                 let p = d.pos();
                 let o = d.info.sounds.offset;
-                self.game
-                    .object_sound(f, [p[0] + o[0], p[1] + o[1], p[2] + o[2]], d.info.sounds.radius);
+                self.game.object_sound(
+                    f,
+                    [p[0] + o[0], p[1] + o[1], p[2] + o[2]],
+                    d.info.sounds.radius,
+                );
                 played = true;
             }
         }
@@ -3962,8 +3977,11 @@ impl<A: Ord + Clone + Display> Server<A> {
             for f in std::mem::take(&mut t.sounds_due) {
                 let p = t.pos();
                 let o = t.info.sounds.offset;
-                self.game
-                    .object_sound(f, [p[0] + o[0], p[1] + o[1], p[2] + o[2]], t.info.sounds.radius);
+                self.game.object_sound(
+                    f,
+                    [p[0] + o[0], p[1] + o[1], p[2] + o[2]],
+                    t.info.sounds.radius,
+                );
                 played = true;
             }
         }
@@ -4183,7 +4201,11 @@ impl<A: Ord + Clone + Display> Server<A> {
                 continue;
             };
             if was_off != off {
-                notes.push(crate::gs::door_note(obj, crate::doors::NOTE_DISABLED, off as u8));
+                notes.push(crate::gs::door_note(
+                    obj,
+                    crate::doors::NOTE_DISABLED,
+                    off as u8,
+                ));
             }
             if was_state != state {
                 notes.push(crate::gs::door_note(obj, crate::doors::NOTE_STATE, state));

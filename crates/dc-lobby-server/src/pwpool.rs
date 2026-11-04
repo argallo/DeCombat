@@ -102,7 +102,9 @@ mod tests {
         let mut waiting = Vec::new();
         for i in 1..=2u32 {
             let (p, o) = (Arc::clone(&p), order_tx.clone());
-            waiting.push(std::thread::spawn(move || p.run(move || o.send(i).unwrap())));
+            waiting.push(std::thread::spawn(move || {
+                p.run(move || o.send(i).unwrap())
+            }));
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert_eq!(p.run(|| ()), Err(Busy), "the queue is full");

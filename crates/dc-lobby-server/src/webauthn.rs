@@ -563,7 +563,7 @@ pub struct NewCredential {
 
 fn parse_cert(der: &[u8]) -> Result<X509Certificate<'_>, String> {
     match X509Certificate::from_der(der) {
-        Ok((rest, c)) if rest.is_empty() => Ok(c),
+        Ok(([], c)) => Ok(c),
         Ok(_) => Err("certificate has bytes after it".into()),
         Err(e) => Err(format!("certificate: {e}")),
     }
@@ -655,8 +655,7 @@ pub fn chain_to_root(
         cands.push(parse_cert(d)?);
     }
     let mut cur = leaf;
-    let mut below = 0usize;
-    for _ in 0..=MAX_CHAIN {
+    for below in 0..=MAX_CHAIN {
         if let Some(r) = roots
             .iter()
             .find(|r| r.subject().as_raw() == cur.issuer().as_raw() && signed_by(cur, r))
@@ -691,7 +690,6 @@ pub fn chain_to_root(
             ));
         }
         cur = next;
-        below += 1;
     }
     Err("the attestation chain is too long".into())
 }

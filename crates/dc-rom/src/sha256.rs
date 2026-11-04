@@ -183,12 +183,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 pub fn sha256_file(path: &Path) -> Result<String, RomError> {
     use std::io::Read;
     let mut f = fs::File::open(path).map_err(|e| RomError::io(path, &e))?;
-    crate::trace::note(
-        "file",
-        path,
-        "",
-        f.metadata().map(|m| m.len()).unwrap_or(0),
-    );
+    crate::trace::note("file", path, "", f.metadata().map(|m| m.len()).unwrap_or(0));
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {

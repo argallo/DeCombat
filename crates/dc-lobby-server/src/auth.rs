@@ -308,11 +308,7 @@ fn on_login(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
 
 /// Phase 1 of a login (locked): everything before the password check, in the order of the checks.
 // DC-DEFAULT: LG-328 (proposed, project decision)
-pub fn login_begin(
-    st: &mut Core,
-    sid: Sid,
-    p: &[u8],
-) -> Result<LoginStep, crate::state::Fault> {
+pub fn login_begin(st: &mut Core, sid: Sid, p: &[u8]) -> Result<LoginStep, crate::state::Fault> {
     let req = wire::parse_login(p);
     // LG-271: the mod-set / content suffix comes off first (every login form), then the hashes must match ours
     let (field, mods) = dc_wire::loginmods::split(&req.token);
@@ -416,7 +412,10 @@ pub fn login_begin(
     // LG-69: an account made for an identity token logs in with a token only (it has no password of its own)
     if !exempt && db::is_identity_linked(&st.db, acc.user_no)? {
         count_failure(st, &keys, now);
-        st.note(&format!("login refused (identity account, token login only): {}", login));
+        st.note(&format!(
+            "login refused (identity account, token login only): {}",
+            login
+        ));
         st.send(
             sid,
             wire::login_reply(&LoginReply {
@@ -475,6 +474,7 @@ fn login_accepted(
 }
 
 /// What the first (locked) phase of a login leaves to do.
+#[allow(clippy::large_enum_variant)] // one value per login, moved straight into the next phase; boxing buys nothing
 pub enum LoginStep {
     /// Answered.
     Done,
@@ -550,7 +550,9 @@ pub fn login_finish(st: &mut Core, sid: Sid, p: LoginPending, c: LoginChecked) -
         .as_ref()
         .is_some_and(|f| !f.disabled && f.pw_hash == acc.pw_hash && f.pw_salt == acc.pw_salt);
     if !same {
-        st.note(&format!("login refused (account changed during the check): {login}"));
+        st.note(&format!(
+            "login refused (account changed during the check): {login}"
+        ));
         refuse_bad_password(st, sid);
         return Ok(());
     }
@@ -634,7 +636,9 @@ fn token_login(st: &mut Core, sid: Sid, token: &str) -> HResult {
     // DC-DEFAULT: LG-330 (proposed, project decision) a refusal names no account number
     let refuse = |st: &mut Core| refuse_bad_password(st, sid);
     if !st.identity.accepts() {
-        st.note(&format!("login refused (identity tokens are not accepted here) from {ip}"));
+        st.note(&format!(
+            "login refused (identity tokens are not accepted here) from {ip}"
+        ));
         refuse(st);
         return Ok(());
     }
@@ -712,7 +716,10 @@ pub fn identity_nick(st: &Core, account: u32, nick: &str) -> Option<String> {
             base.push(c);
         }
         let cand = format!("{}{suffix}", base.trim_end());
-        if valid_nick(&cand) && !crate::gm::name_reserved_for(st, Some(account), &cand) && !taken(&cand) {
+        if valid_nick(&cand)
+            && !crate::gm::name_reserved_for(st, Some(account), &cand)
+            && !taken(&cand)
+        {
             return Some(cand);
         }
     }
@@ -740,9 +747,10 @@ pub(crate) fn finish_login(
         if let Some(c) = identity {
             if let Some(nick) = identity_nick(st, acc.user_no, &c.nick) {
                 if !nick.eq_ignore_ascii_case(&c.nick) {
-                    let holder = db::character_by_nick(&st.db, &c.nick, st.rules.names_case_insensitive)?
-                        .map(|h| h.user_no)
-                        .unwrap_or(0);
+                    let holder =
+                        db::character_by_nick(&st.db, &c.nick, st.rules.names_case_insensitive)?
+                            .map(|h| h.user_no)
+                            .unwrap_or(0);
                     st.note(&format!(
                         "identity: nick {} taken on this lobby by account {}; {} used for {}:{}",
                         c.nick, holder, nick, c.issuer, c.account
@@ -815,7 +823,11 @@ fn send_server_list(st: &mut Core, sid: Sid) {
     }
     // LG-313: the hashes of the featured entries' sets (only when there are any; the 2009 dispatcher drops the id)
     if !st.entry_mods.is_empty() {
-        let sets: Vec<_> = st.entry_mods.values().map(crate::modset::EntrySet::hashes).collect();
+        let sets: Vec<_> = st
+            .entry_mods
+            .values()
+            .map(crate::modset::EntrySet::hashes)
+            .collect();
         st.send(sid, dc_wire::entrymods::push_frame(&sets));
     }
     let list = wire::server_list_push(&server_entries_for(st, sid));
@@ -921,8 +933,8 @@ fn on_server_pick(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     let known = server_entries(st).iter().any(|e| e.id == server && e.open);
     let known = known && acc.is_some() && !crate::servers::pick_refused(st, sid, server);
     // LG-318: no bot seat on the clan server
-    let known = known
-        && !(server == crate::servers::clan_id(st) && acc.is_some_and(|a| st.pool.has(a)));
+    let known =
+        known && !(server == crate::servers::clan_id(st) && acc.is_some_and(|a| st.pool.has(a)));
     match acc {
         Some(a) if known && st.character(a).is_some() => {
             let key = issue_ticket(st, a, server);
@@ -987,7 +999,12 @@ mod tests {
         let acc = new_account(&mut st);
         assert!(acc > 0);
         let rx = connect(&mut st, 1, Listener::Auth);
-        run(&mut st, 1, LOGIN_REQUEST, &login_payload("neo", "blue pill"));
+        run(
+            &mut st,
+            1,
+            LOGIN_REQUEST,
+            &login_payload("neo", "blue pill"),
+        );
         let got = drain(&rx);
         assert_eq!(u32_at(&got[0].1, 0xa), wire::REASON_BAD_PASSWORD);
         let no = acc.to_le_bytes();
@@ -1031,7 +1048,10 @@ mod tests {
         let p = pending.pop().unwrap();
         let c = p.compute();
         st.db
-            .execute("UPDATE accounts SET disabled = 1 WHERE user_no = ?1", [acc as i64])
+            .execute(
+                "UPDATE accounts SET disabled = 1 WHERE user_no = ?1",
+                [acc as i64],
+            )
             .unwrap();
         let rx2 = connect(&mut st, 2, Listener::Auth);
         st.scope(|st| login_finish(st, 2, p, c)).unwrap();
@@ -1055,10 +1075,17 @@ mod tests {
     fn mods_login(st: &mut Core, sid: Sid, field: &str) -> (bool, Option<String>) {
         let rx = connect(st, sid, Listener::Auth);
         let mut w = PktWriter::new(0x200);
-        w.wstr(field, 4096).wstr("pw", 17).wstr("00-11-22-33-44-55", 20).i32(0);
+        w.wstr(field, 4096)
+            .wstr("pw", 17)
+            .wstr("00-11-22-33-44-55", 20)
+            .i32(0);
         run(st, sid, LOGIN_REQUEST, &w.into_payload());
         let got = drain(&rx);
-        let r = &got.iter().find(|(id, _)| *id == 0x201).expect("a login reply").1;
+        let r = &got
+            .iter()
+            .find(|(id, _)| *id == 0x201)
+            .expect("a login reply")
+            .1;
         let refused = u32_at(r, 6) == 0 && u32_at(r, 0xa) == wire::REASON_BAD_PASSWORD;
         let acc = u32_at(r, 0x12);
         let login = db::account_by_no(&st.db, acc).unwrap().map(|a| a.login);
@@ -1071,7 +1098,9 @@ mod tests {
         let mut st = state();
         let (refused, login) = mods_login(&mut st, 21, "plain");
         assert!(!refused);
-        let acc = db::account_by_login(&st.db, login.as_deref().unwrap()).unwrap().unwrap();
+        let acc = db::account_by_login(&st.db, login.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
         assert!(crate::lifecycle::is_human(&st, acc.user_no));
         // a wrong password with the mark: refused, and a stranger cannot mark the account
         store_password(&mut st, acc.user_no, "right-password").unwrap();
@@ -1097,15 +1126,42 @@ mod tests {
         use dc_wire::loginmods::{suffix, EMPTY_SET_HASH};
         assert_eq!(EMPTY_SET_HASH, dc_mod_lua::EMPTY_SET_HASH);
         let mut st = state();
-        assert_eq!(mods_login(&mut st, 1, "LOCAL:alice"), (false, Some("alice".into())));
+        assert_eq!(
+            mods_login(&mut st, 1, "LOCAL:alice"),
+            (false, Some("alice".into()))
+        );
         let f = format!("LOCAL:bob{}", suffix(EMPTY_SET_HASH, "0"));
-        assert_eq!(mods_login(&mut st, 2, &f), (false, Some("bob".into())), "the suffix is not part of the name");
-        assert_eq!(mods_login(&mut st, 3, &format!("bob;m={EMPTY_SET_HASH}")), (false, Some("bob".into())));
-        assert_eq!(mods_login(&mut st, 4, &format!("LOCAL:carl{}", suffix(set, "0"))).0, true);
-        assert_eq!(mods_login(&mut st, 5, &format!("LOCAL:carl{}", suffix(EMPTY_SET_HASH, content))).0, true);
-        assert!(db::account_by_login(&st.db, "carl").unwrap().is_none(), "a refused login makes no account");
+        assert_eq!(
+            mods_login(&mut st, 2, &f),
+            (false, Some("bob".into())),
+            "the suffix is not part of the name"
+        );
+        assert_eq!(
+            mods_login(&mut st, 3, &format!("bob;m={EMPTY_SET_HASH}")),
+            (false, Some("bob".into()))
+        );
+        assert!(mods_login(&mut st, 4, &format!("LOCAL:carl{}", suffix(set, "0"))).0);
+        assert!(
+            mods_login(
+                &mut st,
+                5,
+                &format!("LOCAL:carl{}", suffix(EMPTY_SET_HASH, content))
+            )
+            .0
+        );
+        assert!(
+            db::account_by_login(&st.db, "carl").unwrap().is_none(),
+            "a refused login makes no account"
+        );
         // a token login with another set is refused before the token is looked at
-        assert_eq!(mods_login(&mut st, 6, &format!("LOCAL:tok:aGk.c2ln{}", suffix(set, "0"))).0, true);
+        assert!(
+            mods_login(
+                &mut st,
+                6,
+                &format!("LOCAL:tok:aGk.c2ln{}", suffix(set, "0"))
+            )
+            .0
+        );
     }
 
     #[test]
@@ -1115,17 +1171,40 @@ mod tests {
         use dc_wire::loginmods::{suffix, EMPTY_SET_HASH};
         let mut st = state();
         st.login_mods.set = set.into();
-        assert!(mods_login(&mut st, 1, "LOCAL:alice").0, "no suffix = the empty set");
-        assert!(mods_login(&mut st, 2, &format!("LOCAL:alice{}", suffix(EMPTY_SET_HASH, "0"))).0);
-        assert!(mods_login(&mut st, 3, &format!("LOCAL:alice{}", suffix(&"3c".repeat(32), "0"))).0);
+        assert!(
+            mods_login(&mut st, 1, "LOCAL:alice").0,
+            "no suffix = the empty set"
+        );
+        assert!(
+            mods_login(
+                &mut st,
+                2,
+                &format!("LOCAL:alice{}", suffix(EMPTY_SET_HASH, "0"))
+            )
+            .0
+        );
+        assert!(
+            mods_login(
+                &mut st,
+                3,
+                &format!("LOCAL:alice{}", suffix(&"3c".repeat(32), "0"))
+            )
+            .0
+        );
         let f = format!("LOCAL:alice{}", suffix(&set.to_ascii_uppercase(), "0"));
         assert_eq!(mods_login(&mut st, 4, &f), (false, Some("alice".into())));
         // with content: `0` and another hash are refused, the exact one passes
         st.login_mods.content = content.into();
         assert!(mods_login(&mut st, 5, &format!("dave{}", suffix(set, "0"))).0);
-        assert!(mods_login(&mut st, 6, &format!("dave;m={set}")).0, "no content field = no content");
+        assert!(
+            mods_login(&mut st, 6, &format!("dave;m={set}")).0,
+            "no content field = no content"
+        );
         assert!(mods_login(&mut st, 7, &format!("dave{}", suffix(set, set))).0);
-        assert_eq!(mods_login(&mut st, 8, &format!("dave{}", suffix(set, content))), (false, Some("dave".into())));
+        assert_eq!(
+            mods_login(&mut st, 8, &format!("dave{}", suffix(set, content))),
+            (false, Some("dave".into()))
+        );
     }
 
     #[test]

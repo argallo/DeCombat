@@ -102,7 +102,9 @@ pub fn keep_rule(archive: &str, name: &str, opts: &BuildOptions) -> Keep {
     }
     if (archive.eq_ignore_ascii_case(BODY_MODEL_ARCHIVE)
         || archive.eq_ignore_ascii_case(HELD_WEAPON_ARCHIVE)
-        || VIEW_WEAPON_ARCHIVES.iter().any(|a| archive.eq_ignore_ascii_case(a)))
+        || VIEW_WEAPON_ARCHIVES
+            .iter()
+            .any(|a| archive.eq_ignore_ascii_case(a)))
         && ext == "ltb"
     {
         return Keep::Whole;
@@ -324,7 +326,9 @@ fn safe_entry(n: &str) -> bool {
         && !norm.starts_with('/')
         && !norm.contains(':')
         && !norm.contains('\0')
-        && norm.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+        && norm
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && c != "..")
 }
 
 #[cfg(test)]
@@ -334,15 +338,36 @@ mod tests {
     #[test]
     fn keep_rules() {
         let o = BuildOptions::default();
-        assert_eq!(keep_rule("ATTRIBUTES.rez", "ATTRIBUTES\\ITEMS.TXT", &o), Keep::Whole);
+        assert_eq!(
+            keep_rule("ATTRIBUTES.rez", "ATTRIBUTES\\ITEMS.TXT", &o),
+            Keep::Whole
+        );
         assert_eq!(keep_rule("GMS.rez", "GMS\\x_M.GMS", &o), Keep::Whole);
         assert_eq!(keep_rule("WORLDS.rez", "WORLDS\\A.DAT", &o), Keep::Whole);
-        assert_eq!(keep_rule("CLIENTFX.rez", "CLIENTFX\\CLIENTFX.FXF", &o), Keep::Whole);
-        assert_eq!(keep_rule("CHARS_M_BODY.rez", "CHARS_M_BODY\\a.ltb", &o), Keep::Whole);
-        assert_eq!(keep_rule("GUNS_M_HH.rez", "GUNS_M_HH\\a.ltb", &o), Keep::Whole);
-        assert_eq!(keep_rule("GUNS_M_PV_AR.rez", "GUNS_M_PV_AR\\a.ltb", &o), Keep::Whole);
-        assert_eq!(keep_rule("guns_m_pv_sr.rez", "GUNS_M_PV_SR\\a.ltb", &o), Keep::Whole);
-        assert_eq!(keep_rule("GUNS_M_PV_AR.rez", "GUNS_M_PV_AR\\a.dtx", &o), Keep::List);
+        assert_eq!(
+            keep_rule("CLIENTFX.rez", "CLIENTFX\\CLIENTFX.FXF", &o),
+            Keep::Whole
+        );
+        assert_eq!(
+            keep_rule("CHARS_M_BODY.rez", "CHARS_M_BODY\\a.ltb", &o),
+            Keep::Whole
+        );
+        assert_eq!(
+            keep_rule("GUNS_M_HH.rez", "GUNS_M_HH\\a.ltb", &o),
+            Keep::Whole
+        );
+        assert_eq!(
+            keep_rule("GUNS_M_PV_AR.rez", "GUNS_M_PV_AR\\a.ltb", &o),
+            Keep::Whole
+        );
+        assert_eq!(
+            keep_rule("guns_m_pv_sr.rez", "GUNS_M_PV_SR\\a.ltb", &o),
+            Keep::Whole
+        );
+        assert_eq!(
+            keep_rule("GUNS_M_PV_AR.rez", "GUNS_M_PV_AR\\a.dtx", &o),
+            Keep::List
+        );
         assert_eq!(keep_rule("SND.rez", "SND\\a.wav", &o), Keep::WaveHead);
         assert_eq!(keep_rule("TEXTURES.rez", "TEXTURES\\a.dtx", &o), Keep::List);
         let only = BuildOptions {

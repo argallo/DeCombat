@@ -1953,7 +1953,11 @@ pub struct FrameTarget<'a> {
 
 impl<'a> FrameTarget<'a> {
     /// A single-sample target (no resolve): the frame as drawn with MSAA off, or a pass before the resolving one.
-    pub fn new(colour: &'a wgpu::TextureView, depth: &'a wgpu::TextureView, size: (u32, u32)) -> Self {
+    pub fn new(
+        colour: &'a wgpu::TextureView,
+        depth: &'a wgpu::TextureView,
+        size: (u32, u32),
+    ) -> Self {
         FrameTarget {
             colour,
             depth,

@@ -157,10 +157,19 @@ impl Manifest {
             .and_then(Value::as_array)
             .ok_or_else(|| bad("no files"))?
         {
-            let a = f.as_array().filter(|a| a.len() == 3).ok_or_else(|| bad("file row"))?;
-            let path = a[0].as_str().filter(|p| safe_rel(p)).ok_or_else(|| bad("file path"))?;
+            let a = f
+                .as_array()
+                .filter(|a| a.len() == 3)
+                .ok_or_else(|| bad("file row"))?;
+            let path = a[0]
+                .as_str()
+                .filter(|p| safe_rel(p))
+                .ok_or_else(|| bad("file path"))?;
             let size = a[1].as_u64().ok_or_else(|| bad("file size"))?;
-            let sha = a[2].as_str().filter(|s| is_sha(s)).ok_or_else(|| bad("file sha256"))?;
+            let sha = a[2]
+                .as_str()
+                .filter(|s| is_sha(s))
+                .ok_or_else(|| bad("file sha256"))?;
             files.push((path.to_string(), size, sha.to_ascii_lowercase()));
         }
         let mut archives = BTreeMap::new();
@@ -236,7 +245,11 @@ impl Manifest {
         o.push_str(&format!("    \"build\": {},\n", q(build_name(self.build))));
         o.push_str("    \"sentinels\": {\n");
         for (i, (rel, h)) in SENTINEL_FILES.iter().zip(&self.sentinels).enumerate() {
-            let comma = if i + 1 < SENTINEL_FILES.len() { "," } else { "" };
+            let comma = if i + 1 < SENTINEL_FILES.len() {
+                ","
+            } else {
+                ""
+            };
             o.push_str(&format!("      {}: {}{comma}\n", q(rel), q(h)));
         }
         o.push_str("    }\n  },\n");
@@ -508,7 +521,10 @@ mod tests {
         let img = shell_strings_image(&lib);
         // the header stamp reads the same
         assert_eq!(&img[0x48..0x4c], &0x1234_5678u32.to_le_bytes());
-        assert!(!img.windows(2).any(|w| w == [0x90, 0x91]), "no non-printable body bytes");
+        assert!(
+            !img.windows(2).any(|w| w == [0x90, 0x91]),
+            "no non-printable body bytes"
+        );
         let want: [&[u8]; 4] = [b"alpha", b"tailname", b"gamma", b"beta"];
         assert_eq!(find_strings(&lib, &want), find_strings(&img, &want));
         for len in 1..10 {
@@ -550,7 +566,11 @@ mod tests {
         );
         let m = Manifest {
             build: RomId::Eu20091221,
-            sentinels: KNOWN_BUILDS[0].sha256.iter().map(|s| s.to_string()).collect(),
+            sentinels: KNOWN_BUILDS[0]
+                .sha256
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             key: b"k3y-bytes".to_vec(),
             shell_source_sha256: sha256_hex(b"lib"),
             files: vec![(SHELL_STRINGS.to_string(), 4, sha256_hex(b"strs"))],
@@ -572,7 +592,10 @@ mod tests {
         assert!(refuse_for_client(&d).is_ok());
         fs::write(d.join(MANIFEST), "{}").unwrap();
         let e = refuse_for_client(&d).unwrap_err();
-        assert!(e.contains("server ROM") && e.contains("full 2009 client"), "{e}");
+        assert!(
+            e.contains("server ROM") && e.contains("full 2009 client"),
+            "{e}"
+        );
         let _ = fs::remove_dir_all(&d);
     }
 }

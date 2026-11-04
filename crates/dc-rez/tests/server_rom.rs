@@ -42,8 +42,17 @@ fn a_server_rom_reads_like_the_client_folder() {
     // the header stamp of the shell image
     let a = server_rom::shell_image(&full).unwrap();
     let b = server_rom::shell_image(&srom).unwrap();
-    assert_eq!(&a[..0x100], &b[..0x100], "DOS header, stub, signature, file header");
-    assert!(b.len() * 4 < a.len(), "strings only: {} of {}", b.len(), a.len());
+    assert_eq!(
+        &a[..0x100],
+        &b[..0x100],
+        "DOS header, stub, signature, file header"
+    );
+    assert!(
+        b.len() * 4 < a.len(),
+        "strings only: {} of {}",
+        b.len(),
+        a.len()
+    );
 
     let m = server_rom::manifest(&srom).unwrap().unwrap();
     let vf = RezVfs::new(&full);
@@ -54,7 +63,11 @@ fn a_server_rom_reads_like_the_client_folder() {
         let ls = vs.list_entries(arch).unwrap();
         assert_eq!(lf.len(), ls.len(), "{arch}: entry count");
         for (x, y) in lf.iter().zip(&ls) {
-            assert_eq!((&x.0, x.2), (&y.0, y.2), "{arch}: names and sizes in archive order");
+            assert_eq!(
+                (&x.0, x.2),
+                (&y.0, y.2),
+                "{arch}: names and sizes in archive order"
+            );
         }
         for e in rows {
             let Some(_) = &e.sha256 else {

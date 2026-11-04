@@ -540,6 +540,7 @@ pub fn player_line(
 /// [`player_line`] with extra `key=value` pairs before `name=` (DSV-472: Spy Hunt's per-player `win=` and
 /// `agent=`; a lobby that does not know a key ignores it).
 // SPEC: DSERVER_PIPE.md §4.4; DC-DEFAULT: DSV-472 (proposed)
+#[allow(clippy::too_many_arguments)] // one positional field per `@player` key, as `player_line` has
 pub fn player_line_with(
     uid: u32,
     kills: u32,
@@ -646,7 +647,9 @@ mod tests {
             linksum_line(4, 1006, LeaveHow::Silent, 3, &t),
             "@linksum client=4 uid=1006 how=silent code=3 secs=312.5 rtt=61 rtt_p95=95 rtt_max=410 rtt_n=1200 jitter=3.2 input=29.8 updates=9300 gap=840 resends=7 rel=2100 drops=1 in=19000 out=9400 maxdg=548"
         );
-        assert!(linksum_line(0, 7, LeaveHow::End, 0, &Default::default()).contains(" how=end code=0 "));
+        assert!(
+            linksum_line(0, 7, LeaveHow::End, 0, &Default::default()).contains(" how=end code=0 ")
+        );
     }
 
     #[test]
@@ -841,7 +844,16 @@ mod tests {
         );
         // DSV-472: Spy Hunt's per-player flags sit before the name
         assert_eq!(
-            player_line_with(7, 2, 0, 0, 0, 1, &[("win", 1), ("agent", 1)], "Dave the Great"),
+            player_line_with(
+                7,
+                2,
+                0,
+                0,
+                0,
+                1,
+                &[("win", 1), ("agent", 1)],
+                "Dave the Great"
+            ),
             "@player uid=7 kills=2 deaths=0 team=1 tk=0 hs=1 win=1 agent=1 name=Dave the Great"
         );
         assert_eq!(

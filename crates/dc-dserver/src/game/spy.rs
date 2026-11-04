@@ -348,7 +348,7 @@ pub fn touching(p: [f32; 3], f: [f32; 3]) -> bool {
     let dx = p[0] - f[0];
     let dz = p[2] - f[2];
     let dy = p[1] - f[1];
-    (dx * dx + dz * dz).sqrt() <= TOUCH_RADIUS && dy <= TOUCH_ABOVE && dy >= -TOUCH_BELOW
+    (dx * dx + dz * dz).sqrt() <= TOUCH_RADIUS && (-TOUCH_BELOW..=TOUCH_ABOVE).contains(&dy)
 }
 
 impl Game {
@@ -923,7 +923,10 @@ impl Game {
                 .collect();
             return (wins, None);
         }
-        (self.spy_leader_pid().and_then(uid).into_iter().collect(), None)
+        (
+            self.spy_leader_pid().and_then(uid).into_iter().collect(),
+            None,
+        )
     }
 
     /// The one introduced player with the most points (`None` for a shared lead or nobody).

@@ -124,9 +124,9 @@ pub fn server_entry(e: &ServerEntry) -> Vec<u8> {
         .u32(e.capacity)
         .u32(e.current);
     w.u32(e.op_capacity).u32(e.op_current); // operator capacity / current
-                              // The client lists or auto-picks an entry only when min grade <= the grade of the 0x201 exp <= max grade
-                              // (EVIDENCE: cshell+0x139d70, grade of exp cshell+0x267f10); a max of 0 refuses every ranked account and the
-                              // picker then shows `res 0x475` "Every lobby is currently busy" (DISASM: cshell+0x13d690..0x13d6a4).
+                                            // The client lists or auto-picks an entry only when min grade <= the grade of the 0x201 exp <= max grade
+                                            // (EVIDENCE: cshell+0x139d70, grade of exp cshell+0x267f10); a max of 0 refuses every ranked account and the
+                                            // picker then shows `res 0x475` "Every lobby is currently busy" (DISASM: cshell+0x13d690..0x13d6a4).
     w.u32(0).u32(SERVER_MAX_GRADE);
     w.f32(0.0).f32(0.0); // kill ratio min / max (0 = none)
     w.u32(0); // paid grade
@@ -1069,10 +1069,7 @@ mod tests {
             (1, 1000, 2)
         );
         // LG-175 operator slots at +0x98 / +0x9c
-        assert_eq!(
-            (u32_at(&p, 0x16 + 0x98), u32_at(&p, 0x16 + 0x9c)),
-            (10, 1)
-        );
+        assert_eq!((u32_at(&p, 0x16 + 0x98), u32_at(&p, 0x16 + 0x9c)), (10, 1));
         let mut closed = e.clone();
         closed.open = false;
         let (_, p) = split(&server_list_reply(&[e, closed]));
@@ -1323,10 +1320,7 @@ mod tests {
             (1, 200, 3)
         );
         // LG-175 operator slots at +0x52 / +0x56
-        assert_eq!(
-            (u32_at(&p, 0x12 + 0x52), u32_at(&p, 0x12 + 0x56)),
-            (10, 2)
-        );
+        assert_eq!((u32_at(&p, 0x12 + 0x52), u32_at(&p, 0x12 + 0x56)), (10, 2));
         let (_, p) = split(&channel_enter_reply(true, 77));
         assert_eq!((p.len(), u32_at(&p, 6), u32_at(&p, 0xe)), (0x12, 1, 77));
         let u = LobbyUser {

@@ -140,11 +140,7 @@ impl Mailer {
                         let t = transport.as_ref().expect("made above");
                         match send_one(t, &o, &m) {
                             Ok(()) => {
-                                l.line(&format!(
-                                    "mail: {} sent to {}",
-                                    m.what,
-                                    mask_email(&m.to)
-                                ));
+                                l.line(&format!("mail: {} sent to {}", m.what, mask_email(&m.to)));
                                 tell(true);
                             }
                             Err(e) => {
@@ -196,23 +192,27 @@ impl Mailer {
     /// The start-up line (no password, no address of a player).
     pub fn describe(&self) -> String {
         match &self.sink {
-            Sink::Off => "mail: not set up (no mail.smtp_host): password and ID recovery are off".into(),
+            Sink::Off => {
+                "mail: not set up (no mail.smtp_host): password and ID recovery are off".into()
+            }
             Sink::DryRun => "mail: dry run (mails are written to this log, not sent)".into(),
-            Sink::Smtp(_) => format!(
-                "mail: {}:{} ({}), sender {}",
-                self.opts.smtp_host,
-                self.opts.smtp_port,
-                if self.opts.smtp_port == 465 {
-                    "TLS"
+            Sink::Smtp(_) => {
+                format!(
+                    "mail: {}:{} ({}), sender {}",
+                    self.opts.smtp_host,
+                    self.opts.smtp_port,
+                    if self.opts.smtp_port == 465 {
+                        "TLS"
+                    } else {
+                        "STARTTLS"
+                    },
+                    self.opts.from
+                ) + &if self.opts.reports_to.trim().is_empty() {
+                    String::new()
                 } else {
-                    "STARTTLS"
-                },
-                self.opts.from
-            ) + &if self.opts.reports_to.trim().is_empty() {
-                String::new()
-            } else {
-                format!("; reports to {}", mask_email(&self.opts.reports_to))
-            },
+                    format!("; reports to {}", mask_email(&self.opts.reports_to))
+                }
+            }
         }
     }
 
@@ -288,18 +288,18 @@ fn send_one(t: &lettre::SmtpTransport, o: &MailOpts, m: &Mail) -> Result<(), Str
         .from
         .parse()
         .map_err(|e| format!("mail.from is not an address: {e}"))?;
-    let to = m
-        .to
-        .parse()
-        .map_err(|_| "the recipient is not an address the mail library takes".to_string())?;
-    let mut b = lettre::Message::builder().from(from).to(to).subject(m.subject.clone());
+    let to =
+        m.to.parse()
+            .map_err(|_| "the recipient is not an address the mail library takes".to_string())?;
+    let mut b = lettre::Message::builder()
+        .from(from)
+        .to(to)
+        .subject(m.subject.clone());
     if !m.reply_to.trim().is_empty() {
-        b = b.reply_to(
-            m.reply_to
-                .trim()
-                .parse()
-                .map_err(|_| "the Reply-To is not an address the mail library takes".to_string())?,
-        );
+        b =
+            b.reply_to(m.reply_to.trim().parse().map_err(|_| {
+                "the Reply-To is not an address the mail library takes".to_string()
+            })?);
     }
     for (k, v) in &m.headers {
         let plain = |s: &str| s.chars().all(|c| c.is_ascii() && !c.is_control());

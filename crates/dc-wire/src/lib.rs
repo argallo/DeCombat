@@ -19,18 +19,18 @@
 //!
 //! No runtime dependencies (`std` only).
 
+pub mod entrymods;
 pub mod filetime;
 pub mod flagrefusal;
-pub mod loginmods;
-pub mod report;
-pub mod entrymods;
-pub mod moddedlist;
-pub mod msg_ids;
-pub mod remotehealth;
 pub mod gungame;
 pub mod linkmove;
-pub mod roomhacks;
+pub mod loginmods;
+pub mod moddedlist;
+pub mod msg_ids;
 pub mod possession;
+pub mod remotehealth;
+pub mod report;
+pub mod roomhacks;
 pub mod roomhardcore;
 pub mod seatticket;
 pub mod tcp;

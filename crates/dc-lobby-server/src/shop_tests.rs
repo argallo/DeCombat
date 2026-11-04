@@ -1161,9 +1161,7 @@ fn seasonal_products_sell_for_gp_only_when_on_and_in_season() {
     };
     // the first row of the table, a Halloween item at 700 GP for a day
     let halloween = FIRST_PRODUCT as u16;
-    let christmas_on = |date: (u32, u32)| {
-        !dc_bute::seasonal::on_sale(date.0, date.1).is_empty()
-    };
+    let christmas_on = |date: (u32, u32)| !dc_bute::seasonal::on_sale(date.0, date.1).is_empty();
     assert!(christmas_on((12, 15)));
     // off by default: nothing changes
     assert!(!listed(&mut c, &mut st).contains(&halloween));

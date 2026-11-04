@@ -375,7 +375,10 @@ mod tests {
         assert!(clan_win_counts(&r, 1, secs, [n, n]));
         assert!(clan_win_counts(&r, 2, secs, [n, n]));
         assert!(!clan_win_counts(&r, 0, secs, [n, n]), "draw");
-        assert!(!clan_win_counts(&r, 1, secs, [n, n - 1]), "forfeit: too few losers");
+        assert!(
+            !clan_win_counts(&r, 1, secs, [n, n - 1]),
+            "forfeit: too few losers"
+        );
         assert!(!clan_win_counts(&r, 1, secs, [n - 1, n]), "too few winners");
         assert!(
             !clan_win_counts(&r, 1, Some(secs.unwrap() - 1), [n, n]),

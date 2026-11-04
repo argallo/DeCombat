@@ -499,7 +499,11 @@ fn a_message_door_ignores_a_near_player_and_a_use_door_opens_on_the_use_key() {
     assert!(net.run_until(20_000, |n| n.c(0).seen.view_object.is_some()));
     // DSV-340: a door players may not use is created with its activate entry disabled
     let door = net.server.doors()[0].obj;
-    let mut br = net.c(0).seen.objects[&door].blob.as_ref().expect("blob").reader();
+    let mut br = net.c(0).seen.objects[&door]
+        .blob
+        .as_ref()
+        .expect("blob")
+        .reader();
     br.read_u16();
     assert!(br.read_bit(), "disabled");
     net.alive();
@@ -551,7 +555,11 @@ fn a_message_door_ignores_a_near_player_and_a_use_door_opens_on_the_use_key() {
         .map(|n| (n.1, n.2, n.3))
         .collect();
     assert_eq!(notes, vec![(door, 2, 0), (door, 2, 1)]);
-    assert!(net.c(0).seen.errors.is_empty(), "{:?}", net.c(0).seen.errors);
+    assert!(
+        net.c(0).seen.errors.is_empty(),
+        "{:?}",
+        net.c(0).seen.errors
+    );
 }
 
 /// w1-doors (DOOR-4, DOOR-5): a rotating door next to the red spawn point turns open near a living player (its object
@@ -691,7 +699,10 @@ fn dc_kill_volume_kills_on_a_community_map() {
 }
 
 /// A rotating door of the world file near the red point, turned only by messages (DSV-500).
-fn turn_door(name: &[u8], at: [f32; 3]) -> (dc_dserver::world::BrushInfo, dc_dserver::doors::TurnInfo) {
+fn turn_door(
+    name: &[u8],
+    at: [f32; 3],
+) -> (dc_dserver::world::BrushInfo, dc_dserver::doors::TurnInfo) {
     let brush = dc_dserver::world::BrushInfo {
         name: name.to_vec(),
         role: None,
@@ -740,10 +751,9 @@ fn a_message_door_stands_closed_unless_the_start_scripts_open_it() {
     let (hb, hi) = turn_door(b"Hatch", [RED[0] - 40.0, 50.0, RED[2]]);
     w.brushes.extend([gb, hb]);
     w.turns.extend([gi, hi]);
-    w.scripts.triggers.push((
-        b"QuarantineStart".to_vec(),
-        vec![b"msg Gate on;".to_vec()],
-    ));
+    w.scripts
+        .triggers
+        .push((b"QuarantineStart".to_vec(), vec![b"msg Gate on;".to_vec()]));
     w.scripts.triggers.push((
         b"PlainStart".to_vec(),
         vec![b"msg Hatch (visible 0);\r\nmsg Hatch (solid 0);".to_vec()],

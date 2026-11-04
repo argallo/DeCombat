@@ -3,8 +3,8 @@
 //! the recovery address (LG-240). Invite codes are
 //! required unless `--register-open`. No JavaScript.
 //!
-//! The success page names the host and auth port to type into the client: the host the browser used (its `Host`
-//! header), else the advertised lobby address.
+//! The success page names only the login: the release downloads come set up for their server (the launcher preset),
+//! so there is no host or port to copy.
 // DC-DEFAULT: LG-145 registration page; names and passwords LG-141, invites LG-143, passwords LG-140, address LG-240
 
 use crate::accounts::{self, Invite};
@@ -83,7 +83,13 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(217,167,58,.2)}
 
 /// The registration pages' frame: brand, a card with `heading` and `sub`, the message (`ok` green, else red), the
 /// body. One HTML document, no script (clanweb_tests check for that).
-pub(crate) fn reg_page(heading: &str, sub: &str, msg: Option<&str>, ok: bool, body: &str) -> String {
+pub(crate) fn reg_page(
+    heading: &str,
+    sub: &str,
+    msg: Option<&str>,
+    ok: bool,
+    body: &str,
+) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(
         "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" \
@@ -164,22 +170,30 @@ fn form(st: &Core, msg: Option<&str>, name: &str, email: &str, code: &str) -> St
     )
 }
 
-fn done(st: &Core, login: &str, host: Option<&str>) -> String {
-    let host = host
-        .map(str::to_string)
-        .unwrap_or_else(|| st.opts.lobbyip.clone());
+/// True when `code` is an open invite made for `login` and that account is a GM: the one way to register a
+/// GM-prefixed login (`account add GMname --invite` then `account gm GMname --on`).
+// DC-DEFAULT: LG-172 a GM account's own invite may register its GM-prefixed login
+fn gm_account_invite(st: &Core, code: &str, login: &str) -> rusqlite::Result<bool> {
+    if code.is_empty() {
+        return Ok(false);
+    }
+    let bound = matches!(
+        accounts::invite(&st.db, code, crate::clock::unix_now())?,
+        Invite::Open(Some(name)) if name.eq_ignore_ascii_case(login)
+    );
+    Ok(bound && crate::db::account_by_login(&st.db, login)?.is_some_and(|a| a.gm != 0))
+}
+
+fn done(login: &str) -> String {
+    // the release downloads come set up for their server, so the page names only what the player types
     let body = format!(
-        "<p>The account <b>{login}</b> is ready. Start the game and sign in with these details:</p>\n\
+        "<p>The account <b>{login}</b> is ready. Start DeCombat and sign in with:</p>\n\
          <table class=\"kv\">\
-         <tr><td>Server</td><td><b>{host}</b></td></tr>\
-         <tr><td>Port</td><td><b>{port}</b></td></tr>\
          <tr><td>Login</td><td><b>{login}</b></td></tr>\
          <tr><td>Password</td><td>the one you just chose</td></tr>\
          </table>\n\
-         <p class=\"hint\">The launcher asks for the same server, port, name and password.</p>\n",
+         <p class=\"hint\">Your in-game name is chosen at the first sign-in, and it must differ from the login.</p>\n",
         login = esc(login),
-        host = esc(&host),
-        port = st.opts.port
     );
     reg_page(
         "Account ready",
@@ -290,7 +304,13 @@ pub fn begin(
 }
 
 /// The answer of anything but a POST within the rate limit.
-fn gate(st: &mut Core, method: &str, peer: &str, now: Instant, json: bool) -> Option<(u16, String)> {
+fn gate(
+    st: &mut Core,
+    method: &str,
+    peer: &str,
+    now: Instant,
+    json: bool,
+) -> Option<(u16, String)> {
     if json && method != "POST" && !st.opts.register {
         return Some((404, json_info(st)));
     }
@@ -390,7 +410,8 @@ fn post(
     st: &mut Core,
     body: &[u8],
     peer: &str,
-    host: Option<&str>,
+    // the success page no longer names the host (the downloads are preset); kept for the callers' shape
+    _host: Option<&str>,
     json: bool,
     phc: Option<&str>,
 ) -> crate::db::DbResult<RegStep> {
@@ -409,9 +430,17 @@ fn post(
         if json {
             return Ok(RegStep::Done((200, json_refused(m))));
         }
-        Ok(RegStep::Done((200, form(st, Some(m), &login, email_typed.trim(), &code))))
+        Ok(RegStep::Done((
+            200,
+            form(st, Some(m), &login, email_typed.trim(), &code),
+        )))
     };
-    if let Err(e) = accounts::valid_new_login(&login) {
+    let checked = if gm_account_invite(st, &code, &login)? {
+        accounts::valid_login(&login)
+    } else {
+        accounts::valid_new_login(&login)
+    };
+    if let Err(e) = checked {
         return refuse(st, &format!("Cannot register: {e}."));
     }
     if let Err(e) = accounts::valid_password_for(&login, &pw) {
@@ -496,7 +525,7 @@ fn post(
     if json {
         return Ok(RegStep::Done((200, json_done(&login))));
     }
-    Ok(RegStep::Done((200, done(st, &login, host))))
+    Ok(RegStep::Done((200, done(&login))))
 }
 
 /// The answer to a registration when the password pool has no room (LG-328).

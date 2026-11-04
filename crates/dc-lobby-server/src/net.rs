@@ -177,11 +177,8 @@ fn watch_game(shared: &Shared, st: &mut Core, id: u64) {
                     .games
                     .get_mut(&id)
                     .and_then(|x| x.tmp_workdir.take());
-                let code = child.map(|mut c| {
-                    c.wait()
-                        .map(|s| exit_text(s))
-                        .unwrap_or_else(|e| e.to_string())
-                });
+                let code =
+                    child.map(|mut c| c.wait().map(exit_text).unwrap_or_else(|e| e.to_string()));
                 // SPEC: DSERVER_PIPE addendum e2e C4 (the per-room working directory goes with the game)
                 if let Some(d) = tmp {
                     let _ = std::fs::remove_dir_all(&d);

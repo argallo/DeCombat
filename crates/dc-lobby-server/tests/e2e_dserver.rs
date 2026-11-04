@@ -551,12 +551,18 @@ fn a_seat_needs_its_ticket_and_a_stranger_does_not_move_the_player() {
     ];
     m.udp.extend(strangers);
     let ended = |c: &SynthClient| {
-        c.state() == ClientState::InWorld || matches!(c.state(), ClientState::Dropped(_) | ClientState::Failed(_))
+        c.state() == ClientState::InWorld
+            || matches!(c.state(), ClientState::Dropped(_) | ClientState::Failed(_))
     };
     let ok = drive(&mut m.udp, server, clock, T, ended);
     assert!(ok, "dserver log:\n{}", m.l.dserver_logs());
     for p in &m.udp[2..] {
-        assert_eq!(p.client.state(), ClientState::Dropped(6), "dserver log:\n{}", m.l.dserver_logs());
+        assert_eq!(
+            p.client.state(),
+            ClientState::Dropped(6),
+            "dserver log:\n{}",
+            m.l.dserver_logs()
+        );
     }
     assert_eq!(m.udp[0].client.state(), ClientState::InWorld);
     assert_eq!(m.udp[1].client.state(), ClientState::InWorld);
@@ -564,8 +570,17 @@ fn a_seat_needs_its_ticket_and_a_stranger_does_not_move_the_player() {
     // the player's reconnect from another socket
     m.udp.truncate(2);
     m.udp.push(UdpPlayer::new("Alice", Some(m.tickets[0])));
-    let ok = drive(&mut m.udp[2..], server, clock, T, |c| c.state() == ClientState::InWorld);
+    let ok = drive(&mut m.udp[2..], server, clock, T, |c| {
+        c.state() == ClientState::InWorld
+    });
     assert!(ok, "dserver log:\n{}", m.l.dserver_logs());
-    assert!(wait_until(T, || joins(&m.l) == before + 1), "log:\n{}", m.l.log_text());
-    assert!(m.l.dserver_logs().contains("reconnected: closing the older link"));
+    assert!(
+        wait_until(T, || joins(&m.l) == before + 1),
+        "log:\n{}",
+        m.l.log_text()
+    );
+    assert!(m
+        .l
+        .dserver_logs()
+        .contains("reconnected: closing the older link"));
 }

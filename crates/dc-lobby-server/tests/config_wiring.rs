@@ -364,7 +364,10 @@ fn a_report_over_the_socket_is_stored_and_mailed() {
             assert_eq!(row, ("the shop freezes".into(), 1, 2, 1, "repo".into()));
             return;
         }
-        assert!(t.elapsed() < Duration::from_secs(40), "no mailed row: {row:?}");
+        assert!(
+            t.elapsed() < Duration::from_secs(40),
+            "no mailed row: {row:?}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -741,11 +744,17 @@ fn a_vanilla_lobby_with_a_catalogue_keeps_the_empty_set_hash() {
         auth,
     );
     let text = wait_for(&log, "mod-set hash");
-    assert!(!text.contains("mods: catalog:"), "the entry is offered:\n{text}");
+    assert!(
+        !text.contains("mods: catalog:"),
+        "the entry is offered:\n{text}"
+    );
     let list = std::fs::read_to_string(dir.join("server_list.json")).expect("server-list data");
     assert!(
         list.contains("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
         "{list}"
     );
-    assert!(list.contains("\"policy\": \"vanilla\"") && !list.contains("drawn_crosshair"), "{list}");
+    assert!(
+        list.contains("\"policy\": \"vanilla\"") && !list.contains("drawn_crosshair"),
+        "{list}"
+    );
 }

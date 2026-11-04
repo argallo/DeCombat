@@ -207,7 +207,11 @@ fn rom_spawns_rest_on_the_floor() {
         let dy = (ours[1] - p[1]).abs();
         worst = worst.max(dy);
         drop = drop.max(s.pos[1] - ours[1]);
-        assert!(dy < 1.0, "spawn {:?}: ours {ours:?}, reference {p:?}", s.pos);
+        assert!(
+            dy < 1.0,
+            "spawn {:?}: ours {ours:?}, reference {p:?}",
+            s.pos
+        );
         compared += 1;
     }
     assert!(
@@ -813,7 +817,10 @@ fn rom_spawn_choice_follows_the_mode_filter() {
                 on_points += 1;
             }
         }
-        assert!(on_points > 0, "{label}: reference teleports on spawn points");
+        assert!(
+            on_points > 0,
+            "{label}: reference teleports on spawn points"
+        );
         println!(
             "{label}: 600 choices on the team's {} points only ({other_mode} team points of other modes never \
              chosen); {on_points} reference spawn teleports, all on points of the mode",

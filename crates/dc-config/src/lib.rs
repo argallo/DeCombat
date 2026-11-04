@@ -10,8 +10,8 @@
 mod check;
 pub mod directory;
 pub mod modes;
-pub mod vanilla_plus;
 pub mod schema;
+pub mod vanilla_plus;
 
 pub use check::{
     check, public_loopback_advertise, CheckOptions, Ports, MAX_CHANNELS, MIN_HOST_TOKEN,

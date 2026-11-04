@@ -37,7 +37,10 @@ pub fn log_text(msg: &str) -> String {
 #[cfg(test)]
 #[test]
 fn player_text_cannot_forge_a_log_line() {
-    assert_eq!(log_text("chat: hi\r\n2026-01-01 admin: stop"), "chat: hi |  | 2026-01-01 admin: stop");
+    assert_eq!(
+        log_text("chat: hi\r\n2026-01-01 admin: stop"),
+        "chat: hi |  | 2026-01-01 admin: stop"
+    );
     assert_eq!(log_text("a\u{1b}[2Jb\tc"), "a [2Jb\tc");
     let long = log_text(&"x".repeat(5000));
     assert_eq!(long.chars().count(), MAX_LINE_CHARS + 3);
@@ -88,9 +91,9 @@ fn masked(frame_id: i32, to_client: bool, payload: &[u8]) -> std::borrow::Cow<'_
     }
     let mut v = payload.to_vec();
     let end = (LOGIN_PASSWORD_AT + LOGIN_PASSWORD_UNITS * 2).min(v.len());
-    for u in v[LOGIN_PASSWORD_AT..end].chunks_exact_mut(2) {
-        if u != [0, 0] {
-            u.copy_from_slice(&[b'*', 0]);
+    for u in v[LOGIN_PASSWORD_AT..end].as_chunks_mut::<2>().0 {
+        if *u != [0, 0] {
+            *u = [b'*', 0];
         }
     }
     std::borrow::Cow::Owned(v)

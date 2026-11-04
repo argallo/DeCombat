@@ -302,7 +302,16 @@ mod tests {
     #[test]
     fn msaa_count_accepts_only_the_power_of_two_counts() {
         assert_eq!(RenderSettings::default().msaa, 1, "off by default");
-        for (set, want) in [(0, 1), (1, 1), (2, 2), (3, 1), (4, 4), (6, 1), (8, 8), (16, 1)] {
+        for (set, want) in [
+            (0, 1),
+            (1, 1),
+            (2, 2),
+            (3, 1),
+            (4, 4),
+            (6, 1),
+            (8, 8),
+            (16, 1),
+        ] {
             let s = RenderSettings {
                 msaa: set,
                 ..RenderSettings::default()

@@ -180,11 +180,16 @@ pub fn route(h: &Hosting, path: &str) -> Option<Reply> {
         });
     }
     // DC-DEFAULT: LG-313 (proposed): a featured entry's set, no account needed (as `/server_list.json`)
-    if let Some(id) = path.strip_prefix("/entry_mods/").and_then(|n| n.strip_suffix(".json")) {
-        return Some(match id.parse().ok().and_then(|n: u32| h.entry_sets.get(&n)) {
-            Some(j) => served("application/json", j.clone().into_bytes()),
-            None => text(404, "This server entry has no mod set."),
-        });
+    if let Some(id) = path
+        .strip_prefix("/entry_mods/")
+        .and_then(|n| n.strip_suffix(".json"))
+    {
+        return Some(
+            match id.parse().ok().and_then(|n: u32| h.entry_sets.get(&n)) {
+                Some(j) => served("application/json", j.clone().into_bytes()),
+                None => text(404, "This server entry has no mod set."),
+            },
+        );
     }
     // DC-DEFAULT: MOD-25 (proposed): `/mods/catalog.json` and `/mods/<sha256>.png`; no account needed
     if path == "/mods/catalog.json" {
@@ -239,7 +244,13 @@ mod tests {
             update_url: "decombat.com".into(),
         })
         .unwrap();
-        for piece in ["\"latest\"", "\"0.3.0\"", "\"min_version\"", "\"0.2.0\"", "\"decombat.com\""] {
+        for piece in [
+            "\"latest\"",
+            "\"0.3.0\"",
+            "\"min_version\"",
+            "\"0.2.0\"",
+            "\"decombat.com\"",
+        ] {
             assert!(doc.contains(piece), "{doc}");
         }
         let d = dir("ver");

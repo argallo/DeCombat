@@ -95,6 +95,11 @@ fn press(m: &mut Menu, cmd: i32) {
 
 #[test]
 fn the_top_bar_buttons_open_their_boxes_over_the_lobby_and_close_again() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     let (mut m, _) = menu();
     assert_eq!(m.screen_name(), "lobby");
     for (cmd, name, close) in [

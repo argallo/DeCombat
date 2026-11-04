@@ -208,12 +208,8 @@ pub fn bot_seed(login: &str) -> u64 {
 }
 
 /// The options a new account's start loadout is resolved with: a bot name gets `--bot-start-loadout` when it is
-/// set, else (LG-260, `--bot-kits random`) a random GP primary and secondary of the ROM shop picked by its name.
-pub fn options_for_account(o: &Options, login: &str) -> Options {
-    options_for_account_with(o, login, None)
-}
-
-/// [`options_for_account`] with the ROM for the random kits.
+/// set, else (LG-260, `--bot-kits random`) a random GP primary and secondary of the ROM shop picked by its name
+/// (`rom` supplies the shop for the random kits).
 pub fn options_for_account_with(o: &Options, login: &str, rom: Option<&RomData>) -> Options {
     let mut o = o.clone();
     if is_bot_name(login) {

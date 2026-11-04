@@ -79,7 +79,8 @@ fn tls_client(port: u16, pin: &str) -> rustls::StreamOwned<ClientConnection, Tcp
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(Pin(pin.to_string())))
         .with_no_client_auth();
-    let c = ClientConnection::new(Arc::new(cfg), ServerName::try_from("localhost").unwrap()).unwrap();
+    let c =
+        ClientConnection::new(Arc::new(cfg), ServerName::try_from("localhost").unwrap()).unwrap();
     let s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     rustls::StreamOwned::new(c, s)
@@ -123,7 +124,10 @@ fn the_pair_is_made_once_and_keeps_its_fingerprint() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let m = std::fs::metadata(d.join(KEY_FILE)).unwrap().permissions().mode();
+        let m = std::fs::metadata(d.join(KEY_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(m & 0o777, 0o600);
     }
     // one file without the other: an error, nothing overwritten
@@ -169,7 +173,9 @@ fn the_gate_refuses_plain_logins_from_remote_peers_of_a_public_lobby() {
     // --tls loopback: TLS from everyone
     let g = Gate::new(None, TlsMode::Loopback, false, false);
     assert!(!g.plain_ok(Some(local)));
-    assert!(is_loopback_bind("127.0.0.1") && is_loopback_bind("localhost") && is_loopback_bind("[::1]"));
+    assert!(
+        is_loopback_bind("127.0.0.1") && is_loopback_bind("localhost") && is_loopback_bind("[::1]")
+    );
     assert!(!is_loopback_bind("0.0.0.0") && !is_loopback_bind("192.168.1.5"));
     assert_eq!(TlsMode::parse("loopback"), Ok(TlsMode::Loopback));
     assert!(TlsMode::parse("sometimes").is_err());
@@ -224,7 +230,10 @@ fn a_login_over_tls_on_the_auth_port() {
     assert_eq!(u32_at(&r, 6), 0);
     // a client pinning another fingerprint never gets to send anything
     let mut c = tls_client(port, "00:11");
-    assert!(c.write_all(&login_frame("alice", "s3cret-pw")).and_then(|_| c.flush()).is_err());
+    assert!(c
+        .write_all(&login_frame("alice", "s3cret-pw"))
+        .and_then(|_| c.flush())
+        .is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -258,7 +267,12 @@ fn the_web_port_serves_tls_and_redirects_plain_requests() {
     let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = l.local_addr().unwrap().port();
     let gate = Gate::new(Some(id), TlsMode::Loopback, false, false);
-    crate::clanweb::spawn_with_tls(shared, l, crate::hosting::Hosting::none(), Some(Arc::new(gate)));
+    crate::clanweb::spawn_with_tls(
+        shared,
+        l,
+        crate::hosting::Hosting::none(),
+        Some(Arc::new(gate)),
+    );
     let mut c = tls_client(port, &fp);
     write!(c, "GET /missing HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").unwrap();
     let mut out = Vec::new();
@@ -268,14 +282,27 @@ fn the_web_port_serves_tls_and_redirects_plain_requests() {
     // plain GET: a redirect to the same address over https; a plain POST is refused
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    write!(s, "GET /register?x=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").unwrap();
+    write!(
+        s,
+        "GET /register?x=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+    )
+    .unwrap();
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
     assert!(out.starts_with("HTTP/1.1 301"), "{out}");
-    assert!(out.contains(&format!("Location: https://127.0.0.1:{port}/register?x=1\r\n")), "{out}");
+    assert!(
+        out.contains(&format!(
+            "Location: https://127.0.0.1:{port}/register?x=1\r\n"
+        )),
+        "{out}"
+    );
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    write!(s, "POST /register HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 3\r\n\r\na=b").unwrap();
+    write!(
+        s,
+        "POST /register HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 3\r\n\r\na=b"
+    )
+    .unwrap();
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
     assert!(out.starts_with("HTTP/1.1 403"), "{out}");
@@ -307,9 +334,14 @@ fn a_client_that_trickles_bytes_is_dropped_at_the_overall_deadline() {
             }
         }
     });
-    let (failed, took) = rx.recv_timeout(Duration::from_secs(5)).expect("admit returned");
+    let (failed, took) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("admit returned");
     assert!(failed, "a trickling handshake fails");
-    assert!(took >= Duration::from_millis(600) && took < Duration::from_millis(2500), "{took:?}");
+    assert!(
+        took >= Duration::from_millis(600) && took < Duration::from_millis(2500),
+        "{took:?}"
+    );
     let _ = t.join();
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -318,7 +350,9 @@ fn a_client_that_trickles_bytes_is_dropped_at_the_overall_deadline() {
 fn the_handshake_cap_closes_the_next_pending_connection_and_frees_places() {
     // the counter itself
     let slots = Slots::default();
-    let held: Vec<_> = (0..MAX_HANDSHAKES).map(|_| slots.take(MAX_HANDSHAKES).unwrap()).collect();
+    let held: Vec<_> = (0..MAX_HANDSHAKES)
+        .map(|_| slots.take(MAX_HANDSHAKES).unwrap())
+        .collect();
     assert!(slots.take(MAX_HANDSHAKES).is_none(), "the 65th is refused");
     drop(held);
     assert!(slots.take(MAX_HANDSHAKES).is_some(), "places are freed");
@@ -329,11 +363,21 @@ fn the_handshake_cap_closes_the_next_pending_connection_and_frees_places() {
     let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = l.local_addr().unwrap().port();
     let gate = Gate::new(Some(id), TlsMode::Auto, false, false);
-    crate::net::spawn_listener_capped(Arc::clone(&shared), l, Listener::Auth, Some(Arc::new(gate)), 3);
-    let idle: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+    crate::net::spawn_listener_capped(
+        Arc::clone(&shared),
+        l,
+        Listener::Auth,
+        Some(Arc::new(gate)),
+        3,
+    );
+    let idle: Vec<TcpStream> = (0..3)
+        .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
     std::thread::sleep(Duration::from_millis(300));
     let mut fourth = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    fourth.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    fourth
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
     let mut b = [0u8; 1];
     // closed by the server: end of stream (or a reset), not a timeout
     match fourth.read(&mut b) {
@@ -350,14 +394,25 @@ fn a_new_pair_leaves_no_temporary_files_and_the_proxy_note_is_logged_for_public_
     let d = temp_dir();
     let id = load_or_create(&d, &[]).unwrap();
     assert!(d.join(CERT_FILE).is_file() && d.join(KEY_FILE).is_file());
-    assert!(!d.join(format!("{CERT_FILE}.tmp")).exists() && !d.join(format!("{KEY_FILE}.tmp")).exists());
+    assert!(
+        !d.join(format!("{CERT_FILE}.tmp")).exists() && !d.join(format!("{KEY_FILE}.tmp")).exists()
+    );
     let public = Gate::new(None, TlsMode::Auto, true, false);
     let lines = startup_lines(&id, &public);
-    assert!(lines.iter().any(|l| l.contains("--tls loopback") && l.contains("proxy")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("--tls loopback") && l.contains("proxy")),
+        "{lines:?}"
+    );
     let strict = Gate::new(None, TlsMode::Loopback, true, false);
-    assert!(!startup_lines(&id, &strict).iter().any(|l| l.contains("proxy")));
+    assert!(!startup_lines(&id, &strict)
+        .iter()
+        .any(|l| l.contains("proxy")));
     let local = Gate::new(None, TlsMode::Auto, false, false);
-    assert!(!startup_lines(&id, &local).iter().any(|l| l.contains("proxy")));
+    assert!(!startup_lines(&id, &local)
+        .iter()
+        .any(|l| l.contains("proxy")));
     let _ = std::fs::remove_dir_all(&d);
 }
 

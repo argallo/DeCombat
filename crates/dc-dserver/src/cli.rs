@@ -132,9 +132,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
                 }
             }
             "rom" => a.rom = Some(PathBuf::from(value().ok_or("-rom needs a value")?)),
-            "content" => {
-                a.content = Some(PathBuf::from(value().ok_or("-content needs a value")?))
-            }
+            "content" => a.content = Some(PathBuf::from(value().ok_or("-content needs a value")?)),
             "log" => a.log = Some(PathBuf::from(value().ok_or("-log needs a value")?)),
             "bindip" => a.bind = num("-bindip", value())?,
             "idle" => {
@@ -951,25 +949,40 @@ max_segments_per_tick = 64
     #[test]
     fn config_spy_table_sets_the_agents_health_and_armour() {
         let a = pe("-world w", &[]).unwrap();
-        assert_eq!((a.server.game.agent_health, a.server.game.agent_armor), (1000.0, 500.0));
+        assert_eq!(
+            (a.server.game.agent_health, a.server.game.agent_armor),
+            (1000.0, 500.0)
+        );
         assert_eq!(a.server.game.agent_damage_scale, 2.0, "DSV-456 default");
-        let p = temp_toml("spy", "[spy]
+        let p = temp_toml(
+            "spy",
+            "[spy]
 agent_health = 1200.0
 agent_armor = 300.0
 agent_damage_scale = 3.5
-");
+",
+        );
         let a = pe(&format!("-world w -config {}", p.display()), &[]).unwrap();
-        assert_eq!((a.server.game.agent_health, a.server.game.agent_armor), (1200.0, 300.0));
+        assert_eq!(
+            (a.server.game.agent_health, a.server.game.agent_armor),
+            (1200.0, 300.0)
+        );
         assert_eq!(a.server.game.agent_damage_scale, 3.5);
         let a = pe(
             &format!("-world w -config {}", p.display()),
             &[("DC_SPY__AGENT_HEALTH", "2000")],
         )
         .unwrap();
-        assert_eq!((a.server.game.agent_health, a.server.game.agent_armor), (2000.0, 300.0));
-        let bad = temp_toml("spy-bad", "[spy]
+        assert_eq!(
+            (a.server.game.agent_health, a.server.game.agent_armor),
+            (2000.0, 300.0)
+        );
+        let bad = temp_toml(
+            "spy-bad",
+            "[spy]
 agent_health = 0.0
-");
+",
+        );
         assert!(pe(&format!("-world w -config {}", bad.display()), &[])
             .unwrap_err()
             .contains("spy.agent_health"));

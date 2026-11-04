@@ -364,12 +364,20 @@ impl LobbyServerCfg {
 impl LobbySection {
     /// The entries of this lobby (CD-21): every `[[lobby.servers]]` entry without `lobby`.
     pub fn local_servers(&self) -> Vec<LobbyServerCfg> {
-        self.servers.iter().filter(|e| !e.is_remote()).cloned().collect()
+        self.servers
+            .iter()
+            .filter(|e| !e.is_remote())
+            .cloned()
+            .collect()
     }
 
     /// The entries naming other lobby instances (LG-272), in config order.
     pub fn remote_servers(&self) -> Vec<LobbyServerCfg> {
-        self.servers.iter().filter(|e| e.is_remote()).cloned().collect()
+        self.servers
+            .iter()
+            .filter(|e| e.is_remote())
+            .cloned()
+            .collect()
     }
 }
 
@@ -1412,7 +1420,10 @@ impl std::fmt::Debug for MailSection {
             .field("smtp_host", &self.smtp_host)
             .field("smtp_port", &self.smtp_port)
             .field("user", &self.user)
-            .field("password", &if self.password.is_empty() { "" } else { "***" })
+            .field(
+                "password",
+                &if self.password.is_empty() { "" } else { "***" },
+            )
             .field("from", &self.from)
             .field("subject_prefix", &self.subject_prefix)
             .field("dry_run", &self.dry_run)

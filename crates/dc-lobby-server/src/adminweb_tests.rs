@@ -5,6 +5,9 @@ use super::*;
 use crate::webauthn::tests::{SoftKey, TestCa, ORIGIN, RP};
 use std::net::Ipv4Addr;
 
+/// What a test key answers with: three byte strings.
+type Answer = (Vec<u8>, Vec<u8>, Vec<u8>);
+
 const LO: Option<IpAddr> = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
 const HOST: &str = "admin.example.com";
 const T0: i64 = 1_800_000_000;
@@ -159,7 +162,7 @@ impl T {
     fn login_with(
         &self,
         k: &mut SoftKey,
-        answer: &dyn Fn(&mut SoftKey, &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>),
+        answer: &dyn Fn(&mut SoftKey, &[u8]) -> Answer,
     ) -> (Resp, Value) {
         let (st, o) = self.post("/auth/login/options", None, json!({}));
         assert_eq!(st, 200, "{o}");
@@ -1163,10 +1166,18 @@ fn inst(name: &str, label: &str, admin: &str, env_file: &str) -> dc_config::Admi
 fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     let (ish, iaddr) = instance_port(Some("inst-s3cret"));
     let env = std::env::temp_dir().join(format!("dc_adminfwd_env_{}", std::process::id()));
-    std::fs::write(&env, "DC_ADMIN=127.0.0.1:10091\nexport DC_ADMIN_TOKEN=\"inst-s3cret\"\n").unwrap();
+    std::fs::write(
+        &env,
+        "DC_ADMIN=127.0.0.1:10091\nexport DC_ADMIN_TOKEN=\"inst-s3cret\"\n",
+    )
+    .unwrap();
     let env_s = env.to_string_lossy().to_string();
     // a closed port: bind one and drop it
-    let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let closed = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
     let t = setup_with(|c| {
         c.label = "Vanilla lobby".into();
         c.instances = vec![
@@ -1179,7 +1190,8 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
         let mut g = ish.lock().unwrap();
         let st = &mut *g;
         let a = crate::db::create_account(&st.db, "modonly", 0).unwrap();
-        st.scope(|st| crate::auth::create_character(st, a, "ModOnly", 2)).unwrap();
+        st.scope(|st| crate::auth::create_character(st, a, "ModOnly", 2))
+            .unwrap();
         a
     };
     let mut k = SoftKey::new(&t.ca);
@@ -1188,10 +1200,22 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     // no session: the pages go to the sign-in, everything else is 401; nothing reaches the instance
     for p in ["/i/modded/ops", "/i/modded/ops/beta"] {
         let r = t.get(p, None);
-        assert_eq!((r.status, r.headers.as_str()), (303, "Location: /login\r\n"), "{p}");
+        assert_eq!(
+            (r.status, r.headers.as_str()),
+            (303, "Location: /login\r\n"),
+            "{p}"
+        );
     }
     assert_eq!(t.get("/i/modded/ops/live", None).status, 401);
-    assert_eq!(t.post("/i/modded/ops/player/disable", None, json!({"account": acc})).0, 401);
+    assert_eq!(
+        t.post(
+            "/i/modded/ops/player/disable",
+            None,
+            json!({"account": acc})
+        )
+        .0,
+        401
+    );
 
     let s = t.login(&mut k);
     let tgt_token = {
@@ -1203,23 +1227,36 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     let page = t.get("/i/modded/ops", Some(&s));
     assert_eq!(page.status, 200, "{}", page.body);
     assert!(page.ctype.starts_with("text/html"));
-    assert!(page.body.contains(&format!("<meta name=\"csrf\" content=\"{}\">", s.csrf)));
-    assert!(!page.body.contains(&tgt_token), "the instance's page token never reaches the browser");
+    assert!(page
+        .body
+        .contains(&format!("<meta name=\"csrf\" content=\"{}\">", s.csrf)));
+    assert!(
+        !page.body.contains(&tgt_token),
+        "the instance's page token never reaches the browser"
+    );
     assert!(!page.body.contains("inst-s3cret"));
     assert!(page.body.contains("DeCombat <span>operations</span>"));
-    assert!(page.body.contains("<select data-inst aria-label=\"Lobby\">"));
-    assert!(page.body.contains("<option value=\"/ops\">Vanilla lobby</option>"));
+    assert!(page
+        .body
+        .contains("<select data-inst aria-label=\"Lobby\">"));
+    assert!(page
+        .body
+        .contains("<option value=\"/ops\">Vanilla lobby</option>"));
     assert!(page
         .body
         .contains("<option value=\"/i/modded/ops\" selected>Hacking Mod lobby</option>"));
     assert!(page.body.contains("<body class=\"other-lobby\">"));
     assert!(!page.body.contains("href=\"#updates\""));
     assert!(page.body.contains("<a href=\"/keys\">Security keys</a>"));
-    assert!(page.body.contains("<title>Hacking Mod lobby | DeCombat ops</title>"));
+    assert!(page
+        .body
+        .contains("<title>Hacking Mod lobby | DeCombat ops</title>"));
     let beta = t.get("/i/modded/ops/beta", Some(&s));
     assert_eq!(beta.status, 200);
     assert!(beta.body.contains(&s.csrf) && !beta.body.contains(&tgt_token));
-    assert!(beta.body.contains("<option value=\"/i/modded/ops/beta\" selected>"));
+    assert!(beta
+        .body
+        .contains("<option value=\"/i/modded/ops/beta\" selected>"));
     // the inline scripts are the templates' own, so the CSP hashes still allow them
     let csp = page.csp();
     for h in inline_script_hashes(&page.body) {
@@ -1227,11 +1264,16 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     }
     // the default lobby's page names itself and keeps its Updates tab
     let own = t.get("/ops", Some(&s));
-    assert!(own.body.contains("<title>Vanilla lobby | DeCombat ops</title>"));
+    assert!(own
+        .body
+        .contains("<title>Vanilla lobby | DeCombat ops</title>"));
     assert!(own
         .body
         .contains("<option value=\"/ops\" selected>Vanilla lobby</option>"));
-    assert!(own.body.contains("href=\"#updates\"") && !own.body.contains("<body class=\"other-lobby\">"));
+    assert!(
+        own.body.contains("href=\"#updates\"")
+            && !own.body.contains("<body class=\"other-lobby\">")
+    );
 
     // the JSON is the instance's: its account is there and not in the default lobby
     let tl = t.get("/i/modded/ops/timeline?name=modonly", Some(&s));
@@ -1252,11 +1294,18 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     assert_eq!(t.get("/i/modded/ops/../status", Some(&s)).status, 400);
     assert_eq!(t.get("/i/modded/ops/%2e%2e/status", Some(&s)).status, 400);
     assert_eq!(t.get("/i/modded/ops/updates", Some(&s)).status, 403);
-    let (st, v) = t.post("/i/modded/ops/updates/deploy", Some(&s), json!({"sha": "abcdef1"}));
+    let (st, v) = t.post(
+        "/i/modded/ops/updates/deploy",
+        Some(&s),
+        json!({"sha": "abcdef1"}),
+    );
     assert_eq!(st, 403, "{v}");
     assert!(v["message"].as_str().unwrap().contains("Vanilla lobby"));
     let r = t.get("/i/modded", Some(&s));
-    assert_eq!((r.status, r.headers.as_str()), (303, "Location: /i/modded/ops\r\n"));
+    assert_eq!(
+        (r.status, r.headers.as_str()),
+        (303, "Location: /i/modded/ops\r\n")
+    );
 
     // writes: the admin web's Origin and the session's token first, then the instance's own guard (passed by the
     // forwarder: "no such signup" is the beta list's answer after its guard)
@@ -1268,7 +1317,11 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
         t.send(&r, &json!({"id": 999, "note": "x"}))
     };
     assert_eq!(beta_note("wrong", ORIGIN).status, 403);
-    assert_eq!(beta_note(&tgt_token, ORIGIN).status, 403, "the instance's token is not the session's");
+    assert_eq!(
+        beta_note(&tgt_token, ORIGIN).status,
+        403,
+        "the instance's token is not the session's"
+    );
     assert_eq!(beta_note(&s.csrf, "https://evil.example.com").status, 403);
     let ok = beta_note(&s.csrf, ORIGIN);
     assert_eq!(ok.status, 400, "{}", ok.body);
@@ -1276,8 +1329,16 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     // an account write lands on the instance, named after the key and the client address
     let mut r = req("POST", "/i/modded/ops/player/disable");
     r.cookie = Some(&s.cookie);
-    assert_eq!(t.send(&r, &json!({"account": acc})).status, 403, "no page token");
-    let (st, v) = t.post("/i/modded/ops/player/disable", Some(&s), json!({"account": acc}));
+    assert_eq!(
+        t.send(&r, &json!({"account": acc})).status,
+        403,
+        "no page token"
+    );
+    let (st, v) = t.post(
+        "/i/modded/ops/player/disable",
+        Some(&s),
+        json!({"account": acc}),
+    );
     assert_eq!(st, 200, "{v}");
     let detail: String = ish
         .lock()
@@ -1289,21 +1350,23 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(detail.contains("the admin web, key #1 from 192.0.2.10"), "{detail}");
+    assert!(
+        detail.contains("the admin web, key #1 from 192.0.2.10"),
+        "{detail}"
+    );
     assert!(!detail.contains("the admin port"), "{detail}");
     // and the default lobby's own events name the forwarded write
-    let n: i64 = t
-        .sh
-        .lock()
-        .unwrap()
-        .db
-        .query_row(
-            "SELECT COUNT(*) FROM ops_events WHERE kind = 'admin_web' \
+    let n: i64 =
+        t.sh.lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM ops_events WHERE kind = 'admin_web' \
              AND detail LIKE '%POST /ops/player/disable on instance modded (answer 200)%'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
     assert_eq!(n, 1);
     let _ = std::fs::remove_file(&env);
 }
@@ -1333,9 +1396,13 @@ fn the_pages_take_their_base_from_the_path() {
             "{name}: the switcher's anchor"
         );
         assert!(page.contains(".inst select"), "{name}");
-        assert!(page.contains("select[data-inst]"), "{name}: the switcher's change handler");
+        assert!(
+            page.contains("select[data-inst]"),
+            "{name}: the switcher's change handler"
+        );
     }
-    assert!(crate::opsweb::PAGE.contains(r#"document.getElementById("beta-link").href = BASE + "/ops/beta""#));
+    assert!(crate::opsweb::PAGE
+        .contains(r#"document.getElementById("beta-link").href = BASE + "/ops/beta""#));
     assert!(crate::betaweb::ADMIN_PAGE.contains("a.href = BASE + path"));
     assert!(crate::opsweb::PAGE.contains("<a href=\"#updates\">Updates</a>"));
 }

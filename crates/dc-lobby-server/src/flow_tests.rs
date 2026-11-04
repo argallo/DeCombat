@@ -210,7 +210,11 @@ fn items_expired_while_away_are_told_at_the_next_login() {
         .unwrap();
     let (mut zoe2, _, _) = lobby_login(&mut st, 5, 6, "zoe", "Zoe");
     let d = zoe2.take(crate::notices::EXPIRY_NOTICE_PUSH);
-    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xa)), (1, 12), "one box: item 12");
+    assert_eq!(
+        (u32_at(&d, 6), u32_at(&d, 0xa)),
+        (1, 12),
+        "one box: item 12"
+    );
     let left: i64 = st
         .db
         .query_row(
@@ -221,10 +225,7 @@ fn items_expired_while_away_are_told_at_the_next_login() {
         .unwrap();
     assert_eq!(left, 0, "the login's scan removed it");
     let (mut zoe3, _, _) = lobby_login(&mut st, 9, 10, "zoe", "Zoe");
-    assert!(
-        !zoe3.has(crate::notices::EXPIRY_NOTICE_PUSH),
-        "told once"
-    );
+    assert!(!zoe3.has(crate::notices::EXPIRY_NOTICE_PUSH), "told once");
 }
 
 #[test]
@@ -923,7 +924,13 @@ fn nx_daily_bonus_leaves_the_login_wire_alone() {
     let (off, on) = (frames(false), frames(true));
     let ids = |v: &[(u16, Vec<u8>)]| v.iter().map(|f| f.0).collect::<Vec<_>>();
     assert_eq!(ids(&off), ids(&on));
-    let sheet = |v: &[(u16, Vec<u8>)]| v.iter().find(|f| f.0 == CHAR_SHEET_REPLY).unwrap().1.clone();
+    let sheet = |v: &[(u16, Vec<u8>)]| {
+        v.iter()
+            .find(|f| f.0 == CHAR_SHEET_REPLY)
+            .unwrap()
+            .1
+            .clone()
+    };
     let (a, mut b) = (sheet(&off), sheet(&on));
     assert_eq!((u32_at(&a, 0x104), u32_at(&b, 0x104)), (0, 1));
     b[0x104] = 0;
@@ -1014,11 +1021,7 @@ fn played_clan_room() -> (Core, Client, [u32; 2], [u32; 2], u64, RoomKey) {
     }
     for (u, t, cl) in [(na, 1, 0), (nb, 1, 1), (nc, 2, 2), (nd, 2, 3)] {
         st.scope(|st| {
-            game::on_line(
-                st,
-                id,
-                &format!("@join {cl} {u} {t} {cl} N{u}"),
-            )?;
+            game::on_line(st, id, &format!("@join {cl} {u} {t} {cl} N{u}"))?;
             game::on_line(
                 st,
                 id,
@@ -1229,7 +1232,10 @@ fn a_bot_from_a_players_pc_earns_nothing_and_a_lone_player_is_paid() {
     let run = |peer: &str| {
         let (mut st, _a, _b, na, nb, id) = leaver_match(true);
         st.db
-            .execute("UPDATE accounts SET self_bot = 1 WHERE user_no = ?1", [nb as i64])
+            .execute(
+                "UPDATE accounts SET self_bot = 1 WHERE user_no = ?1",
+                [nb as i64],
+            )
             .unwrap();
         for s in st.sessions.values_mut() {
             if s.account == Some(nb) {
@@ -1241,7 +1247,12 @@ fn a_bot_from_a_players_pc_earns_nothing_and_a_lone_player_is_paid() {
         result_line_for(&mut st, id);
         let a2 = crate::db::character(&st.db, na).unwrap().unwrap();
         let b2 = crate::db::character(&st.db, nb).unwrap().unwrap();
-        (a2.exp > ea.exp, b2.exp > eb.exp, a2.gp > ea.gp, b2.gp > eb.gp)
+        (
+            a2.exp > ea.exp,
+            b2.exp > eb.exp,
+            a2.gp > ea.gp,
+            b2.gp > eb.gp,
+        )
     };
     assert_eq!(run("203.0.113.9:5000"), (true, false, true, false));
     assert_eq!(run("127.0.0.1:5000"), (true, true, true, true));
@@ -2411,9 +2422,17 @@ fn a_sniper_only_room_puts_the_first_owned_sniper_rifle_in_the_primary_slot() {
     a.send(&mut st, ROOM_SETTING_CHANGE, &u32s(&[0, 0xe, 6]));
     assert_eq!(u32_at(&a.take(ROOM_SETTING_CHANGE_REPLY), 6), 1);
     b.send(&mut st, ROOM_USER_FLAG, &u32s(&[0, 1]));
-    assert_eq!(u32_at(&b.take(ROOM_USER_FLAG_REPLY), 6), 1, "a sniper rifle is owned");
+    assert_eq!(
+        u32_at(&b.take(ROOM_USER_FLAG_REPLY), 6),
+        1,
+        "a sniper rifle is owned"
+    );
     c.send(&mut st, ROOM_USER_FLAG, &u32s(&[0, 1]));
-    assert_eq!(u32_at(&c.take(ROOM_USER_FLAG_REPLY), 6), 0, "no sniper rifle at all");
+    assert_eq!(
+        u32_at(&c.take(ROOM_USER_FLAG_REPLY), 6),
+        0,
+        "no sniper rifle at all"
+    );
     let ch = st.character(nb).unwrap_or_default();
     let tok = game::loadout_tokens(&st, nb, &ch);
     assert!(tok.starts_with(" loadout=0:31,1:20,2:40 "), "{tok}");
@@ -2422,7 +2441,10 @@ fn a_sniper_only_room_puts_the_first_owned_sniper_rifle_in_the_primary_slot() {
         .iter()
         .map(|i| (i.slot, i.item_no))
         .collect();
-    assert!(stored.contains(&(0, 10)) && stored.contains(&(11, 31)), "{stored:?}");
+    assert!(
+        stored.contains(&(0, 10)) && stored.contains(&(11, 31)),
+        "{stored:?}"
+    );
     // without the limit the stored loadout goes out as it is
     a.send(&mut st, ROOM_SETTING_CHANGE, &u32s(&[0, 0xe, 0]));
     let tok = game::loadout_tokens(&st, nb, &ch);
@@ -2854,7 +2876,10 @@ fn a_member_who_goes_shopping_is_shown_shopping_to_the_room_until_he_is_back() {
     assert_eq!(st.sessions[&b.sid].private_state, 0);
     b.send(&mut st, ROOM_USER_FLAG, &u32s(&[1, 0]));
     let d = a.take(ROOM_USER_STATE_PUSH);
-    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xa), u32_at(&d, 0xe)), (nb, 0, 0));
+    assert_eq!(
+        (u32_at(&d, 6), u32_at(&d, 0xa), u32_at(&d, 0xe)),
+        (nb, 0, 0)
+    );
     assert_eq!(st.rooms[&key].member(nb).unwrap().sub, 0);
 }
 
@@ -2872,7 +2897,10 @@ fn a_ready_member_who_goes_shopping_is_no_longer_ready() {
     a.got.clear();
     b.send(&mut st, ROOM_USER_FLAG, &u32s(&[1, 1]));
     let d = a.take(ROOM_USER_STATE_PUSH);
-    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xa), u32_at(&d, 0xe)), (nb, 0, 1));
+    assert_eq!(
+        (u32_at(&d, 6), u32_at(&d, 0xa), u32_at(&d, 0xe)),
+        (nb, 0, 1)
+    );
     assert_eq!(st.rooms[&key].member(nb).unwrap().state, 0);
 }
 
@@ -2938,7 +2966,9 @@ fn another_lobby_entry_rides_in_our_push_before_the_unchanged_server_list() {
     }
     let mut st = state();
     let plain = login(&mut st, 70);
-    assert!(plain.iter().all(|(id, _)| *id != dc_wire::moddedlist::MODDED_SERVERS_PUSH));
+    assert!(plain
+        .iter()
+        .all(|(id, _)| *id != dc_wire::moddedlist::MODDED_SERVERS_PUSH));
     let list_before = plain
         .iter()
         .find(|(id, _)| *id == SERVER_LIST_PUSH)
@@ -2961,9 +2991,14 @@ fn another_lobby_entry_rides_in_our_push_before_the_unchanged_server_list() {
     }];
     let got = login(&mut st, 71);
     let ids: Vec<u16> = got.iter().map(|(id, _)| *id).collect();
-    let push = ids.iter().position(|i| *i == dc_wire::moddedlist::MODDED_SERVERS_PUSH);
+    let push = ids
+        .iter()
+        .position(|i| *i == dc_wire::moddedlist::MODDED_SERVERS_PUSH);
     let list = ids.iter().position(|i| *i == SERVER_LIST_PUSH);
-    assert!(push.is_some() && push < list, "0x3f02 comes before 0x2000: {ids:x?}");
+    assert!(
+        push.is_some() && push < list,
+        "0x3f02 comes before 0x2000: {ids:x?}"
+    );
     let listed = dc_wire::moddedlist::parse(&got[push.unwrap()].1);
     assert_eq!(
         listed,
@@ -2977,7 +3012,11 @@ fn another_lobby_entry_rides_in_our_push_before_the_unchanged_server_list() {
     );
     // the 2009 list is byte for byte the one without the entry
     assert_eq!(got[list.unwrap()].1, list_before);
-    assert_eq!(u32_at(&list_before, 0x12), 2, "this lobby's entry and the clan entry only");
+    assert_eq!(
+        u32_at(&list_before, 0x12),
+        2,
+        "this lobby's entry and the clan entry only"
+    );
 }
 
 /// A mod client over an empty folder whose set offers the given Hacks bits (LG-274).
@@ -3100,13 +3139,29 @@ fn a_vanilla_room_has_no_hacks() {
 fn gun_rom(st: &mut Core) {
     let mut rom = crate::rom::RomData::empty();
     let modes: String = (0..9)
-        .map(|i| [format!("[Mode{i}]"), "GameType = 6".into(), "DefaultGoal = 2".into()].join("\n") + "\n")
+        .map(|i| {
+            [
+                format!("[Mode{i}]"),
+                "GameType = 6".into(),
+                "DefaultGoal = 2".into(),
+            ]
+            .join("\n")
+                + "\n"
+        })
         .collect();
     rom.game_room = dc_bute::GameRoomData::from_doc(dc_bute::ButeDoc::parse(&modes));
     let mut shop = String::new();
-    for (i, (id, kind)) in [(4, 0), (12, 0), (1, 4), (58, 7), (29, 8), (171, 0x1d), (13, 0)]
-        .iter()
-        .enumerate()
+    for (i, (id, kind)) in [
+        (4, 0),
+        (12, 0),
+        (1, 4),
+        (58, 7),
+        (29, 8),
+        (171, 0x1d),
+        (13, 0),
+    ]
+    .iter()
+    .enumerate()
     {
         let lines = [
             format!("[ItemInfo{i}]"),
@@ -3271,7 +3326,10 @@ fn hardcore_on_a_featured_entry_only() {
     a.send(&mut st, REQUEST, &u32s(&[1]));
     assert_eq!(parse(&b.take(PUSH)), Some(true));
     assert_eq!(parse(&a.take(PUSH)), Some(true));
-    assert_eq!(game::hardcore_args(&st, key), ["-combat", "health_scale=0.2"]);
+    assert_eq!(
+        game::hardcore_args(&st, key),
+        ["-combat", "health_scale=0.2"]
+    );
     // it stands beside a weapon limit: sniper only stays
     a.send(&mut st, ROOM_SETTING_CHANGE, &u32s(&[8, 0xe, 6, 0]));
     assert_eq!(st.rooms[&key].weapon_limit, 6);
@@ -3305,7 +3363,15 @@ fn possession_on_a_featured_entry_only() {
     let modes: String = [1, 5, 6, 9, 11]
         .iter()
         .enumerate()
-        .map(|(i, c)| [format!("[Mode{i}]"), format!("GameType = {c}"), "DefaultGoal = 2".into()].join("\n") + "\n")
+        .map(|(i, c)| {
+            [
+                format!("[Mode{i}]"),
+                format!("GameType = {c}"),
+                "DefaultGoal = 2".into(),
+            ]
+            .join("\n")
+                + "\n"
+        })
         .collect();
     let mut rom = crate::rom::RomData::empty();
     rom.game_room = dc_bute::GameRoomData::from_doc(dc_bute::ButeDoc::parse(&modes));
@@ -3467,7 +3533,13 @@ fn people(st: &mut Core, n: u32, first_sid: Sid) -> Vec<(Client, u32)> {
     (0..n)
         .map(|i| {
             let login = format!("person{first_sid}x{i}");
-            player(st, first_sid + 10 * i as u64, first_sid + 10 * i as u64 + 1, &login, &login)
+            player(
+                st,
+                first_sid + 10 * i as u64,
+                first_sid + 10 * i as u64 + 1,
+                &login,
+                &login,
+            )
         })
         .collect()
 }
@@ -3489,15 +3561,23 @@ fn the_pool_is_made_once_and_passes_over_a_name_somebody_holds() {
     st.scope(crate::botpool::ensure).unwrap();
     let count = |st: &Core| -> i64 {
         st.db
-            .query_row("SELECT COUNT(*) FROM accounts WHERE pool_bot = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM accounts WHERE pool_bot = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap()
     };
     assert_eq!(count(&st), 3);
     st.scope(crate::botpool::ensure).unwrap();
     assert_eq!(count(&st), 3, "idempotent");
-    let other = crate::db::account_by_login(&st.db, "poolbot2").unwrap().unwrap();
+    let other = crate::db::account_by_login(&st.db, "poolbot2")
+        .unwrap()
+        .unwrap();
     assert!(!st.pool.has(other.user_no));
-    let four = crate::db::account_by_login(&st.db, "poolbot4").unwrap().unwrap();
+    let four = crate::db::account_by_login(&st.db, "poolbot4")
+        .unwrap()
+        .unwrap();
     assert!(st.pool.has(four.user_no));
     assert!(!crate::lifecycle::is_human(&st, four.user_no));
     assert_eq!(st.character(four.user_no).unwrap().nick, "PoolBot4");
@@ -3545,7 +3625,11 @@ fn a_seat_comes_back_with_its_connection_and_waits_for_its_key() {
     assert_eq!(ok, 1);
     a.send(&mut st, SERVER_PICK, &u32s(&[1]));
     st.scope(|st| crate::lobby::disconnect(st, 3)).unwrap();
-    assert_eq!(seat_auth(&mut st, 4, "127.0.0.1:1").1, 0, "the key holds it");
+    assert_eq!(
+        seat_auth(&mut st, 4, "127.0.0.1:1").1,
+        0,
+        "the key holds it"
+    );
     st.scope(|st| crate::lobby::disconnect(st, 4)).unwrap();
     // an unused key runs out: the bot crashed between the connections
     let mut st = pool_state(1);
@@ -3561,16 +3645,25 @@ fn a_seat_comes_back_with_its_connection_and_waits_for_its_key() {
     let (mut l, account) = seat(&mut st, 10);
     assert_eq!(seat_auth(&mut st, 20, "127.0.0.1:1").1, 0);
     st.scope(|st| crate::lobby::disconnect(st, 20)).unwrap();
-    assert!(st.tickets.values().all(|t| t.account != account), "no key left");
+    assert!(
+        st.tickets.values().all(|t| t.account != account),
+        "no key left"
+    );
     let _ = &mut l;
     st.scope(|st| crate::lobby::disconnect(st, l.sid)).unwrap();
-    assert_eq!(seat_auth(&mut st, 21, "127.0.0.1:1").3, account, "the same seat again");
+    assert_eq!(
+        seat_auth(&mut st, 21, "127.0.0.1:1").3,
+        account,
+        "the same seat again"
+    );
 }
 
 #[test]
 fn a_seat_has_no_password_login_and_no_way_to_shop_chat_or_make_a_room() {
     let mut st = pool_state(1);
-    let acc = crate::db::account_by_login(&st.db, "poolbot1").unwrap().unwrap();
+    let acc = crate::db::account_by_login(&st.db, "poolbot1")
+        .unwrap()
+        .unwrap();
     // by name, also from this machine, with or without the mark
     for (i, field) in ["LOCAL:poolbot1", "LOCAL:poolbot1;b=1"].iter().enumerate() {
         let sid = 40 + i as u64;
@@ -3586,7 +3679,10 @@ fn a_seat_has_no_password_login_and_no_way_to_shop_chat_or_make_a_room() {
         body.extend(0i32.to_le_bytes());
         a.send(&mut st, LOGIN_REQUEST, &body);
         let r = a.take(LOGIN_REPLY);
-        assert_eq!((u32_at(&r, 6), u32_at(&r, 0xa)), (0, crate::wire::REASON_BAD_PASSWORD));
+        assert_eq!(
+            (u32_at(&r, 6), u32_at(&r, 0xa)),
+            (0, crate::wire::REASON_BAD_PASSWORD)
+        );
     }
     assert!(st.sessions.values().all(|s| s.account != Some(acc.user_no)));
     // the prefix is reserved for the nickname screen
@@ -3618,7 +3714,10 @@ fn a_seat_has_no_password_login_and_no_way_to_shop_chat_or_make_a_room() {
 fn a_seat_earns_nothing_and_keeps_no_record() {
     let (mut st, _a, _b, na, nb, id) = leaver_match(true);
     st.db
-        .execute("UPDATE accounts SET pool_bot = 1, self_bot = 1 WHERE user_no = ?1", [nb as i64])
+        .execute(
+            "UPDATE accounts SET pool_bot = 1, self_bot = 1 WHERE user_no = ?1",
+            [nb as i64],
+        )
         .unwrap();
     st.rules.bot_pool_size = 0;
     st.scope(crate::botpool::ensure).unwrap();
@@ -3633,7 +3732,10 @@ fn a_seat_earns_nothing_and_keeps_no_record() {
         crate::db::character(&st.db, nb).unwrap().unwrap(),
     );
     assert!(a2.exp > ea.exp && a2.gp > ea.gp, "the person is paid");
-    assert_eq!((b2.exp, b2.gp, b2.kills, b2.deaths), (eb.exp, eb.gp, eb.kills, eb.deaths));
+    assert_eq!(
+        (b2.exp, b2.gp, b2.kills, b2.deaths),
+        (eb.exp, eb.gp, eb.kills, eb.deaths)
+    );
 }
 
 /// Under the threshold bots fill a room, and a person who wants in still gets a bot's seat.
@@ -3646,17 +3748,31 @@ fn under_the_threshold_bots_fill_and_a_person_takes_a_bots_seat() {
     let (mut b1, a1) = seat(&mut st, 200);
     let (mut b2, a2) = seat(&mut st, 210);
     assert!(seat_enter(&mut st, &mut b1, no));
-    assert!(seat_enter(&mut st, &mut b2, no), "the last seat, under the threshold");
+    assert!(
+        seat_enter(&mut st, &mut b2, no),
+        "the last seat, under the threshold"
+    );
     assert_eq!(room_at(&st, no).members.len(), 3);
     let mut guest = people(&mut st, 1, 300).pop().unwrap();
     assert!(seat_enter(&mut st, &mut guest.0, no), "a person gets in");
     let r = room_at(&st, no);
-    assert_eq!(r.members.len(), 3, "full again: nobody more leaves under the threshold");
+    assert_eq!(
+        r.members.len(),
+        3,
+        "full again: nobody more leaves under the threshold"
+    );
     assert!(r.member(guest.1).is_some());
     // the bot that left heard of its removal, the others saw a leave
-    let gone = if r.member(a1).is_none() { (&mut b1, a1) } else { (&mut b2, a2) };
+    let gone = if r.member(a1).is_none() {
+        (&mut b1, a1)
+    } else {
+        (&mut b2, a2)
+    };
     let d = gone.0.all(ROOM_USER_REMOVE_PUSH);
-    assert_eq!((u32_at(&d[0], 6), u32_at(&d[0], 0xa)), (gone.1, crate::wire::REMOVE_KICKED));
+    assert_eq!(
+        (u32_at(&d[0], 6), u32_at(&d[0], 0xa)),
+        (gone.1, crate::wire::REMOVE_KICKED)
+    );
     let seen = host.0.all(ROOM_USER_REMOVE_PUSH);
     assert_eq!(u32_at(seen.last().unwrap(), 0xa), crate::wire::REMOVE_LEFT);
     // a full room of people refuses, and with the rule off a bot keeps its seat
@@ -3697,7 +3813,11 @@ fn at_the_threshold_the_last_seat_stays_open_and_the_bot_does_not_come_back() {
     let (t1, t2) = teams(&st, no);
     assert!(t1.abs_diff(t2) <= 1, "balanced: {t1} {t2}");
     // whoever left, it is refused now, and asks no more of the room
-    let (gone, _other) = if r.member(a1).is_none() { (&mut b1, 0) } else { (&mut b2, 0) };
+    let (gone, _other) = if r.member(a1).is_none() {
+        (&mut b1, 0)
+    } else {
+        (&mut b2, 0)
+    };
     assert!(!seat_enter(&mut st, gone, no));
     assert_eq!(room_at(&st, no).members.len(), 3);
     // the people went below the threshold: the bot may fill again
@@ -3736,7 +3856,10 @@ fn a_bot_host_leaves_last_and_the_room_goes_to_a_person() {
     let (mut hb, hb_acc) = player(&mut st, 1, 2, "VpsBot1", "VpsBot1");
     let no = seat_room(&mut st, &mut hb, 2);
     let mut guest = people(&mut st, 1, 100).pop().unwrap();
-    assert!(seat_enter(&mut st, &mut guest.0, no), "the second seat fills it");
+    assert!(
+        seat_enter(&mut st, &mut guest.0, no),
+        "the second seat fills it"
+    );
     let r = room_at(&st, no);
     assert_eq!(r.members.len(), 1, "the host bot was the only bot: it left");
     assert_eq!(r.host, guest.1, "the person holds the room");
@@ -3747,7 +3870,10 @@ fn a_bot_host_leaves_last_and_the_room_goes_to_a_person() {
     st.rules.bot_keep_seat_online = 1;
     let (mut gm, gm_acc) = player(&mut st, 1, 2, "VpsBot2", "VpsBot2");
     st.db
-        .execute("UPDATE accounts SET gm = 1 WHERE user_no = ?1", [gm_acc as i64])
+        .execute(
+            "UPDATE accounts SET gm = 1 WHERE user_no = ?1",
+            [gm_acc as i64],
+        )
         .unwrap();
     let no = seat_room(&mut st, &mut gm, 1);
     let mut guest = people(&mut st, 1, 100).pop().unwrap();
@@ -3760,7 +3886,10 @@ fn a_bot_host_leaves_last_and_the_room_goes_to_a_person() {
 fn a_bot_leaves_a_running_match_for_a_person_and_the_match_goes_on() {
     let (mut st, mut a, _b, _na, nb, id) = leaver_match(false);
     st.db
-        .execute("UPDATE accounts SET self_bot = 1 WHERE user_no = ?1", [nb as i64])
+        .execute(
+            "UPDATE accounts SET self_bot = 1 WHERE user_no = ?1",
+            [nb as i64],
+        )
         .unwrap();
     let key = st.games[&id].room;
     let phase = st.rooms[&key].state;

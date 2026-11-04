@@ -134,7 +134,11 @@ fn door_sounds_of(o: &dc_world::Object<'_>, opening: PropHash, closing: PropHash
 impl DoorSounds {
     /// The file of a move that starts now (opening or closing), `None` when the door names none.
     pub fn of_move(&self, opening: bool) -> Option<&str> {
-        let f = if opening { &self.opening } else { &self.closing };
+        let f = if opening {
+            &self.opening
+        } else {
+            &self.closing
+        };
         (!f.is_empty()).then_some(f.as_str())
     }
 }
@@ -885,8 +889,13 @@ impl TurnDoor {
     /// locked one; a switch players use has one as a door (DSV-561), another switch none (`None`).
     pub fn activate(&self) -> Option<(bool, u8)> {
         // DSV-500: a door that only messages turn has its entry disabled (no use prompt)
-        (self.info.kind == TurnKind::Door || self.info.open_by == OpenBy::Use)
-            .then(|| activate_of(self.info.open_by != OpenBy::Message, self.locked, self.opening))
+        (self.info.kind == TurnKind::Door || self.info.open_by == OpenBy::Use).then(|| {
+            activate_of(
+                self.info.open_by != OpenBy::Message,
+                self.locked,
+                self.opening,
+            )
+        })
     }
 
     /// Radius around the pivot that the turning model sweeps.
@@ -1092,7 +1101,10 @@ pub fn parse_statements(text: &[u8]) -> Vec<DoorStatement> {
 // DC-DEFAULT: DSV-562 (proposed) the ROM worlds write only `0` and `1`; the start scripts read the value the same way
 // (DSV-37)
 pub fn script_flag(v: &[u8]) -> bool {
-    if let Some(n) = std::str::from_utf8(v).ok().and_then(|t| t.trim().parse::<f32>().ok()) {
+    if let Some(n) = std::str::from_utf8(v)
+        .ok()
+        .and_then(|t| t.trim().parse::<f32>().ok())
+    {
         return n != 0.0;
     }
     if v.eq_ignore_ascii_case(b"true") {
@@ -1143,7 +1155,8 @@ pub struct ScriptTrigger {
 /// Property keys of a trigger: player-triggerable, the number of activations.
 // OBSERVED: the ROM world files' trigger objects (hashes only; SANDHOG_CP1: the player-triggerable boxes in front
 // of its locked doors fire once and unlock them; the triggers fired only by messages lie below the level)
-pub const PROP_PLAYER_TRIGGERABLE: PropHash = ([0xc5, 0xef, 0x96, 0x7e, 0xe4, 0xd9, 0xae, 0xbb], 17);
+pub const PROP_PLAYER_TRIGGERABLE: PropHash =
+    ([0xc5, 0xef, 0x96, 0x7e, 0xe4, 0xd9, 0xae, 0xbb], 17);
 pub const PROP_ACTIVATIONS: PropHash = ([0xfe, 0x28, 0xb2, 0x9f, 0x43, 0x83, 0x0a, 0xfd], 19);
 
 /// The trigger objects of a parsed world (empty command texts left out, as in the start scripts).
@@ -1217,7 +1230,11 @@ impl Triggers {
     // DC-DEFAULT: DSV-562 (proposed)
     pub fn seed(&mut self, names: &[Vec<u8>]) {
         for n in names {
-            if let Some(i) = self.list.iter().position(|t| t.name.eq_ignore_ascii_case(n)) {
+            if let Some(i) = self
+                .list
+                .iter()
+                .position(|t| t.name.eq_ignore_ascii_case(n))
+            {
                 self.fires[i] = self.fires[i].saturating_add(1);
             }
         }
@@ -1688,7 +1705,10 @@ mod use_tests {
             }
             run_commands(&mut doors, &mut turns, &mut delays, t);
         }
-        assert!(doors.iter().all(|d| (d.offset - 48.0).abs() < 1e-3), "both open");
+        assert!(
+            doors.iter().all(|d| (d.offset - 48.0).abs() < 1e-3),
+            "both open"
+        );
         // the open command closes them 5 s after they were open (the player still there)
         for t in (3200..9500).step_by(50) {
             for d in &mut doors {
@@ -1696,7 +1716,10 @@ mod use_tests {
             }
             run_commands(&mut doors, &mut turns, &mut delays, t);
         }
-        assert!(doors.iter().all(|d| d.offset == 0.0), "closed by the open command");
+        assert!(
+            doors.iter().all(|d| d.offset == 0.0),
+            "closed by the open command"
+        );
         // a use key far away does nothing
         assert!(!use_key(&mut doors, &mut turns, [1000.0, 0.0, 0.0], 9500));
     }
@@ -1734,7 +1757,10 @@ mod use_tests {
             doors.iter().all(|d| d.offset == 100.0),
             "the shutters opened"
         );
-        assert!(!use_key(&mut doors, &mut turns, at_lever, t), "locked for 7 s");
+        assert!(
+            !use_key(&mut doors, &mut turns, at_lever, t),
+            "locked for 7 s"
+        );
         while t < 12_200 {
             tick(&mut doors, &mut turns, &mut dl, t, &[at_lever]);
             t += 100;
@@ -1892,8 +1918,8 @@ mod tests {
     fn the_activate_entry_follows_the_door() {
         assert_eq!(activate_of(true, false, false), (false, ACTIVATE_OFF));
         assert_eq!(activate_of(true, false, true), (false, ACTIVATE_ON));
-        assert_eq!(activate_of(false, false, false).0, true);
-        assert_eq!(activate_of(true, true, false).0, true);
+        assert!(activate_of(false, false, false).0);
+        assert!(activate_of(true, true, false).0);
         let mut d = Door::new(1, info());
         assert_eq!(d.activate(), (false, ACTIVATE_OFF));
         d.step(0, 16, &[[0.0, 50.0, 0.0]]);
@@ -1903,7 +1929,10 @@ mod tests {
         let b = door_blob_of(DOOR_ACTIVATE_ROW, true, ACTIVATE_ON);
         assert_eq!(b.bit_len(), 25);
         let mut r = b.reader();
-        assert_eq!((r.read_u8(), r.read_u8(), r.read_bit(), r.read_u8()), (0x39, 0, true, 0));
+        assert_eq!(
+            (r.read_u8(), r.read_u8(), r.read_bit(), r.read_u8()),
+            (0x39, 0, true, 0)
+        );
         let n = crate::gs::door_note(0x123, NOTE_STATE, ACTIVATE_ON);
         let s = crate::gs::door_note(0x123, NOTE_DISABLED, 1);
         assert_eq!(n.bit_len() - s.bit_len(), 7, "state is 8 bits, disabled 1");
@@ -2045,7 +2074,10 @@ mod script_tests {
         assert_eq!(turns[0].activate(), Some((true, ACTIVATE_OFF)), "no prompt");
         let mut trig = Triggers::new(vec![trigger(
             "Opener",
-            &["msg GateB unlock;", "msg Lamp (visible 1);\r\nmsg Wall (solid 0);"],
+            &[
+                "msg GateB unlock;",
+                "msg Lamp (visible 1);\r\nmsg Wall (solid 0);",
+            ],
             1,
             None,
         )]);
@@ -2097,8 +2129,18 @@ mod script_tests {
             ..gate("Switch", 0.0, false, "")
         };
         let mut trig = Triggers::new(vec![
-            trigger("Lit", &["msg LampOn (visible 1);\r\nmsg LampOff (visible 0);"], 0, None),
-            trigger("Dark", &["msg LampOn (visible 0);\r\nmsg LampOff (visible 1);"], 0, None),
+            trigger(
+                "Lit",
+                &["msg LampOn (visible 1);\r\nmsg LampOff (visible 0);"],
+                0,
+                None,
+            ),
+            trigger(
+                "Dark",
+                &["msg LampOn (visible 0);\r\nmsg LampOff (visible 1);"],
+                0,
+                None,
+            ),
         ]);
         let mut doors: Vec<Door> = Vec::new();
         let mut turns = vec![TurnDoor::new(5, sw(false))];
@@ -2108,19 +2150,38 @@ mod script_tests {
         let mut seen = Vec::new();
         for t in (0..200).step_by(20) {
             turns[0].step(t, 20, &[]);
-            seen.extend(run_world(&mut doors, &mut turns, &mut trig, &mut dl, Vec::new(), t));
+            seen.extend(run_world(
+                &mut doors,
+                &mut turns,
+                &mut trig,
+                &mut dl,
+                Vec::new(),
+                t,
+            ));
         }
         assert_eq!(turns[0].frac, 1.0);
         assert_eq!(turns[0].activate(), Some((false, ACTIVATE_ON)));
         assert_eq!(
-            seen.iter().map(|m| (m.name.clone(), m.visible)).collect::<Vec<_>>(),
-            [(b"LampOn".to_vec(), Some(true)), (b"LampOff".to_vec(), Some(false))]
+            seen.iter()
+                .map(|m| (m.name.clone(), m.visible))
+                .collect::<Vec<_>>(),
+            [
+                (b"LampOn".to_vec(), Some(true)),
+                (b"LampOff".to_vec(), Some(false))
+            ]
         );
         assert!(use_key(&mut doors, &mut turns, [5.0, 50.0, 30.0], 1000));
         let mut seen = Vec::new();
         for t in (1000..1200).step_by(20) {
             turns[0].step(t, 20, &[]);
-            seen.extend(run_world(&mut doors, &mut turns, &mut trig, &mut dl, Vec::new(), t));
+            seen.extend(run_world(
+                &mut doors,
+                &mut turns,
+                &mut trig,
+                &mut dl,
+                Vec::new(),
+                t,
+            ));
         }
         assert_eq!(turns[0].frac, 0.0);
         assert_eq!(seen[0].visible, Some(false), "off: the lit lamp goes");
@@ -2172,9 +2233,24 @@ mod script_bound_tests {
     #[test]
     fn a_self_doubling_trigger_stops_at_the_budget() {
         let mut t = Triggers::new(vec![
-            trig("Twice", &["msg Twice trigger;\r\nmsg Twice trigger;\r\nmsg Lamp (visible 1);"], 0, None),
-            trig("PingA", &["msg PingB trigger;\r\nmsg PingB trigger;"], 0, None),
-            trig("PingB", &["msg PingA trigger;\r\nmsg PingA trigger;"], 0, None),
+            trig(
+                "Twice",
+                &["msg Twice trigger;\r\nmsg Twice trigger;\r\nmsg Lamp (visible 1);"],
+                0,
+                None,
+            ),
+            trig(
+                "PingA",
+                &["msg PingB trigger;\r\nmsg PingB trigger;"],
+                0,
+                None,
+            ),
+            trig(
+                "PingB",
+                &["msg PingA trigger;\r\nmsg PingA trigger;"],
+                0,
+                None,
+            ),
         ]);
         let (mut doors, mut turns): (Vec<Door>, Vec<TurnDoor>) = (Vec::new(), Vec::new());
         let mut dl = DelayedStatements::new();
@@ -2244,7 +2320,12 @@ mod script_bound_tests {
         }
         assert_eq!(doors[0].fired.len(), 1, "one locked command in the burst");
         assert_eq!(doors[0].sounds_due, ["locked.wav"]);
-        use_key(&mut doors, &mut turns, [5.0, 50.0, 0.0], USE_COOLDOWN_MS + 50);
+        use_key(
+            &mut doors,
+            &mut turns,
+            [5.0, 50.0, 0.0],
+            USE_COOLDOWN_MS + 50,
+        );
         assert_eq!(doors[0].fired.len(), 2, "again after the cooldown");
         assert_eq!(doors[0].sounds_due.len(), 1, "one sound queued at a time");
 
@@ -2270,7 +2351,10 @@ mod script_bound_tests {
         let mut doors: Vec<Door> = Vec::new();
         let mut turns = vec![TurnDoor::new(2, sw)];
         assert!(use_key(&mut doors, &mut turns, [0.0, 50.0, 10.0], 0));
-        assert!(!use_key(&mut doors, &mut turns, [0.0, 50.0, 10.0], 100), "cooling");
+        assert!(
+            !use_key(&mut doors, &mut turns, [0.0, 50.0, 10.0], 100),
+            "cooling"
+        );
         assert!(turns[0].want);
         assert!(use_key(&mut doors, &mut turns, [0.0, 50.0, 10.0], 600));
         assert!(!turns[0].want);

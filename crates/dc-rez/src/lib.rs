@@ -854,9 +854,7 @@ impl RezVfs {
         let game_dir = self.rom_dir.join("Game");
         let rez_path = game_dir.join(rez_name);
         // a server ROM holds the archive as a folder of the same name
-        let listed = || {
-            matches!(dc_rom::server_rom::manifest(&self.rom_dir), Ok(Some(m)) if m.archive(rez_name).is_some())
-        };
+        let listed = || matches!(dc_rom::server_rom::manifest(&self.rom_dir), Ok(Some(m)) if m.archive(rez_name).is_some());
         // the names come from code and tables in another case than on disk (e.g. `GUNS_M_PV_Pistol.rez`): a
         // case-sensitive volume (an APFS or Linux option) needs the folder's own spelling
         let rez_path = if rez_path.is_file() || rez_path.is_dir() || listed() {

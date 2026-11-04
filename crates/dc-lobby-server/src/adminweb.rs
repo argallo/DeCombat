@@ -563,7 +563,7 @@ pub fn inline_script_hashes(html: &str) -> Vec<String> {
         };
         out.push(format!(
             "'sha256-{}'",
-            b64::std(&webauthn::sha256(after[..j].as_bytes()))
+            b64::std(&webauthn::sha256(&after.as_bytes()[..j]))
         ));
         rest = &after[j..];
     }
@@ -1230,7 +1230,10 @@ pub fn handle(
                 event(
                     shared,
                     false,
-                    &format!("deploy request with key #{} from {} (answer {status})", s.key_id, c.ip),
+                    &format!(
+                        "deploy request with key #{} from {} (answer {status})",
+                        s.key_id, c.ip
+                    ),
                 );
             }
             if matches!(p, "/ops" | "/ops/beta") && status == 200 && ctype == crate::opsweb::HTML {
@@ -1298,8 +1301,13 @@ fn instance(c: &Ctx, s: &Session, method: &str, head: &str, path: &str, body: &[
         Ok(a) => {
             let page = inner.trim_end_matches('/');
             if a.html && a.status == 200 && matches!(page, "/ops" | "/ops/beta") {
-                let out =
-                    crate::adminfwd::dress(&a.body, &c.cfg, Some(inst), &s.csrf, page == "/ops/beta");
+                let out = crate::adminfwd::dress(
+                    &a.body,
+                    &c.cfg,
+                    Some(inst),
+                    &s.csrf,
+                    page == "/ops/beta",
+                );
                 Resp::new(200, HTML_TYPE, out)
             } else if a.html {
                 // only the two pages are HTML; anything else of that kind is not passed on

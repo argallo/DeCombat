@@ -59,7 +59,8 @@ fn read_line(d: &[u8], at: &mut usize) -> Option<String> {
 }
 
 fn u32_at(d: &[u8], o: usize) -> Option<u32> {
-    d.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    d.get(o..o + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// The 0x3f10 frame.
@@ -79,10 +80,18 @@ pub fn parse_push(d: &[u8]) -> Vec<EntryHashes> {
     let mut at = 10;
     let mut out = Vec::new();
     for _ in 0..n {
-        let Some(l) = read_line(d, &mut at) else { break };
+        let Some(l) = read_line(d, &mut at) else {
+            break;
+        };
         let mut f = l.split('\t');
-        if let (Some(Ok(entry)), Some(set), Some(content)) = (f.next().map(str::parse), f.next(), f.next()) {
-            out.push(EntryHashes { entry, set: set.to_string(), content: content.to_string() });
+        if let (Some(Ok(entry)), Some(set), Some(content)) =
+            (f.next().map(str::parse), f.next(), f.next())
+        {
+            out.push(EntryHashes {
+                entry,
+                set: set.to_string(),
+                content: content.to_string(),
+            });
         }
     }
     out
@@ -103,7 +112,11 @@ pub fn parse_claim(d: &[u8]) -> Option<EntryHashes> {
     let l = read_line(d, &mut at)?;
     let (set, content) = l.split_once('\t')?;
     let content = content.split('\t').next().unwrap_or_default();
-    Some(EntryHashes { entry, set: set.to_ascii_lowercase(), content: content.to_ascii_lowercase() })
+    Some(EntryHashes {
+        entry,
+        set: set.to_ascii_lowercase(),
+        content: content.to_ascii_lowercase(),
+    })
 }
 
 /// The 0x3f12 frame.
@@ -126,7 +139,11 @@ mod tests {
 
     #[test]
     fn the_three_frames_round_trip_and_broken_lines_are_skipped() {
-        let e = EntryHashes { entry: 3, set: "ab".repeat(32), content: "0".into() };
+        let e = EntryHashes {
+            entry: 3,
+            set: "ab".repeat(32),
+            content: "0".into(),
+        };
         let f = push_frame(std::slice::from_ref(&e));
         assert_eq!(parse_push(&f[8..]), vec![e.clone()]);
         let c = claim_message(&e).into_payload();
@@ -137,7 +154,14 @@ mod tests {
         w.u32(2);
         line(&mut w, "not a line");
         line(&mut w, "4\ts\tc\textra");
-        assert_eq!(parse_push(&w.into_payload()), vec![EntryHashes { entry: 4, set: "s".into(), content: "c".into() }]);
+        assert_eq!(
+            parse_push(&w.into_payload()),
+            vec![EntryHashes {
+                entry: 4,
+                set: "s".into(),
+                content: "c".into()
+            }]
+        );
         assert_eq!(parse_claim(&[0; 6]), None);
     }
 }

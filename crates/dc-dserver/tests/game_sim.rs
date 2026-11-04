@@ -2793,9 +2793,12 @@ fn hisec_case_rows_are_drawn_by_weight_and_reported() {
         let mut net = hisec_net(h, t.clone());
         net.shoot(0, 1, 4, [0.0; 3]);
         net.run_for(300);
-        assert!(net
-            .pipe_lines()
-            .contains(&format!("@hisec uid=7 case={want} key=1 name=Dave")), "{rows:?}: {:?}", net.pipe_lines());
+        assert!(
+            net.pipe_lines()
+                .contains(&format!("@hisec uid=7 case={want} key=1 name=Dave")),
+            "{rows:?}: {:?}",
+            net.pipe_lines()
+        );
     }
 }
 
@@ -3166,7 +3169,11 @@ fn a_modded_rifle_hits_for_less_and_holds_the_smaller_clip() {
             && n.c(1).life_state() == 1));
         net.run_for(300);
         let w = net.server.game().players()[&net.pid(0)].weapons[0];
-        assert_eq!((w.weapon, w.clip_size, w.clip), (27, 8, 8), "the Fast Loader's clip");
+        assert_eq!(
+            (w.weapon, w.clip_size, w.clip),
+            (27, 8, 8),
+            "the Fast Loader's clip"
+        );
         assert_eq!(net.c(0).seen.weapon_parts.first().map(|p| p.0), Some(27));
         net.shoot(0, 1, 1, [0.0; 3]);
         assert_eq!(
@@ -3217,13 +3224,24 @@ P1 = \"G3\"
     )
     .unwrap();
     let args = dc_dserver::cli::parse(
-        ["-worldfile", "synth.dat", "-content", &file.display().to_string()].map(String::from),
+        [
+            "-worldfile",
+            "synth.dat",
+            "-content",
+            &file.display().to_string(),
+        ]
+        .map(String::from),
     )
     .unwrap();
-    let content = dc_dserver::runner::load_content(&args).unwrap().expect("-content");
+    let content = dc_dserver::runner::load_content(&args)
+        .unwrap()
+        .expect("-content");
     assert_eq!(
         dc_dserver::runner::content_line(&content),
-        format!("content: 1 weapon patches, 1 ammo patches, hash {}", content.hash())
+        format!(
+            "content: 1 weapon patches, 1 ammo patches, hash {}",
+            content.hash()
+        )
     );
     for (patched, want_health, want_clip) in [(false, 50.0, 10), (true, 70.0, 6)] {
         let mut t = tables();
@@ -3252,7 +3270,11 @@ P1 = \"G3\"
             && n.c(1).life_state() == 1));
         net.run_for(300);
         let w = net.server.game().players()[&net.pid(0)].weapons[0];
-        assert_eq!((w.weapon, w.clip_size), (27, want_clip), "patched {patched}");
+        assert_eq!(
+            (w.weapon, w.clip_size),
+            (27, want_clip),
+            "patched {patched}"
+        );
         net.shoot(0, 1, 1, [0.0; 3]);
         assert_eq!(net.c(1).seen.health, Some(want_health), "patched {patched}");
     }
@@ -4279,7 +4301,9 @@ fn the_use_key_swaps_the_drawn_backpack_gun() {
     assert!(!held.iter().any(|w| w.weapon == 5), "{held:?}");
     // the test tables give weapon 5 no third-person model, so it is not laid down; the server tries to
     assert!(
-        net.logs.iter().any(|l| l.contains("weapon 5 has no third-person model")),
+        net.logs
+            .iter()
+            .any(|l| l.contains("weapon 5 has no third-person model")),
         "the swapped backpack gun is the one dropped"
     );
 }
@@ -5834,7 +5858,10 @@ fn first_shot_ends_the_spawn_shield() {
         "end note at {t_end}, shot at {t_shot}"
     );
     assert!(ended(&net, 0, dave).is_none(), "Dave has not fired");
-    assert!(net.c(0).seen.damage.is_empty(), "Dave, who did not fire, is still shielded");
+    assert!(
+        net.c(0).seen.damage.is_empty(),
+        "Dave, who did not fire, is still shielded"
+    );
     net.shoot(0, 1, 1, [0.0; 3]);
     assert_eq!(net.c(1).seen.damage.len(), 1, "Dave hits Erin back");
 }

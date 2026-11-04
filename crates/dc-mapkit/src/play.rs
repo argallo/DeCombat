@@ -304,14 +304,18 @@ pub struct Ports {
 pub const GAME_RANGE: u16 = 16;
 
 pub fn pick_ports() -> Option<Ports> {
+    // The auth port is scanned from a clock-seeded start in 20000..41100, below the dynamic range: the OS hands out
+    // dynamic ports in order (Windows from 49152), so one above 57455 leaves no room for `+ 8080` and a drawn one
+    // failed about a third of the time.
     let mut auth = None;
-    for _ in 0..64 {
-        let a = free_tcp()?;
-        let web = a.checked_add(8080)?;
-        if a.checked_add(3)
-            .is_some_and(|c| tcp_free(a + 2) && tcp_free(c))
-            && tcp_free(web)
-        {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos())
+        ^ std::process::id();
+    let start = (seed % 5000) as u16;
+    for k in 0..256u16 {
+        let a = 20_000 + (start + k) * 4;
+        if tcp_free(a) && tcp_free(a + 2) && tcp_free(a + 3) && tcp_free(a + 8080) {
             auth = Some(a);
             break;
         }

@@ -35,8 +35,12 @@ pub struct ReviewList {
 
 /// Reads and checks a list; `Err` holds every problem.
 pub fn load(text: &str) -> Result<ReviewList, Vec<Issue>> {
-    let list: ReviewList =
-        serde_json::from_str(text).map_err(|e| vec![Issue::error("vanilla_plus", format!("not a review list: {e}"))])?;
+    let list: ReviewList = serde_json::from_str(text).map_err(|e| {
+        vec![Issue::error(
+            "vanilla_plus",
+            format!("not a review list: {e}"),
+        )]
+    })?;
     let issues = validate(&list);
     if issues.is_empty() {
         Ok(list)
@@ -54,17 +58,30 @@ pub fn validate(list: &ReviewList) -> Vec<Issue> {
     let mut seen = BTreeSet::new();
     for (i, p) in list.packs.iter().enumerate() {
         let path = format!("packs[{i}]");
-        let r = ModRef { id: p.id.clone(), version: p.version.clone(), sha256: p.sha256.clone() };
+        let r = ModRef {
+            id: p.id.clone(),
+            version: p.version.clone(),
+            sha256: p.sha256.clone(),
+        };
         out.extend(check_mod_ref(&path, &r));
         if !seen.insert(p.id.as_str()) {
-            out.push(Issue::error(format!("{path}.id"), format!("pack '{}' listed twice", p.id)));
+            out.push(Issue::error(
+                format!("{path}.id"),
+                format!("pack '{}' listed twice", p.id),
+            ));
         }
         if !is_http_url(&p.source_repo) {
-            out.push(Issue::error(format!("{path}.source_repo"), "must be an http(s) URL"));
+            out.push(Issue::error(
+                format!("{path}.source_repo"),
+                "must be an http(s) URL",
+            ));
         }
         let note = p.reviewer_note.trim().chars().count();
         if note == 0 || note > MAX_NOTE_CHARS {
-            out.push(Issue::error(format!("{path}.reviewer_note"), format!("must say what was reviewed, 1..{MAX_NOTE_CHARS} characters")));
+            out.push(Issue::error(
+                format!("{path}.reviewer_note"),
+                format!("must say what was reviewed, 1..{MAX_NOTE_CHARS} characters"),
+            ));
         }
     }
     out
@@ -74,7 +91,10 @@ pub fn validate(list: &ReviewList) -> Vec<Issue> {
 pub fn config_lines(list: &ReviewList) -> String {
     let mut s = String::from("mods = [\n");
     for p in &list.packs {
-        s.push_str(&format!("  {{ id = \"{}\", version = \"{}\", sha256 = \"{}\" }},\n", p.id, p.version, p.sha256));
+        s.push_str(&format!(
+            "  {{ id = \"{}\", version = \"{}\", sha256 = \"{}\" }},\n",
+            p.id, p.version, p.sha256
+        ));
     }
     s.push_str("]\n");
     s
@@ -113,10 +133,22 @@ mod tests {
     #[test]
     fn bad_rows_are_refused() {
         let sha = "ab".repeat(32);
-        let fields = |t: &str| load(t).unwrap_err().iter().map(|i| i.path.clone()).collect::<Vec<_>>();
-        assert_eq!(fields(&doc("nothex", "https://example.org/p", "n")), ["packs[0].sha256"]);
+        let fields = |t: &str| {
+            load(t)
+                .unwrap_err()
+                .iter()
+                .map(|i| i.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            fields(&doc("nothex", "https://example.org/p", "n")),
+            ["packs[0].sha256"]
+        );
         assert_eq!(fields(&doc(&sha, "ftp://x", "n")), ["packs[0].source_repo"]);
-        assert_eq!(fields(&doc(&sha, "https://example.org/p", " ")), ["packs[0].reviewer_note"]);
+        assert_eq!(
+            fields(&doc(&sha, "https://example.org/p", " ")),
+            ["packs[0].reviewer_note"]
+        );
         assert!(load(r#"{"version":1,"packs":[{"id":"a"}]}"#).is_err());
         assert!(load(r#"{"version":1,"packs":[],"extra":1}"#).is_err());
         let two = format!(

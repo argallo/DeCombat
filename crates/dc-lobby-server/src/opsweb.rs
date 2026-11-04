@@ -22,7 +22,9 @@ pub const JSON: &str = "application/json; charset=utf-8";
 fn host_is_loopback(head: &str) -> bool {
     let Some(v) = head.lines().skip(1).find_map(|l| {
         let (k, v) = l.split_once(':')?;
-        k.trim().eq_ignore_ascii_case("host").then(|| v.trim().to_ascii_lowercase())
+        k.trim()
+            .eq_ignore_ascii_case("host")
+            .then(|| v.trim().to_ascii_lowercase())
     }) else {
         return true;
     };
@@ -44,7 +46,10 @@ fn err(status: u16, text: &str) -> (u16, &'static str, String) {
     (
         status,
         JSON,
-        format!("{{\"ok\": false, \"message\": {}}}", dc_mod_lua::JsonValue::String(text.into()).to_json_string()),
+        format!(
+            "{{\"ok\": false, \"message\": {}}}",
+            dc_mod_lua::JsonValue::String(text.into()).to_json_string()
+        ),
     )
 }
 
@@ -75,7 +80,10 @@ pub fn handle_with_body(
         return None;
     }
     if !peer.is_some_and(|p| p.is_loopback()) {
-        return Some(err(403, "the dashboard answers loopback only (use an ssh tunnel)"));
+        return Some(err(
+            403,
+            "the dashboard answers loopback only (use an ssh tunnel)",
+        ));
     }
     if !host_is_loopback(head) {
         return Some(err(403, "Host must be a loopback name"));
@@ -215,7 +223,11 @@ pub fn serve(
                 Ok(c) => checks.extend(c),
                 Err(e) => checks.push(("db".into(), false, format!("monitor query failed: {e}"))),
             }
-            (200, JSON, crate::opsmon::alerts_json(&checks).to_json_string())
+            (
+                200,
+                JSON,
+                crate::opsmon::alerts_json(&checks).to_json_string(),
+            )
         }
         _ => err(404, "not found"),
     }
@@ -235,12 +247,20 @@ mod tests {
 
     #[test]
     fn host_names() {
-        assert!(host_is_loopback("GET / HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n"));
-        assert!(host_is_loopback("GET / HTTP/1.1\r\nhost: localhost\r\n\r\n"));
+        assert!(host_is_loopback(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n"
+        ));
+        assert!(host_is_loopback(
+            "GET / HTTP/1.1\r\nhost: localhost\r\n\r\n"
+        ));
         assert!(host_is_loopback("GET / HTTP/1.1\r\nHost: [::1]:8\r\n\r\n"));
         assert!(host_is_loopback("GET / HTTP/1.0\r\n\r\n"));
-        assert!(!host_is_loopback("GET / HTTP/1.1\r\nHost: evil.example:10090\r\n\r\n"));
-        assert!(!host_is_loopback("GET / HTTP/1.1\r\nHost: 192.0.2.4\r\n\r\n"));
+        assert!(!host_is_loopback(
+            "GET / HTTP/1.1\r\nHost: evil.example:10090\r\n\r\n"
+        ));
+        assert!(!host_is_loopback(
+            "GET / HTTP/1.1\r\nHost: 192.0.2.4\r\n\r\n"
+        ));
     }
 
     #[test]
@@ -253,18 +273,35 @@ mod tests {
     fn the_page_and_its_json_answer_loopback_only() {
         let sh = shared();
         let get = |p: &str, peer, host: &str, token, ok| {
-            handle(&sh, &format!("GET {p} HTTP/1.1\r\nHost: {host}\r\n\r\n"), peer, token, ok).unwrap()
+            handle(
+                &sh,
+                &format!("GET {p} HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+                peer,
+                token,
+                ok,
+            )
+            .unwrap()
         };
         let (st, ct, body) = get("/ops", LO, "127.0.0.1:10090", None, true);
         assert_eq!((st, ct), (200, HTML));
-        assert!(body.contains("<title>") && !body.contains("<script src") && !body.contains("<link"));
-        for p in ["/ops/live", "/ops/events?problems=1", "/ops/matches", "/ops/alerts"] {
+        assert!(
+            body.contains("<title>") && !body.contains("<script src") && !body.contains("<link")
+        );
+        for p in [
+            "/ops/live",
+            "/ops/events?problems=1",
+            "/ops/matches",
+            "/ops/alerts",
+        ] {
             let (st, ct, body) = get(p, LO, "localhost:10090", None, true);
             assert_eq!((st, ct), (200, JSON), "{p}: {body}");
         }
         // a remote peer is refused even with the right token (an admin port opened with --admin-public)
         let remote = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)));
-        assert_eq!(get("/ops/live", remote, "127.0.0.1", Some("t"), true).0, 403);
+        assert_eq!(
+            get("/ops/live", remote, "127.0.0.1", Some("t"), true).0,
+            403
+        );
         assert_eq!(get("/ops", remote, "127.0.0.1", None, true).0, 403);
         // a rebound name, a missing token
         assert_eq!(get("/ops/live", LO, "attacker.example", None, true).0, 403);
@@ -273,10 +310,23 @@ mod tests {
         // bad arguments and writes
         assert_eq!(get("/ops/match", LO, "127.0.0.1", None, true).0, 400);
         assert_eq!(get("/ops/match?id=99", LO, "127.0.0.1", None, true).0, 404);
-        assert_eq!(get("/ops/timeline?name=", LO, "127.0.0.1", None, true).0, 400);
-        assert_eq!(get("/ops/timeline?name=nobody", LO, "127.0.0.1", None, true).0, 404);
+        assert_eq!(
+            get("/ops/timeline?name=", LO, "127.0.0.1", None, true).0,
+            400
+        );
+        assert_eq!(
+            get("/ops/timeline?name=nobody", LO, "127.0.0.1", None, true).0,
+            404
+        );
         assert_eq!(get("/ops/nope", LO, "127.0.0.1", None, true).0, 404);
-        let post = handle(&sh, "POST /ops/live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", LO, None, true).unwrap();
+        let post = handle(
+            &sh,
+            "POST /ops/live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            LO,
+            None,
+            true,
+        )
+        .unwrap();
         assert_eq!(post.0, 405);
     }
 }

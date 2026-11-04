@@ -513,12 +513,24 @@ fn the_hacking_mod_says_what_it_does_and_lists_its_commands() {
     let (_, entry) = pack_mod_bytes(&dir).expect("pack");
     assert_eq!(entry.version.to_string(), "1.1.1");
     let d = entry.description.to_lowercase();
-    for word in ["through walls", "box", "chams", "skeleton", "nametags", "health bars", "team mates", "recoil"] {
+    for word in [
+        "through walls",
+        "box",
+        "chams",
+        "skeleton",
+        "nametags",
+        "health bars",
+        "team mates",
+        "recoil",
+    ] {
         assert!(d.contains(word), "{word}: {d}");
     }
     let c: Vec<&str> = entry.commands.iter().map(|c| c.command.as_str()).collect();
     assert_eq!(c, ["/wallhack", "/nametags", "/health", "/teammates"]);
-    assert!(entry.to_json_value().to_json_string().contains("\"/wallhack\""));
+    assert!(entry
+        .to_json_value()
+        .to_json_string()
+        .contains("\"/wallhack\""));
 }
 
 /// MOD-27: `validate` refuses a bad commands list.
@@ -532,9 +544,17 @@ fn validate_refuses_a_bad_commands_list() {
         std::fs::copy(src.join(f), d.join(f)).unwrap();
     }
     let man = std::fs::read_to_string(src.join("manifest.json")).unwrap();
-    std::fs::write(d.join("manifest.json"), man.replace("\"/wallhack\"", "\"wallhack\"")).unwrap();
+    std::fs::write(
+        d.join("manifest.json"),
+        man.replace("\"/wallhack\"", "\"wallhack\""),
+    )
+    .unwrap();
     let report = validate_mod(&d, None);
-    assert!(!report.ok && report.errors.iter().any(|e| e.contains("Invalid command")), "{:?}", report.errors);
+    assert!(
+        !report.ok && report.errors.iter().any(|e| e.contains("Invalid command")),
+        "{:?}",
+        report.errors
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 

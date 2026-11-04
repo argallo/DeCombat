@@ -290,6 +290,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -357,3 +358,7 @@ jobs:
           got=$(gh release view "$TAG" --repo "$R" --json assets --jq '.assets[].name' | sort)
           [ "$want" = "$got" ] || { echo "::error::the draft's assets differ from the build's; it stays a draft"; echo "$got"; exit 1; }
           gh release edit "$TAG" --repo "$R" --draft=false
+      # a release made with the workflow token starts no other workflow: ask for the website's rebuild (its downloads
+      # section lists the releases) by hand; a site that does not deploy yet only validates
+      - name: refresh the website
+        run: gh workflow run website.yml --repo "$GITHUB_REPOSITORY" --ref master || echo "::warning::could not start website.yml"

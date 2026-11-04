@@ -461,6 +461,11 @@ fn other(name: &str, region: &str, addr: SocketAddr) -> dc_client::menu::link::O
 
 #[test]
 fn the_server_list_shows_modded_rows_with_badges_mods_and_the_mods_button_and_no_address() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = menu(None, "127.0.0.1:1".parse().unwrap());
     m.feed_event(LinkEvent::Community(fixture()));
@@ -1014,6 +1019,11 @@ fn a_fresh_run_with_a_persisted_set_shows_required_by_and_remove_unused_keeps_it
 /// The server list's background read fills a modded row with no join; an unreachable row keeps what was known.
 #[test]
 fn opening_the_server_list_reads_the_rows_sets_and_no_answer_keeps_the_old_one() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp("row_read");
     let xray = cached_example(&root, "hacking_mod");
@@ -1134,6 +1144,11 @@ fn catalog_doc(e: &dc_modkit::ModSetEntry, sha: &str, size: usize) -> Vec<u8> {
 /// CLI-1634: Get mods lists the lobby's optional mod; Download installs it disabled; Settings persists; Remove deletes.
 #[test]
 fn get_mods_downloads_disabled_settings_persist_and_remove_deletes() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp("get");
     let (zip, entry) = crosshair_package();

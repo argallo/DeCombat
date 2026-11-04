@@ -121,7 +121,11 @@ struct PassUniform {
 /// The seconds the camo effects run on (DC_DEFAULTS.md VAR-4), wrapped so they stay exact in a float.
 fn fx_clock() -> f32 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32() % 3600.0
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f32()
+        % 3600.0
 }
 
 fn blend_factor(f: BlendFactor) -> wgpu::BlendFactor {

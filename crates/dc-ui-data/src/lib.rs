@@ -14,8 +14,8 @@
 //! and tags are read from the user's own `CShell.dll` by rva and accepted only when they hash to the pinned
 //! digest ([`UiNames`]); the tables are read and decrypted through `dc-rez`.
 
-mod error;
 pub mod activate;
+mod error;
 pub mod fonts;
 pub mod hud;
 pub mod layout;

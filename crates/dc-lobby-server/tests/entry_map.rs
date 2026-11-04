@@ -250,11 +250,19 @@ fn dc_host_exe() -> PathBuf {
     exe
 }
 
-/// Four UDP ports in a row that are free now.
+/// Four UDP ports in a row that are free now. Scanned in 20000..40000 from a start that differs per run: the
+/// OS's own picks come from the ephemeral range, which Windows hands out in order from 49152 up, so asking it for a
+/// port can stay above 60000 for the whole loop.
 fn udp_range() -> (u16, u16) {
-    for _ in 0..200 {
-        let lo = free_udp_port();
-        if lo < 60000 && (lo..lo + 4).all(udp_free) {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos()
+        ^ std::process::id().wrapping_mul(2_654_435_761);
+    let start = 20000 + (seed % 5000) as u16 * 4;
+    for i in 0..5000u16 {
+        let lo = 20000 + (start - 20000 + i * 4) % 20000;
+        if (lo..lo + 4).all(udp_free) {
             return (lo, lo + 3);
         }
     }

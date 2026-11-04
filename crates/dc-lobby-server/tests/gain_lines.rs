@@ -160,7 +160,10 @@ fn first_account_number_comes_from_the_server_toml_layer_when_set() {
     // and lobby.json alone still works
     let l = Lobby::start(
         "auth1-json",
-        opts(r#"{"auth.first_account_no": 5000, "bots.pool_size": 0}"#, &[]),
+        opts(
+            r#"{"auth.first_account_no": 5000, "bots.pool_size": 0}"#,
+            &[],
+        ),
     );
     let (_a, na) = player(&l, "dave", "Dave");
     assert_eq!(na, 5000);

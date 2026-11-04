@@ -4,8 +4,8 @@
 //! mode's. No other entry sends or accepts anything of this.
 // DC-DEFAULT: LG-304 (proposed) the entry's feature; LG-305 (proposed) the room setting and the draw
 
-use crate::room::RoomKey;
 use crate::rom::RomData;
+use crate::room::RoomKey;
 use crate::state::{Core, Sid};
 use crate::wire;
 use dc_wire::gungame;

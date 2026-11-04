@@ -346,7 +346,10 @@ mod tests {
         // the host's own tools are never refused, however many
         for _ in 0..10 {
             assert!(cap.admit("127.0.0.1".parse().unwrap()).unwrap().is_none());
-            assert!(cap.admit("::ffff:127.0.0.1".parse().unwrap()).unwrap().is_none());
+            assert!(cap
+                .admit("::ffff:127.0.0.1".parse().unwrap())
+                .unwrap()
+                .is_none());
         }
         // a closed connection gives its place back; a mapped address counts as the same peer
         drop(a1);
@@ -367,7 +370,10 @@ mod tests {
         }
         assert!(!g.begin_attempt(&keys, t0), "ten at once are the limit");
         let other = login_keys("Erin", "198.51.100.5:6000");
-        assert!(g.begin_attempt(&other, t0), "another name and address go on");
+        assert!(
+            g.begin_attempt(&other, t0),
+            "another name and address go on"
+        );
         g.end_attempt(&other);
         for _ in 0..LOGIN_FAILURES {
             g.end_attempt(&keys);

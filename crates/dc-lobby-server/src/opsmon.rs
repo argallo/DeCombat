@@ -227,11 +227,26 @@ fn put_event(c: &Connection, at: i64, user: u32, nick: &str, k: &str, match_id: 
 /// Records one event of `user` (0 = no account). Never fails: a write error is dropped. The logins and lobby
 /// disconnects of bot accounts are not recorded (a pool of bots would bury the players).
 pub fn event(st: &Core, user: u32, k: &str, detail: &str) {
-    if (k == kind::LOGIN || k == kind::DISCONNECT) && user != 0 && !crate::lifecycle::is_human(st, user) {
+    if (k == kind::LOGIN || k == kind::DISCONNECT)
+        && user != 0
+        && !crate::lifecycle::is_human(st, user)
+    {
         return;
     }
-    let m = if user == 0 { 0 } else { current_match(st, user) };
-    put_event(&st.db, crate::clock::unix_now(), user, &nick_of(st, user), k, m, detail);
+    let m = if user == 0 {
+        0
+    } else {
+        current_match(st, user)
+    };
+    put_event(
+        &st.db,
+        crate::clock::unix_now(),
+        user,
+        &nick_of(st, user),
+        k,
+        m,
+        detail,
+    );
 }
 
 /// An event of the admin web sign-in (adminweb.rs, LG-386): sign-ins, enrolments, key changes and refusals, named by
@@ -245,23 +260,48 @@ pub fn admin_web_event(c: &Connection, problem: bool, detail: &str) {
 
 /// [`event`] tied to a match.
 fn match_event(st: &Core, user: u32, k: &str, match_id: i64, detail: &str) {
-    put_event(&st.db, crate::clock::unix_now(), user, &nick_of(st, user), k, match_id, detail);
+    put_event(
+        &st.db,
+        crate::clock::unix_now(),
+        user,
+        &nick_of(st, user),
+        k,
+        match_id,
+        detail,
+    );
 }
 
 /// Hook for client diagnostics uploads (crash or disconnect reports): `id` is the stored report's id, `what` a short
 /// description. Shows in the account's timeline and in the problem list.
 pub fn diagnostics_uploaded(st: &Core, user: u32, id: &str, what: &str) {
-    event(st, user, kind::DIAGNOSTICS, &format!("diagnostics {id}: {what}"));
+    event(
+        st,
+        user,
+        kind::DIAGNOSTICS,
+        &format!("diagnostics {id}: {what}"),
+    );
 }
 
 /// A handler's rolled-back error (net.rs `report`): counted for the error-spike alert.
 pub fn fault(st: &Core, what: &str) {
-    put_event(&st.db, crate::clock::unix_now(), 0, "", kind::LOBBY_FAULT, 0, what);
+    put_event(
+        &st.db,
+        crate::clock::unix_now(),
+        0,
+        "",
+        kind::LOBBY_FAULT,
+        0,
+        what,
+    );
 }
 
 /// Deletes rows older than the retention (at most once per [`PURGE_EVERY`]).
 pub fn maybe_purge(st: &mut Core) {
-    if st.monitor.last_purge.is_some_and(|t| t.elapsed() < PURGE_EVERY) {
+    if st
+        .monitor
+        .last_purge
+        .is_some_and(|t| t.elapsed() < PURGE_EVERY)
+    {
         return;
     }
     st.monitor.last_purge = Some(Instant::now());
@@ -296,7 +336,11 @@ fn ensure_match(st: &mut Core, game: u64) -> Option<i64> {
     let (host, version) = match g.link.remote() {
         Some(r) => (
             r.agent.clone(),
-            st.hosts.online.get(&r.agent).map(|a| a.version.clone()).unwrap_or_default(),
+            st.hosts
+                .online
+                .get(&r.agent)
+                .map(|a| a.version.clone())
+                .unwrap_or_default(),
         ),
         None => ("local".to_string(), build_sha().to_string()),
     };
@@ -380,7 +424,12 @@ pub fn parse_linksum(line: &str) -> Option<LinkSum> {
             .filter(|v| v.is_finite() && *v >= 0.0)
             .unwrap_or(0.0)
     };
-    let i = |k: &str| m.get(k).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    let i = |k: &str| {
+        m.get(k)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+            .max(0)
+    };
     let how: String = m
         .get("how")
         .copied()
@@ -390,7 +439,10 @@ pub fn parse_linksum(line: &str) -> Option<LinkSum> {
         .take(16)
         .collect();
     Some(LinkSum {
-        client: m.get("client").map(|s| s.chars().take(8).collect()).unwrap_or_default(),
+        client: m
+            .get("client")
+            .map(|s| s.chars().take(8).collect())
+            .unwrap_or_default(),
         uid: m.get("uid")?.parse().ok()?,
         how,
         code: i("code"),
@@ -535,7 +587,8 @@ pub fn on_pipe(st: &mut Core, game: u64, line: &str, ev: &Event) {
                 let detail = format!(
                     "{} room {} (client {client})",
                     if first { "joined" } else { "joined again" },
-                    room.map(|r| format!("{}-{}", r.channel, r.no)).unwrap_or_default()
+                    room.map(|r| format!("{}-{}", r.channel, r.no))
+                        .unwrap_or_default()
                 );
                 match_event(st, *uid, kind::MATCH_JOIN, match_id, &detail);
             }
@@ -589,7 +642,13 @@ pub fn on_pipe(st: &mut Core, game: u64, line: &str, ev: &Event) {
             );
         }
         Event::Crash(text) => {
-            match_event(st, 0, kind::GAME_CRASH, match_id, &format!("game {game}: {text}"));
+            match_event(
+                st,
+                0,
+                kind::GAME_CRASH,
+                match_id,
+                &format!("game {game}: {text}"),
+            );
         }
         Event::Other(_) => {
             if let Some(s) = parse_linksum(line) {
@@ -695,7 +754,13 @@ fn r1(v: f64) -> J {
 /// `silent`: nothing arrived (a window without datagrams in, a stale report, a link that ended silent). The input
 /// rate and its longest gap are not used: a dead player sends no updates until the respawn (7 s gaps with bots).
 // DC-DEFAULT: MON-4 (proposed) the dashboard's colours
-pub fn health(rtt_mean: f64, rtt_max: f64, resends: f64, flow_drops: f64, silent: bool) -> &'static str {
+pub fn health(
+    rtt_mean: f64,
+    rtt_max: f64,
+    resends: f64,
+    flow_drops: f64,
+    silent: bool,
+) -> &'static str {
     if silent || rtt_mean > 200.0 {
         "bad"
     } else if rtt_mean > 120.0 || rtt_max > 400.0 || resends > 10.0 || flow_drops > 0.0 {
@@ -718,7 +783,10 @@ pub fn live_json(st: &Core) -> J {
         ("connections", n(st.sessions.len() as f64)),
         (
             "online",
-            n(st.sessions.values().filter(|x| x.in_lobby && x.account.is_some()).count() as f64),
+            n(st.sessions
+                .values()
+                .filter(|x| x.in_lobby && x.account.is_some())
+                .count() as f64),
         ),
         ("lobby_logins", n(st.lobby_logins as f64)),
         ("public", J::Bool(st.opts.public)),
@@ -764,7 +832,10 @@ pub fn live_json(st: &Core) -> J {
                         J::Bool(a.is_none_or(|a| same_build(&a.version, build_sha()))),
                     ),
                     ("address", a.map_or(J::Null, |a| s(a.address.clone()))),
-                    ("online_secs", a.map_or(J::Null, |a| n(a.since.elapsed().as_secs() as f64))),
+                    (
+                        "online_secs",
+                        a.map_or(J::Null, |a| n(a.since.elapsed().as_secs() as f64)),
+                    ),
                     ("games", n(games as f64)),
                     ("local", J::Bool(false)),
                 ])
@@ -791,7 +862,12 @@ pub fn live_json(st: &Core) -> J {
                     ("max_players", n(r.max_players)),
                     (
                         "members",
-                        J::Array(r.members.iter().map(|m| s(nick_of(st, m.account))).collect()),
+                        J::Array(
+                            r.members
+                                .iter()
+                                .map(|m| s(nick_of(st, m.account)))
+                                .collect(),
+                        ),
                     ),
                 ])
             })
@@ -848,7 +924,10 @@ pub fn live_json(st: &Core) -> J {
             ("game", n(g.id as f64)),
             (
                 "match",
-                st.monitor.games.get(&g.id).map_or(J::Null, |m| n(m.match_id as f64)),
+                st.monitor
+                    .games
+                    .get(&g.id)
+                    .map_or(J::Null, |m| n(m.match_id as f64)),
             ),
             ("room", s(format!("{}-{}", g.room.channel, g.room.no))),
             ("mode", s(st.rom.mode_key(g.mode))),
@@ -902,7 +981,9 @@ pub fn find_accounts(c: &Connection, name: &str) -> rusqlite::Result<Vec<(u32, S
     }
     let like = format!(
         "%{}%",
-        name.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        name.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
     );
     let mut q = c.prepare(
         "SELECT a.user_no, COALESCE(c.nick, ''), a.login FROM accounts a LEFT JOIN characters c ON c.user_no = a.user_no \
@@ -1102,7 +1183,8 @@ const PLAYER_COLS: &str = "match_id, user_no, nick, bot, client, joined, left_at
     rtt_mean, rtt_p95, rtt_max, rtt_samples, jitter, input_rate, updates, gap_max, resends, reliable, flow_drops, dg_in, \
     dg_out, max_datagram";
 
-const MATCH_COLS: &str = "id, game, started, ended, channel, room, map, map_world, mode, mode_key, host, host_version, \
+const MATCH_COLS: &str =
+    "id, game, started, ended, channel, room, map, map_world, mode, mode_key, host, host_version, \
     port, players, bots, outcome, winner, alpha, bravo, silent_drops";
 
 fn match_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<J> {
@@ -1190,7 +1272,13 @@ pub fn match_json(c: &Connection, id: i64) -> rusqlite::Result<Option<J>> {
                 ("dg_out", n(r.get::<_, i64>(14)? as f64)),
                 (
                     "health",
-                    s(health(rtt, rtt_max, resends as f64, drops as f64, dg_in == 0)),
+                    s(health(
+                        rtt,
+                        rtt_max,
+                        resends as f64,
+                        drops as f64,
+                        dg_in == 0,
+                    )),
                 ),
             ]))
         })?
@@ -1245,7 +1333,13 @@ pub fn timeline_json(c: &Connection, name: &str, limit: u32) -> rusqlite::Result
     let others: Vec<J> = found
         .iter()
         .skip(1)
-        .map(|(u, nk, lg)| o(vec![("account", n(*u)), ("nick", s(nk.clone())), ("login", s(lg.clone()))]))
+        .map(|(u, nk, lg)| {
+            o(vec![
+                ("account", n(*u)),
+                ("nick", s(nk.clone())),
+                ("login", s(lg.clone())),
+            ])
+        })
         .collect();
     Ok(Some(o(vec![
         ("account", n(user)),
@@ -1311,16 +1405,19 @@ pub fn db_checks(c: &Connection, now: i64, t: &Thresholds) -> rusqlite::Result<V
              WHERE silent_drops >= ?1 AND (ended = 0 OR ended >= ?2) AND started >= ?3 ORDER BY id DESC LIMIT 5",
         )?;
         let bad: Vec<String> = q
-            .query_map(params![t.silent_drops as i64, since, since - 6 * 3600], |r| {
-                Ok(format!(
-                    "match {} (room {}-{}, {}): {} silent drops",
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?
-                ))
-            })?
+            .query_map(
+                params![t.silent_drops as i64, since, since - 6 * 3600],
+                |r| {
+                    Ok(format!(
+                        "match {} (room {}-{}, {}): {} silent drops",
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<_>>()?;
         out.push(if bad.is_empty() {
             (
@@ -1370,15 +1467,27 @@ pub fn host_checks(st: &Core) -> Vec<Check> {
     let mut out = Vec::new();
     for c in &st.opts.host_agents {
         match st.hosts.online.get(&c.name) {
-            None => out.push((format!("host.{}", c.name), false, format!("game host {} offline", c.name))),
+            None => out.push((
+                format!("host.{}", c.name),
+                false,
+                format!("game host {} offline", c.name),
+            )),
             Some(a) => {
-                out.push((format!("host.{}", c.name), true, format!("game host {} online", c.name)));
+                out.push((
+                    format!("host.{}", c.name),
+                    true,
+                    format!("game host {} online", c.name),
+                ));
                 let same = same_build(&a.version, build_sha());
                 out.push((
                     format!("version.{}", c.name),
                     same,
                     if same {
-                        format!("game host {} runs the lobby's build {}", c.name, build_sha())
+                        format!(
+                            "game host {} runs the lobby's build {}",
+                            c.name,
+                            build_sha()
+                        )
                     } else {
                         format!(
                             "game host {} runs build {}, the lobby {}",
@@ -1487,7 +1596,11 @@ fn player_text(p: &J) -> String {
         "{} {}{} joined {}, {:.0} s, left: {} (code {:.0}); {}",
         gs(p, "nick"),
         gs(p, "account"),
-        if get(p, "bot") == &J::Bool(true) { " (bot)" } else { "" },
+        if get(p, "bot") == &J::Bool(true) {
+            " (bot)"
+        } else {
+            ""
+        },
         when(gn(p, "joined") as i64),
         gn(p, "secs"),
         gs(p, "how"),
@@ -1500,7 +1613,11 @@ fn event_text(e: &J) -> String {
     format!(
         "{} {}{} {}{}: {}",
         when(gn(e, "at") as i64),
-        if get(e, "problem") == &J::Bool(true) { "!" } else { " " },
+        if get(e, "problem") == &J::Bool(true) {
+            "!"
+        } else {
+            " "
+        },
         gs(e, "kind"),
         gs(e, "nick"),
         match gn(e, "match") as i64 {
@@ -1540,7 +1657,10 @@ pub fn run_cli(args: &[String]) -> i32 {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(crate::cli::default_db);
     if !path.is_file() {
-        eprintln!("dc-lobby-server ops: no DB file {} (give --db)", path.display());
+        eprintln!(
+            "dc-lobby-server ops: no DB file {} (give --db)",
+            path.display()
+        );
         return 2;
     }
     let c = match Connection::open_with_flags(
@@ -1612,7 +1732,12 @@ fn cli_timeline(c: &Connection, name: &str, limit: u32) -> Result<(), String> {
         gs(&t, "nick")
     );
     for x in arr(&t, "other_matches") {
-        println!("  (also matches: {} {} {})", gs(x, "account"), gs(x, "login"), gs(x, "nick"));
+        println!(
+            "  (also matches: {} {} {})",
+            gs(x, "account"),
+            gs(x, "login"),
+            gs(x, "nick")
+        );
     }
     println!("-- matches (newest first)");
     for p in arr(&t, "matches") {
@@ -1772,16 +1897,28 @@ mod tests {
     #[test]
     fn linksum_lines_parse_and_bad_ones_do_not() {
         let s = parse_linksum(&SUM.replace("UID", "1006")).unwrap();
-        assert_eq!((s.uid, s.how.as_str(), s.code, s.client.as_str()), (1006, "silent", 3, "0"));
-        assert_eq!((s.secs, s.rtt_mean, s.rtt_p95, s.rtt_max), (312.5, 61.0, 95.0, 410.0));
+        assert_eq!(
+            (s.uid, s.how.as_str(), s.code, s.client.as_str()),
+            (1006, "silent", 3, "0")
+        );
+        assert_eq!(
+            (s.secs, s.rtt_mean, s.rtt_p95, s.rtt_max),
+            (312.5, 61.0, 95.0, 410.0)
+        );
         assert_eq!(
             (s.rtt_samples, s.updates, s.gap_max, s.resends, s.reliable),
             (1200, 9300, 840, 7, 2100)
         );
-        assert_eq!((s.flow_drops, s.dg_in, s.dg_out, s.max_datagram), (1, 19000, 9400, 548));
+        assert_eq!(
+            (s.flow_drops, s.dg_in, s.dg_out, s.max_datagram),
+            (1, 19000, 9400, 548)
+        );
         assert!((s.input_rate - 29.8).abs() < 1e-9 && (s.jitter - 3.2).abs() < 1e-9);
         assert!(parse_linksum("@net client=0 uid=1").is_none());
-        assert!(parse_linksum("@linksum client=0 how=bye").is_none(), "no uid");
+        assert!(
+            parse_linksum("@linksum client=0 how=bye").is_none(),
+            "no uid"
+        );
         let odd = parse_linksum("@linksum uid=5 how=<b>x rtt=-4 secs=nan").unwrap();
         assert_eq!((odd.how.as_str(), odd.rtt_mean, odd.secs), ("bx", 0.0, 0.0));
     }
@@ -1815,7 +1952,11 @@ mod tests {
              drops=0 in=1 out=1",
         );
         line(&mut st, 7, &SUM.replace("UID", &alice.to_string()));
-        line(&mut st, 7, "@result mode=TDM win=1 alpha=3 bravo=1 limit=3 rounds=1:0");
+        line(
+            &mut st,
+            7,
+            "@result mode=TDM win=1 alpha=3 bravo=1 limit=3 rounds=1:0",
+        );
         line(
             &mut st,
             7,
@@ -1833,8 +1974,14 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .unwrap();
-        assert_eq!((outcome.as_str(), players, bots, silent, winner), ("result", 1, 1, 1, 1));
-        assert_eq!(port, 27015, "the start's port stays; @ready fills only a missing one");
+        assert_eq!(
+            (outcome.as_str(), players, bots, silent, winner),
+            ("result", 1, 1, 1, 1)
+        );
+        assert_eq!(
+            port, 27015,
+            "the start's port stays; @ready fills only a missing one"
+        );
         assert_eq!(count(c, "SELECT COUNT(*) FROM ops_match_players"), 2);
         let (how, p95, maxdg, isbot): (String, f64, i64, i64) = c
             .query_row(
@@ -1855,22 +2002,49 @@ mod tests {
         );
         // the human's timeline: the join and the silent drop, both tied to the match; the bot has no events
         assert_eq!(
-            kinds(c, &format!("SELECT kind FROM ops_events WHERE user_no = {alice} ORDER BY id")),
+            kinds(
+                c,
+                &format!("SELECT kind FROM ops_events WHERE user_no = {alice} ORDER BY id")
+            ),
             vec![kind::MATCH_JOIN, kind::SILENT_DROP]
         );
-        assert_eq!(count(c, &format!("SELECT COUNT(*) FROM ops_events WHERE user_no = {bot}")), 0);
+        assert_eq!(
+            count(
+                c,
+                &format!("SELECT COUNT(*) FROM ops_events WHERE user_no = {bot}")
+            ),
+            0
+        );
         let id = count(c, "SELECT id FROM ops_matches WHERE game = 7");
         assert_eq!(
-            count(c, &format!("SELECT COUNT(*) FROM ops_events WHERE match_id = {id}")),
+            count(
+                c,
+                &format!("SELECT COUNT(*) FROM ops_events WHERE match_id = {id}")
+            ),
             2
         );
         let m = match_json(c, id).unwrap().unwrap().to_json_string();
-        assert!(m.contains("\"how\":\"silent\"") && m.contains("\"rtt_p95\":95"), "{m}");
-        let t = timeline_json(c, "alice", 50).unwrap().unwrap().to_json_string();
-        assert!(t.contains("\"nick\":\"Alice\"") && t.contains("silent_drop"), "{t}");
-        assert!(timeline_json(c, "lic", 50).unwrap().is_some(), "a part of the name finds it");
+        assert!(
+            m.contains("\"how\":\"silent\"") && m.contains("\"rtt_p95\":95"),
+            "{m}"
+        );
+        let t = timeline_json(c, "alice", 50)
+            .unwrap()
+            .unwrap()
+            .to_json_string();
+        assert!(
+            t.contains("\"nick\":\"Alice\"") && t.contains("silent_drop"),
+            "{t}"
+        );
+        assert!(
+            timeline_json(c, "lic", 50).unwrap().is_some(),
+            "a part of the name finds it"
+        );
         assert!(timeline_json(c, "nobody", 50).unwrap().is_none());
-        assert!(timeline_json(c, "%", 50).unwrap().is_none(), "LIKE wildcards are plain text");
+        assert!(
+            timeline_json(c, "%", 50).unwrap().is_none(),
+            "LIKE wildcards are plain text"
+        );
         // the EOF after `@end` changes nothing
         st.scope(|st| {
             crate::game::close_game(st, 7, true);
@@ -1879,7 +2053,9 @@ mod tests {
         .unwrap();
         let outcome: String = st
             .db
-            .query_row("SELECT outcome FROM ops_matches WHERE game = 7", [], |r| r.get(0))
+            .query_row("SELECT outcome FROM ops_matches WHERE game = 7", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(outcome, "result");
         assert_eq!(count(&st.db, "SELECT COUNT(*) FROM ops_match_players"), 2);
@@ -1911,7 +2087,10 @@ mod tests {
             .unwrap();
         assert_eq!((how.as_str(), link), ("crash", 0));
         assert_eq!(
-            count(c, "SELECT COUNT(*) FROM ops_events WHERE kind = 'game_crash' AND problem = 1"),
+            count(
+                c,
+                "SELECT COUNT(*) FROM ops_events WHERE kind = 'game_crash' AND problem = 1"
+            ),
             1
         );
         // a server that never got ready failed its start
@@ -1923,7 +2102,9 @@ mod tests {
         .unwrap();
         let outcome: String = st
             .db
-            .query_row("SELECT outcome FROM ops_matches WHERE game = 4", [], |r| r.get(0))
+            .query_row("SELECT outcome FROM ops_matches WHERE game = 4", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(outcome, "start-failed");
     }
@@ -1933,23 +2114,48 @@ mod tests {
         let st = crate::state::testing::state();
         let a = account(&st, "alice", "Alice");
         event(&st, a, kind::LOGIN, "lobby login");
-        event(&st, a, kind::DISCONNECT, "lobby connection 4 closed (in room 1-2)");
-        event(&st, a, kind::DISCONNECT, "lobby connection 5 closed (in room 1-2, in a match)");
+        event(
+            &st,
+            a,
+            kind::DISCONNECT,
+            "lobby connection 4 closed (in room 1-2)",
+        );
+        event(
+            &st,
+            a,
+            kind::DISCONNECT,
+            "lobby connection 5 closed (in room 1-2, in a match)",
+        );
         event(&st, a, kind::READY_REFUSED, "weapon limit 6");
         diagnostics_uploaded(&st, a, "r17", "crash report");
         fault(&st, "db: locked");
         assert_eq!(
-            kinds(&st.db, "SELECT kind FROM ops_events WHERE problem = 1 ORDER BY id"),
-            vec![kind::DISCONNECT, kind::READY_REFUSED, kind::DIAGNOSTICS, kind::LOBBY_FAULT]
+            kinds(
+                &st.db,
+                "SELECT kind FROM ops_events WHERE problem = 1 ORDER BY id"
+            ),
+            vec![
+                kind::DISCONNECT,
+                kind::READY_REFUSED,
+                kind::DIAGNOSTICS,
+                kind::LOBBY_FAULT
+            ]
         );
         let all = events_json(&st.db, false, 100).unwrap().to_json_string();
-        assert!(all.contains("\"nick\":\"Alice\"") && all.contains("diagnostics r17"), "{all}");
+        assert!(
+            all.contains("\"nick\":\"Alice\"") && all.contains("diagnostics r17"),
+            "{all}"
+        );
         let only = events_json(&st.db, true, 100).unwrap().to_json_string();
         assert!(!only.contains("\"kind\":\"login\""), "{only}");
         event(&st, a, kind::REPORT, &"x".repeat(2000));
         let kept: String = st
             .db
-            .query_row("SELECT detail FROM ops_events ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT detail FROM ops_events ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(kept.chars().count(), MAX_DETAIL + 3);
     }
@@ -1972,7 +2178,10 @@ mod tests {
         event(&st, b, kind::LOGIN, "lobby login");
         event(&st, b, kind::DISCONNECT, "closed (in room 1-1, in a match)");
         event(&st, b, kind::SEAT_REFUSED, "seat");
-        assert_eq!(kinds(&st.db, "SELECT kind FROM ops_events"), vec![kind::SEAT_REFUSED]);
+        assert_eq!(
+            kinds(&st.db, "SELECT kind FROM ops_events"),
+            vec![kind::SEAT_REFUSED]
+        );
     }
 
     #[test]
@@ -1982,14 +2191,23 @@ mod tests {
         {
             let c = &st.db;
             for (id, t) in [(1, now - 15 * 86_400), (2, now - 13 * 86_400)] {
-                c.execute("INSERT INTO ops_matches (id, started) VALUES (?1, ?2)", params![id, t])
-                    .unwrap();
+                c.execute(
+                    "INSERT INTO ops_matches (id, started) VALUES (?1, ?2)",
+                    params![id, t],
+                )
+                .unwrap();
                 c.execute("INSERT INTO ops_match_players (match_id) VALUES (?1)", [id])
                     .unwrap();
-                c.execute("INSERT INTO ops_net (match_id, at) VALUES (?1, ?2)", params![id, t])
-                    .unwrap();
-                c.execute("INSERT INTO ops_events (at, kind) VALUES (?1, 'login')", [t])
-                    .unwrap();
+                c.execute(
+                    "INSERT INTO ops_net (match_id, at) VALUES (?1, ?2)",
+                    params![id, t],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO ops_events (at, kind) VALUES (?1, 'login')",
+                    [t],
+                )
+                .unwrap();
             }
             assert_eq!(purge(c, now, 0).unwrap(), 0, "0 days keeps everything");
             assert_eq!(purge(c, now, 14).unwrap(), 4);
@@ -2001,12 +2219,20 @@ mod tests {
         // the lobby purges at most once an hour, with the configured days
         st.rules.ops.monitor_retention_days = 1;
         maybe_purge(&mut st);
-        assert_eq!(count(&st.db, "SELECT COUNT(*) FROM ops_matches"), 0, "13 days > 1 day");
+        assert_eq!(
+            count(&st.db, "SELECT COUNT(*) FROM ops_matches"),
+            0,
+            "13 days > 1 day"
+        );
         st.db
             .execute("INSERT INTO ops_events (at, kind) VALUES (0, 'login')", [])
             .unwrap();
         maybe_purge(&mut st);
-        assert_eq!(count(&st.db, "SELECT COUNT(*) FROM ops_events"), 1, "not again within the hour");
+        assert_eq!(
+            count(&st.db, "SELECT COUNT(*) FROM ops_events"),
+            1,
+            "not again within the hour"
+        );
     }
 
     #[test]
@@ -2018,7 +2244,11 @@ mod tests {
         let ok = |checks: &[Check], name: &str| checks.iter().find(|x| x.0 == name).map(|x| x.1);
         let checks = db_checks(c, now, &t).unwrap();
         assert_eq!(
-            (ok(&checks, "silent_drops"), ok(&checks, "errors"), ok(&checks, "crashes")),
+            (
+                ok(&checks, "silent_drops"),
+                ok(&checks, "errors"),
+                ok(&checks, "crashes")
+            ),
             (Some(true), Some(true), Some(true))
         );
         // a running match with 3 silent drops; an older one with 5 that ended an hour ago, a crash
@@ -2036,15 +2266,25 @@ mod tests {
         let checks = db_checks(c, now, &t).unwrap();
         let silent = checks.iter().find(|x| x.0 == "silent_drops").unwrap();
         assert!(
-            !silent.1 && silent.2.contains("match 1 (room 1-2, W): 3 silent drops") && !silent.2.contains("match 2"),
+            !silent.1
+                && silent.2.contains("match 1 (room 1-2, W): 3 silent drops")
+                && !silent.2.contains("match 2"),
             "{silent:?}"
         );
-        assert_eq!(ok(&checks, "crashes"), Some(true), "the crash is outside the window");
+        assert_eq!(
+            ok(&checks, "crashes"),
+            Some(true),
+            "the crash is outside the window"
+        );
         let wide = Thresholds {
             window_min: 120,
             ..t
         };
-        assert_eq!(ok(&db_checks(c, now, &wide).unwrap(), "crashes"), Some(true), "one crash < 2");
+        assert_eq!(
+            ok(&db_checks(c, now, &wide).unwrap(), "crashes"),
+            Some(true),
+            "one crash < 2"
+        );
         let strict = Thresholds {
             window_min: 120,
             crashes: 1,
@@ -2052,7 +2292,10 @@ mod tests {
             ..t
         };
         let checks = db_checks(c, now, &strict).unwrap();
-        assert_eq!((ok(&checks, "crashes"), ok(&checks, "silent_drops")), (Some(false), Some(false)));
+        assert_eq!(
+            (ok(&checks, "crashes"), ok(&checks, "silent_drops")),
+            (Some(false), Some(false))
+        );
         // an error spike: 30 problem events in the window; info events do not count
         for i in 0..29 {
             put_event(c, now - i, 0, "", kind::SEAT_REFUSED, 0, "");
@@ -2072,8 +2315,14 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         let off = Thresholds::from_query(&q);
-        assert_eq!((off.silent_drops, off.errors, off.window_min), (0, 30, 24 * 60));
-        assert!(db_checks(c, now, &off).unwrap().iter().all(|x| x.0 != "silent_drops"));
+        assert_eq!(
+            (off.silent_drops, off.errors, off.window_min),
+            (0, 30, 24 * 60)
+        );
+        assert!(db_checks(c, now, &off)
+            .unwrap()
+            .iter()
+            .all(|x| x.0 != "silent_drops"));
     }
 
     #[test]
@@ -2082,13 +2331,19 @@ mod tests {
         assert!(!same_build("abc1234", "def5678"));
         assert!(same_build("unknown", "def5678") && same_build("", "x"));
         let st = crate::state::testing::state();
-        assert!(host_checks(&st).is_empty(), "no hosts configured, nothing to check");
+        assert!(
+            host_checks(&st).is_empty(),
+            "no hosts configured, nothing to check"
+        );
     }
 
     #[test]
     fn the_player_list_pages_filters_and_leaves_bots_out() {
         let st = crate::state::testing::state();
-        for (i, login) in ["anna", "poolbot3", "marked", "bert", "carla"].iter().enumerate() {
+        for (i, login) in ["anna", "poolbot3", "marked", "bert", "carla"]
+            .iter()
+            .enumerate()
+        {
             st.db
                 .execute(
                     "INSERT INTO accounts (login, created, last_login, self_bot) VALUES (?1, ?2, ?3, ?4)",
@@ -2098,17 +2353,27 @@ mod tests {
         }
         let names = |v: &J| -> Vec<String> {
             let t = v.to_json_string();
-            t.split("\"login\":\"").skip(1).map(|x| x[..x.find('"').unwrap()].to_string()).collect()
+            t.split("\"login\":\"")
+                .skip(1)
+                .map(|x| x[..x.find('"').unwrap()].to_string())
+                .collect()
         };
         let none = BTreeSet::new();
         let v = players_json(&st.db, &none, "", false, "", 0, 50).unwrap();
-        assert_eq!(names(&v), ["carla", "bert", "anna"], "bots out, last seen first");
+        assert_eq!(
+            names(&v),
+            ["carla", "bert", "anna"],
+            "bots out, last seen first"
+        );
         assert!(v.to_json_string().contains("\"total\":3"));
         let v = players_json(&st.db, &none, "", true, "", 0, 50).unwrap();
         assert!(v.to_json_string().contains("\"total\":5"));
         let page = players_json(&st.db, &none, "", false, "", 1, 1).unwrap();
         assert_eq!(names(&page), ["bert"], "offset 1, limit 1");
-        assert_eq!(names(&players_json(&st.db, &none, "ER", false, "", 0, 50).unwrap()), ["bert"]);
+        assert_eq!(
+            names(&players_json(&st.db, &none, "ER", false, "", 0, 50).unwrap()),
+            ["bert"]
+        );
         let online: BTreeSet<u32> = [1u32].into_iter().collect();
         let v = players_json(&st.db, &online, "", false, "seen", 0, 50).unwrap();
         assert_eq!(names(&v)[0], "anna", "people online first");
@@ -2120,8 +2385,14 @@ mod tests {
         let text = live_json(&st).to_json_string();
         let hosts = &text[text.find("\"hosts\"").expect("hosts")..];
         let first = &hosts[..hosts.find('}').expect("an entry")];
-        assert!(first.contains("this server (lobby)") && first.contains("\"local\":true"), "{first}");
-        assert!(first.contains("\"online\":true") && first.contains("\"games\":0"), "{first}");
+        assert!(
+            first.contains("this server (lobby)") && first.contains("\"local\":true"),
+            "{first}"
+        );
+        assert!(
+            first.contains("\"online\":true") && first.contains("\"games\":0"),
+            "{first}"
+        );
     }
 
     #[test]

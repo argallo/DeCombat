@@ -130,7 +130,10 @@ def build_env():
         tag = CROSS_TRIPLE.replace('-', '_')
         env['CC_' + tag] = os.path.join(stub, 'cc.cmd')
         env['AR_' + tag] = os.path.join(stub, 'ar.cmd')
-    if 'CA_ROM' not in env:
+    if env.get('DC_NO_ROM'):
+        # a ROM-less run, as CI has it: CA_ROM is genuinely absent from the environment
+        env.pop('CA_ROM', None)
+    elif 'CA_ROM' not in env:
         env['CA_ROM'] = os.path.join(ROOT, 'extracted', 'app', 'client', 'eu-test')
     return env
 

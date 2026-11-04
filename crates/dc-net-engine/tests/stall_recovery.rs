@@ -24,12 +24,16 @@ fn take(events: Vec<LinkEvent>, chan: &mut SimChannel, now: u32, side: &mut Side
     for e in events {
         match e {
             LinkEvent::Transmit(d) => chan.send(now, d),
-            LinkEvent::Message { reliable: true, bits } => {
+            LinkEvent::Message {
+                reliable: true,
+                bits,
+            } => {
                 let b = bits.as_bytes();
-                side.rel
-                    .push(u32::from_le_bytes([b[1], b[2], b[3], b[4]]));
+                side.rel.push(u32::from_le_bytes([b[1], b[2], b[3], b[4]]));
             }
-            LinkEvent::Message { reliable: false, .. } => side.unrel_at.push(now),
+            LinkEvent::Message {
+                reliable: false, ..
+            } => side.unrel_at.push(now),
             LinkEvent::Closed { .. } => side.closed = true,
         }
     }
@@ -130,8 +134,14 @@ fn check(stall: u32) {
     let after = 15_000;
     let r = run(stall, after);
     let end = r.stall_end + after;
-    assert!(!r.host.closed && !r.client.closed, "stall {stall}: a side closed");
-    let first = r.host.first_in_after.expect("the host hears the client again");
+    assert!(
+        !r.host.closed && !r.client.closed,
+        "stall {stall}: a side closed"
+    );
+    let first = r
+        .host
+        .first_in_after
+        .expect("the host hears the client again");
     assert!(
         first - r.stall_end <= 200,
         "stall {stall}: first datagram {} ms after the stall",
@@ -148,9 +158,17 @@ fn check(stall: u32) {
     );
     let want: Vec<u32> = (0..r.host.rel.len() as u32).collect();
     assert_eq!(r.host.rel, want, "stall {stall}: client -> host order");
-    assert!(r.host.rel.len() as u32 + 2 >= r.client_rel_sent, "stall {stall}");
+    assert!(
+        r.host.rel.len() as u32 + 2 >= r.client_rel_sent,
+        "stall {stall}"
+    );
     // the player updates flow at the send rate again: at least 20/s in the last 2 s
-    let late = r.host.unrel_at.iter().filter(|&&t| t + 2_000 >= end).count();
+    let late = r
+        .host
+        .unrel_at
+        .iter()
+        .filter(|&&t| t + 2_000 >= end)
+        .count();
     assert!(late >= 40, "stall {stall}: {late} updates in the last 2 s");
     // and the client's updates came back within a second of the stall
     let soon = r
@@ -159,9 +177,18 @@ fn check(stall: u32) {
         .iter()
         .filter(|&&t| t >= r.stall_end && t < r.stall_end + 1_000)
         .count();
-    assert!(soon >= 15, "stall {stall}: {soon} updates in the first second after the stall");
-    assert!(!r.client_link.is_stalled() && !r.client_link.is_paused(), "stall {stall}: client still paused");
-    assert!(!r.host_link.is_stalled(), "stall {stall}: host still in trickle mode");
+    assert!(
+        soon >= 15,
+        "stall {stall}: {soon} updates in the first second after the stall"
+    );
+    assert!(
+        !r.client_link.is_stalled() && !r.client_link.is_paused(),
+        "stall {stall}: client still paused"
+    );
+    assert!(
+        !r.host_link.is_stalled(),
+        "stall {stall}: host still in trickle mode"
+    );
 }
 
 #[test]

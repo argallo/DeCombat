@@ -738,7 +738,12 @@ pub(crate) fn read_head_and_rest<S: Read>(s: &mut S) -> Option<(String, Vec<u8>)
 
 /// Reads a request body of `Content-Length` bytes (none without one); `Err(413)` above `cap`, `Err(400)` when the
 /// connection ends early.
-pub(crate) fn read_body<S: Read>(s: &mut S, head: &str, mut got: Vec<u8>, cap: usize) -> Result<Vec<u8>, u16> {
+pub(crate) fn read_body<S: Read>(
+    s: &mut S,
+    head: &str,
+    mut got: Vec<u8>,
+    cap: usize,
+) -> Result<Vec<u8>, u16> {
     let len = head
         .lines()
         .skip(1)
@@ -818,7 +823,11 @@ fn serve(
             Some(out) => out,
             None => match read_body(&mut s, &head, rest, crate::diag::MAX_BODY) {
                 Ok(b) => {
-                    let peer = s.tcp().peer_addr().map(|a| a.to_string()).unwrap_or_default();
+                    let peer = s
+                        .tcp()
+                        .peer_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_default();
                     crate::diag::respond(&shared, &head, &b, &peer)
                 }
                 Err(code) => crate::diag::body_error(code),
@@ -838,7 +847,11 @@ fn serve(
             } else {
                 Vec::new()
             };
-            let peer = s.tcp().peer_addr().map(|a| a.to_string()).unwrap_or_default();
+            let peer = s
+                .tcp()
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
             crate::betaweb::respond(&shared, &req, &head, &body, &peer)
         }
         // the clan pages, and the registration page (LG-145: a capped form body, the source address for its rate
@@ -851,7 +864,12 @@ fn serve(
             let ident = crate::identity::handles(&req.path);
             let form = register || recover;
             let body = if (form || ident) && req.method == "POST" {
-                match read_body(&mut s, &head, rest, crate::identity::MAX_BODY.max(crate::register::MAX_BODY)) {
+                match read_body(
+                    &mut s,
+                    &head,
+                    rest,
+                    crate::identity::MAX_BODY.max(crate::register::MAX_BODY),
+                ) {
                     Ok(b) => b,
                     Err(code) => {
                         let msg = if code == 413 {
@@ -877,7 +895,11 @@ fn serve(
             } else {
                 Vec::new()
             };
-            let peer = s.tcp().peer_addr().map(|a| a.to_string()).unwrap_or_default();
+            let peer = s
+                .tcp()
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
             let host = crate::register::host_of(&head);
             // LG-210: the game's registration dialog asks for JSON
             let json = ident || (form && crate::register::wants_json(&head, &body, &req.query));
@@ -976,22 +998,28 @@ fn serve(
                     None => {}
                 }
             }
-            let r = if let Some(e) = reg_err { Err(e) } else if ident_done || reg_done { Ok(()) } else { g.scope(|st| {
-                res = if recover {
-                    crate::recover::route(
-                        st,
-                        &req.method,
-                        &req.path,
-                        &body,
-                        &peer,
-                        std::time::Instant::now(),
-                        json,
-                    )?
-                } else {
-                    route_from(st, &req, &peer)?
-                };
+            let r = if let Some(e) = reg_err {
+                Err(e)
+            } else if ident_done || reg_done {
                 Ok(())
-            }) };
+            } else {
+                g.scope(|st| {
+                    res = if recover {
+                        crate::recover::route(
+                            st,
+                            &req.method,
+                            &req.path,
+                            &body,
+                            &peer,
+                            std::time::Instant::now(),
+                            json,
+                        )?
+                    } else {
+                        route_from(st, &req, &peer)?
+                    };
+                    Ok(())
+                })
+            };
             if let Err(e) = r {
                 g.note(&format!(
                     "clan web {}: error (rolled back): {}",
@@ -1032,10 +1060,14 @@ fn redirect_to_tls(mut s: TcpStream) {
         .skip(1)
         .find_map(|l| {
             let (k, v) = l.split_once(':')?;
-            k.trim().eq_ignore_ascii_case("host").then(|| v.trim().to_string())
+            k.trim()
+                .eq_ignore_ascii_case("host")
+                .then(|| v.trim().to_string())
         })
         .filter(|h| {
-            !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || "-.:[]".contains(c))
+            !h.is_empty()
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-.:[]".contains(c))
         })
         .or_else(|| s.local_addr().ok().map(|a| a.to_string()))
         .unwrap_or_default();
@@ -1070,7 +1102,12 @@ pub fn spawn_with(shared: Shared, l: TcpListener, hosting: Hosting) {
 }
 
 /// [`spawn_with`] behind the TLS gate of the web port (LG-223 / LG-224); None = plain only.
-pub fn spawn_with_tls(shared: Shared, l: TcpListener, hosting: Hosting, gate: Option<Arc<crate::tls::Gate>>) {
+pub fn spawn_with_tls(
+    shared: Shared,
+    l: TcpListener,
+    hosting: Hosting,
+    gate: Option<Arc<crate::tls::Gate>>,
+) {
     let hosting = Arc::new(hosting);
     let slots = crate::tls::Slots::default();
     let cap = crate::net::lock(&shared).limits.conns.clone();

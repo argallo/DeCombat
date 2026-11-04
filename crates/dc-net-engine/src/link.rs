@@ -934,7 +934,11 @@ impl Link {
     }
 
     fn hb_due(&self, now: Millis) -> bool {
-        heartbeat_due(now, self.last_ack_sent, self.latency.l_ms().min(HEARTBEAT_MAX_MS))
+        heartbeat_due(
+            now,
+            self.last_ack_sent,
+            self.latency.l_ms().min(HEARTBEAT_MAX_MS),
+        )
     }
 
     /// Send pump: resend scan, then datagrams while there is something to say and flow control leaves room.

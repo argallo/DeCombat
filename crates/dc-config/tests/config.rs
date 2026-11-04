@@ -687,9 +687,15 @@ fn landing_files_exist_and_name_the_project() {
         html.contains("not affiliated with, endorsed by or sponsored by"),
         "NOTICE wording"
     );
+    // links out (Discord, the release page) are fine; nothing the page loads may come from elsewhere
+    assert!(!html.contains("src=\"http"), "no remote resources");
     assert!(
-        !html.contains("src=\"http") && !html.contains("href=\"http"),
-        "no remote resources"
+        !html.split("<link ").skip(1).any(|l| l
+            .split('>')
+            .next()
+            .unwrap_or("")
+            .contains("href=\"http")),
+        "no remote <link> resources"
     );
 }
 
@@ -1137,7 +1143,10 @@ fn check_identity_section() {
         check(&c, CheckOptions::default())
     };
     assert!(!has_err(&run(&|_| {}), "identity."));
-    assert!(has_err(&run(&|c| c.identity.issue = true), "identity.issuer"));
+    assert!(has_err(
+        &run(&|c| c.identity.issue = true),
+        "identity.issuer"
+    ));
     assert!(has_err(
         &run(&|c| {
             c.identity.issue = true;
@@ -1175,7 +1184,10 @@ fn check_identity_section() {
         }),
         "identity."
     ));
-    assert!(has_err(&run(&|c| c.identity.issuer = "bad|id".into()), "identity.issuer"));
+    assert!(has_err(
+        &run(&|c| c.identity.issuer = "bad|id".into()),
+        "identity.issuer"
+    ));
 }
 
 #[test]
@@ -1187,7 +1199,10 @@ fn a_partial_reward_table_fills_from_its_own_defaults() {
     assert_eq!(cfg.economy.gp, want);
     assert_eq!(cfg.economy.gp.agent_win, 0);
     let cfg = dc_config::parse_toml("[economy.exp]\nkill = 9\n").unwrap();
-    assert_eq!((cfg.economy.exp.agent_win, cfg.economy.exp.finish), (30, 10));
+    assert_eq!(
+        (cfg.economy.exp.agent_win, cfg.economy.exp.finish),
+        (30, 10)
+    );
     assert!(dc_config::parse_toml("[economy.gp]\nbogus = 1\n").is_err());
 }
 
@@ -1425,22 +1440,53 @@ fn beta_section_is_checked_only_when_enabled() {
         check(&c, CheckOptions::default())
     };
     let d = Config::default();
-    assert!(!d.beta.enabled && d.beta.max_mail_per_day == 90 && d.beta.site_origin == "https://decombat.com");
+    assert!(
+        !d.beta.enabled
+            && d.beta.max_mail_per_day == 90
+            && d.beta.site_origin == "https://decombat.com"
+    );
     let mut off = Config::default();
     off.beta.site_origin = "nonsense".into();
-    assert!(!has_err(&check(&off, CheckOptions::default()), "beta.site_origin"));
+    assert!(!has_err(
+        &check(&off, CheckOptions::default()),
+        "beta.site_origin"
+    ));
     assert!(!has_err(&issues(&|_| {}), "beta.site_origin"));
-    assert!(has_err(&issues(&|c| c.beta.site_origin = "https://decombat.com/".into()), "beta.site_origin"));
-    assert!(has_err(&issues(&|c| c.beta.site_origin = "https://decombat.com/x".into()), "beta.site_origin"));
-    assert!(has_err(&issues(&|c| c.beta.site_origin = "ftp://decombat.com".into()), "beta.site_origin"));
-    assert!(has_err(&issues(&|c| c.beta.public_url = "https://beta.example.org/".into()), "beta.public_url"));
-    assert!(has_err(&issues(&|c| c.beta.public_url = "beta.example.org".into()), "beta.public_url"));
-    assert!(has_err(&issues(&|c| c.beta.reply_to = "a@b@example.org".into()), "beta.reply_to"));
-    assert!(!has_err(&issues(&|c| c.beta.reply_to = "contact@example.org".into()), "beta.reply_to"));
-    let parsed = dc_config::parse_toml("[beta]
+    assert!(has_err(
+        &issues(&|c| c.beta.site_origin = "https://decombat.com/".into()),
+        "beta.site_origin"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.beta.site_origin = "https://decombat.com/x".into()),
+        "beta.site_origin"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.beta.site_origin = "ftp://decombat.com".into()),
+        "beta.site_origin"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.beta.public_url = "https://beta.example.org/".into()),
+        "beta.public_url"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.beta.public_url = "beta.example.org".into()),
+        "beta.public_url"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.beta.reply_to = "a@b@example.org".into()),
+        "beta.reply_to"
+    ));
+    assert!(!has_err(
+        &issues(&|c| c.beta.reply_to = "contact@example.org".into()),
+        "beta.reply_to"
+    ));
+    let parsed = dc_config::parse_toml(
+        "[beta]
 enabled = true
 trust_cf_header = true
-").unwrap();
+",
+    )
+    .unwrap();
     assert!(parsed.beta.enabled && parsed.beta.trust_cf_header && parsed.beta.invite_days == 14);
 }
 
@@ -1454,16 +1500,36 @@ fn admin_web_section_is_checked_only_when_enabled() {
         check(&c, CheckOptions::default())
     };
     let d = Config::default();
-    assert!(!d.admin_web.enabled && d.admin_web.bind == "127.0.0.1:10096" && d.admin_web.max_keys == 4);
+    assert!(
+        !d.admin_web.enabled && d.admin_web.bind == "127.0.0.1:10096" && d.admin_web.max_keys == 4
+    );
     let mut off = Config::default();
     off.admin_web.bind = "0.0.0.0:10096".into();
-    assert!(!has_err(&check(&off, CheckOptions::default()), "admin_web.bind"));
+    assert!(!has_err(
+        &check(&off, CheckOptions::default()),
+        "admin_web.bind"
+    ));
     assert!(!has_err(&issues(&|_| {}), "admin_web"));
-    assert!(has_err(&issues(&|c| c.admin_web.bind = "0.0.0.0:10096".into()), "admin_web.bind"));
-    assert!(has_err(&issues(&|c| c.admin_web.bind = "nonsense".into()), "admin_web.bind"));
-    assert!(has_err(&issues(&|c| c.admin_web.public_origin = "http://admin.example.org".into()), "admin_web.public_origin"));
-    assert!(has_err(&issues(&|c| c.admin_web.public_origin = "https://admin.example.org/".into()), "admin_web.public_origin"));
-    assert!(has_err(&issues(&|c| c.admin_web.rp_id = "example.org".into()), "admin_web.rp_id"));
+    assert!(has_err(
+        &issues(&|c| c.admin_web.bind = "0.0.0.0:10096".into()),
+        "admin_web.bind"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.admin_web.bind = "nonsense".into()),
+        "admin_web.bind"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.admin_web.public_origin = "http://admin.example.org".into()),
+        "admin_web.public_origin"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.admin_web.public_origin = "https://admin.example.org/".into()),
+        "admin_web.public_origin"
+    ));
+    assert!(has_err(
+        &issues(&|c| c.admin_web.rp_id = "example.org".into()),
+        "admin_web.rp_id"
+    ));
     assert!(!has_err(
         &issues(&|c| {
             c.admin_web.public_origin = "https://admin.example.org".into();
@@ -1471,12 +1537,22 @@ fn admin_web_section_is_checked_only_when_enabled() {
         }),
         "admin_web.rp_id"
     ));
-    assert!(has_err(&issues(&|c| c.admin_web.max_keys = 0), "admin_web.max_keys"));
-    let parsed = dc_config::parse_toml("[admin_web]
+    assert!(has_err(
+        &issues(&|c| c.admin_web.max_keys = 0),
+        "admin_web.max_keys"
+    ));
+    let parsed = dc_config::parse_toml(
+        "[admin_web]
 enabled = true
 max_keys = 2
-").unwrap();
-    assert!(parsed.admin_web.enabled && parsed.admin_web.max_keys == 2 && parsed.admin_web.idle_minutes == 30);
+",
+    )
+    .unwrap();
+    assert!(
+        parsed.admin_web.enabled
+            && parsed.admin_web.max_keys == 2
+            && parsed.admin_web.idle_minutes == 30
+    );
 }
 
 // LG-399: further instances behind the admin web: path-safe unique names, labels, loopback admin ports
@@ -1493,23 +1569,56 @@ instances = [{ name = \"modded\", label = \"Hacking Mod lobby\", admin = \"127.0
     let a = &parsed.admin_web;
     assert_eq!(a.label, "Vanilla lobby");
     assert_eq!(a.instances.len(), 1);
-    assert_eq!((a.instances[0].name.as_str(), a.instances[0].admin.as_str()), ("modded", "127.0.0.1:10091"));
+    assert_eq!(
+        (a.instances[0].name.as_str(), a.instances[0].admin.as_str()),
+        ("modded", "127.0.0.1:10091")
+    );
     assert!(a.instances[0].env_file.is_empty());
-    assert!(!has_err(&check(&parsed, CheckOptions::default()), "admin_web"));
+    assert!(!has_err(
+        &check(&parsed, CheckOptions::default()),
+        "admin_web"
+    ));
     assert!(Config::default().admin_web.instances.is_empty());
     let bad = |f: &dyn Fn(&mut dc_config::AdminWebInstance)| {
         let mut c = parsed.clone();
         f(&mut c.admin_web.instances[0]);
         check(&c, CheckOptions::default())
     };
-    assert!(has_err(&bad(&|i| i.name = "Mod".into()), "admin_web.instances.name"));
-    assert!(has_err(&bad(&|i| i.name = "../x".into()), "admin_web.instances.name"));
-    assert!(has_err(&bad(&|i| i.name = String::new()), "admin_web.instances.name"));
-    assert!(has_err(&bad(&|i| i.label = " ".into()), "admin_web.instances.label"));
-    assert!(has_err(&bad(&|i| i.admin = "192.0.2.4:10091".into()), "admin_web.instances.admin"));
-    assert!(has_err(&bad(&|i| i.admin = "127.0.0.1:10096".into()), "admin_web.instances.admin"));
+    assert!(has_err(
+        &bad(&|i| i.name = "Mod".into()),
+        "admin_web.instances.name"
+    ));
+    assert!(has_err(
+        &bad(&|i| i.name = "../x".into()),
+        "admin_web.instances.name"
+    ));
+    assert!(has_err(
+        &bad(&|i| i.name = String::new()),
+        "admin_web.instances.name"
+    ));
+    assert!(has_err(
+        &bad(&|i| i.label = " ".into()),
+        "admin_web.instances.label"
+    ));
+    assert!(has_err(
+        &bad(&|i| i.admin = "192.0.2.4:10091".into()),
+        "admin_web.instances.admin"
+    ));
+    assert!(has_err(
+        &bad(&|i| i.admin = "127.0.0.1:10096".into()),
+        "admin_web.instances.admin"
+    ));
     let mut twice = parsed.clone();
-    twice.admin_web.instances.push(twice.admin_web.instances[0].clone());
-    assert!(has_err(&check(&twice, CheckOptions::default()), "admin_web.instances.name"));
-    assert!(dc_config::parse_toml("[admin_web]\ninstances = [{ name = \"m\", token = \"x\" }]\n").is_err());
+    twice
+        .admin_web
+        .instances
+        .push(twice.admin_web.instances[0].clone());
+    assert!(has_err(
+        &check(&twice, CheckOptions::default()),
+        "admin_web.instances.name"
+    ));
+    assert!(
+        dc_config::parse_toml("[admin_web]\ninstances = [{ name = \"m\", token = \"x\" }]\n")
+            .is_err()
+    );
 }

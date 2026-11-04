@@ -90,7 +90,9 @@ fn clear() -> [u8; 3] {
 fn partial_pixels(img: &FrameImage) -> usize {
     let (lo, hi) = (clear()[0] + 8, QUAD[0] - 8);
     img.rgba
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[0] > lo && p[0] < hi)
         .count()
 }
@@ -128,8 +130,15 @@ fn four_samples_smooth_the_edges_and_keep_the_interior() {
     }
     // interior and background: the same values (one fragment per pixel either way; all samples covered or none)
     let centre = (W / 2, H / 2);
-    assert!(near(one.pixel(centre.0, centre.1), QUAD), "{:?}", one.pixel(centre.0, centre.1));
-    assert_eq!(one.pixel(centre.0, centre.1), four.pixel(centre.0, centre.1));
+    assert!(
+        near(one.pixel(centre.0, centre.1), QUAD),
+        "{:?}",
+        one.pixel(centre.0, centre.1)
+    );
+    assert_eq!(
+        one.pixel(centre.0, centre.1),
+        four.pixel(centre.0, centre.1)
+    );
     assert!(near(one.pixel(2, 2), clear()), "{:?}", one.pixel(2, 2));
     assert_eq!(one.pixel(2, 2), four.pixel(2, 2));
     // edges: binary coverage without MSAA, partial coverage with it
@@ -140,7 +149,9 @@ fn four_samples_smooth_the_edges_and_keep_the_interior() {
     // most of the frame is untouched by the anti-aliasing
     let differing = one
         .rgba
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(four.rgba.as_chunks::<4>().0.iter())
         .filter(|(a, b)| a != b)
         .count();
@@ -168,7 +179,11 @@ fn msaa_off_is_the_default_renderer() {
             },
         );
         assert_eq!(r.msaa(), 1, "msaa {msaa} reads as off");
-        assert_eq!(texel_hash(W, H, &img.rgba), h, "msaa {msaa}: the same bytes");
+        assert_eq!(
+            texel_hash(W, H, &img.rgba),
+            h,
+            "msaa {msaa}: the same bytes"
+        );
     }
 }
 
@@ -186,8 +201,16 @@ fn every_supported_count_renders() {
             },
         );
         assert_eq!(r.msaa(), n);
-        assert!(near(img.pixel(W / 2, H / 2), QUAD), "{n}x: {:?}", img.pixel(W / 2, H / 2));
-        assert!(near(img.pixel(2, 2), clear()), "{n}x: {:?}", img.pixel(2, 2));
+        assert!(
+            near(img.pixel(W / 2, H / 2), QUAD),
+            "{n}x: {:?}",
+            img.pixel(W / 2, H / 2)
+        );
+        assert!(
+            near(img.pixel(2, 2), clear()),
+            "{n}x: {:?}",
+            img.pixel(2, 2)
+        );
         println!("{n}x: partially covered pixels {}", partial_pixels(&img));
     }
 }

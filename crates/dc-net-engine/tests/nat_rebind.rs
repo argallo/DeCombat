@@ -341,9 +341,8 @@ fn a_client_without_the_secret_works_but_never_moves() {
 /// and each also with a transport bye in front.
 fn brute_force(start: u32) -> Vec<(u32, Vec<u8>)> {
     let mut out = Vec::new();
-    let mut t = start;
     let mut wrong = [0u8; 8];
-    for seq in (0..8192u16).step_by(32) {
+    for (t, seq) in (start..).zip((0..8192u16).step_by(32)) {
         for (k, ctl) in [
             Some(CtlBlock::Ack {
                 ack_seq: seq,
@@ -379,7 +378,6 @@ fn brute_force(start: u32) -> Vec<(u32, Vec<u8>)> {
             assert!(move_trailer(&d).is_some());
             out.push((t, d));
         }
-        t += 1;
     }
     out
 }

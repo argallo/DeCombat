@@ -15,7 +15,10 @@ use support::*;
 fn connect_from(src: Ipv4Addr, port: u16) -> std::io::Result<TcpStream> {
     let s = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     s.bind(&SockAddr::from(SocketAddrV4::new(src, 0)))?;
-    s.connect(&SockAddr::from(SocketAddr::from((Ipv4Addr::LOCALHOST, port))))?;
+    s.connect(&SockAddr::from(SocketAddr::from((
+        Ipv4Addr::LOCALHOST,
+        port,
+    ))))?;
     let t: TcpStream = s.into();
     t.set_read_timeout(Some(Duration::from_secs(30)))?;
     Ok(t)
@@ -80,10 +83,7 @@ fn a_login_burst_does_not_stall_lobby_play() {
     let l = Lobby::start(
         "login_burst",
         LobbyOpts {
-            extra: vec![
-                "--check-password".into(),
-                "--register-open".into(),
-            ],
+            extra: vec!["--check-password".into(), "--register-open".into()],
             ..Default::default()
         },
     );

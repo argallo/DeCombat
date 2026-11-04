@@ -32,8 +32,8 @@ pub mod coop;
 // fall damage (DSV-76)
 pub mod fall;
 pub mod gungame;
-pub mod possession;
 pub mod hisec;
+pub mod possession;
 // weapons dropped at a death (DSV-93..DSV-95)
 pub mod drops;
 // DC-DEFAULT: DSV-115..DSV-120 (proposed) destructible world objects (world-objects)
@@ -523,8 +523,14 @@ impl AnimSet {
             // DC-DEFAULT: DSV-475 (proposed) the rig's own upper / lower weight set (EVIDENCE cshell+0x15ef0: looked
             // up by name), else the reference stack's index
             secondary: [
-                (TRACKER_UPPER.0, rig.tracker_masks[0].unwrap_or(TRACKER_UPPER.1)),
-                (TRACKER_LOWER.0, rig.tracker_masks[1].unwrap_or(TRACKER_LOWER.1)),
+                (
+                    TRACKER_UPPER.0,
+                    rig.tracker_masks[0].unwrap_or(TRACKER_UPPER.1),
+                ),
+                (
+                    TRACKER_LOWER.0,
+                    rig.tracker_masks[1].unwrap_or(TRACKER_LOWER.1),
+                ),
             ],
         }
     }
@@ -3520,7 +3526,10 @@ impl Game {
         // link and not again)
         if !self.players.get(&pid).is_some_and(|p| p.switch_sent) {
             self.send(pid, gs::shell_flag_90(false));
-            self.send(pid, crate::msg::s2c_switch_state(REFERENCE_SWITCH_STATE_READY));
+            self.send(
+                pid,
+                crate::msg::s2c_switch_state(REFERENCE_SWITCH_STATE_READY),
+            );
         }
         let Some(p) = self.players.get_mut(&pid) else {
             return;
@@ -3980,7 +3989,10 @@ impl Game {
         }
         // DC-DEFAULT: DSV-233 (proposed) the agent spawns with the agent weapons
         // DC-DEFAULT: DSV-481 (proposed) Gun Game: the kit of the player's rung
-        if let Some(ws) = self.agent_weapons_of(pid).or_else(|| self.gun_game_spawn_kit(pid)) {
+        if let Some(ws) = self
+            .agent_weapons_of(pid)
+            .or_else(|| self.gun_game_spawn_kit(pid))
+        {
             weapons = ws
                 .iter()
                 .map(|&(slot, w)| WeaponState {
@@ -5188,7 +5200,11 @@ mod tests {
         assert!(off.iter().all(|o| hp(o).is_none()));
         let rest: Vec<GameOut> = on.iter().filter(|o| hp(o).is_none()).cloned().collect();
         assert_eq!(rest, off, "the other messages are unchanged");
-        let e = |pid, health| dc_wire::remotehealth::HealthEntry { pid, health, max: 100 };
+        let e = |pid, health| dc_wire::remotehealth::HealthEntry {
+            pid,
+            health,
+            max: 100,
+        };
         let sent: Vec<_> = on.iter().filter_map(hp).collect();
         assert_eq!(
             sent,
@@ -5538,11 +5554,19 @@ mod tests {
     fn a_bomb_match_opens_with_a_warmup_where_nothing_counts() {
         use super::warmup::WARMUP_MIN_SECS;
         let mut g = bomb_room_with(GameTuning::default());
-        assert_eq!(g.warmup_secs(), WARMUP_MIN_SECS, "no train key: the minimum");
+        assert_eq!(
+            g.warmup_secs(),
+            WARMUP_MIN_SECS,
+            "no train key: the minimum"
+        );
         g.room.pairs.insert("train".into(), "45".into());
         assert_eq!(g.warmup_secs(), 45);
         g.room.pairs.insert("train".into(), "10".into());
-        assert_eq!(g.warmup_secs(), WARMUP_MIN_SECS, "the ROM's 10 s: the minimum");
+        assert_eq!(
+            g.warmup_secs(),
+            WARMUP_MIN_SECS,
+            "the ROM's 10 s: the minimum"
+        );
         assert!(g.in_warmup(), "the round start opened the warm-up");
         let o = g.take_out();
         // the 0x45 of the first spawn carries the banner flag
@@ -5568,7 +5592,10 @@ mod tests {
         // a kill in the warm-up: no round end, nothing counted
         g.kill(1, Some(0), 10, false, 6_000);
         g.tick(6_100);
-        assert!(matches!(g.phase(), RoundPhase::Running { .. }), "no elimination");
+        assert!(
+            matches!(g.phase(), RoundPhase::Running { .. }),
+            "no elimination"
+        );
         assert_eq!(g.round_wins, [0, 0]);
         g.take_out();
         // the warm-up's end: round 1, everyone back, the counters cleared, the banner off
@@ -5592,7 +5619,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(!mb.is_empty() && mb.iter().all(|m| !banner(m)), "banner off");
+        assert!(
+            !mb.is_empty() && mb.iter().all(|m| !banner(m)),
+            "banner off"
+        );
         g.tick(end.wrapping_add(200));
         assert!(!g.bomb.carriers.is_empty(), "round 1 has a carrier");
         // `-warmup 0`: none
@@ -5839,8 +5869,14 @@ mod tests {
         assert_eq!(held, vec![0, 2], "every attacker holds the bomb");
         let o = g.take_out();
         for p in [0, 2] {
-            assert!(shell_ids(&o, p).contains(&gs::GS_WEAPON_GIVE), "grant to {p}");
-            assert!(shell_ids(&o, p).contains(&gs::GS_OBJECTIVE_ITEM), "mark to {p}");
+            assert!(
+                shell_ids(&o, p).contains(&gs::GS_WEAPON_GIVE),
+                "grant to {p}"
+            );
+            assert!(
+                shell_ids(&o, p).contains(&gs::GS_OBJECTIVE_ITEM),
+                "mark to {p}"
+            );
         }
         g.players.get_mut(&2).unwrap().pos = [500.0, 0.0, 0.0];
         g.kill(2, Some(1), 3, false, 200);
@@ -5853,7 +5889,11 @@ mod tests {
         );
         g.players.get_mut(&0).unwrap().pos = [500.0, 0.0, 0.0];
         g.tick(300);
-        assert_eq!(g.bomb().carriers, vec![0], "nothing lies in the world to take");
+        assert_eq!(
+            g.bomb().carriers,
+            vec![0],
+            "nothing lies in the world to take"
+        );
         assert!(!shell_ids(&g.take_out(), 0).contains(&gs::GS_WEAPON_GIVE));
     }
 
@@ -5873,20 +5913,40 @@ mod tests {
         g.on_up(2, Up::WorldReady, 20);
         g.tick(100);
         for p in [0, 2] {
-            assert!(g.players[&p].weapons.iter().any(|w| w.weapon == ITEM), "{p}");
+            assert!(
+                g.players[&p].weapons.iter().any(|w| w.weapon == ITEM),
+                "{p}"
+            );
             g.players.get_mut(&p).unwrap().pos = [1000.0, 0.0, 0.0];
         }
         g.take_out();
-        g.on_up(2, Up::UseHold { phase: 1, target: 50 }, 200);
+        g.on_up(
+            2,
+            Up::UseHold {
+                phase: 1,
+                target: 50,
+            },
+            200,
+        );
         g.tick(200 + PLANT_MS);
         assert_eq!(g.bomb().planted.map(|p| p.by), Some(2));
         let o = g.take_out();
         for p in [0, 2] {
-            assert!(shell_ids(&o, p).contains(&gs::GS_WEAPON_REMOVE), "removed from {p}");
+            assert!(
+                shell_ids(&o, p).contains(&gs::GS_WEAPON_REMOVE),
+                "removed from {p}"
+            );
             assert!(!g.players[&p].weapons.iter().any(|w| w.weapon == ITEM));
         }
         assert!(g.bomb().carriers.is_empty());
-        g.on_up(0, Up::UseHold { phase: 1, target: 50 }, 20_000);
+        g.on_up(
+            0,
+            Up::UseHold {
+                phase: 1,
+                target: 50,
+            },
+            20_000,
+        );
         assert!(g.bomb().hold.is_none(), "nobody else plants that round");
     }
 
@@ -6038,9 +6098,8 @@ mod tests {
         g.tick(5000 + PLANT_MS + BOMB_SECS * 1000);
         let o = g.take_out();
         assert!(shell_ids(&o, 0).contains(&gs::GS_BOMB_EXPLODED));
-        assert_eq!(
-            g.players[&1].life == Life::Alive,
-            false,
+        assert!(
+            !(g.players[&1].life == Life::Alive),
             "the defender beside it died"
         );
         assert_eq!(
@@ -6094,7 +6153,11 @@ mod tests {
             g.tick(t);
             let o = g.take_out();
             assert!(shell_ids(&o, 0).contains(&gs::GS_BOMB_EXPLODED));
-            assert_eq!(g.players[&1].life, Life::Alive, "the defender is out of reach");
+            assert_eq!(
+                g.players[&1].life,
+                Life::Alive,
+                "the defender is out of reach"
+            );
             for pid in [0u8, 1] {
                 assert_eq!(
                     result_of(&o, pid),
@@ -6157,7 +6220,11 @@ mod tests {
             out.extend(g.take_out());
         }
         assert_eq!(g.round_no(), 2);
-        assert_eq!(g.bomb().carriers, vec![0], "the only attacker carries again");
+        assert_eq!(
+            g.bomb().carriers,
+            vec![0],
+            "the only attacker carries again"
+        );
         let ids = shell_ids(&out, 0);
         let give = ids
             .iter()
@@ -6168,7 +6235,10 @@ mod tests {
             .position(|&i| i == gs::GS_ROUND_BEGIN)
             .expect("0x44");
         assert!(give > rb, "the grant after the round start: {ids:x?}");
-        assert!(ids[rb..].contains(&gs::GS_OBJECTIVE_ITEM), "the carrier mark");
+        assert!(
+            ids[rb..].contains(&gs::GS_OBJECTIVE_ITEM),
+            "the carrier mark"
+        );
         assert!(g.players[&0]
             .weapons
             .iter()
@@ -6399,7 +6469,11 @@ mod tests {
         assert!(g.bomb().planted.is_none());
         assert_eq!(g.bomb().ended, Some(BombEnd::Cancelled));
         let o = g.take_out();
-        assert_eq!(bomb_outs(&o), vec![GameOut::BombHidden], "gone with the result");
+        assert_eq!(
+            bomb_outs(&o),
+            vec![GameOut::BombHidden],
+            "gone with the result"
+        );
         let wins = g.round_wins;
         let mut out = Vec::new();
         let mut now = t + 1010;
@@ -6615,7 +6689,11 @@ mod tests {
             dtype: 0,
         };
         g.apply_damage(1, Some(0), 1000.0, [1.0, 0.0, 0.0], src, 2, 500);
-        assert_ne!(g.players[&1].life, Life::Alive, "the spy's shot kills a spy");
+        assert_ne!(
+            g.players[&1].life,
+            Life::Alive,
+            "the spy's shot kills a spy"
+        );
         assert_eq!(g.players[&1].team, HUNTERS);
         assert_eq!(g.spy().dropped(), 1);
         assert_eq!(g.spy().points_of(0), 2 * POINTS_INTEL + POINTS_KILL);
@@ -6628,7 +6706,11 @@ mod tests {
             .pos;
         g.players.get_mut(&0).unwrap().pos = at;
         g.tick(600);
-        assert_eq!(g.spy().carried.get(&0), Some(&3), "the killer took the case");
+        assert_eq!(
+            g.spy().carried.get(&0),
+            Some(&3),
+            "the killer took the case"
+        );
         assert_eq!(g.spy().dropped(), 0);
     }
 
@@ -6636,7 +6718,6 @@ mod tests {
     /// (the tuning), the client gets both maxima before the values; a hit takes from them unclamped.
     #[test]
     fn spy_hunt_the_agents_health_and_armour_come_from_the_config() {
-        use super::spy::*;
         let mut g = spy_room();
         g.cfg.agent_health = 1500.0;
         g.cfg.agent_armor = 250.0;
@@ -6650,11 +6731,25 @@ mod tests {
         assert_eq!((g.players[&2].health, g.players[&2].armor), (1500.0, 250.0));
         let st = status_msgs(&o, 2);
         let at = |k: (u8, f32)| st.iter().position(|x| *x == k);
-        let (mh, ma) = (at((gs::STATUS_MAX_HEALTH, 1500.0)), at((gs::STATUS_MAX_ARMOR, 250.0)));
-        let (h, a) = (at((gs::STATUS_HEALTH, 1500.0)), at((gs::STATUS_ARMOR, 250.0)));
-        assert!(mh.is_some() && ma.is_some() && h.is_some() && a.is_some(), "{st:?}");
+        let (mh, ma) = (
+            at((gs::STATUS_MAX_HEALTH, 1500.0)),
+            at((gs::STATUS_MAX_ARMOR, 250.0)),
+        );
+        let (h, a) = (
+            at((gs::STATUS_HEALTH, 1500.0)),
+            at((gs::STATUS_ARMOR, 250.0)),
+        );
+        assert!(
+            mh.is_some() && ma.is_some() && h.is_some() && a.is_some(),
+            "{st:?}"
+        );
         assert!(mh < h && ma < a, "the maxima first: {st:?}");
-        assert!(status_msgs(&o, 0).iter().all(|(k, _)| *k != gs::STATUS_MAX_HEALTH), "only to him");
+        assert!(
+            status_msgs(&o, 0)
+                .iter()
+                .all(|(k, _)| *k != gs::STATUS_MAX_HEALTH),
+            "only to him"
+        );
         // a hit takes from the agent's health above 100 (no clamp to the normal maximum)
         let src = super::combat::DamageSource {
             weapon: 10,
@@ -6663,7 +6758,12 @@ mod tests {
         g.apply_damage(2, Some(0), 300.0, [1.0, 0.0, 0.0], src, 2, 800);
         let p = &g.players[&2];
         assert_eq!(p.life, Life::Alive);
-        assert!(p.health > 100.0 && p.health + p.armor < 1750.0, "{} / {}", p.health, p.armor);
+        assert!(
+            p.health > 100.0 && p.health + p.armor < 1750.0,
+            "{} / {}",
+            p.health,
+            p.armor
+        );
     }
 
     /// DSV-452 (project decision): the agent's death ends the match at once with the hunters' result (the
@@ -6688,7 +6788,11 @@ mod tests {
             g.phase()
         );
         assert_eq!(g.spy().points_of(0), POINTS_AGENT_KILL);
-        assert_eq!(g.spy().carried.get(&2), Some(&5), "the intel stays with him");
+        assert_eq!(
+            g.spy().carried.get(&2),
+            Some(&5),
+            "the intel stays with him"
+        );
         assert!(g.spy().intel.is_empty(), "no case dropped or placed");
         assert!(g.weapon_drops().is_empty(), "no weapon dropped");
         assert!(bounty_msgs(&o, 0)
@@ -6853,7 +6957,10 @@ mod tests {
         assert_eq!(g.spy().points_of(2), 5 * POINTS_INTEL + POINTS_AGENT);
         // DSV-451: the agent's health and its maximum go to him
         assert_eq!(g.players[&2].health, AGENT_HEALTH);
-        assert!(AGENT_HEALTH >= 5.0 * g.cfg.max_health, "a lot more than a hunter");
+        assert!(
+            AGENT_HEALTH >= 5.0 * g.cfg.max_health,
+            "a lot more than a hunter"
+        );
         let statuses = status_msgs(&o, 2);
         assert!(
             statuses.contains(&(gs::STATUS_MAX_HEALTH, AGENT_HEALTH))
@@ -7051,7 +7158,10 @@ mod tests {
         assert!(touching(at(20.0, 30.0), case), "on a step beside it");
         assert!(touching(at(-40.0, 0.0), case), "the case at head height");
         assert!(!touching(at(50.0, 0.0), case), "jump apex over it");
-        assert!(!touching(at(90.0, 0.0), case), "on a ledge above it (the old 96-unit rule took it)");
+        assert!(
+            !touching(at(90.0, 0.0), case),
+            "on a ledge above it (the old 96-unit rule took it)"
+        );
         assert!(!touching(at(-70.0, 0.0), case), "under it");
         assert!(!touching(at(0.0, 60.0), case), "too far across");
         // in a room: a player above the case keeps away from it, the same player on its floor takes it
@@ -7176,7 +7286,10 @@ mod tests {
         }
         assert_eq!(g.spy().agent, Some(1), "the agent at the last case");
         assert!(g.spy().points_of(1) >= g.rules.goal);
-        assert!(matches!(g.phase(), RoundPhase::Running { .. }), "no goal end");
+        assert!(
+            matches!(g.phase(), RoundPhase::Running { .. }),
+            "no goal end"
+        );
         assert_eq!(g.spy().phase, PHASE_AGENT);
         assert_eq!(banner(&o, 1), Some((b"T.dtx".to_vec(), b"B.dtx".to_vec())));
         assert_eq!(banner(&o, 0), Some((b"T.dtx".to_vec(), b"H.dtx".to_vec())));
@@ -7222,16 +7335,22 @@ mod tests {
         let players: Vec<&&String> = pipe.iter().filter(|l| l.starts_with("@player")).collect();
         assert!(players.len() >= 2, "{pipe:?}");
         assert_eq!(
-            players.iter().filter(|l| l.contains(" win=1 agent=1 name=")).count(),
+            players
+                .iter()
+                .filter(|l| l.contains(" win=1 agent=1 name="))
+                .count(),
             1,
             "{pipe:?}"
         );
         assert!(
-            players.iter().all(|l| l.contains(" win=1 agent=1 ") || l.contains(" win=0 agent=0 ")),
+            players
+                .iter()
+                .all(|l| l.contains(" win=1 agent=1 ") || l.contains(" win=0 agent=0 ")),
             "{pipe:?}"
         );
         assert!(
-            pipe.iter().any(|l| l.starts_with("@result") && l.contains(" win=0 ")),
+            pipe.iter()
+                .any(|l| l.starts_with("@result") && l.contains(" win=0 ")),
             "{pipe:?}"
         );
         assert_eq!(
@@ -7491,7 +7610,10 @@ mod tests {
                 .iter()
                 .rposition(|i| *i == gs::GS_INFECTION_MODE)
                 .expect("0xd3");
-            assert!(begin < count, "client {pid}: 0x44 before the countdown: {ids:x?}");
+            assert!(
+                begin < count,
+                "client {pid}: 0x44 before the countdown: {ids:x?}"
+            );
             assert!(infection_msgs(&o, pid)
                 .iter()
                 .any(|m| m.0 == 1 && m.1 == 2 && m.3 == COUNTDOWN_SECS as i32));
@@ -7890,8 +8012,14 @@ mod tests {
         assert_eq!(w.absorb, Absorb::Worn([Some(0), Some(3), Some(5)]));
         assert_eq!(w.start, 100.0, "the rows' Armor summed (100 + 0 + 0)");
         // a repeated row protects once
-        assert_eq!(dedup_worn([Some(6), Some(6), Some(5)]), [Some(6), None, Some(5)]);
-        assert_eq!(dedup_worn([Some(0), Some(3), Some(3)]), [Some(0), Some(3), None]);
+        assert_eq!(
+            dedup_worn([Some(6), Some(6), Some(5)]),
+            [Some(6), None, Some(5)]
+        );
+        assert_eq!(
+            dedup_worn([Some(0), Some(3), Some(3)]),
+            [Some(0), Some(3), None]
+        );
         assert_eq!(dedup_worn([Some(0), None, None]), [Some(0), None, None]);
         // head node (factor 2): 50 damage, the head gear and goggle take 0.25 + 0.1 of it
         let f = hit_report(&g, 0, 1, 0.0, Some(1));
@@ -8798,10 +8926,17 @@ mod tests {
         });
         g.out.clear();
         g.end_spawn_note_of(1, 1000 + SPAWN_FIRE_GRACE_MS - 1);
-        assert_eq!(g.spawn_notes.len(), 1, "a shot in flight at the death keeps the shield");
+        assert_eq!(
+            g.spawn_notes.len(),
+            1,
+            "a shot in flight at the death keeps the shield"
+        );
         assert!(g.out.is_empty());
         g.end_spawn_note_of(1, 1000 + SPAWN_FIRE_GRACE_MS);
-        assert!(g.spawn_notes.is_empty(), "the first shot of the new life ends the window");
+        assert!(
+            g.spawn_notes.is_empty(),
+            "the first shot of the new life ends the window"
+        );
         let end = gs::spawn_note(obj, gs::NOTE_SPAWN_END);
         let ends = g
             .out
@@ -9094,7 +9229,11 @@ mod tests {
             ..Default::default()
         };
         assert!((g.hit_damage(0, &f) - 45.0).abs() < 1e-4, "50 x 0.9");
-        assert_eq!(g.hit_damage(1, &f), 50.0, "no such player: the row's damage");
+        assert_eq!(
+            g.hit_damage(1, &f),
+            50.0,
+            "no such player: the row's damage"
+        );
         g.cfg.mod_damage = false;
         assert_eq!(g.hit_damage(0, &f), 50.0);
     }
@@ -9108,7 +9247,10 @@ mod tests {
             GameTuning {
                 move_check: false,
                 possession: true,
-                gun_game: gun_game.then(|| gungame::GunGameSetup { seed: 5, ladder: vec![30, 31] }),
+                gun_game: gun_game.then(|| gungame::GunGameSetup {
+                    seed: 5,
+                    ladder: vec![30, 31],
+                }),
                 ..GameTuning::default()
             },
             &world(),
@@ -9118,7 +9260,11 @@ mod tests {
         room.pairs.insert("type".into(), class.into());
         room.pairs.insert("goal".into(), "50".into());
         g.set_room(&room);
-        for (pid, uid, obj, kit) in [(0u8, 7u32, 1u16, "0:40,2:0"), (1, 8, 3, "0:30,1:164,2:0"), (2, 9, 5, "0:31,2:0")] {
+        for (pid, uid, obj, kit) in [
+            (0u8, 7u32, 1u16, "0:40,2:0"),
+            (1, 8, 3, "0:30,1:164,2:0"),
+            (2, 9, 5, "0:31,2:0"),
+        ] {
             let mut e = entry(uid, 0, "P");
             e.extra = vec![("loadout".into(), kit.into())];
             g.note_identified(&e);
@@ -9150,12 +9296,21 @@ mod tests {
         assert_eq!((f.to, f.ms), ([900.0, 0.0, 0.0], 300));
         assert_eq!(g.players[&0].move_seq, seq.wrapping_add(1));
         let o = g.take_out();
-        assert!(ids(&o, 0).contains(&dc_wire::possession::SHELL_ID), "the client hears");
-        assert!(!ids(&o, 1).contains(&dc_wire::possession::SHELL_ID), "only the killer");
+        assert!(
+            ids(&o, 0).contains(&dc_wire::possession::SHELL_ID),
+            "the client hears"
+        );
+        assert!(
+            !ids(&o, 1).contains(&dc_wire::possession::SHELL_ID),
+            "only the killer"
+        );
         g.tick_possession(250);
         assert_eq!(g.players[&0].pos, [450.0, 0.0, 0.0]);
         assert!((g.players[&0].vel[0] - 3000.0).abs() < 0.1);
-        assert!(!ids(&g.take_out(), 0).contains(&gs::GS_MOVER_UPDATE), "no teleport yet");
+        assert!(
+            !ids(&g.take_out(), 0).contains(&gs::GS_MOVER_UPDATE),
+            "no teleport yet"
+        );
         g.tick_possession(400);
         let p = &g.players[&0];
         assert!(p.flight.is_none());
@@ -9187,7 +9342,20 @@ mod tests {
         g.kill(1, Some(0), 40, false, 100);
         g.take_out();
         let health = g.players[&0].health;
-        g.apply_hit_as(0, Some(2), 500.0, 500.0, [0.0, 0.0, 1.0], combat::DamageSource { weapon: 31, dtype: 0 }, 0, 0, 110);
+        g.apply_hit_as(
+            0,
+            Some(2),
+            500.0,
+            500.0,
+            [0.0, 0.0, 1.0],
+            combat::DamageSource {
+                weapon: 31,
+                dtype: 0,
+            },
+            0,
+            0,
+            110,
+        );
         assert_eq!(g.players[&0].health, health);
         assert!(matches!(g.players[&0].life, Life::Alive));
         let f = hit_report(&g, 0, 2, 0.0, None);
@@ -9236,7 +9404,10 @@ mod tests {
         let p = &g.players[&0];
         assert_eq!((p.armor, p.health, p.current), (42.0, 61.0, Some(0)));
         assert_eq!(p.weapons[0].parts, [3, -1, -1, -1]);
-        assert_eq!((p.weapons[0].clip, p.weapons[0].stock), (fresh.clip, fresh.stock));
+        assert_eq!(
+            (p.weapons[0].clip, p.weapons[0].stock),
+            (fresh.clip, fresh.stock)
+        );
         let o = g.take_out();
         let sent = ids(&o, 0);
         let (rm, give) = (
@@ -9246,7 +9417,15 @@ mod tests {
         assert!(rm < give, "{sent:x?}");
         // the old gun is gone: a change back is refused, not adopted
         g.tick_possession(1_000);
-        g.on_up(0, Up::WeaponChange { slot: 0, weapon_id: 40, aux: 0 }, 1_010);
+        g.on_up(
+            0,
+            Up::WeaponChange {
+                slot: 0,
+                weapon_id: 40,
+                aux: 0,
+            },
+            1_010,
+        );
         assert_eq!(held(&g, 0), victim);
         respawn(&mut g, 0, 2_000);
         assert_eq!(held(&g, 0), own);
@@ -9299,7 +9478,10 @@ mod tests {
     #[test]
     fn possession_is_off_in_the_refused_modes_and_vanilla() {
         for class in ["5", "9", "11"] {
-            assert!(!possession_game_of(class, false).is_possession(), "class {class}");
+            assert!(
+                !possession_game_of(class, false).is_possession(),
+                "class {class}"
+            );
         }
         let mut g = possession_game_of("6", true);
         assert!(g.is_gun_game() && !g.is_possession());
@@ -9349,7 +9531,9 @@ mod tests {
         assert_eq!(g.players[&1].health, 65.0, "a fall: 1 x 5");
         // what the victim is told is on the shown scale
         let o = g.take_out();
-        assert!(o.iter().any(|x| matches!(x, GameOut::To(1, m) if m.as_bytes()[1] == 0x66)));
+        assert!(o
+            .iter()
+            .any(|x| matches!(x, GameOut::To(1, m) if m.as_bytes()[1] == 0x66)));
         // lethal: kill feed, 0 health
         g.apply_hit(1, Some(0), 13.0, 13.0, [1.0, 0.0, 0.0], src(3), 2, 130);
         assert_eq!(g.players[&1].health, 0.0);
@@ -9366,7 +9550,10 @@ mod tests {
             v.armor = 100.0;
             v.armor_absorb = Absorb::Flat(0.5);
         }
-        let src = combat::DamageSource { weapon: 3, dtype: 3 };
+        let src = combat::DamageSource {
+            weapon: 3,
+            dtype: 3,
+        };
         g.apply_hit(1, Some(0), 10.0, 10.0, [1.0, 0.0, 0.0], src, 2, 100);
         let v = &g.players[&1];
         assert_eq!((v.health, v.armor), (75.0, 75.0), "50: 25 + 25");
@@ -9388,7 +9575,10 @@ mod tests {
         let mut g = gun_game();
         g.cfg.health_scale = 0.2;
         g.players.get_mut(&1).unwrap().armor = 0.0;
-        let src = combat::DamageSource { weapon: 30, dtype: 3 };
+        let src = combat::DamageSource {
+            weapon: 30,
+            dtype: 3,
+        };
         g.apply_hit(1, Some(0), 20.0, 20.0, [1.0, 0.0, 0.0], src, 2, 100);
         assert_eq!(g.players[&1].health, 0.0, "one shot");
         assert_eq!(g.ffa_kills_of(0), 1, "the rung moved");
@@ -9404,13 +9594,28 @@ mod tests {
             return;
         };
         let (t, _) = RomTables::load(&dir);
-        let body = t.chars.bodies.values().find(|b| b.gear.is_some()).expect("a body row");
+        let body = t
+            .chars
+            .bodies
+            .values()
+            .find(|b| b.gear.is_some())
+            .expect("a body row");
         let gear_row = body.gear.unwrap();
         let gear = t.weapons.gear[&u16::try_from(gear_row).unwrap()].clone();
         let armor = gear.armor.unwrap_or(0.0);
-        let nodes = t.chars.skeletons.get(&body.skeleton.unwrap_or(0)).cloned().unwrap_or_default();
+        let nodes = t
+            .chars
+            .skeletons
+            .get(&body.skeleton.unwrap_or(0))
+            .cloned()
+            .unwrap_or_default();
         // the factor of each location 0 (body), 1 (head), 3, 4 (limbs): the first node of it
-        let factor = |loc: u8| nodes.iter().find(|n| n.location == loc).map_or(1.0, |n| n.factor);
+        let factor = |loc: u8| {
+            nodes
+                .iter()
+                .find(|n| n.location == loc)
+                .map_or(1.0, |n| n.factor)
+        };
         eprintln!(
             "TABLE armour {armor} gear {gear_row} factors body {} head {} l3 {} l4 {}",
             factor(0),
@@ -9421,14 +9626,23 @@ mod tests {
         let cost_from_base = GameTuning::default().armor_cost_from_base;
         let mut rows = 0;
         let (mut one_armoured, mut one_bare) = (0, 0);
-        let mut ids: Vec<(u16, i32)> = t.items.weapon_types.iter().map(|(w, ty)| (*w, *ty)).collect();
+        let mut ids: Vec<(u16, i32)> = t
+            .items
+            .weapon_types
+            .iter()
+            .map(|(w, ty)| (*w, *ty))
+            .collect();
         ids.sort();
         for (w, ty) in ids {
             if !dc_bute::arms::is_ladder_gun(ty) {
                 continue;
             }
-            let Some(ammo) = t.weapons.ammo_of(w) else { continue };
-            let Some(base) = t.weapons.damage(w, ammo).filter(|d| *d > 0.0) else { continue };
+            let Some(ammo) = t.weapons.ammo_of(w) else {
+                continue;
+            };
+            let Some(base) = t.weapons.damage(w, ammo).filter(|d| *d > 0.0) else {
+                continue;
+            };
             let dtype = t.weapons.damage_type(w, ammo).unwrap_or(3);
             let hit = |loc: u8, scale: f32| {
                 let f = factor(loc);
@@ -9454,7 +9668,9 @@ mod tests {
                 base * factor(0) / 0.2
             );
         }
-        eprintln!("TABLE {one_armoured} of {rows} one-shot in armour (body), {one_bare} without armour");
+        eprintln!(
+            "TABLE {one_armoured} of {rows} one-shot in armour (body), {one_bare} without armour"
+        );
         assert!(rows >= 30, "{rows}");
         assert!(one_armoured * 4 >= rows * 3, "most guns kill in one shot");
         let dearest = t
@@ -9505,7 +9721,11 @@ mod tests {
     }
 
     fn held(g: &Game, pid: u8) -> Vec<(u8, u16)> {
-        g.players[&pid].weapons.iter().map(|w| (w.slot, w.weapon)).collect()
+        g.players[&pid]
+            .weapons
+            .iter()
+            .map(|w| (w.slot, w.weapon))
+            .collect()
     }
 
     fn respawn(g: &mut Game, pid: u8, now: Millis) {
@@ -9569,9 +9789,17 @@ mod tests {
         // 1 knifes 0: 0 back to rung 0, 1 stays on rung 0
         g.kill(0, Some(1), 0, false, 200);
         assert_eq!((g.ffa_kills_of(0), g.ffa_kills_of(1)), (0, 0));
-        assert_eq!(held(&g, 1), vec![(0, 30), (2, 0)], "the knifer keeps his gun");
+        assert_eq!(
+            held(&g, 1),
+            vec![(0, 30), (2, 0)],
+            "the knifer keeps his gun"
+        );
         respawn(&mut g, 0, 300);
-        assert_eq!(held(&g, 0), vec![(0, 30), (2, 0)], "the lower gun at the respawn");
+        assert_eq!(
+            held(&g, 0),
+            vec![(0, 30), (2, 0)],
+            "the lower gun at the respawn"
+        );
         // floor: knifed on rung 0 stays there
         g.kill(0, Some(1), 0, false, 400);
         assert_eq!(g.ffa_kills_of(0), 0);
@@ -9593,7 +9821,15 @@ mod tests {
     #[test]
     fn gun_game_refuses_any_other_weapon() {
         let mut g = gun_game();
-        g.on_up(0, Up::WeaponChange { slot: 0, weapon_id: 40, aux: 0 }, 100);
+        g.on_up(
+            0,
+            Up::WeaponChange {
+                slot: 0,
+                weapon_id: 40,
+                aux: 0,
+            },
+            100,
+        );
         assert_eq!(held(&g, 0), vec![(0, 30), (2, 0)], "not adopted");
         let mut f = hit_report(&g, 0, 1, 0.0, None);
         f.weapon_id = 40;
@@ -9601,7 +9837,9 @@ mod tests {
         assert_eq!(g.players[&1].health, 100.0);
         let o = g.take_out();
         assert!(effects(&o).is_empty());
-        assert!(o.iter().any(|x| matches!(x, GameOut::Log(l) if l.contains("refused (gun game)"))));
+        assert!(o
+            .iter()
+            .any(|x| matches!(x, GameOut::Log(l) if l.contains("refused (gun game)"))));
         f.weapon_id = 30;
         g.on_up(0, Up::Fire(Box::new(f)), 300);
         assert!(g.players[&1].health < 100.0, "the rung's gun hurts");
@@ -9643,7 +9881,10 @@ mod tests {
         t.items.weapon_types = [(30, 0)].into();
         let mut g = Game::new(
             GameTuning {
-                gun_game: Some(gungame::GunGameSetup { seed: 1, ladder: vec![30] }),
+                gun_game: Some(gungame::GunGameSetup {
+                    seed: 1,
+                    ladder: vec![30],
+                }),
                 ..GameTuning::default()
             },
             &world(),
@@ -10382,8 +10623,9 @@ S0 = \"B\"
                         (w.spawns[i].pos[0] - pos[0]).hypot(w.spawns[i].pos[2] - pos[2]) < 0.5
                             && team_of(i) == Some(team)
                             && w.spawn_modes[i].as_deref().is_some_and(|m| {
-                                crate::chars::name_key(m.trim_ascii().to_ascii_lowercase().as_slice())
-                                    == super::bomb::SND_SPAWN_FILTER
+                                crate::chars::name_key(
+                                    m.trim_ascii().to_ascii_lowercase().as_slice(),
+                                ) == super::bomb::SND_SPAWN_FILTER
                             })
                     })
                 };
@@ -10403,7 +10645,15 @@ S0 = \"B\"
                 let join = |g: &mut Game, pid: u8, team: u8| {
                     let e = entry(100 + pid as u32, team, "P");
                     g.note_identified(&e);
-                    g.add_player(pid, Some(&e), None, 1 + 2 * pid as u16, [0.0; 3], [0.0; 3], 0);
+                    g.add_player(
+                        pid,
+                        Some(&e),
+                        None,
+                        1 + 2 * pid as u16,
+                        [0.0; 3],
+                        [0.0; 3],
+                        0,
+                    );
                     g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
                     g.on_up(pid, Up::WorldReady, 20);
                 };
@@ -10433,7 +10683,7 @@ S0 = \"B\"
                         );
                         assert_eq!(
                             p.team,
-                            1 + (p.pid % 2 == 1 || p.pid == 4) as u8 * 0 + [0, 0, 1, 1, 0, 1][p.pid as usize],
+                            1 + [0, 0, 1, 1, 0, 1][p.pid as usize],
                             "{world} class {class} round {round}: pid {} changed team",
                             p.pid
                         );
@@ -10443,10 +10693,16 @@ S0 = \"B\"
                     assert!(!sides[0].is_empty() && !sides[1].is_empty());
                     // no two teams on one side: no position is on both teams' sets
                     for a in &sides[0] {
-                        assert!(!on_set(*a, 2), "{world} class {class} round {round}: team 1 on team 2's base");
+                        assert!(
+                            !on_set(*a, 2),
+                            "{world} class {class} round {round}: team 1 on team 2's base"
+                        );
                     }
                     for b in &sides[1] {
-                        assert!(!on_set(*b, 1), "{world} class {class} round {round}: team 2 on team 1's base");
+                        assert!(
+                            !on_set(*b, 1),
+                            "{world} class {class} round {round}: team 2 on team 1's base"
+                        );
                     }
                     if round == 6 {
                         break;
@@ -10476,10 +10732,17 @@ S0 = \"B\"
                         g.tick(now);
                         g.take_out();
                     }
-                    assert_eq!(g.round_no(), round + 1, "{world} class {class}: round {round} did not end");
+                    assert_eq!(
+                        g.round_no(),
+                        round + 1,
+                        "{world} class {class}: round {round} did not end"
+                    );
                     assert!(!g.modes.swapped, "{world} class {class}: sides switched");
                 }
-                assert!(spawns >= 26, "{world} class {class}: {spawns} spawns checked");
+                assert!(
+                    spawns >= 26,
+                    "{world} class {class}: {spawns} spawns checked"
+                );
             }
         }
     }
@@ -10527,7 +10790,15 @@ S0 = \"B\"
             let pid = i as u8;
             let e = entry(7 + u32::from(pid), pid.min(1), "P");
             g.note_identified(&e);
-            g.add_player(pid, Some(&e), None, 1 + 2 * u16::from(pid), [0.0; 3], [0.0; 3], 0);
+            g.add_player(
+                pid,
+                Some(&e),
+                None,
+                1 + 2 * u16::from(pid),
+                [0.0; 3],
+                [0.0; 3],
+                0,
+            );
             g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
             g.on_up(pid, Up::WorldReady, 20);
             g.players.get_mut(&pid).unwrap().pos = *pos;
@@ -10581,7 +10852,11 @@ S0 = \"B\"
             })
             .collect();
         assert_eq!(recs.len(), 1, "one shot record");
-        assert_eq!(u16::from_le_bytes([recs[0][2], recs[0][3]]), 0xFFFF, "no hit object");
+        assert_eq!(
+            u16::from_le_bytes([recs[0][2], recs[0][3]]),
+            0xFFFF,
+            "no hit object"
+        );
         let want = gs::shot_effect(&gs::ShotEffect {
             first: None,
             shooter: g.players[&0].obj,
@@ -10640,7 +10915,10 @@ S0 = \"B\"
             g.tick_burns(t);
         }
         assert_eq!(g.flights_in_air(), 0);
-        assert!(t < 4700, "burst on the enemy after about 0.6 s, not at the end of its life ({t})");
+        assert!(
+            t < 4700,
+            "burst on the enemy after about 0.6 s, not at the end of its life ({t})"
+        );
         assert_eq!(g.burning(), vec![1], "only the enemy it reached burns");
         assert_eq!(g.players[&1].health, 100.0, "no blast");
         let burst = t;
@@ -10713,8 +10991,12 @@ S0 = \"B\"
             return;
         };
         let (t, _) = RomTables::load(&rom);
-        let Ok(w) = crate::world::load_from_rom(&rom, "Worlds/WarHead", crate::world::NameForm::Listed, None)
-        else {
+        let Ok(w) = crate::world::load_from_rom(
+            &rom,
+            "Worlds/WarHead",
+            crate::world::NameForm::Listed,
+            None,
+        ) else {
             println!("skipped: no WarHead world");
             return;
         };
@@ -10732,7 +11014,13 @@ S0 = \"B\"
             .agent_weapons
             .iter()
             .copied()
-            .find(|&x| t.weapons.fires_projectile(x, t.weapons.ammo_of(x).unwrap_or(0)) && t.weapons.prog(x, t.weapons.ammo_of(x).unwrap_or(0)).is_none())
+            .find(|&x| {
+                t.weapons
+                    .fires_projectile(x, t.weapons.ammo_of(x).unwrap_or(0))
+                    && t.weapons
+                        .prog(x, t.weapons.ammo_of(x).unwrap_or(0))
+                        .is_none()
+            })
             .expect("an agent launcher row");
         let ammo = t.weapons.ammo_of(weapon).expect("its ammunition");
         let area = t.weapons.area(weapon, ammo).expect("a blast row");
@@ -10766,7 +11054,14 @@ S0 = \"B\"
         let l = len3(d);
         let dir = [d[0] / l, d[1] / l, d[2] / l];
         let (tb, _) = g
-            .projectile_ray(origin, [origin[0] + dir[0] * (l + 50.0), origin[1] + dir[1] * (l + 50.0), origin[2] + dir[2] * (l + 50.0)])
+            .projectile_ray(
+                origin,
+                [
+                    origin[0] + dir[0] * (l + 50.0),
+                    origin[1] + dir[1] * (l + 50.0),
+                    origin[2] + dir[2] * (l + 50.0),
+                ],
+            )
             .expect("the shot meets the floor");
         let burst = [
             origin[0] + dir[0] * (l + 50.0) * tb,
@@ -10790,7 +11085,11 @@ S0 = \"B\"
         let scale = g.cfg.projectile.blast_damage_scale;
         for (pid, pos) in [(1u8, near), (2, far)] {
             let want = area.damage
-                * projectile::blast_factor(len3(sub3(pos, burst)), area.radius, projectile::BLAST_INNER_FRACTION)
+                * projectile::blast_factor(
+                    len3(sub3(pos, burst)),
+                    area.radius,
+                    projectile::BLAST_INNER_FRACTION,
+                )
                 * scale;
             let lost = 100.0 - g.players[&pid].health;
             assert!(want > 0.0);
@@ -10804,6 +11103,9 @@ S0 = \"B\"
             "the nearer enemy takes more"
         );
         let own = 500.0 - g.players[&0].health;
-        assert!(g.players[&0].life == Life::Alive && own < area.damage * scale, "own {own}");
+        assert!(
+            g.players[&0].life == Life::Alive && own < area.damage * scale,
+            "own {own}"
+        );
     }
 }

@@ -268,9 +268,8 @@ pub fn title_png(name: &str) -> Result<Vec<u8>, String> {
                 let old = dst.0[3] as f32 / 255.0;
                 let out = a + old * (1.0 - a);
                 if out > 0.0 {
-                    for i in 0..3 {
-                        dst.0[i] =
-                            ((rgb[i] as f32 * a + dst.0[i] as f32 * old * (1.0 - a)) / out) as u8;
+                    for (d, c) in dst.0.iter_mut().zip(rgb.iter()).take(3) {
+                        *d = ((*c as f32 * a + *d as f32 * old * (1.0 - a)) / out) as u8;
                     }
                     dst.0[3] = (out * 255.0) as u8;
                 }

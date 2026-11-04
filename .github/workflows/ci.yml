@@ -20,7 +20,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # ROM-gated tests (dc_rom::test_rom / rom_or_skip!) skip themselves when CA_ROM is unset; CI never has a ROM.
-  CA_ROM: ""
+  # CA_ROM must stay ABSENT, not empty: many tests read it with env::var, where an empty value counts as set.
 
 jobs:
   test:

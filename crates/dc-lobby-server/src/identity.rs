@@ -72,15 +72,29 @@ fn digit(v: u32, url: bool) -> char {
         0..=25 => b'A' + v,
         26..=51 => b'a' + v - 26,
         52..=61 => b'0' + v - 52,
-        62 => if url { b'-' } else { b'+' },
-        _ => if url { b'_' } else { b'/' },
+        62 => {
+            if url {
+                b'-'
+            } else {
+                b'+'
+            }
+        }
+        _ => {
+            if url {
+                b'_'
+            } else {
+                b'/'
+            }
+        }
     }) as char
 }
 
 fn b64_encode(data: &[u8], url: bool, pad: bool) -> String {
     let mut o = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
         let digits = c.len() + 1;
         for i in 0..4 {
             if i < digits {
@@ -179,7 +193,10 @@ pub fn valid_field(s: &str) -> bool {
 /// The payload text of `c`; Err when a field cannot be carried.
 pub fn payload(c: &Claims) -> Result<String, String> {
     if !valid_issuer(&c.issuer) {
-        return Err(format!("issuer id {:?} is not 1..64 of A-Z a-z 0-9 . _ : -", c.issuer));
+        return Err(format!(
+            "issuer id {:?} is not 1..64 of A-Z a-z 0-9 . _ : -",
+            c.issuer
+        ));
     }
     if c.login.is_empty() || !valid_field(&c.login) {
         return Err("the login name cannot be carried in a token".into());
@@ -202,7 +219,9 @@ fn parse_payload(p: &str) -> Option<Claims> {
         return None;
     }
     fn num<T: std::str::FromStr>(s: &str) -> Option<T> {
-        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse().ok()).flatten()
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
     }
     Some(Claims {
         issuer: f[1].to_string(),
@@ -291,7 +310,8 @@ pub fn load_or_create(path: &Path) -> Result<(Ed25519KeyPair, bool), String> {
         if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             let _ = std::fs::create_dir_all(d);
         }
-        crate::tls::write_private(path, pem.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+        crate::tls::write_private(path, pem.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         created = true;
     }
     // the parser's own error text is not shown (it could quote key material); only the file name
@@ -350,7 +370,11 @@ impl Authority {
             issuer: issuer.to_string(),
             public_key: Some(kp.public_key().as_ref().to_vec()),
             signer: Some(Arc::new(kp)),
-            token_hours: if token_hours == 0 { DEFAULT_TOKEN_HOURS } else { token_hours },
+            token_hours: if token_hours == 0 {
+                DEFAULT_TOKEN_HOURS
+            } else {
+                token_hours
+            },
         }
     }
 
@@ -370,8 +394,17 @@ impl Authority {
     }
 
     /// A token for an account of this lobby.
-    pub fn issue(&self, account: u32, login: &str, nick: &str, now: i64) -> Result<(String, i64), String> {
-        let kp = self.signer.as_ref().ok_or("this lobby does not issue identity tokens")?;
+    pub fn issue(
+        &self,
+        account: u32,
+        login: &str,
+        nick: &str,
+        now: i64,
+    ) -> Result<(String, i64), String> {
+        let kp = self
+            .signer
+            .as_ref()
+            .ok_or("this lobby does not issue identity tokens")?;
         let expires = now + self.token_hours as i64 * 3600;
         // a nickname that cannot be carried is left out (it is informational only)
         let nick = if valid_field(nick) { nick } else { "" };
@@ -413,7 +446,9 @@ pub fn from_options(o: &crate::cli::Options) -> Result<(Authority, Vec<String>),
         if created {
             notes.push(format!("identity: made a new key pair {}", path.display()));
         }
-        if !key.is_empty() && parse_public_key(key).ok().as_deref() != Some(kp.public_key().as_ref()) {
+        if !key.is_empty()
+            && parse_public_key(key).ok().as_deref() != Some(kp.public_key().as_ref())
+        {
             notes.push("identity: WARNING: identity.public_key differs from the own key pair; the own key is used".into());
         }
         let a = Authority::issuing(issuer, kp, o.identity_token_hours);
@@ -427,13 +462,20 @@ pub fn from_options(o: &crate::cli::Options) -> Result<(Authority, Vec<String>),
         (true, true) => Ok((Authority::default(), notes)),
         (false, false) => {
             if !valid_issuer(issuer) {
-                return Err(format!("identity issuer {issuer:?}: 1..64 of A-Z a-z 0-9 . _ : -"));
+                return Err(format!(
+                    "identity issuer {issuer:?}: 1..64 of A-Z a-z 0-9 . _ : -"
+                ));
             }
             let k = parse_public_key(key)?;
-            notes.push(format!("identity: accepting tokens of {issuer:?} (public key {})", b64std(&k)));
+            notes.push(format!(
+                "identity: accepting tokens of {issuer:?} (public key {})",
+                b64std(&k)
+            ));
             Ok((Authority::accepting(issuer, k), notes))
         }
-        _ => Err("accepting identity tokens needs both --identity-issuer and --identity-key".into()),
+        _ => {
+            Err("accepting identity tokens needs both --identity-issuer and --identity-key".into())
+        }
     }
 }
 
@@ -491,12 +533,17 @@ pub fn local_account(st: &mut Core, c: &Claims) -> db::DbResult<Result<db::Accou
     if st.identity.is_own(c) {
         return Ok(match db::account_by_no(&st.db, c.account)? {
             Some(a) if a.login.eq_ignore_ascii_case(&c.login) => Ok(a),
-            Some(_) => Err(format!("own token of account {} names another login", c.account)),
+            Some(_) => Err(format!(
+                "own token of account {} names another login",
+                c.account
+            )),
             None => Err(format!("own token names no account {}", c.account)),
         });
     }
     if let Some(no) = db::identity_link(&st.db, &c.issuer, c.account)? {
-        return Ok(db::account_by_no(&st.db, no)?.ok_or_else(|| format!("linked account {no} is gone")));
+        return Ok(
+            db::account_by_no(&st.db, no)?.ok_or_else(|| format!("linked account {no} is gone"))
+        );
     }
     if db::account_by_login(&st.db, &c.login)?.is_some() {
         return Ok(Err(format!(
@@ -550,7 +597,9 @@ pub fn json_strings(s: &str) -> Option<Vec<(String, String)>> {
                     'u' => {
                         let hex = |it: &mut std::iter::Peekable<std::str::Chars>| {
                             let h: String = (0..4).filter_map(|_| it.next()).collect();
-                            (h.len() == 4).then(|| u32::from_str_radix(&h, 16).ok()).flatten()
+                            (h.len() == 4)
+                                .then(|| u32::from_str_radix(&h, 16).ok())
+                                .flatten()
                         };
                         let a = hex(it)?;
                         let ch = if (0xd800..0xdc00).contains(&a) {
@@ -558,7 +607,9 @@ pub fn json_strings(s: &str) -> Option<Vec<(String, String)>> {
                                 return None;
                             }
                             let b = hex(it)?;
-                            char::from_u32(0x10000 + ((a - 0xd800) << 10) + (b.checked_sub(0xdc00)?))?
+                            char::from_u32(
+                                0x10000 + ((a - 0xd800) << 10) + (b.checked_sub(0xdc00)?),
+                            )?
                         } else {
                             char::from_u32(a)?
                         };
@@ -656,7 +707,14 @@ impl Pending {
 
 /// `POST /identity/token`, whole, under one lock: (status, JSON body). The web server uses [`begin`], [`Pending::check`]
 /// and [`finish`] so the Argon2 verify runs outside the lock.
-pub fn route(st: &mut Core, method: &str, body: &[u8], peer: &str, now: Instant) -> db::DbResult<(u16, String)> {
+#[cfg(test)]
+pub fn route(
+    st: &mut Core,
+    method: &str,
+    body: &[u8],
+    peer: &str,
+    now: Instant,
+) -> db::DbResult<(u16, String)> {
     match begin(st, method, body, peer, now)? {
         Step::Done(r) => Ok(r),
         Step::Verify(p) => {
@@ -667,20 +725,41 @@ pub fn route(st: &mut Core, method: &str, body: &[u8], peer: &str, now: Instant)
 }
 
 /// Phase 1 (locked): the request checks and the account lookup.
-pub fn begin(st: &mut Core, method: &str, body: &[u8], peer: &str, now: Instant) -> db::DbResult<Step> {
+pub fn begin(
+    st: &mut Core,
+    method: &str,
+    body: &[u8],
+    peer: &str,
+    now: Instant,
+) -> db::DbResult<Step> {
     use crate::register::json_str;
     let done = |c: u16, b: String| Ok(Step::Done((c, b)));
     if st.identity.signer.is_none() {
-        return done(404, "{\"error\":\"identity tokens are not issued here\"}".into());
+        return done(
+            404,
+            "{\"error\":\"identity tokens are not issued here\"}".into(),
+        );
     }
     if method != "POST" {
-        return done(405, "{\"error\":\"use POST with {\\\"login\\\",\\\"password\\\"}\"}".into());
+        return done(
+            405,
+            "{\"error\":\"use POST with {\\\"login\\\",\\\"password\\\"}\"}".into(),
+        );
     }
     let Some(fields) = std::str::from_utf8(body).ok().and_then(json_strings) else {
-        return done(400, "{\"error\":\"body must be a JSON object {\\\"login\\\",\\\"password\\\"}\"}".into());
+        return done(
+            400,
+            "{\"error\":\"body must be a JSON object {\\\"login\\\",\\\"password\\\"}\"}".into(),
+        );
     };
     let _ = json_str;
-    let get = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    let get = |k: &str| {
+        fields
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
     let login = crate::auth::normalize_login(&get("login"));
     let password = get("password");
     if login.is_empty() {
@@ -700,16 +779,37 @@ pub fn begin(st: &mut Core, method: &str, body: &[u8], peer: &str, now: Instant)
         Some(a) if crate::gm::active_ban(st, a.user_no)?.is_some() => Some("account banned"),
         _ => None,
     };
-    Ok(Step::Verify(Pending { acc, refuse, password, keys, ip, login }))
+    Ok(Step::Verify(Pending {
+        acc,
+        refuse,
+        password,
+        keys,
+        ip,
+        login,
+    }))
 }
 
 /// Phase 2 (locked again): count the outcome and issue the token.
-pub fn finish(st: &mut Core, p: Pending, check: crate::auth::PwCheck, now: Instant) -> db::DbResult<(u16, String)> {
+pub fn finish(
+    st: &mut Core,
+    p: Pending,
+    check: crate::auth::PwCheck,
+    now: Instant,
+) -> db::DbResult<(u16, String)> {
     use crate::register::json_str;
-    let Pending { acc, refuse, password, keys, ip, login } = p;
+    let Pending {
+        acc,
+        refuse,
+        password,
+        keys,
+        ip,
+        login,
+    } = p;
     let refused = |st: &mut Core, why: &str| {
         crate::auth::count_failure(st, &keys, now);
-        st.note(&format!("identity: token refused ({why}): {login} from {ip}"));
+        st.note(&format!(
+            "identity: token refused ({why}): {login} from {ip}"
+        ));
         Ok((401, MSG_REFUSED.into()))
     };
     if let Some(why) = refuse {
@@ -721,10 +821,15 @@ pub fn finish(st: &mut Core, p: Pending, check: crate::auth::PwCheck, now: Insta
     match check {
         crate::auth::PwCheck::Ok => {}
         crate::auth::PwCheck::OkUpgrade => crate::auth::store_password(st, acc.user_no, &password)?,
-        crate::auth::PwCheck::Bad | crate::auth::PwCheck::NoPassword => return refused(st, "password"),
+        crate::auth::PwCheck::Bad | crate::auth::PwCheck::NoPassword => {
+            return refused(st, "password")
+        }
     }
     st.limits.login.success(&keys[0]);
-    let nick = st.character(acc.user_no).map(|c| c.nick.clone()).unwrap_or_default();
+    let nick = st
+        .character(acc.user_no)
+        .map(|c| c.nick.clone())
+        .unwrap_or_default();
     let unix = crate::clock::unix_now();
     let (token, expires) = match st.identity.issue(acc.user_no, &acc.login, &nick, unix) {
         Ok(t) => t,
@@ -773,7 +878,9 @@ mod tests {
     #[test]
     fn base64_both_alphabets_round_trip() {
         for n in 0..40u8 {
-            let d: Vec<u8> = (0..n).map(|i| i.wrapping_mul(37).wrapping_add(250)).collect();
+            let d: Vec<u8> = (0..n)
+                .map(|i| i.wrapping_mul(37).wrapping_add(250))
+                .collect();
             assert_eq!(b64_decode(&b64url(&d)).unwrap(), d);
             assert_eq!(b64_decode(&b64std(&d)).unwrap(), d);
         }
@@ -795,7 +902,13 @@ mod tests {
         assert_eq!(c, claims(NOW));
         // within the skew on both ends
         assert!(verify(&t, kp.public_key().as_ref(), "decombat.main", NOW - 299).is_ok());
-        assert!(verify(&t, kp.public_key().as_ref(), "decombat.main", NOW + 86400 + 299).is_ok());
+        assert!(verify(
+            &t,
+            kp.public_key().as_ref(),
+            "decombat.main",
+            NOW + 86400 + 299
+        )
+        .is_ok());
     }
 
     #[test]
@@ -803,7 +916,12 @@ mod tests {
         let kp = pair();
         let t = sign(&kp, &claims(NOW)).unwrap();
         assert_eq!(
-            verify(&t, kp.public_key().as_ref(), "decombat.main", NOW + 86400 + 301),
+            verify(
+                &t,
+                kp.public_key().as_ref(),
+                "decombat.main",
+                NOW + 86400 + 301
+            ),
             Err(Refusal::Expired)
         );
         assert_eq!(
@@ -824,7 +942,10 @@ mod tests {
         let mut sig = b64_decode(s).unwrap();
         sig[5] ^= 1;
         let t2 = format!("{p}.{}", b64url(&sig));
-        assert_eq!(verify(&t2, kp.public_key().as_ref(), "decombat.main", NOW), Err(Refusal::BadSignature));
+        assert_eq!(
+            verify(&t2, kp.public_key().as_ref(), "decombat.main", NOW),
+            Err(Refusal::BadSignature)
+        );
     }
 
     #[test]
@@ -845,13 +966,29 @@ mod tests {
         let text = String::from_utf8(b64_decode(p).unwrap()).unwrap();
         let forged = text.replace("|1001|", "|1002|");
         let t2 = format!("{}.{s}", b64url(forged.as_bytes()));
-        assert_eq!(verify(&t2, kp.public_key().as_ref(), "decombat.main", NOW), Err(Refusal::BadSignature));
-        assert_eq!(verify("garbage", kp.public_key().as_ref(), "decombat.main", NOW), Err(Refusal::Malformed));
-        assert_eq!(verify("a.b.c", kp.public_key().as_ref(), "decombat.main", NOW), Err(Refusal::Malformed));
+        assert_eq!(
+            verify(&t2, kp.public_key().as_ref(), "decombat.main", NOW),
+            Err(Refusal::BadSignature)
+        );
+        assert_eq!(
+            verify("garbage", kp.public_key().as_ref(), "decombat.main", NOW),
+            Err(Refusal::Malformed)
+        );
+        assert_eq!(
+            verify("a.b.c", kp.public_key().as_ref(), "decombat.main", NOW),
+            Err(Refusal::Malformed)
+        );
         // a signed payload that is not ours is malformed, not trusted
         let odd = "dcid1|decombat.main|x|alice||1|2";
-        let t3 = format!("{}.{}", b64url(odd.as_bytes()), b64url(kp.sign(odd.as_bytes()).as_ref()));
-        assert_eq!(verify(&t3, kp.public_key().as_ref(), "decombat.main", NOW), Err(Refusal::Malformed));
+        let t3 = format!(
+            "{}.{}",
+            b64url(odd.as_bytes()),
+            b64url(kp.sign(odd.as_bytes()).as_ref())
+        );
+        assert_eq!(
+            verify(&t3, kp.public_key().as_ref(), "decombat.main", NOW),
+            Err(Refusal::Malformed)
+        );
     }
 
     #[test]
@@ -879,7 +1016,10 @@ mod tests {
         assert!(!made);
         assert_eq!(public_b64(&a), public_b64(&b));
         assert_eq!(public_b64(&a).len(), 44);
-        assert_eq!(parse_public_key(&public_b64(&a)).unwrap(), a.public_key().as_ref());
+        assert_eq!(
+            parse_public_key(&public_b64(&a)).unwrap(),
+            a.public_key().as_ref()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -900,7 +1040,10 @@ mod tests {
 
     fn login_payload(user: &str, pw: &str) -> Vec<u8> {
         let mut w = dc_wire::PktWriter::new(0x200);
-        w.wstr(user, 4096).wstr(pw, 17).wstr("00-11-22-33-44-55", 20).i32(0);
+        w.wstr(user, 4096)
+            .wstr(pw, 17)
+            .wstr("00-11-22-33-44-55", 20)
+            .i32(0);
         w.into_payload()
     }
 
@@ -908,15 +1051,26 @@ mod tests {
     fn login(st: &mut Core, sid: u64, user: &str, pw: &str) -> (u32, u32, u32) {
         let rx = connect(st, sid as _, Listener::Auth);
         let p = login_payload(user, pw);
-        st.scope(|st| crate::auth::dispatch(st, sid as _, crate::msg::LOGIN_REQUEST, &p).map(|_| ()))
-            .unwrap();
+        st.scope(|st| {
+            crate::auth::dispatch(st, sid as _, crate::msg::LOGIN_REQUEST, &p).map(|_| ())
+        })
+        .unwrap();
         let got = drain(&rx);
-        let r = &got.iter().find(|(id, _)| *id == 0x201).expect("a login reply").1;
+        let r = &got
+            .iter()
+            .find(|(id, _)| *id == 0x201)
+            .expect("a login reply")
+            .1;
         (u32_at(r, 6), u32_at(r, 0xa), u32_at(r, 0x12))
     }
 
     fn field(json: &str, k: &str) -> String {
-        json_strings(json).unwrap().into_iter().find(|(n, _)| n == k).map(|(_, v)| v).unwrap_or_default()
+        json_strings(json)
+            .unwrap()
+            .into_iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v)
+            .unwrap_or_default()
     }
 
     fn issuer_state() -> (Core, Vec<u8>) {
@@ -937,51 +1091,118 @@ mod tests {
     fn the_endpoint_issues_a_token_for_the_right_password_only() {
         let (mut st, public) = issuer_state();
         let t0 = Instant::now();
-        let (code, body) = route(&mut st, "POST", br#"{"login":"alice","password":"wrong"}"#, "1.2.3.4:5", t0).unwrap();
+        let (code, body) = route(
+            &mut st,
+            "POST",
+            br#"{"login":"alice","password":"wrong"}"#,
+            "1.2.3.4:5",
+            t0,
+        )
+        .unwrap();
         assert_eq!((code, body.as_str()), (401, MSG_REFUSED));
-        let (code, _) = route(&mut st, "POST", br#"{"login":"nobody","password":"x"}"#, "1.2.3.4:5", t0).unwrap();
+        let (code, _) = route(
+            &mut st,
+            "POST",
+            br#"{"login":"nobody","password":"x"}"#,
+            "1.2.3.4:5",
+            t0,
+        )
+        .unwrap();
         assert_eq!(code, 401);
         assert_eq!(route(&mut st, "GET", b"", "1.2.3.4:5", t0).unwrap().0, 405);
-        assert_eq!(route(&mut st, "POST", b"login=alice", "1.2.3.4:5", t0).unwrap().0, 400);
-        let (code, body) =
-            route(&mut st, "POST", br#"{"login":"Alice","password":"rabbit-hole"}"#, "1.2.3.4:5", t0).unwrap();
+        assert_eq!(
+            route(&mut st, "POST", b"login=alice", "1.2.3.4:5", t0)
+                .unwrap()
+                .0,
+            400
+        );
+        let (code, body) = route(
+            &mut st,
+            "POST",
+            br#"{"login":"Alice","password":"rabbit-hole"}"#,
+            "1.2.3.4:5",
+            t0,
+        )
+        .unwrap();
         assert_eq!(code, 200, "{body}");
         let token = field(&body, "token");
         let unix = crate::clock::unix_now();
         let c = verify(&token, &public, "dc.main", unix).unwrap();
         let acc = db::account_by_login(&st.db, "alice").unwrap().unwrap();
         assert_eq!((c.account, c.login.as_str()), (acc.user_no, "alice"));
-        assert!(body.contains(&format!("\"account\":{}", acc.user_no)), "{body}");
-        assert!(body.contains(&format!("\"expires\":{}", c.expires)), "{body}");
+        assert!(
+            body.contains(&format!("\"account\":{}", acc.user_no)),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("\"expires\":{}", c.expires)),
+            "{body}"
+        );
         assert!((c.expires - c.issued) == 24 * 3600);
         // a disabled account gets no token
         crate::accounts::set_disabled(&st.db, "alice", true).unwrap();
-        let (code, _) =
-            route(&mut st, "POST", br#"{"login":"alice","password":"rabbit-hole"}"#, "1.2.3.4:5", t0).unwrap();
+        let (code, _) = route(
+            &mut st,
+            "POST",
+            br#"{"login":"alice","password":"rabbit-hole"}"#,
+            "1.2.3.4:5",
+            t0,
+        )
+        .unwrap();
         assert_eq!(code, 401);
         // a banned account gets no token
-        st.db.execute("INSERT INTO op_bans (user_no, until) VALUES (?1, 0)", [acc.user_no as i64]).unwrap();
-        let (code, _) =
-            route(&mut st, "POST", br#"{"login":"alice","password":"rabbit-hole"}"#, "1.2.3.4:5", t0).unwrap();
+        st.db
+            .execute(
+                "INSERT INTO op_bans (user_no, until) VALUES (?1, 0)",
+                [acc.user_no as i64],
+            )
+            .unwrap();
+        let (code, _) = route(
+            &mut st,
+            "POST",
+            br#"{"login":"alice","password":"rabbit-hole"}"#,
+            "1.2.3.4:5",
+            t0,
+        )
+        .unwrap();
         assert_eq!(code, 401);
         st.db.execute("DELETE FROM op_bans", []).unwrap();
         // ten failures lock the name: the right password is refused too (LG-146)
         crate::accounts::set_disabled(&st.db, "alice", false).unwrap();
         for _ in 0..10 {
-            route(&mut st, "POST", br#"{"login":"alice","password":"nope"}"#, "9.9.9.9:1", t0).unwrap();
+            route(
+                &mut st,
+                "POST",
+                br#"{"login":"alice","password":"nope"}"#,
+                "9.9.9.9:1",
+                t0,
+            )
+            .unwrap();
         }
-        let (code, _) =
-            route(&mut st, "POST", br#"{"login":"alice","password":"rabbit-hole"}"#, "8.8.8.8:1", t0).unwrap();
+        let (code, _) = route(
+            &mut st,
+            "POST",
+            br#"{"login":"alice","password":"rabbit-hole"}"#,
+            "8.8.8.8:1",
+            t0,
+        )
+        .unwrap();
         assert_eq!(code, 401);
         // a lobby that does not issue answers 404
         let mut other = state();
-        assert_eq!(route(&mut other, "POST", b"{}", "1.2.3.4:5", t0).unwrap().0, 404);
+        assert_eq!(
+            route(&mut other, "POST", b"{}", "1.2.3.4:5", t0).unwrap().0,
+            404
+        );
     }
 
     #[test]
     fn a_token_login_makes_the_local_account_once_and_finds_it_again() {
         let (mut issuer, public) = issuer_state();
-        let alice = db::account_by_login(&issuer.db, "alice").unwrap().unwrap().user_no;
+        let alice = db::account_by_login(&issuer.db, "alice")
+            .unwrap()
+            .unwrap()
+            .user_no;
         let (_, body) = route(
             &mut issuer,
             "POST",
@@ -1003,12 +1224,21 @@ mod tests {
         })
         .unwrap();
         // not trusted yet: refused
-        assert_eq!(login(&mut host, 1, &format!("LOCAL:tok:{token}"), "").1, crate::wire::REASON_BAD_PASSWORD);
+        assert_eq!(
+            login(&mut host, 1, &format!("LOCAL:tok:{token}"), "").1,
+            crate::wire::REASON_BAD_PASSWORD
+        );
         host.identity = Authority::accepting("dc.main", public.clone());
         let (ok, _, no) = login(&mut host, 2, &format!("LOCAL:tok:{token}"), "");
         assert_eq!(ok, 1);
-        assert_eq!(db::identity_link(&host.db, "dc.main", alice).unwrap(), Some(no));
-        assert_eq!(db::account_by_no(&host.db, no).unwrap().unwrap().login, "alice");
+        assert_eq!(
+            db::identity_link(&host.db, "dc.main", alice).unwrap(),
+            Some(no)
+        );
+        assert_eq!(
+            db::account_by_no(&host.db, no).unwrap().unwrap().login,
+            "alice"
+        );
         let (ok, _, again) = login(&mut host, 3, &format!("tok:{token}"), "whatever");
         assert_eq!((ok, again), (1, no));
         // LG-271: the mod suffix after the token is stripped before the token is read
@@ -1016,11 +1246,20 @@ mod tests {
         let (ok, _, again) = login(&mut host, 7, &format!("LOCAL:tok:{token}{suffix}"), "");
         assert_eq!((ok, again), (1, no));
         host.login_mods.set = "ab".repeat(32);
-        assert_eq!(login(&mut host, 8, &format!("tok:{token}{suffix}"), "").1, crate::wire::REASON_BAD_PASSWORD);
+        assert_eq!(
+            login(&mut host, 8, &format!("tok:{token}{suffix}"), "").1,
+            crate::wire::REASON_BAD_PASSWORD
+        );
         let modded = dc_wire::loginmods::suffix(&"ab".repeat(32), "0");
-        assert_eq!(login(&mut host, 10, &format!("tok:{token}{modded}"), "").0, 1);
+        assert_eq!(
+            login(&mut host, 10, &format!("tok:{token}{modded}"), "").0,
+            1
+        );
         host.login_mods = Default::default();
-        let n: i64 = host.db.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0)).unwrap();
+        let n: i64 = host
+            .db
+            .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 2);
         // the token account has no password login, the local one keeps its own
         let (ok, reason, _) = login(&mut host, 4, "LOCAL:alice", "rabbit-hole");
@@ -1033,13 +1272,20 @@ mod tests {
         // a lobby whose own account holds the name does not hand it over
         let mut other = state();
         other.identity = Authority::accepting("dc.main", public);
-        other.scope(|st| {
-            crate::auth::ensure_account(st, "Alice", "local-alice")?;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(login(&mut other, 1, &format!("tok:{token}"), "").1, crate::wire::REASON_BAD_PASSWORD);
-        assert_eq!(db::identity_link(&other.db, "dc.main", alice).unwrap(), None);
+        other
+            .scope(|st| {
+                crate::auth::ensure_account(st, "Alice", "local-alice")?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            login(&mut other, 1, &format!("tok:{token}"), "").1,
+            crate::wire::REASON_BAD_PASSWORD
+        );
+        assert_eq!(
+            db::identity_link(&other.db, "dc.main", alice).unwrap(),
+            None
+        );
 
         // the issuer takes its own token for its own account, without a link row
         issuer.opts.autochar = true;
@@ -1063,15 +1309,23 @@ mod tests {
         // a lobby whose own account holds the name: every token login is refused and counts against the name
         let mut other = state();
         other.identity = Authority::accepting("dc.main", public.clone());
-        other.scope(|st| {
-            crate::auth::ensure_account(st, "Alice", "local-alice")?;
-            Ok(())
-        })
-        .unwrap();
+        other
+            .scope(|st| {
+                crate::auth::ensure_account(st, "Alice", "local-alice")?;
+                Ok(())
+            })
+            .unwrap();
         for i in 0..10 {
-            assert_eq!(login(&mut other, 1 + i, &format!("tok:{token}"), "").1, crate::wire::REASON_BAD_PASSWORD);
+            assert_eq!(
+                login(&mut other, 1 + i, &format!("tok:{token}"), "").1,
+                crate::wire::REASON_BAD_PASSWORD
+            );
         }
-        assert!(other.limits.login.locked(&["name:alice".to_string()], Instant::now()).is_some());
+        assert!(other
+            .limits
+            .login
+            .locked(&["name:alice".to_string()], Instant::now())
+            .is_some());
         // a locked name refuses a good token too
         let mut host = state();
         host.opts.autochar = true;
@@ -1082,7 +1336,10 @@ mod tests {
         for _ in 0..10 {
             host.limits.login.fail(&keys, now);
         }
-        assert_eq!(login(&mut host, 2, &format!("tok:{token}"), "").1, crate::wire::REASON_BAD_PASSWORD);
+        assert_eq!(
+            login(&mut host, 2, &format!("tok:{token}"), "").1,
+            crate::wire::REASON_BAD_PASSWORD
+        );
     }
 
     #[test]
@@ -1100,7 +1357,10 @@ mod tests {
                 let (code, b) = route(&mut st, "POST", body.as_bytes(), "5.5.5.5:1", t0).unwrap();
                 assert_eq!((code, b.as_str()), (401, MSG_REFUSED));
             }
-            assert!(st.limits.login.locked(&keys, t0).is_some(), "{login} disabled={disable}");
+            assert!(
+                st.limits.login.locked(&keys, t0).is_some(),
+                "{login} disabled={disable}"
+            );
         }
     }
 
@@ -1112,12 +1372,18 @@ mod tests {
         c.issued = i64::MAX - 1;
         c.expires = i64::MAX;
         let t = sign(&kp, &c).unwrap();
-        assert_eq!(verify(&t, &public, "decombat.main", i64::MAX).unwrap_err(), Refusal::Malformed);
+        assert_eq!(
+            verify(&t, &public, "decombat.main", i64::MAX).unwrap_err(),
+            Refusal::Malformed
+        );
         let mut c = claims(1_000);
         c.issued = 200_000_000_000;
         c.expires = 200_000_000_100;
         let t = sign(&kp, &c).unwrap();
-        assert_eq!(verify(&t, &public, "decombat.main", 1_000).unwrap_err(), Refusal::Malformed);
+        assert_eq!(
+            verify(&t, &public, "decombat.main", 1_000).unwrap_err(),
+            Refusal::Malformed
+        );
     }
 
     // ------------------------------------------------------------------ LG-273: the nick follows the identity
@@ -1160,14 +1426,21 @@ mod tests {
         // the creation path of the nickname screen: the starter kit is there
         let items: i64 = st
             .db
-            .query_row("SELECT COUNT(*) FROM items WHERE user_no = ?1", [no as i64], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE user_no = ?1",
+                [no as i64],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(items > 0, "starter kit granted");
         // a second login finds the same account and character
         let (ok, _, again) = login(&mut st, 2, &t, "");
         assert_eq!((ok, again), (1, no));
         assert_eq!(nick_of(&st, no).as_deref(), Some("Quinn"));
-        let n: i64 = st.db.query_row("SELECT COUNT(*) FROM characters", [], |r| r.get(0)).unwrap();
+        let n: i64 = st
+            .db
+            .query_row("SELECT COUNT(*) FROM characters", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -1184,12 +1457,26 @@ mod tests {
         .unwrap();
         let (ok, _, no) = login(&mut st, 1, &token(&kp, 77, "quinnan224", "Quinn"), "");
         assert_eq!(ok, 1);
-        assert_eq!(nick_of(&st, no).as_deref(), Some("Quinn3"), "Quinn and quinn2 (any case) are held");
+        assert_eq!(
+            nick_of(&st, no).as_deref(),
+            Some("Quinn3"),
+            "Quinn and quinn2 (any case) are held"
+        );
         // a 16-unit nick keeps 15 units and the number
-        let (ok, _, other) = login(&mut st, 2, &token(&kp, 78, "longone", "Sixteen_Letters!"), "");
+        let (ok, _, other) = login(
+            &mut st,
+            2,
+            &token(&kp, 78, "longone", "Sixteen_Letters!"),
+            "",
+        );
         assert_eq!(ok, 1);
         assert_eq!(nick_of(&st, other).as_deref(), Some("Sixteen_Letters!"));
-        let (ok, _, third) = login(&mut st, 3, &token(&kp, 79, "copycat", "Sixteen_Letters!"), "");
+        let (ok, _, third) = login(
+            &mut st,
+            3,
+            &token(&kp, 79, "copycat", "Sixteen_Letters!"),
+            "",
+        );
         assert_eq!(ok, 1);
         assert_eq!(nick_of(&st, third).as_deref(), Some("Sixteen_Letters2"));
     }
@@ -1204,8 +1491,14 @@ mod tests {
         st.login_mods.set = "ab".repeat(32);
         let t = token(&kp, 77, "quinnan224", "quinnan224");
         // the first join without the server's mod set: refused before any account is made
-        assert_eq!(login(&mut st, 1, &t, "").1, crate::wire::REASON_BAD_PASSWORD);
-        let n: i64 = st.db.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            login(&mut st, 1, &t, "").1,
+            crate::wire::REASON_BAD_PASSWORD
+        );
+        let n: i64 = st
+            .db
+            .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
         let modded = dc_wire::loginmods::suffix(&"ab".repeat(32), "0");
         let (ok, reason, no) = login(&mut st, 2, &format!("{t}{modded}"), "");

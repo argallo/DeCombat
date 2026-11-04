@@ -33,7 +33,14 @@ fn lobby() -> Core {
     st
 }
 
-fn call(st: &mut Core, method: &str, path: &str, form: &str, peer: &str, unix: i64) -> (u16, String) {
+fn call(
+    st: &mut Core,
+    method: &str,
+    path: &str,
+    form: &str,
+    peer: &str,
+    unix: i64,
+) -> (u16, String) {
     call_as(st, method, path, form, peer, unix, true)
 }
 
@@ -48,7 +55,16 @@ fn call_as(
 ) -> (u16, String) {
     let mut out = (0, String::new());
     st.scope(|st| {
-        out = route_at(st, method, path, form.as_bytes(), peer, Instant::now(), unix, json)?;
+        out = route_at(
+            st,
+            method,
+            path,
+            form.as_bytes(),
+            peer,
+            Instant::now(),
+            unix,
+            json,
+        )?;
         Ok(())
     })
     .unwrap();
@@ -104,16 +120,43 @@ fn pw_is(st: &Core, pw: &str) -> bool {
 #[test]
 fn without_a_mail_server_recovery_says_it_is_not_set_up() {
     let mut st = state();
-    assert_eq!(call(&mut st, "GET", "/recover", "", "1.2.3.4:5", T0), (200, "{\"mail\":false}".into()));
-    let (code, body) = call(&mut st, "POST", "/recover/password", "name=a&email=a%40b.cd", "1.2.3.4:5", T0);
+    assert_eq!(
+        call(&mut st, "GET", "/recover", "", "1.2.3.4:5", T0),
+        (200, "{\"mail\":false}".into())
+    );
+    let (code, body) = call(
+        &mut st,
+        "POST",
+        "/recover/password",
+        "name=a&email=a%40b.cd",
+        "1.2.3.4:5",
+        T0,
+    );
     assert_eq!((code, body), (200, refused(MSG_NOT_SET_UP)));
-    let (_, body) = call(&mut st, "POST", "/recover/password/confirm", "name=a&code=x", "1.2.3.4:5", T0);
+    let (_, body) = call(
+        &mut st,
+        "POST",
+        "/recover/password/confirm",
+        "name=a&code=x",
+        "1.2.3.4:5",
+        T0,
+    );
     assert_eq!(body, refused(MSG_NOT_SET_UP));
-    let (_, body) = call(&mut st, "POST", "/recover/id", "email=a%40b.cd", "1.2.3.4:5", T0);
+    let (_, body) = call(
+        &mut st,
+        "POST",
+        "/recover/id",
+        "email=a%40b.cd",
+        "1.2.3.4:5",
+        T0,
+    );
     assert_eq!(body, refused(MSG_ID_NOT_SET_UP));
     let (code, page) = call_as(&mut st, "GET", "/recover", "", "1.2.3.4:5", T0, false);
     assert_eq!(code, 200);
-    assert!(page.contains(MSG_NOT_SET_UP) && !page.contains("<form"), "{page}");
+    assert!(
+        page.contains(MSG_NOT_SET_UP) && !page.contains("<form"),
+        "{page}"
+    );
     // the registration page offers the recovery link only when mail is set up
     st.opts.register = true;
     let mut out = (0, String::new());
@@ -124,7 +167,10 @@ fn without_a_mail_server_recovery_says_it_is_not_set_up() {
     .unwrap();
     assert!(!out.1.contains("href=\"/recover\""));
     st.mail = Mailer::dry_run("");
-    assert_eq!(call(&mut st, "GET", "/recover", "", "1.2.3.4:5", T0).1, "{\"mail\":true}");
+    assert_eq!(
+        call(&mut st, "GET", "/recover", "", "1.2.3.4:5", T0).1,
+        "{\"mail\":true}"
+    );
     st.scope(|st| {
         out = crate::register::route(st, "GET", b"", "1.2.3.4:5", None, Instant::now())?;
         Ok(())
@@ -142,9 +188,17 @@ fn a_mailed_code_sets_the_new_password_and_the_auth_port_takes_it() {
     let m = st.mail.dry[0].clone();
     assert_eq!(m.to, "Erika.Doe@Example.org", "sent to the stored address");
     assert_eq!(m.subject, "[T] password reset code");
-    assert!(m.body.contains("login Erika") && m.body.contains("ignore this mail"), "{}", m.body);
+    assert!(
+        m.body.contains("login Erika") && m.body.contains("ignore this mail"),
+        "{}",
+        m.body
+    );
     let c = last_code(&st);
-    assert!(c.bytes().all(|b| crate::accounts::CODE_ALPHABET.contains(&b)), "{c}");
+    assert!(
+        c.bytes()
+            .all(|b| crate::accounts::CODE_ALPHABET.contains(&b)),
+        "{c}"
+    );
     // only the hash is stored
     let stored: String = st
         .db
@@ -154,7 +208,11 @@ fn a_mailed_code_sets_the_new_password_and_the_auth_port_takes_it() {
     assert!(!stored.contains(&c) && !stored.to_uppercase().contains(&c));
     // the password rules come first and do not use up the code
     let (_, body) = confirm(&mut st, 2, &c, "short", T0 + 10);
-    assert!(body.starts_with("{\"ok\":false,\"message\":\"Cannot change the password: ") && body.contains("8 to 16"), "{body}");
+    assert!(
+        body.starts_with("{\"ok\":false,\"message\":\"Cannot change the password: ")
+            && body.contains("8 to 16"),
+        "{body}"
+    );
     let (_, body) = call(
         &mut st,
         "POST",
@@ -163,13 +221,22 @@ fn a_mailed_code_sets_the_new_password_and_the_auth_port_takes_it() {
         &peer(2),
         T0 + 10,
     );
-    assert_eq!(body, refused("Cannot change the password: the two passwords differ."));
+    assert_eq!(
+        body,
+        refused("Cannot change the password: the two passwords differ.")
+    );
     // the right code in lower case with a dash
     let typed = format!("{}-{}", c[..4].to_lowercase(), &c[4..]);
-    assert_eq!(confirm(&mut st, 3, &typed, NEW_PW, T0 + 20), (200, ok(MSG_CHANGED)));
+    assert_eq!(
+        confirm(&mut st, 3, &typed, NEW_PW, T0 + 20),
+        (200, ok(MSG_CHANGED))
+    );
     assert!(pw_is(&st, NEW_PW) && !pw_is(&st, OLD_PW));
     // single use
-    assert_eq!(confirm(&mut st, 4, &c, "another-pass-5", T0 + 30).1, refused(MSG_BAD_CODE));
+    assert_eq!(
+        confirm(&mut st, 4, &c, "another-pass-5", T0 + 30).1,
+        refused(MSG_BAD_CODE)
+    );
     assert!(pw_is(&st, NEW_PW));
     // the auth port: the new password logs in, the old one does not
     let shared: Shared = Arc::new(Mutex::new(st));
@@ -221,9 +288,26 @@ fn unknown_accounts_and_other_addresses_get_the_same_answer_and_no_mail() {
     );
     assert_eq!(body, refused(MSG_BAD_CODE));
     // malformed input is refused without looking anything up
-    let (_, body) = call(&mut st, "POST", "/recover/password", "name=Erika&email=erika", &peer(3), T0);
-    assert_eq!(body, refused("Cannot send: that is not a valid e-mail address."));
-    let (_, body) = call(&mut st, "POST", "/recover/password", "name=&email=a%40b.cd", &peer(3), T0);
+    let (_, body) = call(
+        &mut st,
+        "POST",
+        "/recover/password",
+        "name=Erika&email=erika",
+        &peer(3),
+        T0,
+    );
+    assert_eq!(
+        body,
+        refused("Cannot send: that is not a valid e-mail address.")
+    );
+    let (_, body) = call(
+        &mut st,
+        "POST",
+        "/recover/password",
+        "name=&email=a%40b.cd",
+        &peer(3),
+        T0,
+    );
     assert_eq!(body, refused("Enter your login name."));
 }
 
@@ -232,11 +316,22 @@ fn five_wrong_codes_burn_it_and_an_old_code_expires() {
     let mut st = lobby();
     request(&mut st, 1, T0);
     let c = last_code(&st);
-    let wrong = if c.starts_with('A') { "BBBBBBBB" } else { "AAAAAAAA" };
+    let wrong = if c.starts_with('A') {
+        "BBBBBBBB"
+    } else {
+        "AAAAAAAA"
+    };
     for i in 0..CODE_TRIES as u32 {
-        assert_eq!(confirm(&mut st, 10 + i, wrong, NEW_PW, T0 + 1).1, refused(MSG_BAD_CODE));
+        assert_eq!(
+            confirm(&mut st, 10 + i, wrong, NEW_PW, T0 + 1).1,
+            refused(MSG_BAD_CODE)
+        );
     }
-    assert_eq!(confirm(&mut st, 20, &c, NEW_PW, T0 + 2).1, refused(MSG_BAD_CODE), "burnt");
+    assert_eq!(
+        confirm(&mut st, 20, &c, NEW_PW, T0 + 2).1,
+        refused(MSG_BAD_CODE),
+        "burnt"
+    );
     assert!(pw_is(&st, OLD_PW));
     // expiry: 15 minutes
     request(&mut st, 2, T0 + 100);
@@ -248,7 +343,10 @@ fn five_wrong_codes_burn_it_and_an_old_code_expires() {
     );
     request(&mut st, 3, T0 + 2000);
     let c = last_code(&st);
-    assert_eq!(confirm(&mut st, 22, &c, NEW_PW, T0 + 2000 + CODE_TTL_SECS - 1).1, ok(MSG_CHANGED));
+    assert_eq!(
+        confirm(&mut st, 22, &c, NEW_PW, T0 + 2000 + CODE_TTL_SECS - 1).1,
+        ok(MSG_CHANGED)
+    );
 }
 
 #[test]
@@ -267,7 +365,10 @@ fn three_codes_an_hour_and_a_new_code_replaces_the_old() {
     let at = first.find("Your code: ").unwrap() + 11;
     let old = first[at..at + CODE_LEN].to_string();
     if old != newest {
-        assert_eq!(confirm(&mut st, 30, &old, NEW_PW, T0 + 10).1, refused(MSG_BAD_CODE));
+        assert_eq!(
+            confirm(&mut st, 30, &old, NEW_PW, T0 + 10).1,
+            refused(MSG_BAD_CODE)
+        );
     }
     // an hour after the first, a code is sent again
     assert_eq!(request(&mut st, 5, T0 + 3601).1, ok(MSG_SENT));
@@ -285,39 +386,84 @@ fn login_ids_are_mailed_to_the_address() {
         Ok(())
     })
     .unwrap();
-    let (code, body) = call(&mut st, "POST", "/recover/id", "email=erika.doe%40example.org", &peer(1), T0);
+    let (code, body) = call(
+        &mut st,
+        "POST",
+        "/recover/id",
+        "email=erika.doe%40example.org",
+        &peer(1),
+        T0,
+    );
     assert_eq!((code, body), (200, ok(MSG_ID_SENT)));
     assert_eq!(st.mail.dry.len(), 1);
     let m = &st.mail.dry[0];
     assert_eq!(m.subject, "[T] your login IDs");
-    assert!(m.body.contains("  Erika\n") && m.body.contains("  Erikaie\n") && !m.body.contains("Kim"), "{}", m.body);
+    assert!(
+        m.body.contains("  Erika\n") && m.body.contains("  Erikaie\n") && !m.body.contains("Kim"),
+        "{}",
+        m.body
+    );
     assert_eq!(m.to, "erika.doe@example.org");
     // an unused address: the same answer, no mail
-    let (_, body) = call(&mut st, "POST", "/recover/id", "email=nobody%40example.org", &peer(2), T0);
+    let (_, body) = call(
+        &mut st,
+        "POST",
+        "/recover/id",
+        "email=nobody%40example.org",
+        &peer(2),
+        T0,
+    );
     assert_eq!(body, ok(MSG_ID_SENT));
     assert_eq!(st.mail.dry.len(), 1);
     let (_, body) = call(&mut st, "POST", "/recover/id", "email=", &peer(3), T0);
-    assert!(body.starts_with("{\"ok\":false,\"message\":\"Cannot send: enter your e-mail address"), "{body}");
+    assert!(
+        body.starts_with("{\"ok\":false,\"message\":\"Cannot send: enter your e-mail address"),
+        "{body}"
+    );
 }
 
 #[test]
 fn the_address_throttle_and_the_html_pages() {
     let mut st = lobby();
     for i in 0..crate::limits::REGISTER_ATTEMPTS {
-        let (code, _) = call(&mut st, "POST", "/recover/id", "email=x%40y.zz", "203.0.113.9:1", T0 + i as i64);
+        let (code, _) = call(
+            &mut st,
+            "POST",
+            "/recover/id",
+            "email=x%40y.zz",
+            "203.0.113.9:1",
+            T0 + i as i64,
+        );
         assert_eq!(code, 200);
     }
-    let (code, body) = call(&mut st, "POST", "/recover/password", "name=Erika&email=erika.doe%40example.org", "203.0.113.9:2", T0);
+    let (code, body) = call(
+        &mut st,
+        "POST",
+        "/recover/password",
+        "name=Erika&email=erika.doe%40example.org",
+        "203.0.113.9:2",
+        T0,
+    );
     assert_eq!((code, body), (429, refused(MSG_SLOW)));
     assert!(st.mail.dry.is_empty());
     // HTML: the form pages and the answers in the page frame, no script
     let (code, page) = call_as(&mut st, "GET", "/recover", "", &peer(1), T0, false);
     assert_eq!(code, 200);
     assert!(
-        page.contains("action=\"/recover/password\"") && page.contains("action=\"/recover/id\"") && !page.contains("<script"),
+        page.contains("action=\"/recover/password\"")
+            && page.contains("action=\"/recover/id\"")
+            && !page.contains("<script"),
         "{page}"
     );
-    let (_, page) = call_as(&mut st, "GET", "/recover/password/confirm", "", &peer(1), T0, false);
+    let (_, page) = call_as(
+        &mut st,
+        "GET",
+        "/recover/password/confirm",
+        "",
+        &peer(1),
+        T0,
+        false,
+    );
     assert!(page.contains("action=\"/recover/password/confirm\"") && page.contains("name=\"pw2\""));
     let (_, page) = call_as(
         &mut st,
@@ -328,8 +474,14 @@ fn the_address_throttle_and_the_html_pages() {
         T0,
         false,
     );
-    assert!(page.contains(MSG_SENT) && page.contains("action=\"/recover/password/confirm\""), "{page}");
-    assert!(!page.contains(&last_code(&st)), "the code is only in the mail");
+    assert!(
+        page.contains(MSG_SENT) && page.contains("action=\"/recover/password/confirm\""),
+        "{page}"
+    );
+    assert!(
+        !page.contains(&last_code(&st)),
+        "the code is only in the mail"
+    );
     let (code, _) = call_as(&mut st, "PUT", "/recover/id", "", &peer(1), T0, false);
     assert_eq!(code, 405);
     assert!(handles("/recover/") && handles("/recover/password/confirm") && !handles("/recovery"));

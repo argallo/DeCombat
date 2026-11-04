@@ -1,7 +1,7 @@
 //! GATE-PLACE loopback tests: the server and two synthetic clients (simulated channel, injected time) with the
 //! test-only placement feature on, off, and asked with a wrong key.
 
-use dc_dserver::session::{Output, Server, ServerTuning, StartOrder};
+use dc_dserver::session::{Output, Server, ServerTuning};
 use dc_dserver::synth_client::{ClientState, SynthClient, SynthConfig};
 use dc_dserver::world::{synthetic_world_bytes, world_from_bytes, WorldInfo};
 use dc_net_engine::sim::{Faults, SimChannel};

@@ -79,7 +79,11 @@ impl Game {
                 dc_sim::V3::from_array(spot),
             )
         });
-        let spot = if fits { spot } else { self.floor_point(fallback, dims) };
+        let spot = if fits {
+            spot
+        } else {
+            self.floor_point(fallback, dims)
+        };
         spot.iter().all(|c| c.is_finite()).then_some(spot)
     }
 
@@ -103,7 +107,10 @@ impl Game {
         let Some(to) = self.possession_spot(victim, dims) else {
             return;
         };
-        let dist = (0..3).map(|i| (to[i] - from[i]).powi(2)).sum::<f32>().sqrt();
+        let dist = (0..3)
+            .map(|i| (to[i] - from[i]).powi(2))
+            .sum::<f32>()
+            .sqrt();
         let ms = move_ms(dist);
         let guns: Vec<(u8, u16, [i8; 4])> = self.players.get(&victim).map_or(Vec::new(), |v| {
             v.weapons
@@ -117,7 +124,12 @@ impl Game {
         };
         // reports of the old sequence are ignored from here to the closing teleport
         k.move_seq = k.move_seq.wrapping_add(1);
-        k.flight = Some(Flight { from, to, start: now, ms });
+        k.flight = Some(Flight {
+            from,
+            to,
+            start: now,
+            ms,
+        });
         k.fall = None;
         k.sprinting = None;
         self.log(format!(
@@ -126,12 +138,19 @@ impl Game {
         self.possession_rearm(killer, &guns);
         let mut b = dc_wire::udp::BitWriter::new();
         dc_wire::possession::write_move(&mut b, to, ms as u16);
-        self.send(killer, crate::msg::s2c_shell_msg(dc_wire::possession::SHELL_ID, &b));
+        self.send(
+            killer,
+            crate::msg::s2c_shell_msg(dc_wire::possession::SHELL_ID, &b),
+        );
     }
 
     /// A full copy of a weapon with its attachments (a magazine mod as at a spawn).
     fn possession_weapon(&self, slot: u8, weapon: u16, parts: [i8; 4]) -> WeaponState {
-        let mut w = WeaponState { slot, parts, ..self.new_weapon(weapon, None) };
+        let mut w = WeaponState {
+            slot,
+            parts,
+            ..self.new_weapon(weapon, None)
+        };
         let (clip_plus, max_plus) = self.tables.weapons.magazine_bonus(weapon, &parts);
         if w.clip_size > 0 && !w.own_ammo {
             let size = (i64::from(w.clip_size) + i64::from(clip_plus)).max(1);
@@ -221,8 +240,8 @@ impl Game {
             if elapsed < f.ms {
                 let t = elapsed as f32 / f.ms as f32;
                 let mut pos = [0.0; 3];
-                for i in 0..3 {
-                    pos[i] = f.from[i] + (f.to[i] - f.from[i]) * t;
+                for (i, at) in pos.iter_mut().enumerate() {
+                    *at = f.from[i] + (f.to[i] - f.from[i]) * t;
                     p.vel[i] = (f.to[i] - f.from[i]) / (f.ms as f32 / 1000.0);
                 }
                 p.pos = pos;

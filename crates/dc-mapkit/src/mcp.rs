@@ -1417,7 +1417,9 @@ mod tests {
         assert!(
             playbook_text.contains("`{kind, rom: {path, source} \\| null, count, thumbs, rows:")
         );
-        assert!(playbook_text.replace('\r', "").contains("except `kind:\n  \"modes\"`"));
+        assert!(playbook_text
+            .replace('\r', "")
+            .contains("except `kind:\n  \"modes\"`"));
         assert!(playbook_text.contains("`math.random` is deterministic"));
         assert!(playbook_text.contains("2025-03-26 included"));
         let schema_text = by_id["8"]["result"]["contents"][0]["text"]

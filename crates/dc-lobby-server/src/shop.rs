@@ -193,9 +193,16 @@ pub const KEY_PRICES: i64 = 6;
 /// LG-314: a product that holds a pack item. No such product is on sale yet: it is off the shop on every entry.
 // DC-DEFAULT: LG-314 (proposed, project decision "no shop sale of new guns yet")
 pub fn holds_pack_item(st: &Core, pid: i32) -> bool {
-    st.rom.shop.catalog.as_ref().and_then(|c| c.product(pid).map(|p| product_items(c, p))).is_some_and(|items| {
-        items.iter().any(|i| dc_bute::modpatch::is_pack_item(i.item_no))
-    })
+    st.rom
+        .shop
+        .catalog
+        .as_ref()
+        .and_then(|c| c.product(pid).map(|p| product_items(c, p)))
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|i| dc_bute::modpatch::is_pack_item(i.item_no))
+        })
 }
 
 /// Product ids shown in the shop (0x351): the ROM display flag, or the operator's list.

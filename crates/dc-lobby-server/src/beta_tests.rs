@@ -215,7 +215,6 @@ fn bad_input_is_refused_and_pending_rows_expire() {
         Confirmed::No
     );
     // a confirmed row does not expire
-    drop(c);
     confirmed(&mut st, "fay@example.com", NOW);
     purge(&st.db, NOW + 400 * 86_400).unwrap();
     assert_eq!(status_of(&st, "fay@example.com"), "confirmed");

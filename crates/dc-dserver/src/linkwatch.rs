@@ -216,8 +216,16 @@ impl LinkWatch {
                 self.seen_samples = total;
                 self.win_sum += v as f64;
                 self.win_n += 1;
-                self.win_min = if self.win_n == 1 { v } else { self.win_min.min(v) };
-                self.win_max = if self.win_n == 1 { v } else { self.win_max.max(v) };
+                self.win_min = if self.win_n == 1 {
+                    v
+                } else {
+                    self.win_min.min(v)
+                };
+                self.win_max = if self.win_n == 1 {
+                    v
+                } else {
+                    self.win_max.max(v)
+                };
                 self.all_sum += v as f64;
                 self.all_n += 1;
                 self.all_max = self.all_max.max(v);
@@ -264,7 +272,10 @@ impl LinkWatch {
         let (mean, p95, max) = if self.all_n > 0 {
             (
                 (self.all_sum / self.all_n as f64) as f32,
-                self.hist.quantile(0.95).unwrap_or(self.all_max).min(self.all_max.max(0.0)),
+                self.hist
+                    .quantile(0.95)
+                    .unwrap_or(self.all_max)
+                    .min(self.all_max.max(0.0)),
                 self.all_max,
             )
         } else {
@@ -278,7 +289,11 @@ impl LinkWatch {
             rtt_max: max,
             rtt_samples: self.all_n,
             updates: self.updates,
-            input_rate: if secs > 0.0 { self.updates as f32 / secs } else { 0.0 },
+            input_rate: if secs > 0.0 {
+                self.updates as f32 / secs
+            } else {
+                0.0
+            },
             jitter_ms: self.jitter_ms,
             max_gap_ms: self.max_gap,
             resends: s.resends,
@@ -430,7 +445,15 @@ mod tests {
         assert_eq!(t.rtt_max, 300.0);
         assert_eq!((t.updates, t.max_gap_ms), (200, 50));
         assert!((t.input_rate - 20.0).abs() < 0.01, "{t:?}");
-        assert_eq!((t.resends, t.reliable_blocks, t.datagrams_in, t.datagrams_out), (4, 80, 900, 450));
+        assert_eq!(
+            (
+                t.resends,
+                t.reliable_blocks,
+                t.datagrams_in,
+                t.datagrams_out
+            ),
+            (4, 80, 900, 450)
+        );
         assert_eq!(t.max_datagram_bytes, 512);
         assert_eq!(t.secs, 10.0);
         // 6 % slow samples move the p95 into the slow bucket

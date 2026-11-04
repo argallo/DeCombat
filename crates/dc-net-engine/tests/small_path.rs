@@ -45,8 +45,13 @@ fn take(events: Vec<LinkEvent>, chan: &mut SimChannel, now: u32, side: &mut Side
                 side.largest_out = side.largest_out.max(d.len());
                 chan.send(now, d);
             }
-            LinkEvent::Message { reliable: true, bits } => side.rel.push(bits),
-            LinkEvent::Message { reliable: false, .. } => side.unrel_at.push(now),
+            LinkEvent::Message {
+                reliable: true,
+                bits,
+            } => side.rel.push(bits),
+            LinkEvent::Message {
+                reliable: false, ..
+            } => side.unrel_at.push(now),
             LinkEvent::Closed { .. } => side.closed = true,
         }
     }
@@ -129,14 +134,14 @@ fn run(limit: usize, seed: u64) -> Outcome {
                 server_link.send_reliable(m);
             }
         }
-        if now % 35 == 0 {
+        if now.is_multiple_of(35) {
             // 30 Hz object stream, up to the DSV-17 budget
             server_link.send_unreliable(now, next(4060));
         }
         if now % 35 == 15 {
             client_link.send_unreliable(now, next(800));
         }
-        if now % 300 == 0 {
+        if now.is_multiple_of(300) {
             let m = next(887);
             o.client_rel_sent.push(m.clone());
             client_link.send_reliable(m);
@@ -167,7 +172,10 @@ fn longest_gap(at: &[u32], from: u32, to: u32) -> u32 {
 
 fn check(limit: usize, seed: u64) {
     let o = run(limit, seed);
-    assert!(!o.server.closed && !o.client.closed, "limit {limit}: a link closed");
+    assert!(
+        !o.server.closed && !o.client.closed,
+        "limit {limit}: a link closed"
+    );
     assert!(
         o.server.largest_out <= MAX_DATAGRAM_BYTES && o.client.largest_out <= MAX_DATAGRAM_BYTES,
         "limit {limit}: largest datagram server {} client {}",
@@ -180,7 +188,10 @@ fn check(limit: usize, seed: u64) {
         "limit {limit}: datagrams lost for their size"
     );
     // every reliable message arrived once, in order, intact
-    assert_eq!(o.client.rel, o.server_rel_sent, "limit {limit}: server -> client reliable stream");
+    assert_eq!(
+        o.client.rel, o.server_rel_sent,
+        "limit {limit}: server -> client reliable stream"
+    );
     let sent_before_end: Vec<u32> = o.client_rel_sent.iter().map(number_of).collect();
     let got: Vec<u32> = o.server.rel.iter().map(number_of).collect();
     assert!(
@@ -192,7 +203,10 @@ fn check(limit: usize, seed: u64) {
     // the unreliable streams never stop for long, burst or not (1 % loss: a few 35 ms ticks at most)
     let down_gap = longest_gap(&o.client.unrel_at, 1_000, o.end - 200);
     let up_gap = longest_gap(&o.server.unrel_at, 1_000, o.end - 200);
-    assert!(down_gap < 400, "limit {limit}: object stream gap {down_gap} ms");
+    assert!(
+        down_gap < 400,
+        "limit {limit}: object stream gap {down_gap} ms"
+    );
     assert!(up_gap < 400, "limit {limit}: player update gap {up_gap} ms");
     // and the burst is through within a few seconds
     let last = o.server_rel_sent.last().map(number_of);
@@ -233,7 +247,11 @@ fn only_an_unreliable_message_longer_than_the_cap_exceeds_it() {
             sizes.push(d.len());
         }
     }
-    let over: Vec<usize> = sizes.iter().copied().filter(|&s| s > MAX_DATAGRAM_BYTES).collect();
+    let over: Vec<usize> = sizes
+        .iter()
+        .copied()
+        .filter(|&s| s > MAX_DATAGRAM_BYTES)
+        .collect();
     assert_eq!(over.len(), 1, "{sizes:?}");
     assert!(over[0] >= 750 && over[0] < 800, "{sizes:?}");
     assert_eq!(a.stats().oversize_out, 1);
@@ -262,8 +280,14 @@ fn unreliable_messages_flow_while_reliable_blocks_wait() {
         }
         now += 35;
     }
-    assert!(a.is_paused(), "nothing acknowledged: the reliable stream waits");
-    assert!(unrel_datagrams_while_paused > 100, "{unrel_datagrams_while_paused}");
+    assert!(
+        a.is_paused(),
+        "nothing acknowledged: the reliable stream waits"
+    );
+    assert!(
+        unrel_datagrams_while_paused > 100,
+        "{unrel_datagrams_while_paused}"
+    );
 }
 
 /// NET-12: while its own block waits for an ack, a link still acknowledges the peer's data at least once a second

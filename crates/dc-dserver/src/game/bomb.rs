@@ -101,6 +101,9 @@ pub struct Hold {
     pub at: [f32; 3],
 }
 
+/// One site's plant effects: (site number, (effect name, on) in text order).
+pub type PlantFx = (i32, Vec<(Vec<u8>, bool)>);
+
 /// The planted bomb.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Planted {
@@ -144,7 +147,7 @@ pub struct SndState {
     pub item_setup: bool,
     /// Per site number: the world effects its planted command switches (name, on), in text order (CLI-1340; kept
     /// over the round reset).
-    pub plant_fx: Vec<(i32, Vec<(Vec<u8>, bool)>)>,
+    pub plant_fx: Vec<PlantFx>,
     /// A plant switched effects that the next round restores.
     pub fx_switched: bool,
 }
@@ -564,7 +567,8 @@ impl Game {
 
     fn tick_bomb_rules(&mut self, now: Millis) {
         // DC-DEFAULT: DSV-512 (proposed) no bomb in the warm-up (the carrier is chosen at round 1)
-        if !self.is_bomb() || !matches!(self.phase, RoundPhase::Running { .. }) || self.in_warmup() {
+        if !self.is_bomb() || !matches!(self.phase, RoundPhase::Running { .. }) || self.in_warmup()
+        {
             self.bomb.hold = None;
             return;
         }

@@ -344,7 +344,12 @@ pub fn parse_hello(blob: &[u8]) -> Hello {
         &blob[a..b]
     };
     // the seat ticket after the 2009 blob is not part of the name
-    let wide = part(0x82, blob.len().min(dc_wire::seatticket::BLOB_OFFSET).saturating_sub(0x82));
+    let wide = part(
+        0x82,
+        blob.len()
+            .min(dc_wire::seatticket::BLOB_OFFSET)
+            .saturating_sub(0x82),
+    );
     let name16 = wide
         .as_chunks::<2>()
         .0

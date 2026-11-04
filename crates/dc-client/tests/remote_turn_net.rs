@@ -60,6 +60,11 @@ impl WorldSource for Spy<'_> {
 
 #[test]
 fn walker_turns_in_the_frames_handed_to_the_draw() {
+    // needs the ROM's screen layouts (or body models): CI has none
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
     let dir = scratch("remote_turn");
     let world = synth_world_file(&dir);
     let (mut srv, port) = start_dserver(&world, &["-tick", "20", "-roundsecs", "60", "-seed", "7"]);

@@ -11,13 +11,20 @@ const HOST: &str = "127.0.0.1:10090";
 const ORIGIN: &str = "http://127.0.0.1:10090";
 
 fn entry(name: &str, channels: u32) -> dc_config::LobbyServerCfg {
-    toml::from_str(&format!("name = \"{name}\"\ncapacity = 10\nchannels = {channels}")).unwrap()
+    toml::from_str(&format!(
+        "name = \"{name}\"\ncapacity = 10\nchannels = {channels}"
+    ))
+    .unwrap()
 }
 
 /// A lobby with three entries: 1 = channels 1..3, 2 = 4..6, 3 = 7..9.
 pub fn three_entries() -> Core {
     let mut st = crate::state::testing::state();
-    st.opts.servers = vec![entry("US Central", 3), entry("US West", 3), entry("Vanilla++", 3)];
+    st.opts.servers = vec![
+        entry("US Central", 3),
+        entry("US West", 3),
+        entry("Vanilla++", 3),
+    ];
     st
 }
 
@@ -41,7 +48,9 @@ fn a_group_is_checked_against_the_server_list() {
     let st = three_entries();
     let e = crate::servers::entries(&st);
     assert_eq!(
-        e.iter().map(|x| (x.id, x.first, x.channels)).collect::<Vec<_>>(),
+        e.iter()
+            .map(|x| (x.id, x.first, x.channels))
+            .collect::<Vec<_>>(),
         vec![(1, 1, 3), (2, 4, 3), (3, 7, 3)]
     );
     let g = parse(&obj(group_body("PlusBot", 7, 2, &[4, 6, 4])), &e).unwrap();
@@ -79,7 +88,10 @@ fn a_group_is_checked_against_the_server_list() {
         "poolbotx",
         "PoolBot",
     ] {
-        assert!(err(group_body(bad, 3, 2, &[4])).contains("prefix"), "{bad:?}");
+        assert!(
+            err(group_body(bad, 3, 2, &[4])).contains("prefix"),
+            "{bad:?}"
+        );
     }
     let with = |k: &str, v: Value| {
         let mut b = group_body("PlusBot", 3, 2, &[4]);
@@ -89,26 +101,44 @@ fn a_group_is_checked_against_the_server_list() {
     assert!(err(with("skill", json!("101"))).contains("skill"));
     assert!(err(with("skill", json!("70-20"))).contains("skill"));
     assert!(err(with("skill", json!("x"))).contains("skill"));
-    assert_eq!(parse(&obj(with("skill", json!(" 20-70 "))), &e).unwrap().skill, "20-70");
-    assert_eq!(parse(&obj(with("skill", json!("OFF"))), &e).unwrap().skill, "off");
+    assert_eq!(
+        parse(&obj(with("skill", json!(" 20-70 "))), &e)
+            .unwrap()
+            .skill,
+        "20-70"
+    );
+    assert_eq!(
+        parse(&obj(with("skill", json!("OFF"))), &e).unwrap().skill,
+        "off"
+    );
     assert!(err(with("loadout", json!("0:27; rm -rf"))).contains("loadout"));
     assert_eq!(
-        parse(&obj(with("loadout", json!("0:27, 1:3"))), &e).unwrap().loadout,
+        parse(&obj(with("loadout", json!("0:27, 1:3"))), &e)
+            .unwrap()
+            .loadout,
         "0:27,1:3"
     );
     assert_eq!(
-        parse(&obj(with("loadout", json!("Random"))), &e).unwrap().loadout,
+        parse(&obj(with("loadout", json!("Random"))), &e)
+            .unwrap()
+            .loadout,
         "random"
     );
     assert!(
         err(with("room", json!("follow"))).contains("follow"),
         "follow needs a name"
     );
-    assert!(err(with("room", json!("title"))).contains("title"), "title needs text");
+    assert!(
+        err(with("room", json!("title"))).contains("title"),
+        "title needs text"
+    );
     assert!(err(with("room", json!("lobby"))).contains("room"));
     let mut b = with("room", json!("follow"));
     b["room_arg"] = json!("Zoe");
-    assert_eq!(parse(&obj(b), &e).unwrap().room, RoomPick::Follow("Zoe".into()));
+    assert_eq!(
+        parse(&obj(b), &e).unwrap().room,
+        RoomPick::Follow("Zoe".into())
+    );
 }
 
 #[test]
@@ -154,7 +184,9 @@ fn caps_and_prefixes_are_checked_across_groups() {
     // the channels a bot gets: round-robin
     let ch = [4, 6];
     assert_eq!(
-        (1..=5).map(|i| Group::channel_of(&ch, i)).collect::<Vec<_>>(),
+        (1..=5)
+            .map(|i| Group::channel_of(&ch, i))
+            .collect::<Vec<_>>(),
         vec![4, 6, 4, 6, 4]
     );
     assert_eq!(
@@ -192,13 +224,20 @@ fn groups_are_stored_and_a_changed_server_list_is_noticed() {
 }
 
 /// A request through the loopback admin port's dashboard handler.
-fn request(sh: &Shared, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, Value) {
+fn request(
+    sh: &Shared,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, Value) {
     let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {HOST}\r\n");
     for (k, v) in headers {
         head.push_str(&format!("{k}: {v}\r\n"));
     }
     head.push_str("\r\n");
-    let (st, _, out) = crate::opsweb::handle_with_body(sh, &head, body.as_bytes(), LO, None, true).unwrap();
+    let (st, _, out) =
+        crate::opsweb::handle_with_body(sh, &head, body.as_bytes(), LO, None, true).unwrap();
     (st, serde_json::from_str(&out).unwrap_or(Value::Null))
 }
 
@@ -279,13 +318,25 @@ fn writes_need_json_the_page_origin_and_its_token() {
              Origin: {origin}\r\nX-Admin-CSRF: {tok}\r\n\r\n"
         )
     };
-    let via_web = |h: String| admin(&sh, &parse_request(&h).unwrap(), &h, body.as_bytes(), Some(&guard)).0;
+    let via_web = |h: String| {
+        admin(
+            &sh,
+            &parse_request(&h).unwrap(),
+            &h,
+            body.as_bytes(),
+            Some(&guard),
+        )
+        .0
+    };
     assert_eq!(
         via_web(head(ORIGIN, &tok)),
         403,
         "the loopback token and origin do not pass there"
     );
-    assert_eq!(via_web(head("https://admin.example.com", &"s".repeat(43))), 200);
+    assert_eq!(
+        via_web(head("https://admin.example.com", &"s".repeat(43))),
+        200
+    );
     // GET only for the status, the rest is POST
     assert_eq!(request(&sh, "GET", "/ops/bots/group", &[], "").0, 405);
     assert_eq!(request(&sh, "GET", "/ops/botsx", &[], "").0, 404);
@@ -295,10 +346,18 @@ fn writes_need_json_the_page_origin_and_its_token() {
 fn the_dashboard_adds_changes_starts_stops_and_deletes_a_group() {
     let sh = shared_of(three_entries());
     let tok = page_token(&sh);
-    let (s, v) = post(&sh, "/ops/bots/group", &tok, &group_body("PlusBot", 3, 2, &[4, 6]));
+    let (s, v) = post(
+        &sh,
+        "/ops/bots/group",
+        &tok,
+        &group_body("PlusBot", 3, 2, &[4, 6]),
+    );
     assert_eq!(s, 200, "{v}");
     assert!(
-        v["message"].as_str().unwrap().contains("bots.managed is off"),
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("bots.managed is off"),
         "this lobby does not run them"
     );
     let id = v["group"]["id"].as_i64().unwrap();
@@ -307,14 +366,31 @@ fn the_dashboard_adds_changes_starts_stops_and_deletes_a_group() {
         let mut g = crate::net::lock(&sh);
         g.opts.bots_max_total = 9;
     }
-    let (s, v) = post(&sh, "/ops/bots/group", &tok, &group_body("WestBot", 7, 2, &[5]));
+    let (s, v) = post(
+        &sh,
+        "/ops/bots/group",
+        &tok,
+        &group_body("WestBot", 7, 2, &[5]),
+    );
     assert_eq!(s, 409, "{v}");
     assert_eq!(
-        post(&sh, "/ops/bots/group", &tok, &group_body("WestBot", 2, 9, &[5])).0,
+        post(
+            &sh,
+            "/ops/bots/group",
+            &tok,
+            &group_body("WestBot", 2, 9, &[5])
+        )
+        .0,
         400
     );
     assert_eq!(
-        post(&sh, "/ops/bots/group", &tok, &group_body("plusbot", 2, 1, &[1])).0,
+        post(
+            &sh,
+            "/ops/bots/group",
+            &tok,
+            &group_body("plusbot", 2, 1, &[1])
+        )
+        .0,
         409,
         "prefix taken"
     );
@@ -326,7 +402,10 @@ fn the_dashboard_adds_changes_starts_stops_and_deletes_a_group() {
     let (s, v) = post(&sh, "/ops/bots/group", &tok, &edit);
     assert_eq!(s, 200, "{v}");
     assert_eq!(
-        (v["group"]["enabled"].as_bool(), v["group"]["server_id"].as_u64()),
+        (
+            v["group"]["enabled"].as_bool(),
+            v["group"]["server_id"].as_u64()
+        ),
         (Some(true), Some(3))
     );
     edit["id"] = json!(999);
@@ -334,19 +413,32 @@ fn the_dashboard_adds_changes_starts_stops_and_deletes_a_group() {
     // stop, start (the cap is checked again), delete
     assert_eq!(post(&sh, "/ops/bots/stop", &tok, &json!({"id": id})).0, 200);
     assert!(!get(&crate::net::lock(&sh).db, id).unwrap().unwrap().enabled);
-    let (s, v) = post(&sh, "/ops/bots/group", &tok, &group_body("WestBot", 6, 2, &[5]));
+    let (s, v) = post(
+        &sh,
+        "/ops/bots/group",
+        &tok,
+        &group_body("WestBot", 6, 2, &[5]),
+    );
     assert_eq!(s, 200, "{v}");
     assert_eq!(
         post(&sh, "/ops/bots/start", &tok, &json!({"id": id})).0,
         409,
         "5 + 6 > 9"
     );
-    assert_eq!(post(&sh, "/ops/bots/delete", &tok, &json!({"id": 999})).0, 404);
-    assert_eq!(post(&sh, "/ops/bots/delete", &tok, &json!({"id": id})).0, 200);
+    assert_eq!(
+        post(&sh, "/ops/bots/delete", &tok, &json!({"id": 999})).0,
+        404
+    );
+    assert_eq!(
+        post(&sh, "/ops/bots/delete", &tok, &json!({"id": id})).0,
+        200
+    );
     assert!(get(&crate::net::lock(&sh).db, id).unwrap().is_none());
     // every change is an ops event of kind bots, by group id and prefix
     let g = crate::net::lock(&sh);
-    let ev = crate::opsmon::events_json(&g.db, false, 50).unwrap().to_json_string();
+    let ev = crate::opsmon::events_json(&g.db, false, 50)
+        .unwrap()
+        .to_json_string();
     let ev: Value = serde_json::from_str(&ev).unwrap();
     let details: Vec<String> = ev
         .as_array()
@@ -362,7 +454,10 @@ fn the_dashboard_adds_changes_starts_stops_and_deletes_a_group() {
         format!("group {id} PlusBot deleted"),
     ];
     for w in want {
-        assert!(details.iter().any(|d| d.starts_with(&w)), "{w} in {details:?}");
+        assert!(
+            details.iter().any(|d| d.starts_with(&w)),
+            "{w} in {details:?}"
+        );
     }
 }
 
@@ -422,7 +517,11 @@ fn the_status_lists_entries_groups_and_where_each_bot_is() {
     let (s, v) = request(&sh, "GET", "/ops/bots", &[], "");
     assert_eq!(s, 200, "{v}");
     assert_eq!(
-        (v["managed"].as_bool(), v["max_total"].as_u64(), v["per_group"].as_u64()),
+        (
+            v["managed"].as_bool(),
+            v["max_total"].as_u64(),
+            v["per_group"].as_u64()
+        ),
         (Some(false), Some(21), Some(7))
     );
     assert_eq!(v["entries"][1]["name"], "US West");

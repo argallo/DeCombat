@@ -1276,7 +1276,7 @@ pub fn match_items(st: &Core, limit: u32, items: &[db::Item]) -> Vec<db::Item> {
         .position(|i| i.slot == 0 && (0..1000).contains(&i.item_no));
     if let Some(p) = primary {
         // a weapon whose type the table does not know passes (the game server grants it too)
-        if kind(&out[p]).map_or(true, passes) {
+        if kind(&out[p]).is_none_or(passes) {
             return out;
         }
     }
@@ -1483,7 +1483,12 @@ pub fn start(st: &mut Core, sid: Sid, key: RoomKey) -> HResult {
             st,
             host,
             crate::opsmon::kind::START_BLOCKED,
-            &format!("room {}-{}: start blocked, not ready: {}", key.channel, key.no, names.join(", ")),
+            &format!(
+                "room {}-{}: start blocked, not ready: {}",
+                key.channel,
+                key.no,
+                names.join(", ")
+            ),
         );
         st.send(sid, wire::user_flag_reply(false, 0, 0));
         return Ok(());
@@ -1504,7 +1509,10 @@ pub fn start(st: &mut Core, sid: Sid, key: RoomKey) -> HResult {
                     st,
                     host,
                     crate::opsmon::kind::START_FAILED,
-                    &format!("room {}-{}: game server start failed: {e}", key.channel, key.no),
+                    &format!(
+                        "room {}-{}: game server start failed: {e}",
+                        key.channel, key.no
+                    ),
                 );
                 st.send(
                     sid,
@@ -1658,7 +1666,10 @@ pub fn seat_notice_on_message(st: &mut Core, sid: Sid, id: u16) {
     if st.seat_notices.is_empty()
         || !matches!(
             id,
-            crate::msg::LOCATION | crate::msg::ROOM_INFO | crate::msg::ROOM_USERS | crate::msg::ROOM_USER_FLAG
+            crate::msg::LOCATION
+                | crate::msg::ROOM_INFO
+                | crate::msg::ROOM_USERS
+                | crate::msg::ROOM_USER_FLAG
         )
     {
         return;
@@ -2094,7 +2105,11 @@ fn finish(st: &mut Core, game: u64, r: &MatchResult) -> HResult {
         }
         // LG-317: nothing for a bot run from a player's PC
         let no_pay = unpaid.contains(&p.uid);
-        let (exp, gp, bonus) = if no_pay { (0, 0, (0, 0)) } else { (exp, gp, bonus) };
+        let (exp, gp, bonus) = if no_pay {
+            (0, 0, (0, 0))
+        } else {
+            (exp, gp, bonus)
+        };
         rewards::count_down_passes(st, p.uid)?;
         // DSV-472: a per-player verdict (Spy Hunt) over the team rule
         let decided = r.winner != 0 || p.win.is_some();

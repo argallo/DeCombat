@@ -327,7 +327,12 @@ pub fn loadout_look(
 // +0x20 = 0, +0x24 / +0x28 = -1), cshell+0x12cc60 (own look record start: head 0, uniform 0, vest 0, backpack -1,
 // goggle -1, in that order); the item of each byte is PLAUSIBLE from that order; SPEC: PROTOCOL_2009.md §4.5
 // DC-DEFAULT: DSV-341 (proposed)
-pub const LOOK_GEAR: [(usize, u8, u32, i8); 4] = [(7, 4, 4000, 0), (8, 7, 2000, 0), (10, 9, 7000, -1), (11, 6, 5000, -1)];
+pub const LOOK_GEAR: [(usize, u8, u32, i8); 4] = [
+    (7, 4, 4000, 0),
+    (8, 7, 2000, 0),
+    (10, 9, 7000, -1),
+    (11, 6, 5000, -1),
+];
 
 /// Writes the gear of a player's equipment into its look bytes (an empty slot: the look's start value): the clients
 /// dress the character with the same pieces as the shop figure (CLI-1231). An id above 255 cannot be carried and

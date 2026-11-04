@@ -77,7 +77,10 @@ pub fn disconnect(st: &mut Core, sid: Sid) -> HResult {
             st,
             a,
             crate::opsmon::kind::DISCONNECT,
-            &format!("lobby connection {sid} from {peer} closed{}", place.unwrap_or_default()),
+            &format!(
+                "lobby connection {sid} from {peer} closed{}",
+                place.unwrap_or_default()
+            ),
         );
     }
     crate::gm::on_disconnect(st, sid)?;
@@ -169,8 +172,17 @@ fn on_login(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     }
     st.lobby_logins += 1;
     // MON-3: the timeline starts at the login; old monitor rows go now and then
-    let from = st.sessions.get(&sid).map(|s| s.peer.clone()).unwrap_or_default();
-    crate::opsmon::event(st, account, crate::opsmon::kind::LOGIN, &format!("lobby login on connection {sid} from {from}"));
+    let from = st
+        .sessions
+        .get(&sid)
+        .map(|s| s.peer.clone())
+        .unwrap_or_default();
+    crate::opsmon::event(
+        st,
+        account,
+        crate::opsmon::kind::LOGIN,
+        &format!("lobby login on connection {sid} from {from}"),
+    );
     crate::opsmon::maybe_purge(st);
     st.note(&format!(
         "lobby login: account {} on connection {}",
@@ -383,7 +395,10 @@ pub fn refuse_start(st: &mut Core, sid: Sid, key: room::RoomKey) {
             st,
             a,
             crate::opsmon::kind::START_REFUSED,
-            &format!("room {}-{}: start refused, mode {mode} is not playable here", key.channel, key.no),
+            &format!(
+                "room {}-{}: start refused, mode {mode} is not playable here",
+                key.channel, key.no
+            ),
         );
     }
 }

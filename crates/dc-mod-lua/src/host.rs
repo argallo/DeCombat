@@ -313,7 +313,9 @@ impl ModHost {
             } => client_visual_allowed,
             ModPolicy::Curated => {
                 if origin == ModOrigin::Local {
-                    return Err(format!("Mod '{id}' refused: a curated server entry loads no local mods"));
+                    return Err(format!(
+                        "Mod '{id}' refused: a curated server entry loads no local mods"
+                    ));
                 }
                 if let Some(why) = crate::manifest::curated_refusal(manifest) {
                     return Err(format!("Mod '{id}' refused: {why}"));

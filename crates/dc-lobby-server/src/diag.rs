@@ -453,7 +453,12 @@ pub fn handle(
         let stored = svc.store(st, &meta, &who, &ip, body, now)?;
         // MON-3: a new report shows in the uploader's timeline (`<issuer>:<account>`; anonymous ones do not)
         if let Outcome::Stored(id) = &stored {
-            if let Some(user) = who.account.rsplit(':').next().and_then(|a| a.parse::<u32>().ok()) {
+            if let Some(user) = who
+                .account
+                .rsplit(':')
+                .next()
+                .and_then(|a| a.parse::<u32>().ok())
+            {
                 crate::opsmon::diagnostics_uploaded(st, user, &id.to_string(), &meta.kind);
             }
         }
@@ -488,21 +493,52 @@ impl Service {
         now: i64,
     ) -> rusqlite::Result<Option<Denied>> {
         let mut hits: Vec<(&'static str, i64)> = Vec::new();
-        let mut check = |msg: &'static str, cond: &str, key: &str, lim: (i64, i64)| -> rusqlite::Result<()> {
-            if let Some(t) = limit_hit(db, cond, key, lim, now)? {
-                hits.push((msg, t));
-            }
-            Ok(())
-        };
+        let mut check =
+            |msg: &'static str, cond: &str, key: &str, lim: (i64, i64)| -> rusqlite::Result<()> {
+                if let Some(t) = limit_hit(db, cond, key, lim, now)? {
+                    hits.push((msg, t));
+                }
+                Ok(())
+            };
         if who.account.is_empty() {
-            check("too many reports from this address this hour", "account = '' AND ip = ?1", ip, ANON_HOUR)?;
-            check("too many reports from this address today", "account = '' AND ip = ?1", ip, ANON_DAY)?;
+            check(
+                "too many reports from this address this hour",
+                "account = '' AND ip = ?1",
+                ip,
+                ANON_HOUR,
+            )?;
+            check(
+                "too many reports from this address today",
+                "account = '' AND ip = ?1",
+                ip,
+                ANON_DAY,
+            )?;
         } else {
-            check("too many reports from this account this hour", "account = ?1", &who.account, ACCOUNT_HOUR)?;
-            check("too many reports from this account today", "account = ?1", &who.account, ACCOUNT_DAY)?;
+            check(
+                "too many reports from this account this hour",
+                "account = ?1",
+                &who.account,
+                ACCOUNT_HOUR,
+            )?;
+            check(
+                "too many reports from this account today",
+                "account = ?1",
+                &who.account,
+                ACCOUNT_DAY,
+            )?;
         }
-        check("too many reports from this address today", "ip = ?1", ip, IP_DAY)?;
-        check("the lobby takes no more reports today", "?1 = ?1", "", LOBBY_DAY)?;
+        check(
+            "too many reports from this address today",
+            "ip = ?1",
+            ip,
+            IP_DAY,
+        )?;
+        check(
+            "the lobby takes no more reports today",
+            "?1 = ?1",
+            "",
+            LOBBY_DAY,
+        )?;
         if let Some(first) = hits.first() {
             let retry = hits.iter().map(|h| h.1).max().unwrap_or(first.1);
             return Ok(Some(Denied {
@@ -511,7 +547,11 @@ impl Service {
                 retry: Some(retry),
             }));
         }
-        let total: i64 = db.query_row("SELECT COALESCE(SUM(bytes), 0) FROM diag_reports", [], |r| r.get(0))?;
+        let total: i64 = db.query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM diag_reports",
+            [],
+            |r| r.get(0),
+        )?;
         if (total.max(0) as u64).saturating_add(len as u64) > self.max_total {
             return Ok(Some(Denied {
                 status: 503,
@@ -557,7 +597,11 @@ impl Service {
         if let Some(d) = self.admit(&st.db, who, ip, body.len(), now)? {
             return Ok(Outcome::Denied(d));
         }
-        let login = if who.login.is_empty() { &m.login } else { &who.login };
+        let login = if who.login.is_empty() {
+            &m.login
+        } else {
+            &who.login
+        };
         let mailed = if reportmail::enabled(st) { 0 } else { 2 };
         let files: Vec<Value> = m
             .files
@@ -590,11 +634,15 @@ impl Service {
         let rel = format!("{month}/{id}.dcdiag.gz");
         let path = self.dir.join(&month).join(format!("{id}.dcdiag.gz"));
         if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d).map_err(|e| Fault::Other(format!("diag: {}: {e}", d.display())))?;
+            std::fs::create_dir_all(d)
+                .map_err(|e| Fault::Other(format!("diag: {}: {e}", d.display())))?;
         }
-        std::fs::write(&path, body).map_err(|e| Fault::Other(format!("diag: {}: {e}", path.display())))?;
-        st.db
-            .execute("UPDATE diag_reports SET rel = ?1 WHERE id = ?2", params![rel, id])?;
+        std::fs::write(&path, body)
+            .map_err(|e| Fault::Other(format!("diag: {}: {e}", path.display())))?;
+        st.db.execute(
+            "UPDATE diag_reports SET rel = ?1 WHERE id = ?2",
+            params![rel, id],
+        )?;
         Ok(Outcome::Stored(id))
     }
 }
@@ -675,7 +723,10 @@ fn file_list(files_json: &str) -> Vec<(String, i64)> {
         .iter()
         .map(|f| {
             (
-                f.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                f.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 f.get("size").and_then(Value::as_i64).unwrap_or(0),
             )
         })
@@ -684,7 +735,11 @@ fn file_list(files_json: &str) -> Vec<(String, i64)> {
 
 /// The mail subject: fixed words, the id and the kind (from the fixed list).
 pub fn mail_subject(r: &Stored) -> String {
-    let kind = if KINDS.contains(&r.kind.as_str()) { r.kind.as_str() } else { "other" };
+    let kind = if KINDS.contains(&r.kind.as_str()) {
+        r.kind.as_str()
+    } else {
+        "other"
+    };
     format!("Diagnostic report #{}: {kind}", r.id)
 }
 
@@ -719,7 +774,10 @@ pub fn mail_body(r: &Stored) -> String {
     if files.is_empty() {
         out.push_str("  (none)\n");
     }
-    let tail = format!("\nRead it on the server: dc-lobby-server reports show {}\n", r.id);
+    let tail = format!(
+        "\nRead it on the server: dc-lobby-server reports show {}\n",
+        r.id
+    );
     if out.chars().count() + tail.len() > BODY_MAX {
         out = out.chars().take(BODY_MAX - tail.len() - 7).collect();
         out.push_str("\n[cut]\n");
@@ -758,7 +816,9 @@ impl Service {
             if now - since < LOST_SECS {
                 return Ok(());
             }
-            st.note(&format!("diag report #{id}: no answer from the mail thread; will retry"));
+            st.note(&format!(
+                "diag report #{id}: no answer from the mail thread; will retry"
+            ));
             p.inflight = None;
             p.next_try = now + RETRY_SECS;
         }
@@ -836,7 +896,11 @@ impl Service {
 }
 
 fn file_under(dir: &Path, rel: &str) -> Option<PathBuf> {
-    if rel.is_empty() || rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.contains('\\') || p.contains(':')) {
+    if rel.is_empty()
+        || rel
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == ".." || p.contains('\\') || p.contains(':'))
+    {
         return None;
     }
     Some(rel.split('/').fold(dir.to_path_buf(), |a, p| a.join(p)))
@@ -860,7 +924,10 @@ pub fn spawn_background(shared: Shared) {
                         next_purge = now + 3600;
                         match svc.purge(&g.db, now) {
                             Ok(0) => {}
-                            Ok(n) => g.note(&format!("diag: {n} reports past {} days deleted", svc.retention_days)),
+                            Ok(n) => g.note(&format!(
+                                "diag: {n} reports past {} days deleted",
+                                svc.retention_days
+                            )),
                             Err(e) => g.note(&format!("diag: purge failed: {e}")),
                         }
                     }
@@ -1037,7 +1104,13 @@ const USAGE: &str = "usage: dc-lobby-server reports [--db FILE] list [--limit N]
 fn terminal_safe(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
-        .map(|c| if c.is_control() && c != '\n' && c != '\t' { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -1045,7 +1118,13 @@ fn terminal_safe(s: &str) -> String {
 pub fn safe_name(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     while s.contains("..") {
         s = s.replace("..", ".");
@@ -1056,7 +1135,9 @@ pub fn safe_name(name: &str) -> String {
     }
     let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.ends_with(|c: char| c.is_ascii_digit()));
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.ends_with(|c: char| c.is_ascii_digit()));
     if reserved {
         s.insert(0, '_');
     }
@@ -1064,17 +1145,23 @@ pub fn safe_name(name: &str) -> String {
 }
 
 fn row_by_id(db: &Connection, id: i64) -> Result<Stored, String> {
-    db.query_row(&format!("SELECT {COLS} FROM diag_reports WHERE id = ?1"), [id], stored_of)
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("no report #{id}"))
+    db.query_row(
+        &format!("SELECT {COLS} FROM diag_reports WHERE id = ?1"),
+        [id],
+        stored_of,
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("no report #{id}"))
 }
 
 /// The stored document of a row, parsed.
 fn read_doc(base: &Path, r: &Stored) -> Result<Value, String> {
-    let path = file_under(base, &r.rel).ok_or_else(|| format!("report #{}: bad file name in the table", r.id))?;
+    let path = file_under(base, &r.rel)
+        .ok_or_else(|| format!("report #{}: bad file name in the table", r.id))?;
     let gz = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let raw = inflate(&gz, MAX_INFLATED).map_err(|e| format!("{}: {}", path.display(), e.text()))?;
+    let raw =
+        inflate(&gz, MAX_INFLATED).map_err(|e| format!("{}: {}", path.display(), e.text()))?;
     serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -1103,7 +1190,11 @@ pub fn list_text(db: &Connection, limit: i64, kind: Option<&str>) -> Result<Stri
             utc_text(r.created),
             r.kind,
             who,
-            if r.version.is_empty() { "-" } else { &r.version },
+            if r.version.is_empty() {
+                "-"
+            } else {
+                &r.version
+            },
             r.bytes,
             r.summary
         ));
@@ -1115,7 +1206,12 @@ pub fn list_text(db: &Connection, limit: i64, kind: Option<&str>) -> Result<Stri
 }
 
 /// `show`: the row, the document's meta keys and the file list; the files' text with `with_files`.
-pub fn show_text(db: &Connection, base: &Path, id: i64, with_files: bool) -> Result<String, String> {
+pub fn show_text(
+    db: &Connection,
+    base: &Path,
+    id: i64,
+    with_files: bool,
+) -> Result<String, String> {
     let r = row_by_id(db, id)?;
     let mut out = format!(
         "Report #{}\ntime (UTC): {}\nclient id:  {}\nkind:       {}\nsummary:    {}\naccount:    {}\nlogin:      {}\nfrom:       {}\nversion:    {} {}\nOS:         {}\nGPU:        {}\nlink:       {}\nsize:       {} bytes\nmailed:     {}\nfile:       {}\n",
@@ -1142,13 +1238,19 @@ pub fn show_text(db: &Connection, base: &Path, id: i64, with_files: bool) -> Res
     );
     match read_doc(base, &r) {
         Ok(doc) => {
-            for key in ["client", "system", "settings", "match", "link", "nettest", "note"] {
+            for key in [
+                "client", "system", "settings", "match", "link", "nettest", "note",
+            ] {
                 if let Some(v) = doc.get(key) {
                     let t = serde_json::to_string_pretty(v).unwrap_or_default();
                     out.push_str(&format!("\n{key}:\n{t}\n"));
                 }
             }
-            let files = doc.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
+            let files = doc
+                .get("files")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             out.push_str(&format!("\nfiles ({}):\n", files.len()));
             for f in &files {
                 let n = f.get("name").and_then(Value::as_str).unwrap_or("");
@@ -1182,20 +1284,36 @@ pub fn fetch_to(db: &Connection, base: &Path, id: i64, out: &Path) -> Result<Str
         let p = dir.join(name);
         std::fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))
     };
-    put("report.json", serde_json::to_string_pretty(&meta).unwrap_or_default().as_bytes())?;
+    put(
+        "report.json",
+        serde_json::to_string_pretty(&meta)
+            .unwrap_or_default()
+            .as_bytes(),
+    )?;
     let mut used = std::collections::HashSet::new();
     used.insert("report.json".to_string());
     let gz_name = format!("{id}.dcdiag.gz");
     used.insert(gz_name.to_ascii_lowercase());
     let mut n = 2;
-    for f in doc.get("files").and_then(Value::as_array).into_iter().flatten() {
+    for f in doc
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let raw = f.get("name").and_then(Value::as_str).unwrap_or("");
         let mut name = safe_name(raw);
         while !used.insert(name.to_ascii_lowercase()) {
             name = format!("{}_{n}", safe_name(raw));
             n += 1;
         }
-        put(&name, f.get("text").and_then(Value::as_str).unwrap_or("").as_bytes())?;
+        put(
+            &name,
+            f.get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        )?;
     }
     let src = file_under(base, &r.rel).ok_or("bad file name in the table")?;
     std::fs::copy(&src, dir.join(&gz_name)).map_err(|e| format!("{}: {e}", src.display()))?;
@@ -1264,7 +1382,10 @@ pub fn run_subcommand(args: &[String]) -> i32 {
     let conn = match crate::db::open(&path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("dc-lobby-server reports: cannot open {}: {e}", path.display());
+            eprintln!(
+                "dc-lobby-server reports: cannot open {}: {e}",
+                path.display()
+            );
             return 1;
         }
     };
@@ -1280,7 +1401,14 @@ pub fn run_subcommand(args: &[String]) -> i32 {
     let result = match cmd {
         "list" => list_text(&conn, limit, kind.as_deref()),
         "show" => id_arg(&pos).and_then(|id| show_text(&conn, &base, id, files)),
-        _ => id_arg(&pos).and_then(|id| fetch_to(&conn, &base, id, &out_dir.unwrap_or_else(|| PathBuf::from(".")))),
+        _ => id_arg(&pos).and_then(|id| {
+            fetch_to(
+                &conn,
+                &base,
+                id,
+                &out_dir.unwrap_or_else(|| PathBuf::from(".")),
+            )
+        }),
     };
     match result {
         Ok(t) => {
