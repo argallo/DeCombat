@@ -67,6 +67,41 @@ pub struct Project {
     pub settings: WorldSettings,
     pub mod_meta: ModMeta,
     pub build: BuildSettings,
+    /// Models the `asset` verb converted, by name (MAP-104).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, AssetRecord>,
+}
+
+/// A converted model: one mesh and material per part, placed together by `asset.place`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AssetRecord {
+    pub parts: Vec<AssetPart>,
+    /// Width, height and depth in metres, base on the origin.
+    pub size: Vec3f,
+    pub tris: usize,
+    /// The convex outline of the model seen from above (metres, counter-clockwise), for its hidden core (MAP-105).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub footprint: Vec<[f32; 2]>,
+    /// Boxes following the model's solid parts, `[min x, y, z, max x, y, z]` in metres: when there are any they are its
+    /// hidden core instead of the footprint, so a shot goes through what can be seen through (MAP-109).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hull_boxes: Vec<[f32; 6]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AssetPart {
+    pub file: String,
+    pub material: String,
+}
+
+/// A credit for somebody else's work in the map (MOD-28).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Credit {
+    pub title: String,
+    pub author: String,
+    pub license: String,
+    pub source: String,
+    pub changes: String,
 }
 
 impl Default for Project {
@@ -87,6 +122,7 @@ impl Default for Project {
             settings: WorldSettings::default(),
             mod_meta: ModMeta::default(),
             build: BuildSettings::default(),
+            assets: BTreeMap::new(),
         }
     }
 }
@@ -190,6 +226,18 @@ pub struct MaterialFlags {
     pub solid: bool,
     pub no_step: bool,
     pub sky: bool,
+    /// Collision only: a solid of this material stops players and bullets and is never drawn, the way to give a
+    /// see-through model a simple hull (DC-DEFAULT: MAP-104).
+    #[serde(skip_serializing_if = "is_false")]
+    pub hidden: bool,
+    /// With `hidden`: casts no shadow and bounces no light. A thin layer of collision over paint, so that bullet marks
+    /// land in front of the paint and not behind it (DC-DEFAULT: MAP-111).
+    #[serde(skip_serializing_if = "is_false")]
+    pub skin: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Default for MaterialFlags {
@@ -198,6 +246,8 @@ impl Default for MaterialFlags {
             solid: true,
             no_step: false,
             sky: false,
+            hidden: false,
+            skin: false,
         }
     }
 }
@@ -485,6 +535,9 @@ pub struct ModMeta {
     pub goals: BTreeMap<String, u32>,
     pub round_seconds: Option<u32>,
     pub players: Option<Players>,
+    /// Somebody else's work in the map, shipped with it (MOD-28).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credits: Vec<Credit>,
 }
 
 impl Default for ModMeta {
@@ -500,6 +553,7 @@ impl Default for ModMeta {
             goals: BTreeMap::new(),
             round_seconds: None,
             players: None,
+            credits: Vec::new(),
         }
     }
 }
@@ -511,6 +565,16 @@ pub struct Bake {
     pub sun: f32,
     pub hemisphere: f32,
     pub ao: f32,
+    /// Shadows on floors and walls from solids, hidden cores included: 0 (off, the default) .. 1 (DC-DEFAULT: MAP-104).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub shadow: f32,
+    /// World units a lightmap texel covers: above 0 turns on lightmaps and the lamps (DC-DEFAULT: MAP-108).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub lightmap: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Default for Bake {
@@ -520,6 +584,8 @@ impl Default for Bake {
             sun: 0.65,
             hemisphere: 0.15,
             ao: 0.5,
+            shadow: 0.0,
+            lightmap: 0.0,
         }
     }
 }

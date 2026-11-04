@@ -84,7 +84,7 @@ pub const TYPED_TWINS: &[(&str, &str)] = &[
 /// The verb tools, in listing order.
 pub const VERB_TOOLS: &[&str] = &[
     "new", "info", "validate", "build", "export", "render", "apply", "get", "terrain", "snapshot",
-    "history", "revert", "run", "rom_list", "schema",
+    "asset", "history", "revert", "run", "rom_list", "schema",
 ];
 
 /// Serve one session: read requests from `input` until EOF, write responses to `output`. Nothing but response
@@ -566,6 +566,31 @@ pub fn tools() -> Vec<Tool> {
             vec![p(), ("label", prop("string", "a label"))],
             &["project"],
         ),
+        verb(
+            "asset",
+            "Convert a glTF model (.glb file on this machine) into the project: simplified mesh, small textures, credit recorded. Place it with the asset.place op.",
+            vec![
+                p(),
+                ("file", prop("string", "the .glb file")),
+                ("name", prop("string", "the name asset.place uses")),
+                ("max_tris", prop("integer", "triangles for the whole model (default 800)")),
+                ("tex", prop("integer", "largest texture side (default 256)")),
+                ("orient", prop("string", "turn it first, like x90 or z-90,y45")),
+                ("license", prop("string", "CC-BY-4.0 or CC0-1.0; required unless own")),
+                ("author", prop("string", "who made the work; required unless own")),
+                ("source", prop("string", "where it came from, a URL; required unless own")),
+                ("title", prop("string", "the work's title")),
+                ("keep", prop("string", "only these material numbers, like 0,3")),
+                ("own", prop("boolean", "you made it yourself: no credit needed")),
+                ("strict", prop("boolean", "allow more shape error to get near max_tris; seams always hold")),
+                ("proxy", prop("string", "how to rebuild the model: rebake, box or round")),
+                ("width", prop("number", "for a PNG: the width on the wall in metres; it becomes a flat sheet whose holes stay holes")),
+                ("leave_out", prop("string", "parts to leave out, as words of their material names with commas: for a wire mesh, which a bake turns into a solid sheet")),
+                ("relief", prop("number", "draw a texture's normal map into its colour; 0.3 is a good start")),
+                ("textures_only", prop("boolean", "take the textures as materials, no model")),
+            ],
+            &["project", "file"],
+        ),
         verb("history", "List the history entries, oldest first.", vec![p()], &["project"]),
         verb(
             "revert",
@@ -820,6 +845,43 @@ pub fn call_tool(tool: &Tool, args: &Map<String, Value>) -> ToolResult {
             }
             if arg_bool(args, "dry_run") {
                 argv.push("--dry-run".into());
+            }
+            run_verb(argv)
+        }
+        "asset" => {
+            let Some(file) = arg_str(args, "file") else {
+                return usage(tool.name, "`file` (the .glb file) is required");
+            };
+            let mut argv = vec!["asset".to_string(), dir_s, file.to_string()];
+            for (key, long) in [
+                ("name", "name"),
+                ("orient", "orient"),
+                ("license", "license"),
+                ("author", "author"),
+                ("source", "source"),
+                ("title", "title"),
+                ("keep", "keep"),
+                ("proxy", "proxy"),
+                ("leave_out", "leave-out"),
+                ("width", "width"),
+                ("relief", "relief"),
+            ] {
+                flag(&mut argv, key, long);
+            }
+            for (key, long) in [("max_tris", "--max-tris"), ("tex", "--tex")] {
+                if let Some(v) = arg_num(args, key) {
+                    argv.push(long.to_string());
+                    argv.push(num_text(v));
+                }
+            }
+            for (key, long) in [
+                ("own", "--own"),
+                ("strict", "--strict"),
+                ("textures_only", "--textures-only"),
+            ] {
+                if args.get(key).and_then(Value::as_bool) == Some(true) {
+                    argv.push(long.to_string());
+                }
             }
             run_verb(argv)
         }
@@ -1281,6 +1343,11 @@ mod tests {
             ),
             ("validate", json!({}), Some(false)),
             ("terrain", json!({"project": d, "op": "raise"}), Some(false)),
+            (
+                "asset",
+                json!({"project": d, "file": "no_such.glb", "own": true}),
+                Some(false),
+            ),
         ];
         let mut input = vec![
             req(

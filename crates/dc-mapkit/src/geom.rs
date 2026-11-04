@@ -214,6 +214,11 @@ pub struct Poly {
     pub surface: u16,
     pub uv_scale: f32,
     pub uv_frame: Option<UvFrame>,
+    /// The light at each corner follows this normal instead of the plane's: an imported model's smooth shading (MAP-104).
+    pub corner_normals: Option<Vec<V3>>,
+    /// The exact texture coordinates per corner (an imported model): no frame could hold these, the long thin
+    /// triangles of a simplified model round too badly (DC-DEFAULT: MAP-104).
+    pub corner_uvs: Option<Vec<[f32; 2]>>,
     pub group: Option<String>,
 }
 
@@ -239,6 +244,8 @@ impl Poly {
             surface: s.surface,
             uv_scale: s.uv_scale,
             uv_frame: None,
+            corner_normals: None,
+            corner_uvs: None,
             group,
         })
     }
@@ -326,6 +333,9 @@ pub struct Level {
     /// `terrain`; empty for a polygon pushed with [`Level::push`]. The build names them in `bsp.budget`.
     pub poly_sources: Vec<String>,
     pub sky_sources: Vec<String>,
+    /// Polygons of hidden materials: in the collision model, in no render world (DC-DEFAULT: MAP-104).
+    pub hidden: Vec<Poly>,
+    pub hidden_sources: Vec<String>,
     pub extent_min: V3,
     pub extent_max: V3,
 }
@@ -340,6 +350,7 @@ impl Level {
             .polys
             .iter()
             .chain(self.sky_faces.iter())
+            .chain(self.hidden.iter())
             .chain(self.brushes.iter().flat_map(|b| b.polys.iter()));
         for p in all {
             for c in &p.corners {
@@ -870,6 +881,10 @@ pub struct ObjMesh {
     pub uvs: Vec<[f32; 2]>,
     pub normals: Vec<V3>,
     pub faces: Vec<Vec<usize>>,
+    /// For each face its `vt` indices, or nothing when the file gives none.
+    pub face_uvs: Vec<Vec<usize>>,
+    /// For each face its `vn` indices, or nothing when the file gives none.
+    pub face_normals: Vec<Vec<usize>>,
 }
 
 impl ObjMesh {
@@ -919,8 +934,11 @@ pub fn parse_obj(text: &str) -> Result<ObjMesh, String> {
             }
             "f" => {
                 let mut face = Vec::new();
+                let mut face_uv = Vec::new();
+                let mut face_n = Vec::new();
                 for tok in it {
-                    let idx_s = tok.split('/').next().unwrap_or("");
+                    let mut parts = tok.split('/');
+                    let idx_s = parts.next().unwrap_or("");
                     let idx: i64 = idx_s
                         .parse()
                         .map_err(|_| format!("line {}: bad index `{tok}`", ln + 1))?;
@@ -939,10 +957,32 @@ pub fn parse_obj(text: &str) -> Result<ObjMesh, String> {
                         ));
                     }
                     face.push(zero as usize);
+                    let extra = |text: Option<&str>, have: usize| -> Option<usize> {
+                        let i: i64 = text.filter(|t| !t.is_empty())?.parse().ok()?;
+                        let z = if i > 0 { i - 1 } else { have as i64 + i };
+                        (z >= 0 && (z as usize) < have).then_some(z as usize)
+                    };
+                    if let Some(i) = extra(parts.next(), m.uvs.len()) {
+                        face_uv.push(i);
+                    }
+                    if let Some(i) = extra(parts.next(), m.normals.len()) {
+                        face_n.push(i);
+                    }
                 }
                 if face.len() < 3 {
                     return Err(format!("line {}: face with {} corners", ln + 1, face.len()));
                 }
+                // a face keeps its uvs or normals only when every corner names one
+                m.face_uvs.push(if face_uv.len() == face.len() {
+                    face_uv
+                } else {
+                    Vec::new()
+                });
+                m.face_normals.push(if face_n.len() == face.len() {
+                    face_n
+                } else {
+                    Vec::new()
+                });
                 m.faces.push(face);
             }
             _ => {}
@@ -963,10 +1003,18 @@ pub fn write_obj(m: &ObjMesh) -> String {
     for n in &m.normals {
         s.push_str(&format!("vn {} {} {}\n", n.x, n.y, n.z));
     }
-    for f in &m.faces {
+    for (k, f) in m.faces.iter().enumerate() {
         s.push('f');
-        for i in f {
+        let uv = m.face_uvs.get(k).filter(|v| v.len() == f.len());
+        let nor = m.face_normals.get(k).filter(|v| v.len() == f.len());
+        for (c, i) in f.iter().enumerate() {
             s.push_str(&format!(" {}", i + 1));
+            match (uv, nor) {
+                (Some(u), Some(n)) => s.push_str(&format!("/{}/{}", u[c] + 1, n[c] + 1)),
+                (Some(u), None) => s.push_str(&format!("/{}", u[c] + 1)),
+                (None, Some(n)) => s.push_str(&format!("//{}", n[c] + 1)),
+                (None, None) => {}
+            }
         }
         s.push('\n');
     }
@@ -978,20 +1026,37 @@ pub fn write_obj(m: &ObjMesh) -> String {
 pub fn obj_polys(m: &ObjMesh, x: &Xform, s: Surface, group: Option<String>) -> (Vec<Poly>, usize) {
     let mut out = Vec::new();
     let mut skipped = 0;
-    for t in m.triangles() {
-        let c: Vec<V3> = t.iter().map(|i| x.apply(m.positions[*i])).collect();
-        match Plane::from_corners(&c) {
-            Some(plane) => out.push(Poly {
+    for (k, f) in m.faces.iter().enumerate() {
+        let uvs = m.face_uvs.get(k).filter(|v| v.len() == f.len());
+        let normals = m.face_normals.get(k).filter(|v| v.len() == f.len());
+        for i in 1..f.len().saturating_sub(1) {
+            let at = [0, i, i + 1];
+            let c: Vec<V3> = at.iter().map(|j| x.apply(m.positions[f[*j]])).collect();
+            let Some(plane) = Plane::from_corners(&c) else {
+                skipped += 1;
+                continue;
+            };
+            out.push(Poly {
+                uv_frame: None,
+                corner_uvs: uvs.map(|u| {
+                    at.iter()
+                        .map(|j| {
+                            let t = m.uvs[u[*j]];
+                            // OBJ's v runs up, the texture's down
+                            [t[0], 1.0 - t[1]]
+                        })
+                        .collect()
+                }),
+                corner_normals: normals
+                    .map(|n| at.iter().map(|j| x.rotate(m.normals[n[*j]])).collect()),
                 corners: c,
                 plane,
                 material: s.material,
                 flags: s.flags,
                 surface: s.surface,
                 uv_scale: s.uv_scale,
-                uv_frame: None,
                 group: group.clone(),
-            }),
-            None => skipped += 1,
+            });
         }
     }
     (out, skipped)
@@ -1001,6 +1066,47 @@ pub fn obj_polys(m: &ObjMesh, x: &Xform, s: Surface, group: Option<String>) -> (
 mod tests {
     use super::*;
     use crate::project::Solid;
+
+    #[test]
+    fn an_obj_keeps_its_own_uvs_and_normals_through_the_transform() {
+        let m = parse_obj(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nf 1/1/1 2/2/1 3/3/1\n",
+        )
+        .unwrap();
+        let x = Xform::new([100.0, 0.0, 50.0], 90.0, 200.0);
+        let (polys, skipped) = obj_polys(&m, &x, Surface::default(), None);
+        assert_eq!((polys.len(), skipped), (1, 0));
+        let p = &polys[0];
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
+        let uv = p.corner_uvs.as_ref().unwrap();
+        assert!(close(uv[0], [0.0, 1.0]), "v runs down in the texture");
+        assert!(close(uv[1], [1.0, 1.0]));
+        assert!(close(uv[2], [0.0, 0.0]));
+        let n = p.corner_normals.as_ref().unwrap()[0];
+        assert!(
+            (n.x - 1.0).abs() < 1e-4,
+            "the normal turns with the model: {n:?}"
+        );
+        // written and read back, the same
+        let again = parse_obj(&write_obj(&m)).unwrap();
+        assert_eq!(
+            (again.face_uvs.clone(), again.face_normals.clone()),
+            (m.face_uvs.clone(), m.face_normals.clone())
+        );
+    }
+
+    #[test]
+    fn an_obj_without_uvs_is_projected_as_before() {
+        let m = parse_obj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
+        let (polys, _) = obj_polys(
+            &m,
+            &Xform::new([0.0; 3], 0.0, 1.0),
+            Surface::default(),
+            None,
+        );
+        assert!(polys[0].corner_uvs.is_none() && polys[0].corner_normals.is_none());
+    }
 
     fn surf(_: &str) -> Surface {
         Surface::default()

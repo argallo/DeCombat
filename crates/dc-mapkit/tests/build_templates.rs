@@ -80,7 +80,8 @@ fn every_template_builds_parses_and_passes_the_world_checks() {
         assert_eq!(s.brushes, 2);
         assert_eq!(s.sky_faces, 6);
         assert_eq!(s.textures, 4);
-        assert!(s.sections >= 3 && s.vertices > s.triangles);
+        // corners equal in every field share a vertex (MAP-104)
+        assert!(s.sections >= 3 && s.vertices >= 3 && s.vertices < s.triangles * 3);
         let ws = w.stats();
         assert_eq!(ws.bsp_nodes as usize, s.nodes);
         assert_eq!(ws.render.triangles as usize, s.triangles);

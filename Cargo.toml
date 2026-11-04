@@ -37,6 +37,20 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 # The Tier-1 differential test streams ~485 MB through Blowfish and SHA-256; keep that usable in debug test runs.
+# dc-mapkit bakes lightmaps and compresses textures on every `build` and `play`: unoptimized that is 40 seconds of
+# silence before the game opens (MAP-108)
+[profile.dev.package.dc-mapkit]
+opt-level = 2
+[profile.dev.package.dc-tex]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 2
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
 [profile.dev.package.dc-rez]
 opt-level = 3
 [profile.dev.package.dc-rom]

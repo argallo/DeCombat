@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Largest package sent, in bytes; `mods.max_zip_bytes` of server.toml overrides it (same default as the schema).
-pub const DEFAULT_MAX_MOD_BYTES: u64 = 16 * 1024 * 1024;
+pub const DEFAULT_MAX_MOD_BYTES: u64 = 32 * 1024 * 1024;
 
 /// What the web port serves besides the clan pages.
 #[derive(Clone, Debug)]

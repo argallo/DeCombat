@@ -296,6 +296,10 @@ fx {:?} quads {} thrown frames {} (max {})",
         line.contains("refused none"),
         "the server accepted the hits: {line}"
     );
+    if r.adapter.is_none() {
+        println!("no GPU adapter: the effect checks are skipped");
+        return;
+    }
     assert!(
         r.fx.records >= 1,
         "the client received shot records ({:?})",

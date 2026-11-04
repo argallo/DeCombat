@@ -1414,3 +1414,45 @@ fn a_map_patch_replaces_modes_goals_players_and_radar_whole() {
     .unwrap_err();
     assert!(e.contains("mod.content.maps:patch: 'radar"), "{e}");
 }
+
+// ---- credited assets (MOD-28) ---------------------------------------------------------------------
+
+fn credited(credits: &str) -> Result<ModManifest, String> {
+    parse(&format!(
+        r#"{{"id": "m", "name": "M", "version": "1.0.0", "kind": "shared", "description": "A test fixture mod for credited assets.", "author": "tests", "screenshots": ["screenshots/main.png"], "capabilities": ["assets"], "asset_policy": "credited", "credits": [{credits}]}}"#
+    ))
+}
+
+const GOOD_CREDIT: &str = r#"{"title": "a model", "author": "someone", "license": "CC-BY-4.0", "source": "https://example.org/a", "changes": "made smaller"}"#;
+
+#[test]
+fn a_credited_mod_keeps_its_credits_through_json() {
+    let m = credited(GOOD_CREDIT).unwrap();
+    assert_eq!(m.asset_policy, AssetPolicy::Credited);
+    assert_eq!(m.credits.len(), 1);
+    assert_eq!(m.credits[0].license, "CC-BY-4.0");
+    let again = ModManifest::from_json_str(&m.to_json_pretty()).unwrap();
+    assert_eq!(again.asset_policy, AssetPolicy::Credited);
+    assert_eq!(again.credits, m.credits);
+}
+
+#[test]
+fn a_credited_mod_must_say_what_it_uses() {
+    let e = credited("").unwrap_err();
+    assert!(e.contains("at least one"), "{e}");
+    let e = credited(
+        r#"{"title": "a", "author": "", "license": "CC-BY-4.0", "source": "s", "changes": "c"}"#,
+    )
+    .unwrap_err();
+    assert!(e.contains("no 'author'"), "{e}");
+}
+
+#[test]
+fn a_license_that_does_not_allow_it_is_refused() {
+    for license in ["CC-BY-NC-4.0", "proprietary", ""] {
+        let c = format!(
+            r#"{{"title": "a", "author": "b", "license": "{license}", "source": "s", "changes": "c"}}"#
+        );
+        assert!(credited(&c).is_err(), "{license}");
+    }
+}

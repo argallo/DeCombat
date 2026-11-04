@@ -807,6 +807,21 @@ fn build_map_table(lua: &Lua, st: &Shared) -> mlua::Result<Table> {
         }),
     )?;
 
+    // the map's label and mod metadata from a generator, as the `meta.set` op takes them (MAP-104)
+    host(
+        lua,
+        &map,
+        st,
+        "meta",
+        "meta.set",
+        Rc::new(|lua, st, args| {
+            let t = arg_object(args, 0)?;
+            let op = op_from("meta.set", t)?;
+            queue(lua, st, op)?;
+            Ok(Json::Null)
+        }),
+    )?;
+
     // a generator's first line, so running it twice does not place everything twice (MAP-94)
     host(
         lua,
@@ -844,6 +859,18 @@ fn build_map_table(lua: &Lua, st: &Shared) -> mlua::Result<Table> {
         "import",
         Rc::new(|lua, st, args| {
             let op = op_from("import.add", solid_fields(arg_object(args, 0)?)?)?;
+            Ok(first_id(queue(lua, st, op)?))
+        }),
+    )?;
+    host(
+        lua,
+        &map,
+        st,
+        "asset",
+        "asset",
+        Rc::new(|lua, st, args| {
+            let t = arg_object(args, 0)?;
+            let op = op_from("asset.place", solid_fields(t)?)?;
             Ok(first_id(queue(lua, st, op)?))
         }),
     )?;

@@ -143,7 +143,8 @@ override the profile's kind; scaffold refuses a combination whose capabilities t
 | `kind` | string | **yes** | | `server_rules`, `shared` or `client_visual` |
 | `requires_client` | bool | no | derived from `kind` | must agree with the kind |
 | `capabilities` | array of string | no | `[]` | everything the mod may use (section 4); a mod with none can do nothing with the host |
-| `asset_policy` | string | no | `original_only` | the only value today; see section 8 |
+| `asset_policy` | string | no | `original_only` | `original_only` or `credited`; see section 8 |
+| `credits` | array | for `credited` | `[]` | one `{title, author, license, source, changes}` per work you did not make; see section 8 |
 | `entry` | string | no | `main.lua` | script returning `function(mod) ... end`; relative, no `..` |
 | `api` | integer | no | `1` | mod API level |
 | `priority` | integer | no | `0` | lower loads earlier; ties break by `id` |
@@ -560,9 +561,10 @@ What the player sees (CLI-1616 .. CLI-1618, LG-272, CLI-1622, CLI-1623):
 So: fill in `author`, `description`, `github` and `screenshots` (PNG shows on the Mods screen) in the manifest,
 because the player decides on them.
 
-## 8. Assets: no Nexon content, procedural transforms allowed
+## 8. Assets: no Nexon content, procedural transforms allowed, open work with credit
 
-`asset_policy: "original_only"` is the rule. A mod:
+`asset_policy: "original_only"` is the default. `asset_policy: "credited"` also allows somebody else's openly licensed
+work, as described below. Under either, a mod:
 
 - never contains a Nexon asset, string table, key or binary, or anything extracted from the game;
 - may **reference** ROM paths and apply **procedural transforms** at run time (recolour, composite, re-encode). The
@@ -572,6 +574,23 @@ because the player decides on them.
   the mod folder; absolute paths, drive letters and `..` raise. The client resolves a `@mod:` path only inside
   `assets/` of a mod of the loaded set; anything else is refused and never falls back to the ROM (CLI-1612). The HUD
   keys of section 6 and the sound files accept these paths.
+
+**Open work, with credit (`credited`, MOD-28).** A mod may ship models and textures other people made when their license
+allows it and allows changes: `CC-BY-4.0` or `CC0-1.0`. Licenses with a non-commercial or no-derivatives term are refused,
+and so is anything without a license. The manifest names every work, and a `credited` mod without a complete entry does
+not load:
+
+```json
+"asset_policy": "credited",
+"credits": [
+  { "title": "food_can_soup", "author": "NVIDIA", "license": "CC-BY-4.0",
+    "source": "https://huggingface.co/datasets/nvidia/simready-assets",
+    "changes": "converted to the game's format; geometry simplified and textures reduced" }
+]
+```
+
+`dc-mapkit asset` fills this in for a map, writes `CREDITS.txt` into the mod and names the authors in the description. A
+pack that claims a license it does not have is still refused at review: check the source yourself.
 
 A client-visual mod with its own crosshair picture ships `assets/crosshair.dtx` (for example a 32 x 32 32-bit DTX) and its
 `main.lua` sets `crosshair` and `crosshair_colour`. Write your own textures with DeCombat's texture writer
@@ -731,6 +750,22 @@ remote game host (`[[lobby.servers]]` `host`) is refused for them.
    lobby. Its log names each pack that loaded or was left out.
 
 
+### Weapon inspect
+
+A pack can give a gun an inspect: the player presses their inspect key (I by default, set on the Control tab) and the gun
+turns in the hands to show it off. It is drawn on their screen only, changes nothing in play, and firing, reloading, switching
+weapons, sprinting or zooming cancels it at once. A variant has its base gun's inspect. Set these with
+`mod.content.weapons:patch`; `examples/mods/inspect_g36e_l96a1` is a full example, and the rule is CLI-1845 in `DC_DEFAULTS.md`.
+
+| Key | Value |
+|---|---|
+| `InspectLen` | the length in ms, at most 15000 |
+| `InspectPivot` | `"x y z"`: the point it turns about, in the view (right, up, forward) |
+| `InspectPose<n>` | `"ms pitch yaw roll x y z"`, n from 1 to 24: degrees (nose up, nose right, top to the right) and a move, at that time; it starts and ends at rest |
+| `InspectSound<n>` | `"ms k"`, n from 1 to 12: the row's own weapon sound `k` (1 to 3 reload, 4 select, 5 deselect, 6 fire, 10 to 14 misc) |
+
+The motion runs through the poses without stopping, with a slight sway of the hands, so a few well-spaced poses are enough. The first-person model ends at the forearms: keep the nose up and to the left and the gun low, and look at the whole motion in a match. A row without `InspectLen` and a pose has no inspect, and a client older than this feature ignores the keys.
+
 ### Weapon variants
 
 A variant is a gun with a new look that plays the same as its base gun, in its own row from 500 to 899. It may set only
@@ -748,7 +783,7 @@ project folder, not a `.dat`:
 |---|---|
 | `map.json` | the project (`"format": 1`): terrain settings, materials, solids, prefabs, imports, objects in the `dc.*` vocabulary, world settings, mod metadata, build settings |
 | `terrain.r16` | the heightmap (little-endian u16, row-major) |
-| `assets/` | your own textures (PNG) and OBJ meshes; ROM paths are allowed at run time but never committed |
+| `assets/` | your own or credited textures (PNG) and OBJ meshes (section 8); ROM paths are allowed at run time but never committed |
 | `AGENTS.md`, `.gitignore` | scaffolded; `build/` and `.mapkit/` stay out of git |
 
 Verbs today (every one takes `--json`; exit 0 ok, 1 diagnostics, 2 usage): `new <dir> [--template starter|flat|arena]`,

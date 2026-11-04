@@ -312,6 +312,10 @@ fn shot_crate_and_drum_play_their_world_effects() {
     }
     assert!(st.fatal.is_empty(), "{:?}", st.fatal);
     assert!(log.crate_dead && log.drum_dead, "both broke: {log:?}");
+    if r.adapter.is_none() {
+        println!("no GPU adapter: the effect checks are skipped");
+        return;
+    }
     // once per object: two effect objects were created and later removed
     assert_eq!(r.world_effects, 2, "{:?}", r.fx);
     assert_eq!(r.fx.world, 2, "{:?}", r.fx);

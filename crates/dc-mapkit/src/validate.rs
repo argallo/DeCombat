@@ -6,7 +6,7 @@
 //! object classes and property kinds; spawn counts per team / team-less for the declared modes; bomb-site
 //! numbering; flag zones and flags per team; the pos48 extent rule (span per axis: error above 65,536, warning
 //! above 32,768) and objects outside the geometry box; the package size estimate (own textures at w * h * 4,
-//! world data at a rough per-polygon cost) against the 16 MiB lobby default and the 32 MiB client cap; terrain
+//! world data at a rough per-polygon cost) against the 32 MiB cap a client and a lobby share, warning as it nears; terrain
 //! sizes and solid shapes; mod metadata rules.
 
 use crate::build::{level_of, Assets};
@@ -25,13 +25,18 @@ use std::path::Path;
 /// below 0.125 units.
 pub const EXTENT_LIMIT: f32 = 65_536.0;
 pub const EXTENT_WARN: f32 = 32_768.0;
-/// Package caps (HOSTING_AND_MODS.md, dc-config `mods.max_zip_bytes` default and the client's hard cap).
-pub const SIZE_WARN: u64 = 16 * 1024 * 1024;
+/// Package caps (HOSTING_AND_MODS.md): the warning near the cap, and the cap itself, the client's and the default of
+/// dc-config `mods.max_zip_bytes` (MOD-29). Every player downloads a package once per version, so size still costs.
+pub const SIZE_WARN: u64 = 28 * 1024 * 1024;
 pub const SIZE_LIMIT: u64 = 32 * 1024 * 1024;
 /// Bytes per world polygon in the `.dat`: three 68-byte render vertices per polygon on average plus points,
 /// planes, polygon records and BSP nodes (DC-DEFAULT: MAP-13).
 // OBSERVED: the templates build at 269 (flat), 272 (arena) and 289 (starter) bytes per polygon
 pub const BYTES_PER_POLY: u64 = 300;
+/// Bytes per triangle of a see-through model: shared render vertices and one triangle record, no collision data
+/// (DC-DEFAULT: MAP-104).
+// OBSERVED: a map of 37,000 model triangles and 5,570 solid polygons builds to 3,866,618 bytes: about 64 per triangle
+pub const BYTES_PER_MODEL_TRI: u64 = 70;
 /// The radar picture `export` always writes: a 256 x 256 32-bit DTX plus its header (MAP-52).
 pub const RADAR_BYTES: u64 = 256 * 256 * 4 + dc_tex::HEADER_LEN as u64;
 /// Allowance for the 640 x 480 PNG screenshot `export` always writes (36 .. 118 KiB on the templates).
@@ -118,7 +123,9 @@ fn bounds(p: &Project, h: &Heights, dir: &Path) -> (Box3, Box3, usize) {
     let mut geo: Box3 = None;
     let mut polys = 0;
     if let Ok(level) = level_of(p, h, &Assets::new(dir)) {
+        // what a see-through model costs is the difference to BYTES_PER_POLY, in the size estimate
         polys = level.polys.len()
+            + level.hidden.len()
             + level.sky_faces.len()
             + level.brushes.iter().map(|b| b.polys.len()).sum::<usize>();
         if polys > 0 {
@@ -144,13 +151,32 @@ fn bounds(p: &Project, h: &Heights, dir: &Path) -> (Box3, Box3, usize) {
     (geo, all, polys)
 }
 
-/// The size estimate: own textures at w * h * 4 (the DTX writer is uncompressed 32-bit), world data per polygon,
+/// The size estimate: own textures as `export` writes them (compressed with mips when opaque and a power of two), world data per polygon,
 /// objects, a fixed overhead, the radar DTX and the screenshot `export` always writes. Diagnostics name
 /// missing or unreadable textures.
+/// The triangles of the imports without collision.
+fn see_through_tris(dir: &Path, p: &Project) -> usize {
+    let mut tris_of: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut total = 0;
+    for imp in p.imports.iter().filter(|i| !i.collision) {
+        total += *tris_of.entry(imp.file.as_str()).or_insert_with(|| {
+            std::fs::read_to_string(Project::resolve(dir, &imp.file))
+                .ok()
+                .and_then(|t| crate::geom::parse_obj(&t).ok())
+                .map_or(0, |m| {
+                    m.faces.iter().map(|f| f.len().saturating_sub(2)).sum()
+                })
+        });
+    }
+    total
+}
+
 pub fn size_estimate(dir: &Path, p: &Project, polys: usize) -> (u64, usize, usize, Diagnostics) {
     let mut d = Diagnostics::new();
+    let see_through = see_through_tris(dir, p).min(polys);
     let mut bytes: u64 = 4096
-        + polys as u64 * BYTES_PER_POLY
+        + (polys - see_through) as u64 * BYTES_PER_POLY
+        + see_through as u64 * BYTES_PER_MODEL_TRI
         + p.objects.len() as u64 * 128
         + RADAR_BYTES
         + SCREENSHOT_BYTES;
@@ -176,6 +202,10 @@ pub fn size_estimate(dir: &Path, p: &Project, polys: usize) -> (u64, usize, usiz
                     continue;
                 }
                 match image::image_dimensions(&path) {
+                    // compressed with mips: half a byte a texel and a third on top (MAP-107)
+                    Ok((w, h)) if w.is_power_of_two() && h.is_power_of_two() && w.min(h) >= 4 => {
+                        bytes += w as u64 * h as u64 * 2 / 3
+                    }
                     Ok((w, h)) => bytes += w as u64 * h as u64 * 4,
                     Err(e) => d.error(
                         Code::TextureFormat,
@@ -702,8 +732,12 @@ pub fn validate(dir: &Path, p: &Project, h: &Heights) -> Diagnostics {
         );
     } else if bytes > SIZE_WARN {
         d.push(
-            Diagnostic::new(Code::SizeEstimate, "size", format!("estimated {} MiB (lobby default 16 MiB)", bytes >> 20))
-                .with_fix("shrink own textures (512 x 512 is 1 MiB each) or raise the lobby's mods.max_zip_bytes"),
+            Diagnostic::new(
+                Code::SizeEstimate,
+                "size",
+                format!("estimated {} MiB, near the 32 MiB cap", bytes >> 20),
+            )
+            .with_fix("shrink own textures, or reduce the world's triangles or lightmap pages"),
         );
     }
 

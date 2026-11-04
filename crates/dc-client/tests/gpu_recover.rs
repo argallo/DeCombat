@@ -70,6 +70,7 @@ fn a_lost_device_is_rebuilt_and_draws_the_same_frame_from_the_same_world() {
         textures: row.hh_skins.clone(),
     });
     let held = row.pv_model.clone().map(|m| ViewWeapon {
+        inspect: None,
         weapon: 145,
         model: Some(ModelRef {
             model: m,

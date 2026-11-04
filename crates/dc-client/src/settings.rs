@@ -291,6 +291,8 @@ pub enum Bound {
     Use,
     ChatAll,
     ChatTeam,
+    /// CLI-1845: the weapon inspect.
+    Inspect,
 }
 
 /// The two movement commands the 2009 bindable command table has no row for (their keys are kept in our own
@@ -299,6 +301,8 @@ pub enum Bound {
 // DC-DEFAULT: CLI-555 (proposed) their keys live in our own profile section
 pub const CMD_RUN_LOCK: i32 = 12;
 pub const CMD_STRAFE: i32 = 9;
+/// Our own command with no row in the 2009 table: the weapon inspect (DC-DEFAULT: CLI-1845).
+pub const CMD_INSPECT: i32 = 900;
 
 /// What a 2009 bindable command does here (`None`: drawn and stored, inert).
 // SPEC: MOVEMENT_2009.md §5.1 (0 forward, 1 back, 5 crouch, 6 jump, 7 run, 9 strafe modifier, 10 / 11 left / right,
@@ -319,6 +323,7 @@ pub fn bound_of_command(cmd: i32) -> Option<Bound> {
         61 => Bound::Action(Action::Zoom),
         CMD_RUN_LOCK => Bound::Action(Action::RunLock),
         CMD_STRAFE => Bound::Action(Action::StrafeMod),
+        CMD_INSPECT => Bound::Inspect,
         78 => Bound::Slot(0),
         79 => Bound::Slot(1),
         80 => Bound::Slot(2),
@@ -597,6 +602,8 @@ impl Default for KeyBinds {
             (7, 56),
             (CMD_RUN_LOCK, 58),
             (CMD_STRAFE, 16),
+            // DC-DEFAULT: CLI-1845 I
+            (CMD_INSPECT, 23),
             (61, 44),
             (78, 2),
             (79, 3),
@@ -1014,7 +1021,11 @@ impl Settings {
                 s.binds.keys.insert(row.command, keyboard_field(v));
             }
         }
-        for (cmd, key) in [(CMD_RUN_LOCK, "bind_run_lock"), (CMD_STRAFE, "bind_strafe")] {
+        for (cmd, key) in [
+            (CMD_RUN_LOCK, "bind_run_lock"),
+            (CMD_STRAFE, "bind_strafe"),
+            (CMD_INSPECT, "bind_inspect"),
+        ] {
             if let Some(v) = doc.own_get(key).and_then(int_of) {
                 s.binds
                     .keys
@@ -1186,7 +1197,11 @@ impl Settings {
                 doc.set_named(&bindings, OWN_SECTION, &name, &v);
             }
         }
-        for (cmd, key) in [(CMD_RUN_LOCK, "bind_run_lock"), (CMD_STRAFE, "bind_strafe")] {
+        for (cmd, key) in [
+            (CMD_RUN_LOCK, "bind_run_lock"),
+            (CMD_STRAFE, "bind_strafe"),
+            (CMD_INSPECT, "bind_inspect"),
+        ] {
             let v = self.binds.key_of(cmd).map_or(0, i32::from);
             doc.own_set(key, &v.to_string());
         }
@@ -1681,6 +1696,7 @@ mod tests {
         t.music_on = false;
         t.invert_y = true;
         t.binds.bind(0, Some(200));
+        t.binds.bind(CMD_INSPECT, Some(34));
         t.inert.insert("graphic.3".into(), 2);
         t.net_overlay = 2;
         t.antialias = 4;
@@ -1702,6 +1718,7 @@ mod tests {
         assert_eq!(back.effects_volume, 30);
         assert!(!back.music_on && back.invert_y);
         assert_eq!(back.binds.key_of(0), Some(200));
+        assert_eq!(back.binds.key_of(CMD_INSPECT), Some(34), "our own key is kept");
         assert_eq!(back.inert.get("graphic.3"), Some(&2));
         assert_eq!(back.net_overlay, 2, "CLI-1570 kept in our own section");
         assert_eq!(
@@ -1864,6 +1881,21 @@ mod tests {
     }
 
     // CLI-1286: the profile folder without a variable follows the platform
+    #[test]
+    fn the_inspect_key_is_i_by_default_and_can_be_moved() {
+        let mut k = KeyBinds::default();
+        assert_eq!(k.key_of(CMD_INSPECT), Some(23));
+        assert_eq!(k.lookup(23), Some(Bound::Inspect));
+        // another key takes it over, and the old key does nothing any more
+        k.bind(CMD_INSPECT, Some(34));
+        assert_eq!(k.lookup(34), Some(Bound::Inspect));
+        assert_eq!(k.lookup(23), None);
+        // a key it takes from another command leaves that command unbound
+        k.bind(CMD_INSPECT, Some(19));
+        assert_eq!(k.key_of(3), None, "reload lost R");
+        assert_eq!(k.lookup(19), Some(Bound::Inspect));
+    }
+
     #[test]
     fn the_platform_profile_dir_is_application_support_on_macos() {
         let home = std::ffi::OsStr::new("/Users/me");

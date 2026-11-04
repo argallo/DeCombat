@@ -158,6 +158,9 @@ impl Jobs {
                     seconds: None,
                     keep_profile: false,
                     modded: false,
+                    with_mods: Vec::new(),
+                    loadout: None,
+                    inventory: None,
                 },
             )))
         });

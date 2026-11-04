@@ -56,6 +56,7 @@ fn rom_knife_and_grenade_view_models_follow_the_clip_offset_rule() {
             .expect("clips");
         let pos = row.pv_pos.unwrap_or([0.0; 3]);
         let vw = ViewWeapon {
+            inspect: None,
             weapon,
             model: Some(ModelRef {
                 model: pv_model,

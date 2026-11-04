@@ -17,7 +17,7 @@ A map is a folder (MAPKIT_PLAN.md 5.1; DC_DEFAULTS.md MAP-10):
 |---|---|
 | `map.json` | the project: `format: 1`, name, key, seed, terrain settings, `materials`, `solids`, `prefabs`, `imports`, `objects`, `settings`, `mod_meta`, `build`. Unknown keys are refused. |
 | `terrain.r16` | heights: little-endian u16, row-major (row = z), `(cells_x + 1) x (cells_z + 1)` entries; world y = `origin[1] + raw / 65535 * height_scale` |
-| `assets/` | own textures (PNG) and OBJ meshes; ROM paths are a run-time choice and never go into a committed project |
+| `assets/` | own or credited textures (PNG) and OBJ meshes (section 18); ROM paths are a run-time choice and never go into a committed project |
 | `AGENTS.md` | the project's own short guide (scaffolded by `new`) |
 | `build/`, `.mapkit/` | outputs and history; ignored by git |
 
@@ -98,7 +98,7 @@ is `{applied: [{op, ids}], changed: [...], dry_run}`: `ids` echoes the new ids, 
 | `terrain.raise` / `terrain.lower` | `x`, `z`, `radius`, `amount`, `falloff?` (`smooth`, `linear`, `flat`) |
 | `terrain.smooth` | `x?`, `z?`, `radius?` (all three, or none for the whole terrain), `passes?` |
 | `terrain.flatten` | `x`, `z`, `radius`, `height`, `falloff?` |
-| `material.set` | `id` + any of `texture` (`{"own": "assets/x.png"}` or `{"rom": "<path>"}`), `tile`, `surface_id`, `flags` (`{solid, no_step, sky}`), `fit?` (`[u0, v0, u1, v1]`) |
+| `material.set` | `id` + any of `texture` (`{"own": "assets/x.png"}` or `{"rom": "<path>"}`), `tile`, `surface_id`, `flags` (`{solid, no_step, sky, hidden}`), `fit?` (`[u0, v0, u1, v1]`) |
 | `import.add` | `file` (OBJ), `pos`, `material`, `rot_y_deg?`, `scale?`, `collision?`, `ground?` |
 | `prefab.add` | `prefab`, `pos`, `rot_y_deg?`, `scale?`, `ground?` (the prefab library comes with the build slice) |
 | `settings.set` | any of `fog_enable`, `fog_near`, `fog_far`, `fog_color` (rgb), `far_z` (> 0), `sun_dir` (vec3, not zero), `sun_color`, `sun_bright`, `ambient`, `sky_size`, `sky_material` (must exist): the world settings the build turns into `dc.world_settings`, `dc.global_light` and the sky model; only the given fields change |
@@ -196,6 +196,8 @@ error as in Lua; there is no `math.randomseed`). The same project and script que
 | `map.solid.wedge{rises?, ...}` / `map.solid.cylinder{sides?, ...}` / `map.solid.prism{points = {{x, z}, ...}, ...}` | the new id |
 | `map.solid.set(id, {pos?, rot?, size?, material?, faces?, group?, brush?, rises?})` | the id |
 | `map.prefab(name, {pos, rot?, scale?, ground?})` | the new id |
+| `map.asset{asset, pos, rot?, scale?, ground?, solid?, surface?}` (section 18) | the first new id |
+| `map.meta{name?, description?, author?, ...}` (the `meta.set` op) | nothing |
 | `map.import{file, pos, material, rot?, scale?, collision?, ground?}` | the new id |
 | `map.material.set{id, texture?, tile?, surface_id?, flags?, fit?}` (`texture` text = an own PNG path; `{rom = ...}` for a ROM path) | the id |
 | `map.terrain.gen{preset?, seed?, amplitude?, base?, scale?, octaves?, cells_x?, cells_z?, cell_size?}` (`map.terrain.noise` is the same call) | nothing |
@@ -304,9 +306,9 @@ Start from `arena` for a playable map in one step; from `flat` when a script gen
 
 ## 10. Limits
 
-- Own textures only in anything committed; a `{"rom": ...}` texture is checked at build time against the user's
+- Own or credited textures only in anything committed; a `{"rom": ...}` texture is checked at build time against the user's
   ROM and warned `rom.unverified` by `validate`.
-- Keep the world within 32,768 units per axis (pos48 precision) and the package under 16 MiB.
+- Keep the world within 32,768 units per axis (pos48 precision) and the package under 32 MiB (`mods.max_zip_bytes`; every player downloads it once per version, so smaller is still kinder).
 - A cylinder has at most 255 `sides` and a prism at most 255 `points` (the world file counts a polygon's
   corners in one byte): `solid.shape` refuses more.
 - Long rotated walls that all cross one area blow up the collision tree (every such wall is duplicated into
@@ -498,3 +500,70 @@ on a machine.
 
 Building it: `cargo build -p dc-mapkit` (the `gui` feature is on by default; `--no-default-features` is the
 data tool alone, which the MCP server and CI builds can use).
+
+## 18. Models from outside: `asset` (DC_DEFAULTS.md MAP-104, MOD-28)
+
+`dc-mapkit asset <dir> <model.glb> --name N --max-tris T --tex S [--orient x90,y45] --license CC-BY-4.0 --author A
+--source URL [--title T]` (MCP tool `asset`; `--own` instead of the three credit flags for your own work) reads a glTF
+binary, meshopt compression and WebP textures included, and writes `assets/<name>_<k>.obj` and `.png`, one material
+`<name>_<k>` per part and a credit. Then `{"op": "asset.place", "asset": N, "pos": [x, y, z], "rot_y_deg": 0, "scale":
+K, "ground": true}` (`map.asset{...}` in Lua) places it. The model's units are kept, so glTF's metres need a `scale`.
+
+- **Textures only:** `--textures-only --keep 6,7` takes materials for floors and walls, and no model.
+- **Heavy models:** a model of a million triangles takes a minute or more to convert; do it once, then keep the project.
+- **What the converter does:** applies texture transforms, turns the model per `--orient`, drops pieces under 2 % of its size
+  (bolts) and the surfaces no ray from outside can reach (the
+  metal under a can's label), simplifies to `--max-tris`, resizes the base colour to at most `--tex` per side and bakes
+  its tint in, puts the base on y 0. Size budget: 256 for a big prop, 128 for a small one (what the game's own world
+  textures use), and 200 to 2,000 triangles per prop.
+- **Reading the result:** `tris` in the answer can be above what you asked. The simplifier stops short of what visibly
+  breaks a model, and only one more than 4 times over budget is forced down. Look at it close up from eye level: the
+  simplifier judges shape, not the picture, so a label can still get stripes. If it does, raise `--max-tris` or pick
+  another model (`food_can_tomatoSoup_a01` needs 3,000).
+- **Collision:** `asset.place` stops players and bullets by itself: hidden boxes that follow a rebaked model's solid parts,
+  otherwise the model's outline seen from above extruded to its height (DC_DEFAULTS.md MAP-105, MAP-109). `surface` picks the core's surface id, so its impact marks and footsteps
+  (`dc-mapkit rom surfaces` lists them), and `solid: false` leaves out the core for what nobody can reach, a roof lamp. For
+  your own hull, a solid of a material flagged `hidden` is collision only. Things stand on a core with `ground`.
+- **Choosing how to convert (look at every prop close up; DC_DEFAULTS.md MAP-106):**
+  - `--proxy rebake` (start here, for almost everything): a sealed shell around the model, simplified, with one new texture
+    drawn from the full-detail source, with contact shading and fine shape painted in. It takes CAD models full of open
+    edges and hidden parts in its stride, and thin open sheets get a little thickness. It also records collision boxes
+    that follow the solid parts, so a shot passes through what can be seen through. Use `--tex 256` or 512.
+  - `--proxy box` (crates, cartons, cabinets) or `--proxy round` (drums, bins): a simple solid of 12 to 44 triangles with
+    the full-detail model's look projected on it. Labels stay sharp, nothing can smear, and it is the shape the core
+    blocks. Fine detail standing proud of the solid is lost; give these `--tex 256`.
+  - `--strict` (a forklift, a rack, a ladder): real geometry near `--max-tris`. A part stuck at its texture seams turns
+    into its own average colour, because one colour has no seams to break. Thin lattices can still warp: a rail or a truss
+    you can draw is often better as a few see-through solids and a hidden block.
+  - neither: real geometry and real textures, for a model with few triangles; it keeps more than asked rather than smear.
+- **Keeping to the size limit:** an opaque texture exports as compressed DXT1 with mipmaps, about a sixth of its old size;
+  a texture that is one plain colour becomes 4 x 4 pixels and a picture the project already has is reused. A model of many parts adds up fast: use `--tex 128` for all but the big things.
+- **Real scale:** 60 units per metre makes the 100 unit tall player a person. Then racks, pallets and crates are what they
+  look like, cover and all; props at another scale make a map hard to read and to move through.
+- **Map size:** a player runs about 215 units a second. For 3v3 keep team spawns about 12 seconds apart (2,500 units) and
+  set `players` to `{min: 2, max: 6}` with `meta.set`; size the plan first and keep the props at real scale.
+- **Lighting:** `{"op": "settings.set", "bake_lightmap": 10}` turns on real lightmaps at 10 units a texel (DC_DEFAULTS.md
+  MAP-108). Every `dc.point_light` then shines with soft shadows and one bounce of coloured light, the sun comes in only
+  where nothing blocks it (leave holes in a solid roof for skylights), models take the same lamps at their corners,
+  and players take the light of where they stand from a baked grid. A big map costs tens of lightmap pages: `build` reports
+  `lightmap_pages` and `lightmap_bytes`. Use a colour per area and leave some lamps dark; even light reads as a test map.
+  A bake takes seconds in a release build. Two solids sharing a plane now show as flickering stripes: do not overlap
+  them. `bake_shadow` is the older per-corner shadow, for a map without lightmaps.
+- **Bullet marks:** a mark lands on the collision surface, so anything drawn in front of that hides it. Over thin see-through
+  solids (wall grime, trim, floor slabs) put a thin solid of a material with `flags={solid=true,hidden=true,skin=true}` just in front
+  of them: it stops shots and leaves the light alone. Not every surface id leaves a hole: `dc-mapkit rom surfaces --json` gives `marks` for each row of your ROM. Check by shooting
+  at it.
+- **Paint on walls:** `asset <dir> tag.png --name tag --width 5 --own` turns a PNG with power-of-two sides into a flat sheet whose
+  transparent parts stay holes; place it 1.5 units off the wall with `map.asset{ asset="tag", pos=..., rot=..., solid=false }`. It
+  faces +z at `rot` 0. Hard edges only: a texel is paint or a hole. The build warns with `paint.off_wall` when a sheet hangs past its wall or is
+  covered by something painted on it.
+- **Wire mesh and chain link:** this renderer has no cut-outs, so a bake turns them into a solid noisy sheet. Leave them out with
+  `asset --leave-out grid,clips` (words of the material names) and look at the result.
+- **Walls and floors:** `asset --textures-only --keep 3,7 --tex 512 --relief 0.35` takes a model's materials as surfaces, with
+  their normal maps drawn into the colour. Thin see-through solids make good floor slabs, joints, wall grime and trim;
+  their edges and undersides are not drawn in a lit map.
+- **Try it in the game:** walk it (`play`), a render shows neither a backward ramp nor a too narrow gap.
+- **Credits:** `export` sets `asset_policy` to `credited`, writes `CREDITS.txt` and adds the authors to the description.
+  Allowed licenses are `CC-BY-4.0` and `CC0-1.0` (docs/MODDING_GUIDE.md section 8). Keep the models out of the DeCombat
+  repository: a project is the mapper's own.
+

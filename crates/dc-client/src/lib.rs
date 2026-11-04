@@ -54,6 +54,7 @@ pub mod community;
 pub mod clientver;
 pub mod identity;
 pub mod input;
+pub mod inspect;
 pub mod knownsets;
 #[cfg(all(feature = "window", any(target_os = "ios", test)))]
 pub mod ios;

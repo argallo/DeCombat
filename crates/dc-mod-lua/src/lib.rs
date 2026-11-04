@@ -35,10 +35,11 @@ pub use hudkeys::{
 pub use manifest::{
     content_capability, curated_content_refusal, curated_refusal, hook_capability, is_valid_mod_id,
     is_valid_screenshot_path, is_valid_tag, validate_capability, AssetPolicy, JsonValue,
-    ModCommand, ModDep, ModKind, ModManifest, SemVer, VersionReq, ALLOWED_PERMISSIONS,
-    ASSET_POLICIES, CLIENT_VIEW_CAPABILITIES, CURATED_CAPABILITIES, DESCRIPTION_CHARS,
-    HOOK_NAMESPACES, MAX_AUTHOR_CHARS, MAX_COMMANDS, MAX_COMMAND_CHARS, MAX_COMMAND_TEXT_CHARS,
-    MAX_SCREENSHOTS, MAX_SCREENSHOT_BYTES, MAX_TAGS, MAX_TAG_CHARS, MOD_KINDS, PLAIN_CAPABILITIES,
+    ModCommand, ModCredit, ModDep, ModKind, ModManifest, SemVer, VersionReq, ALLOWED_PERMISSIONS,
+    ASSET_POLICIES, CLIENT_VIEW_CAPABILITIES, CREDIT_LICENSES, CURATED_CAPABILITIES,
+    DESCRIPTION_CHARS, HOOK_NAMESPACES, MAX_AUTHOR_CHARS, MAX_COMMANDS, MAX_COMMAND_CHARS,
+    MAX_COMMAND_TEXT_CHARS, MAX_SCREENSHOTS, MAX_SCREENSHOT_BYTES, MAX_TAGS, MAX_TAG_CHARS,
+    MOD_KINDS, PLAIN_CAPABILITIES,
 };
 pub use mapkeys::{
     check_map_record, is_valid_map_id, own_asset_rel_path, MAP_DESCRIPTION_MAX, MAP_ID_MAX,

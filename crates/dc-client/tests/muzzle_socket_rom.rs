@@ -47,6 +47,7 @@ fn rom_the_muzzle_flash_sits_on_the_posed_muzzle_socket() {
             .find_map(|p| WeaponClips::load(&vfs, p).ok().map(|c| (p.clone(), c)))
             .expect("clips");
         let vw = ViewWeapon {
+            inspect: None,
             weapon,
             model: Some(ModelRef {
                 model: pv_model,

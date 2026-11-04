@@ -57,7 +57,7 @@ pub const STRUCTS: &[(&str, &str, Fields)] = &[
             ("texture", "{\"own\": path} | {\"rom\": path}", "own PNG under assets/ (converted to DTX at build) or a ROM archive path (never committed)"),
             ("tile", "num", "world units per texture repeat"),
             ("surface_id", "int", "footstep surface id 0..255 (a ROM surface-table row; 0 = default)"),
-            ("flags", "MaterialFlags", "solid / no_step / sky"),
+            ("flags", "MaterialFlags", "solid / no_step / sky / skin (with hidden: no shadow, for bullet marks over paint) / hidden (collision only, never drawn)"),
             ("fit", "[u0, v0, u1, v1]", "optional: fit this part of the texture once across each face of a solid (an atlas, a whole container side), instead of tiling; terrain and imports ignore it"),
         ],
     ),
@@ -285,7 +285,7 @@ pub const OPS: &[(&str, &str, Fields)] = &[
             ("texture", "{\"own\": path} | {\"rom\": path} | null", "texture source"),
             ("tile", "num|null", "world units per repeat"),
             ("surface_id", "int|null", "footstep surface id"),
-            ("flags", "MaterialFlags|null", "solid / no_step / sky"),
+            ("flags", "MaterialFlags|null", "solid / no_step / sky / skin (with hidden: no shadow, for bullet marks over paint) / hidden (collision only, never drawn)"),
             ("fit", "[u0, v0, u1, v1]|null", "fit this part of the texture (0..1, v down) once across each face of a solid, instead of tiling it"),
         ],
     ),
@@ -303,6 +303,19 @@ pub const OPS: &[(&str, &str, Fields)] = &[
         ],
     ),
     (
+        "asset.place",
+        "Place a model the `asset` verb converted; returns an import id per part. It stops players and bullets through a hidden core unless `solid` is false.",
+        &[
+            ("asset", "text", "the name it was converted under"),
+            ("pos", "vec3", "where its base centre goes"),
+            ("rot_y_deg", "num", "yaw (default 0)"),
+            ("scale", "num", "units per metre (default 1)"),
+            ("ground", "bool", "snap y to the floor (default false)"),
+            ("solid", "bool", "a hidden core around it stops players and bullets (default true)"),
+            ("surface", "int", "the core's surface id: impact marks and footsteps (default 0)"),
+        ],
+    ),
+    (
         "prefab.add",
         "Place a prefab; returns its new id.",
         &[
@@ -317,6 +330,8 @@ pub const OPS: &[(&str, &str, Fields)] = &[
         "settings.set",
         "Change the world settings (fog, far plane, sun, ambient, sky); every field optional, only the given ones change.",
         &[
+            ("bake_shadow", "num|null", "shadows on floors and walls from solids and hidden cores, 0 (off) .. 1"),
+            ("bake_lightmap", "num|null", "world units a lightmap texel covers, 2 .. 64: lightmaps, lamps (dc.point_light) and bounced light; 0 is off"),
             ("fog_enable", "bool|null", "fog on"),
             ("fog_near", "num|null", "fog start"),
             ("fog_far", "num|null", "fog end"),

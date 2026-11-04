@@ -1679,6 +1679,35 @@ fn rom_promotions_follow_the_shop_lists_unlocks() {
 }
 
 #[test]
+fn start_items_land_in_a_new_player_inventory_unequipped() {
+    // DC-DEFAULT: CD-99
+    let mut st = state();
+    st.opts.start_items = "4321, 333".into();
+    let (mut a, na) = player(&mut st, 1, 2, "si1", "Stocked");
+    let items = crate::db::items(&st.db, na).unwrap();
+    for n in [4321, 333] {
+        assert!(
+            items.iter().any(|i| i.item_no == n && i.slot == -1),
+            "{n}: {items:?}"
+        );
+    }
+    assert!(!slots_of(&mut a, &mut st).contains(&4321), "not equipped");
+    // a second login does not add them again
+    let _ = player(&mut st, 3, 4, "si1", "Stocked");
+    let again = crate::db::items(&st.db, na).unwrap();
+    assert_eq!(again.iter().filter(|i| i.item_no == 4321).count(), 1);
+    // bots get none, and a bad list is an error
+    let mut o = st.opts.clone();
+    assert!(
+        crate::grant::apply_start_items(&st.db, &o, "bot12", 9001, 1)
+            .unwrap()
+            .is_empty()
+    );
+    o.start_items = "nonsense".into();
+    assert!(crate::grant::apply_start_items(&st.db, &o, "alice", 9002, 1).is_err());
+}
+
+#[test]
 fn start_loadout_equips_the_seeded_items_on_a_new_character() {
     // DC-DEFAULT: LG-4 (proposed, weapon-sweep) --start-loadout; the 0x323 slot view shows the seeded items
     let mut st = state();

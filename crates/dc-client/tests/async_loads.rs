@@ -72,6 +72,7 @@ fn rom_async_loads_draw_nothing_then_what_inline_loads_draw() {
         textures: row.hh_skins.clone(),
     });
     let held = row.pv_model.clone().map(|m| ViewWeapon {
+        inspect: None,
         weapon: 145,
         model: Some(ModelRef {
             model: m,

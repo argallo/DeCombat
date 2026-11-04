@@ -47,9 +47,10 @@ lines go to stderr; exit 0 ok, 1 error diagnostics, 2 usage. Always pass `--json
   sites numbered 0 and 1, a flag zone and flag per team, walls, sky, a kill slab under the lowest point.
 - After terrain changes or new floors, re-ground the objects (`{"op": "move", "id": ..., "ground": true}` or
   `map.move(id, {ground = true})` for each `map.query()` result).
-- Own textures only (`assets/*.png`, the templates' `ground`, `wall`, `block`, `sky` materials); a ROM texture
+- Own or credited textures only (`assets/*.png`, the templates' `ground`, `wall`, `block`, `sky` materials, models
+  and textures brought in with `dc-mapkit asset`, playbook section 18); a ROM texture
   path is the user's run-time choice and never goes into a committed project.
-- Stay within 32,768 units per axis and 16 MiB; a standing player is 100 tall; a solid's `pos` is its centre.
+- Stay within 32,768 units per axis and 32 MiB; a standing player is 100 tall; a solid's `pos` is its centre.
 - Set a wedge's direction with `rises` (`north` +z, `east` +x, `south` -z, `west` -x); `size` stays `[width, height, run]`.
 - A generator that may run twice starts with `map.clear()` or `map.clear{group = "name"}`; a `solid.duplicate` warning means it did not.
 - A flat floor is `map.terrain.gen{preset = "flat", cells_x = .., cells_z = ..}`.
@@ -71,4 +72,5 @@ dc-mapkit build <dir> | render <dir> --view V [--textured] -o out.png | export <
 dc-mapkit pictures <dir> [--preview-view V] [--loading-view V]
 dc-mapkit snapshot <dir> [--label L] | history <dir> | revert <dir> --to <n>
 dc-mapkit schema [--ops] | rom <kind> [--filter F] | play <dir> [--headless --seconds N] | mcp
+dc-mapkit asset <dir> <model.glb> --name N [--max-tris T] [--tex S] [--orient x90] --license L --author A --source URL
 ```

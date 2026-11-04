@@ -283,6 +283,7 @@ pub fn bound_key(key: KeyCode) -> Option<crate::settings::Bound> {
 pub fn press_input_for(bound: Option<crate::settings::Bound>) -> Option<DeviceInput> {
     match bound? {
         crate::settings::Bound::Reload => Some(DeviceInput::Reload),
+        crate::settings::Bound::Inspect => Some(DeviceInput::Inspect),
         crate::settings::Bound::Use => Some(DeviceInput::Use),
         _ => None,
     }

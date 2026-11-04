@@ -280,6 +280,8 @@ fn helper(axis: usize, d: f32) -> Poly {
         surface: 0,
         uv_scale: 1.0,
         uv_frame: None,
+        corner_normals: None,
+        corner_uvs: None,
         group: None,
     }
 }

@@ -214,6 +214,11 @@ pub fn create_character(st: &mut Core, account: u32, nick: &str, face: i64) -> H
             Err(e) => st.note(&format!("start loadout not applied to {}: {}", account, e)),
         }
     }
+    if let Err(e) =
+        grant::apply_start_items(&st.db, &lo, &login, account, crate::clock::now_ticks())
+    {
+        st.note(&format!("start items not added to {account}: {e}"));
+    }
     if let Ok(Some(g)) = grant::resolve(&st.opts, &st.rom.ranks) {
         if grant::is_target(&st.db, &g, account) {
             grant::apply(&st.db, &g, account)?;

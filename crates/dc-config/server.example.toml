@@ -50,7 +50,7 @@ heartbeat_secs = 60
 [mods]
 policy = "vanilla"              # "vanilla" or "modded"
 client_visual_allowed = false   # must stay false when vanilla
-max_zip_bytes = 16777216
+max_zip_bytes = 33554432
 
 # --- DeCombat gameplay defaults (DC_DEFAULTS.md); change only what you want to differ ---
 

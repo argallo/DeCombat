@@ -309,6 +309,25 @@ pub enum Op {
         #[serde(default)]
         ground: bool,
     },
+    /// Places a model the `asset` verb converted: an import per part, seen but not solid, so give it a solid core of its own.
+    #[serde(rename = "asset.place")]
+    AssetPlace {
+        asset: String,
+        pos: Vec3f,
+        #[serde(default)]
+        rot_y_deg: f32,
+        #[serde(default = "one")]
+        scale: f32,
+        #[serde(default)]
+        ground: bool,
+        /// Stops players and bullets through a hidden core around the model (the default); `false` for what nobody
+        /// can reach, a roof lamp (MAP-105).
+        #[serde(default = "yes")]
+        solid: bool,
+        /// The surface id of the core: impact marks and footsteps.
+        #[serde(default)]
+        surface: u8,
+    },
     #[serde(rename = "prefab.add")]
     PrefabAdd {
         prefab: String,
@@ -324,6 +343,12 @@ pub enum Op {
     /// field optional: only the given ones change). The GUI's world panel is one of these per edit (MAP-61).
     #[serde(rename = "settings.set")]
     SettingsSet {
+        /// Shadows on floors and walls, 0 .. 1 (MAP-104).
+        #[serde(default)]
+        bake_shadow: Option<f32>,
+        /// World units a lightmap texel covers; above 0 turns on lightmaps and the lamps (MAP-108).
+        #[serde(default)]
+        bake_lightmap: Option<f32>,
         #[serde(default)]
         fog_enable: Option<bool>,
         #[serde(default)]
@@ -395,6 +420,7 @@ impl Op {
             Op::TerrainFlatten { .. } => "terrain.flatten",
             Op::MaterialSet { .. } => "material.set",
             Op::ImportAdd { .. } => "import.add",
+            Op::AssetPlace { .. } => "asset.place",
             Op::PrefabAdd { .. } => "prefab.add",
             Op::SettingsSet { .. } => "settings.set",
             Op::MetaSet { .. } => "meta.set",
@@ -418,6 +444,7 @@ impl Op {
         "terrain.flatten",
         "material.set",
         "import.add",
+        "asset.place",
         "prefab.add",
         "settings.set",
         "meta.set",
@@ -537,6 +564,15 @@ pub fn example_ops() -> Vec<Op> {
             collision: true,
             ground: true,
         },
+        Op::AssetPlace {
+            asset: "can".into(),
+            pos: [0.0; 3],
+            rot_y_deg: 0.0,
+            scale: 2667.0,
+            ground: true,
+            solid: true,
+            surface: 0,
+        },
         Op::PrefabAdd {
             prefab: "crate".into(),
             pos: [0.0; 3],
@@ -545,6 +581,8 @@ pub fn example_ops() -> Vec<Op> {
             ground: true,
         },
         Op::SettingsSet {
+            bake_shadow: None,
+            bake_lightmap: None,
             fog_enable: Some(true),
             fog_near: Some(400.0),
             fog_far: Some(6000.0),
@@ -1189,6 +1227,122 @@ fn apply_one(
             });
             done(vec![id])
         }
+        Op::AssetPlace {
+            asset,
+            pos,
+            rot_y_deg,
+            scale,
+            ground,
+            solid,
+            surface,
+        } => {
+            finite3("pos", *pos)?;
+            if !(*scale > 0.0 && scale.is_finite()) {
+                return Err(invalid("scale", "scale must be positive"));
+            }
+            let Some(record) = p.assets.get(asset).cloned() else {
+                return Err(invalid(
+                    "asset",
+                    format!("no converted model `{asset}`; run `dc-mapkit asset` first"),
+                ));
+            };
+            let mut q = *pos;
+            if *ground {
+                if let Some(f) = ground_height(p, h, q[0], q[2]) {
+                    q[1] = f;
+                }
+            }
+            let mut ids = Vec::with_capacity(record.parts.len());
+            for part in &record.parts {
+                let id = p.alloc_id("import");
+                p.imports.push(Import {
+                    id: id.clone(),
+                    file: part.file.clone(),
+                    pos: q,
+                    rot_y_deg: *rot_y_deg,
+                    scale: *scale,
+                    material: part.material.clone(),
+                    collision: false,
+                });
+                ids.push(id);
+            }
+            if *solid {
+                let height = record.size[1] * scale * crate::glb::CORE_MARGIN;
+                let footprint = if record.footprint.len() >= 3 {
+                    record.footprint.clone()
+                } else {
+                    // a model converted before footprints existed: its bounds
+                    let half = 0.5 * crate::glb::CORE_MARGIN;
+                    let (w, d) = (record.size[0] * half, record.size[2] * half);
+                    vec![[-w, -d], [w, -d], [w, d], [-w, d]]
+                };
+                let material = format!("core_{surface}");
+                if p.material_index(&material).is_none() {
+                    let texture = record
+                        .parts
+                        .first()
+                        .and_then(|part| p.material_index(&part.material))
+                        .map(|i| p.materials[i].texture.clone())
+                        .unwrap_or_default();
+                    p.materials.push(Material {
+                        id: material.clone(),
+                        texture,
+                        surface_id: *surface,
+                        flags: MaterialFlags {
+                            hidden: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+                }
+                // boxes that follow the model when it has them: a shot goes through what can be seen through
+                let x = geom::Xform::new(q, *rot_y_deg, *scale);
+                for b in &record.hull_boxes {
+                    let centre = V3::new(
+                        (b[0] + b[3]) / 2.0,
+                        (b[1] + b[4]) / 2.0,
+                        (b[2] + b[5]) / 2.0,
+                    );
+                    let at = x.apply(centre);
+                    let id = p.alloc_id("solid");
+                    p.solids.push(Solid {
+                        id: id.clone(),
+                        pos: at.to_array(),
+                        rot_y_deg: *rot_y_deg,
+                        size: [
+                            (b[3] - b[0]) * scale,
+                            (b[4] - b[1]) * scale,
+                            (b[5] - b[2]) * scale,
+                        ],
+                        material: material.clone(),
+                        group: Some("core".into()),
+                        ..Default::default()
+                    });
+                    ids.push(id);
+                }
+                if !record.hull_boxes.is_empty() {
+                    return done(ids);
+                }
+                let id = p.alloc_id("solid");
+                p.solids.push(Solid {
+                    id: id.clone(),
+                    kind: SolidKind::Prism {
+                        points: footprint
+                            .iter()
+                            .map(|c| [c[0] * scale, c[1] * scale])
+                            .collect(),
+                    },
+                    pos: [q[0], q[1] + height / 2.0, q[2]],
+                    rot_y_deg: *rot_y_deg,
+                    size: [record.size[0] * scale, height, record.size[2] * scale],
+                    material,
+                    group: Some("core".into()),
+                    ..Default::default()
+                });
+                ids.push(id);
+            }
+            done(ids)
+        }
         Op::PrefabAdd {
             prefab,
             pos,
@@ -1222,6 +1376,8 @@ fn apply_one(
         // DC-DEFAULT: MAP-61 (world settings and mod metadata are ops too, so the GUI, the CLI and scripts share
         // one write path and one history)
         Op::SettingsSet {
+            bake_shadow,
+            bake_lightmap,
             fog_enable,
             fog_near,
             fog_far,
@@ -1240,6 +1396,19 @@ fn apply_one(
                     _ => Ok(()),
                 }
             };
+            if let Some(v) = bake_shadow {
+                if !(0.0..=1.0).contains(v) {
+                    return Err(invalid("bake_shadow", "bake_shadow must be 0 .. 1"));
+                }
+            }
+            if let Some(v) = bake_lightmap {
+                if *v != 0.0 && !(2.0..=64.0).contains(v) {
+                    return Err(invalid(
+                        "bake_lightmap",
+                        "bake_lightmap must be 0 (off) or 2 .. 64 units a texel",
+                    ));
+                }
+            }
             finite("fog_near", *fog_near)?;
             finite("fog_far", *fog_far)?;
             finite("sun_bright", *sun_bright)?;
@@ -1274,6 +1443,12 @@ fn apply_one(
                 }
             }
             let s = &mut p.settings;
+            if let Some(v) = bake_shadow {
+                p.build.bake.shadow = *v;
+            }
+            if let Some(v) = bake_lightmap {
+                p.build.bake.lightmap = *v;
+            }
             if let Some(x) = fog_enable {
                 s.fog_enable = *x;
             }
@@ -1518,12 +1693,22 @@ pub fn is_sky_solid(p: &Project, s: &Solid) -> bool {
 /// The floor height under world (x, z): the terrain, or the highest solid top, whichever is higher.
 pub fn ground_height(p: &Project, h: &Heights, x: f32, z: f32) -> Option<f32> {
     let mut best = p.terrain.as_ref().and_then(|t| h.sample(t, x, z));
-    for s in p.solids.iter().filter(|s| !is_sky_solid(p, s)) {
+    for s in p
+        .solids
+        .iter()
+        .filter(|s| !is_sky_solid(p, s) && can_stand_on(p, s))
+    {
         if let Some(top) = solid_top_at(s, x, z) {
             best = Some(best.map_or(top, |b: f32| b.max(top)));
         }
     }
     best
+}
+
+/// A solid of a see-through material (a far roof, floor paint) is no floor (DC-DEFAULT: MAP-105).
+fn can_stand_on(p: &Project, s: &Solid) -> bool {
+    p.material_index(&s.material)
+        .is_none_or(|i| p.materials[i].flags.solid)
 }
 
 /// The standing offset of an object above the floor (DC-DEFAULT: MAP-11).
@@ -1785,6 +1970,104 @@ mod tests {
     }
 
     #[test]
+    fn a_see_through_roof_is_no_floor_and_a_model_can_go_without_a_core() {
+        let (mut p, mut h) = base_project();
+        p.materials.push(Material {
+            id: "roof".into(),
+            flags: MaterialFlags {
+                solid: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let floor = ground_height(&p, &h, 0.0, 0.0);
+        p.solids.push(Solid {
+            id: "solid_900".into(),
+            pos: [0.0, 800.0, 0.0],
+            size: [100.0, 10.0, 100.0],
+            material: "roof".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            ground_height(&p, &h, 0.0, 0.0),
+            floor,
+            "nobody stands on it"
+        );
+        p.assets.insert(
+            "lamp".into(),
+            crate::project::AssetRecord {
+                parts: vec![crate::project::AssetPart {
+                    file: "assets/lamp_0.obj".into(),
+                    material: "roof".into(),
+                }],
+                size: [1.0, 1.0, 1.0],
+                tris: 12,
+                footprint: Vec::new(),
+                hull_boxes: Vec::new(),
+            },
+        );
+        let solids = p.solids.len();
+        let lamp = |solid| Op::AssetPlace {
+            asset: "lamp".into(),
+            pos: [0.0, 0.0, 0.0],
+            rot_y_deg: 30.0,
+            scale: 60.0,
+            ground: false,
+            solid,
+            surface: 20,
+        };
+        apply(&mut p, &mut h, &[lamp(false)]).unwrap();
+        assert_eq!(p.solids.len(), solids, "solid: false adds no core");
+        apply(&mut p, &mut h, &[lamp(true)]).unwrap();
+        let core = p.solids.last().unwrap();
+        assert_eq!(core.rot_y_deg, 30.0, "the core turns with the model");
+        assert_eq!(core.material, "core_20");
+        assert!(core.pos[1] > 0.0 && core.size[1] <= 61.0);
+    }
+
+    /// A model's collision boxes land where its parts are, turned with it (MAP-109).
+    #[test]
+    fn hull_boxes_are_placed_and_turned_with_the_model() {
+        let (mut p, mut h) = base_project();
+        p.materials.push(Material {
+            id: "m".into(),
+            ..Default::default()
+        });
+        p.assets.insert(
+            "frame".into(),
+            crate::project::AssetRecord {
+                parts: vec![crate::project::AssetPart {
+                    file: "assets/frame_0.obj".into(),
+                    material: "m".into(),
+                }],
+                size: [2.0, 1.0, 1.0],
+                tris: 12,
+                footprint: Vec::new(),
+                hull_boxes: vec![[1.0, 0.0, -0.5, 2.0, 1.0, 0.5]],
+            },
+        );
+        let solids = p.solids.len();
+        let place = Op::AssetPlace {
+            asset: "frame".into(),
+            pos: [100.0, 0.0, 0.0],
+            rot_y_deg: 90.0,
+            scale: 60.0,
+            ground: false,
+            solid: true,
+            surface: 20,
+        };
+        apply(&mut p, &mut h, &[place]).unwrap();
+        assert_eq!(p.solids.len(), solids + 1);
+        let b = p.solids.last().unwrap();
+        // the box's middle is 1.5 m along x; a quarter turn takes +x to -z
+        assert!((b.pos[0] - 100.0).abs() < 0.01, "{:?}", b.pos);
+        assert!((b.pos[2] + 90.0).abs() < 0.01, "{:?}", b.pos);
+        assert!((b.pos[1] - 30.0).abs() < 0.01, "{:?}", b.pos);
+        assert_eq!(b.rot_y_deg, 90.0);
+        assert_eq!(b.size, [60.0, 60.0, 60.0]);
+    }
+
+    #[test]
     fn every_variant_applies_and_echoes_ids() {
         let (mut p, mut h) = base_project();
         let ops = example_ops();
@@ -1829,6 +2112,19 @@ mod tests {
         reordered.push(Op::Remove {
             id: "player_spawn_1".into(),
         });
+        p.assets.insert(
+            "can".into(),
+            crate::project::AssetRecord {
+                parts: vec![crate::project::AssetPart {
+                    file: "assets/can_0.obj".into(),
+                    material: "ground".into(),
+                }],
+                size: [0.1, 0.1, 0.1],
+                tris: 12,
+                footprint: vec![[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]],
+                hull_boxes: Vec::new(),
+            },
+        );
         let before = p.clone();
         let r = apply(&mut p, &mut h, &reordered).unwrap();
         assert_eq!(r.applied.len(), reordered.len());
@@ -1836,10 +2132,18 @@ mod tests {
         assert_eq!(r.applied[0].op, "add");
         assert_eq!(r.changed, vec!["map.json", "terrain.r16"]);
         assert!(p.objects.is_empty(), "removed at the end");
-        assert_eq!(p.solids.len(), 1);
+        assert_eq!(p.solids.len(), 2, "solid.add and the core of asset.place");
+        assert_eq!(p.solids[1].group.as_deref(), Some("core"));
+        let core = p.material_index(&p.solids[1].material).unwrap();
+        assert!(p.materials[core].flags.hidden, "a core is never drawn");
         assert_eq!(p.solids[0].rot_y_deg, 45.0);
         assert_eq!(p.solids[0].brush, Some(BrushRole::WorldModel));
-        assert_eq!(p.imports.len(), 1);
+        assert_eq!(
+            p.imports.len(),
+            2,
+            "import.add and the one part of asset.place"
+        );
+        assert!(!p.imports[1].collision, "a placed model is seen, not solid");
         assert_eq!(p.prefabs.len(), 1);
         assert!(p.next_id > before.next_id);
         assert!(

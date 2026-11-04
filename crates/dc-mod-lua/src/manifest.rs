@@ -719,21 +719,73 @@ impl fmt::Display for ModKind {
     }
 }
 
+/// A `credited` mod names at least one work, and every credit is complete and under a license we allow (MOD-28).
+// DC-DEFAULT: MOD-28 (proposed; USER DECISION 2026-11-03)
+fn check_credits(policy: AssetPolicy, credits: &[ModCredit]) -> Result<(), String> {
+    if policy == AssetPolicy::Credited && credits.is_empty() {
+        return Err(
+            "Manifest asset_policy 'credited' needs at least one entry in 'credits'".to_string(),
+        );
+    }
+    for c in credits {
+        for (name, v) in [
+            ("title", &c.title),
+            ("author", &c.author),
+            ("license", &c.license),
+            ("source", &c.source),
+            ("changes", &c.changes),
+        ] {
+            if v.trim().is_empty() {
+                return Err(format!(
+                    "Manifest 'credits' entry '{}' has no '{name}'",
+                    c.title
+                ));
+            }
+        }
+        if !CREDIT_LICENSES.contains(&c.license.as_str()) {
+            return Err(format!(
+                "Manifest 'credits' entry '{}': license '{}' is not one of {}",
+                c.title,
+                c.license,
+                CREDIT_LICENSES.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Which assets a mod may reference or ship. Mods never contain Nexon assets
-/// (HOSTING_AND_MODS.md section 3); the only policy today is `original_only`.
+/// (HOSTING_AND_MODS.md section 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AssetPolicy {
     /// Only assets the mod authors made themselves, plus run-time procedural transforms of ROM data.
     #[default]
     OriginalOnly,
+    /// Those, plus somebody else's openly licensed work with its credit in `credits` (MOD-28).
+    Credited,
 }
 
-pub const ASSET_POLICIES: &[&str] = &["original_only"];
+/// Licenses a `credited` mod may ship work under: they allow copying, changing and sharing with credit, without passing a license
+/// on to the rest of the mod (MOD-28).
+pub const CREDIT_LICENSES: &[&str] = &["CC-BY-4.0", "CC0-1.0"];
+
+/// One work a mod ships that its authors did not make (MOD-28).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModCredit {
+    pub title: String,
+    pub author: String,
+    pub license: String,
+    pub source: String,
+    pub changes: String,
+}
+
+pub const ASSET_POLICIES: &[&str] = &["original_only", "credited"];
 
 impl AssetPolicy {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s {
             "original_only" => Ok(AssetPolicy::OriginalOnly),
+            "credited" => Ok(AssetPolicy::Credited),
             other => Err(format!(
                 "Unknown asset_policy '{}': 'asset_policy' must be one of {}",
                 other,
@@ -745,6 +797,7 @@ impl AssetPolicy {
     pub fn as_str(&self) -> &'static str {
         match self {
             AssetPolicy::OriginalOnly => "original_only",
+            AssetPolicy::Credited => "credited",
         }
     }
 }
@@ -900,6 +953,8 @@ pub struct ModManifest {
     /// The host refuses any use beyond this list.
     pub capabilities: Vec<String>,
     pub asset_policy: AssetPolicy,
+    /// What a `credited` mod ships that its authors did not make (MOD-28).
+    pub credits: Vec<ModCredit>,
     /// What the mod does, shown in the server browser (required in `manifest.json`, 20..=500 characters).
     pub description: String,
     /// Who made it (required in `manifest.json`).
@@ -1011,6 +1066,7 @@ impl ModManifest {
             requires_client: kind.default_requires_client(),
             capabilities: Vec::new(),
             asset_policy: AssetPolicy::OriginalOnly,
+            credits: Vec::new(),
             description: String::new(),
             author: String::new(),
             homepage: None,
@@ -1393,6 +1449,29 @@ impl ModManifest {
             )?,
         };
 
+        let mut credits = Vec::new();
+        match obj.get("credits") {
+            None | Some(JsonValue::Null) => {}
+            Some(JsonValue::Array(rows)) => {
+                for row in rows {
+                    let JsonValue::Object(o) = row else {
+                        return Err("Manifest 'credits' must hold objects".to_string());
+                    };
+                    let text =
+                        |k: &str| o.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    credits.push(ModCredit {
+                        title: text("title"),
+                        author: text("author"),
+                        license: text("license"),
+                        source: text("source"),
+                        changes: text("changes"),
+                    });
+                }
+            }
+            Some(_) => return Err("Manifest 'credits' must be an array".to_string()),
+        }
+        check_credits(asset_policy, &credits)?;
+
         let req_str = |key: &str, what: &str| -> Result<String, String> {
             match obj.get(key) {
                 None | Some(JsonValue::Null) => Err(format!(
@@ -1474,6 +1553,7 @@ impl ModManifest {
             requires_client,
             capabilities,
             asset_policy,
+            credits,
             description,
             author,
             homepage,
@@ -1568,6 +1648,25 @@ impl ModManifest {
             "asset_policy".to_string(),
             JsonValue::String(self.asset_policy.as_str().to_string()),
         );
+        if !self.credits.is_empty() {
+            let row = |c: &ModCredit| {
+                let mut o = std::collections::BTreeMap::new();
+                for (k, v) in [
+                    ("title", &c.title),
+                    ("author", &c.author),
+                    ("license", &c.license),
+                    ("source", &c.source),
+                    ("changes", &c.changes),
+                ] {
+                    o.insert(k.to_string(), JsonValue::String(v.clone()));
+                }
+                JsonValue::Object(o.into_iter().collect())
+            };
+            obj.insert(
+                "credits".to_string(),
+                JsonValue::Array(self.credits.iter().map(row).collect()),
+            );
+        }
         if let Some(schema) = &self.options_schema {
             obj.insert(
                 "options_schema".to_string(),

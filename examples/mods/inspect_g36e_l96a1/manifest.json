@@ -1,0 +1,26 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "content.weapons"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "A weapon inspect for the G36E and the L96A1, and so for their camos: press the inspect key and the gun turns in the hands. It is drawn on your own screen only and changes nothing in play: no stats change, no reference gun applies, and firing, reloading or switching weapons cancels it at once.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "inspect_g36e_l96a1",
+  "kind": "shared",
+  "name": "Inspect: G36E and L96A1",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [],
+  "version": "0.1.0"
+}

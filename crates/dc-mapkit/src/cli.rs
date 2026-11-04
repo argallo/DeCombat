@@ -190,6 +190,28 @@ pub fn command() -> Command {
                 .arg(dir_arg()),
         )
         .subcommand(
+            Command::new("asset")
+                .about("convert a glTF model (.glb) into the project: simplified meshes and small textures, placed with asset.place")
+                .arg(dir_arg())
+                .arg(Arg::new("file").required(true).value_name("FILE").help("the .glb file"))
+                .arg(opt("name", "the name asset.place uses (letters, digits, underscore; default: the file's)"))
+                .arg(opt("max-tris", "triangles for the whole model (default 800)"))
+                .arg(opt("tex", "largest texture side (default 256)"))
+                .arg(opt("orient", "turn it first, like x90 or z-90,y45"))
+                .arg(opt("license", "the work's license: CC-BY-4.0 or CC0-1.0 (required unless --own)"))
+                .arg(opt("author", "who made the work (required unless --own)"))
+                .arg(opt("source", "where it came from, a URL (required unless --own)"))
+                .arg(opt("title", "the work's title (default: the file's name)"))
+                .arg(opt("keep", "only these material numbers, like 0,3 (default: all of them)"))
+                .arg(Arg::new("strict").long("strict").action(ArgAction::SetTrue).help("allow more shape error to get near --max-tris; seams always hold"))
+                .arg(opt("proxy", "how to rebuild the model: rebake (its shape, simplified, with one texture drawn from the source), box or round (a simple solid with the look projected on it)"))
+                .arg(opt("width", "for a PNG: the width on the wall in metres; it becomes a flat sheet whose holes stay holes (default 3)"))
+                .arg(opt("leave-out", "parts to leave out, as words of their material names with commas: for a wire mesh, which a bake turns into a solid sheet"))
+                .arg(opt("relief", "draw a texture's normal map into its colour, for walls and floors: 0.3 is a good start"))
+                .arg(Arg::new("textures-only").long("textures-only").action(ArgAction::SetTrue).help("take the textures as materials <name>_<n> for floors and walls, no model"))
+                .arg(Arg::new("own").long("own").action(ArgAction::SetTrue).help("you made it yourself: no credit needed")),
+        )
+        .subcommand(
             Command::new("export")
                 .about("build and write the mod folder build/mod/<id>/ (packed and hashed; --zip writes the zip)")
                 .arg(dir_arg())
@@ -318,6 +340,20 @@ pub fn command() -> Command {
                         .action(ArgAction::SetTrue)
                         .help("keep the previous run's accounts and client profile under <profile>/mapkit/play/"),
                 )
+                .arg(opt(
+                    "loadout",
+                    "what a new character starts with, slot:item,... (0:25 the G36E as the primary)",
+                ))
+                .arg(opt(
+                    "inventory",
+                    "items a new character owns in the inventory, not equipped: item,... (27 the L96A1)",
+                ))
+                .arg(
+                    Arg::new("with-mod")
+                        .long("with-mod")
+                        .action(ArgAction::Append)
+                        .help("a mod folder to play the map with, in the same set; repeat for more"),
+                )
                 .arg(
                     Arg::new("modded")
                         .long("modded")
@@ -440,6 +476,38 @@ fn dispatch(verb: &str, m: &ArgMatches, err: &mut dyn Write) -> Result<Outcome, 
         "get" => verb_get(m),
         "apply" => verb_apply(m, err),
         "terrain" => verb_terrain(m, err),
+        "asset" => {
+            let num = |k: &str, d: u32| {
+                m.get_one::<String>(k)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(d)
+            };
+            let text = |k: &str| m.get_one::<String>(k).cloned();
+            import_asset(
+                &dir_of(m),
+                &AssetArgs {
+                    file: PathBuf::from(m.get_one::<String>("file").expect("required")),
+                    name: text("name"),
+                    max_tris: num("max-tris", 800) as usize,
+                    tex: num("tex", 256),
+                    orient: text("orient").unwrap_or_default(),
+                    license: text("license"),
+                    author: text("author"),
+                    source: text("source"),
+                    title: text("title"),
+                    own: m.get_flag("own"),
+                    textures_only: m.get_flag("textures-only"),
+                    strict: m.get_flag("strict"),
+                    proxy: text("proxy"),
+                    leave_out: text("leave-out"),
+                    width: text("width").and_then(|v| v.parse().ok()).unwrap_or(3.0),
+                    relief: text("relief").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                    keep: text("keep")
+                        .map(|t| t.split(',').filter_map(|k| k.trim().parse().ok()).collect()),
+                },
+                err,
+            )
+        }
         "snapshot" => {
             let dir = dir_of(m);
             let label = m
@@ -713,6 +781,12 @@ fn dispatch(verb: &str, m: &ArgMatches, err: &mut dyn Write) -> Result<Outcome, 
                 seconds: m.get_one::<u64>("seconds").copied(),
                 keep_profile: m.get_flag("keep-profile"),
                 modded: m.get_flag("modded"),
+                loadout: m.get_one::<String>("loadout").cloned(),
+                inventory: m.get_one::<String>("inventory").cloned(),
+                with_mods: m
+                    .get_many::<String>("with-mod")
+                    .map(|v| v.map(PathBuf::from).collect())
+                    .unwrap_or_default(),
             };
             let r = play::play(&dir, &opts)?;
             let on = match &r.entry_name {
@@ -1152,6 +1226,188 @@ pub fn parse_ops(text: &str) -> Result<Vec<Op>, Diagnostics> {
 }
 
 /// Snapshot, apply and save a batch (or dry-run). Shared by `apply` and `terrain`.
+/// What `asset` converts and how (MAP-104).
+#[derive(Debug, Clone, Default)]
+pub struct AssetArgs {
+    pub file: PathBuf,
+    pub name: Option<String>,
+    pub max_tris: usize,
+    pub tex: u32,
+    pub orient: String,
+    pub license: Option<String>,
+    pub author: Option<String>,
+    pub source: Option<String>,
+    pub title: Option<String>,
+    pub own: bool,
+    pub textures_only: bool,
+    pub strict: bool,
+    pub proxy: Option<String>,
+    pub leave_out: Option<String>,
+    pub width: f32,
+    pub relief: f32,
+    pub keep: Option<Vec<usize>>,
+}
+
+/// `asset`: converts a `.glb` into the project and records it for `asset.place`, with its credit (MAP-104, MOD-28).
+pub fn import_asset(
+    dir: &Path,
+    a: &AssetArgs,
+    err: &mut dyn Write,
+) -> Result<Outcome, Diagnostics> {
+    let fail = |path: &str, msg: String| {
+        Diagnostics::one(Diagnostic::new(Code::OpInvalid, path.to_string(), msg))
+    };
+    let stem = a
+        .file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model")
+        .to_string();
+    let name = a.name.clone().unwrap_or_else(|| stem.clone());
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(fail(
+            "--name",
+            format!("`{name}`: letters, digits and underscores only"),
+        ));
+    }
+    let credit = if a.own {
+        None
+    } else {
+        let need = |v: &Option<String>, k: &str| {
+            v.clone().filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                fail(
+                    &format!("--{k}"),
+                    format!("somebody else's model needs --{k}, or --own if you made it yourself"),
+                )
+            })
+        };
+        let license = need(&a.license, "license")?;
+        if !dc_mod_lua::CREDIT_LICENSES.contains(&license.as_str()) {
+            return Err(fail(
+                "--license",
+                format!(
+                    "`{license}` is not one of {}",
+                    dc_mod_lua::CREDIT_LICENSES.join(", ")
+                ),
+            ));
+        }
+        Some(crate::project::Credit {
+            title: a.title.clone().unwrap_or_else(|| stem.clone()),
+            author: need(&a.author, "author")?,
+            license,
+            source: need(&a.source, "source")?,
+            changes: "converted to the game's format; geometry simplified and textures reduced"
+                .into(),
+        })
+    };
+    let bytes =
+        std::fs::read(&a.file).map_err(|e| fail("file", format!("{}: {e}", a.file.display())))?;
+    let is_picture = a
+        .file
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    let model = if is_picture {
+        crate::glb::decal(&bytes, a.width)
+    } else {
+        crate::glb::convert(
+            &bytes,
+            &crate::glb::GlbOptions {
+                textures_only: a.textures_only,
+                strict: a.strict,
+                relief: a.relief,
+                leave_out: a.leave_out.clone().unwrap_or_default(),
+                proxy: crate::glb::Proxy::parse(a.proxy.as_deref().unwrap_or(""))
+                    .map_err(|e| fail("--proxy", e))?,
+                max_tris: a.max_tris.max(8),
+                tex: a.tex.clamp(4, 1024),
+                orient: a.orient.clone(),
+            },
+        )
+    }
+    .map_err(|e| fail("file", format!("{}: {e}", a.file.display())))?;
+    let (mut p, h) = Project::open(dir)?;
+    let snap = history::snapshot(dir, &format!("asset {name}"))?;
+    let _ = writeln!(err, "snapshot {} taken", snap.n);
+    let assets = dir.join("assets");
+    std::fs::create_dir_all(&assets).map_err(|e| fail("assets", e.to_string()))?;
+    let mut record = crate::project::AssetRecord {
+        parts: Vec::new(),
+        size: model.size,
+        tris: 0,
+        footprint: model.footprint.clone(),
+        hull_boxes: model.hull_boxes.clone(),
+    };
+    let mut ops_list = Vec::new();
+    let mut tex_bytes = 0;
+    let mut written: std::collections::BTreeMap<Vec<u8>, String> =
+        std::collections::BTreeMap::new();
+    for (k, part) in model.parts.iter().enumerate() {
+        if a.keep.as_ref().is_some_and(|keep| !keep.contains(&k)) {
+            continue;
+        }
+        let (obj, png, material) = (
+            format!("assets/{name}_{k}.obj"),
+            format!("assets/{name}_{k}.png"),
+            format!("{name}_{k}"),
+        );
+        // the same picture as one the project already holds is that file (MAP-105)
+        let same = p.materials.iter().find_map(|m| match &m.texture {
+            crate::project::TextureRef::Own(rel) if rel.starts_with("assets/") => {
+                let on_disk = std::fs::read(dir.join(rel)).ok()?;
+                (on_disk == part.png).then(|| rel.clone())
+            }
+            _ => None,
+        });
+        let png = match same.or_else(|| written.get(&part.png).cloned()) {
+            Some(rel) => rel,
+            None => {
+                std::fs::write(dir.join(&png), &part.png).map_err(|e| fail(&png, e.to_string()))?;
+                tex_bytes += part.png.len();
+                written.insert(part.png.clone(), png.clone());
+                png
+            }
+        };
+        if !a.textures_only {
+            std::fs::write(dir.join(&obj), crate::glb::part_obj(part))
+                .map_err(|e| fail(&obj, e.to_string()))?;
+            record.tris += part.tris;
+            record.parts.push(crate::project::AssetPart {
+                file: obj,
+                material: material.clone(),
+            });
+        }
+        ops_list.push(Op::MaterialSet {
+            id: material,
+            texture: Some(crate::project::TextureRef::Own(png)),
+            tile: None,
+            surface_id: None,
+            flags: None,
+            fit: None,
+        });
+    }
+    let mut h = h;
+    ops::apply(&mut p, &mut h, &ops_list)?;
+    let (tris, parts, size) = (record.tris, record.parts.len(), record.size);
+    if !a.textures_only {
+        p.assets.insert(name.clone(), record);
+    }
+    if let Some(c) = credit {
+        p.mod_meta.credits.retain(|o| o.title != c.title);
+        p.mod_meta.credits.push(c);
+    }
+    p.save_all(dir, &h)?;
+    Ok(Outcome::new(
+        serde_json::json!({
+            "name": name, "parts": parts, "tris": tris, "source_tris": model.source_tris,
+            "size_m": size, "png_bytes": tex_bytes,
+        }),
+        format!(
+            "{name}: {} -> {tris} triangles in {parts} parts, {:.2} x {:.2} x {:.2} m",
+            model.source_tris, size[0], size[1], size[2]
+        ),
+    ))
+}
+
 pub fn apply_to_project(
     dir: &Path,
     ops: &[Op],

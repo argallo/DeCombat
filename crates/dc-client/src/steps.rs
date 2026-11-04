@@ -21,7 +21,7 @@
 //! Verbs (menu verbs wait for a menu screen, game verbs for the match):
 //! - `wait_screen {screen}`; `click {widget | x, y}`; `hover {widget | x, y}`; `type {text}` (in the match: into
 //!   the chat box, as the keys would); `key {key, hold_ms}`
-//!   (menu: enter escape tab backtab backspace space up down; game: w a s d space ctrl shift alt z q 1-5 (class keys) r enter
+//!   (menu: enter escape tab backtab backspace space up down; game: w a s d space ctrl shift alt z q 1-5 (class keys) r i enter
 //!   escape backspace f10; in the match enter / escape / backspace also go to the chat box, so `key enter`, `type
 //!   {text}`, `key enter` sends a chat line or a local command such as `/network`);
 //! - `look {yaw, pitch}` (degrees, exact); `fire {count, hold_ms, gap_ms}`; `slot {n}` (1-4); `reload`;
@@ -1529,6 +1529,7 @@ fn game_key_named(k: &str) -> Option<GameKey> {
             k.as_bytes()[0] - b'1',
         ))]),
         "r" | "reload" => Press(vec![DeviceInput::Reload]),
+        "i" | "inspect" => Press(vec![DeviceInput::Inspect]),
         "e" | "use" => Press(vec![DeviceInput::Use]),
         "enter" => Chat(crate::hud::chat::ChatPress::Enter),
         "escape" => Chat(crate::hud::chat::ChatPress::Escape),

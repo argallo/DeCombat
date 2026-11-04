@@ -522,6 +522,11 @@ fn the_client_shoots_a_crate_and_a_drum_and_the_server_breaks_them() {
             .count()
             >= 2
     );
+    // the effects run only with a graphics adapter (a Linux CI runner has none): the server half above still holds
+    if r.adapter.is_none() {
+        println!("no GPU adapter: the effect checks are skipped");
+        return;
+    }
     // the client's own impacts lay on the models (their surface ids), and both death effects were handed over once
     assert!(r.fx.model_impacts >= 5, "{:?}", r.fx);
     assert_eq!(r.world_effects, 2, "{:?}", r.fx);

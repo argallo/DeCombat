@@ -99,7 +99,7 @@ codes! {
     ExtentLimit = "extent.limit", Error, "the world spans more than 65,536 units on one axis (pos48 cannot carry it)";
     ExtentLarge = "extent.large", Warning, "the world spans more than 32,768 units on one axis (pos48 precision drops below 0.125)";
     ExtentEnclose = "extent.enclose", Warning, "an object lies outside the box of the world geometry (positions outside are clamped)";
-    SizeEstimate = "size.estimate", Warning, "the estimated package size is above the lobby's 16 MiB default";
+    SizeEstimate = "size.estimate", Warning, "the estimated package size is near the 32 MiB cap";
     SizeLimit = "size.limit", Error, "the estimated package size is above the client's 32 MiB hard cap";
     TerrainSize = "terrain.size", Error, "terrain.r16 does not hold (cells_x + 1) * (cells_z + 1) heights";
     TerrainSettings = "terrain.settings", Error, "terrain cells or cell size are zero, or the height scale is not positive";
@@ -122,6 +122,8 @@ codes! {
     WorldLayout = "world.layout", Error, "the built world's sections do not tile the file (a tool bug: report it with the project)";
     WorldLevel = "world.level", Error, "the world does not have exactly one level model (the model no object names, bsp flag bit 1 clear), or an object is named `level`";
     BspUnreferenced = "bsp.unreferenced", Error, "a solid polygon is referenced by no BSP node (the collision walk would never find it)";
+    FaceOverlap = "face.overlap", Warning, "two drawn faces share a plane and overlap, so they flicker against each other as the player moves: move one or cut it back";
+    PaintOffWall = "paint.off_wall", Warning, "paint hangs off its wall or sits behind another surface";
     BspBudget = "bsp.budget", Error, "the collision tree of a model ran past its node budget: polygons that straddle every candidate plane (long rotated walls crossing a common area) are duplicated into every subtree; split or realign the named solids";
     SkySurface = "sky.surface", Error, "a sky face (surface flag 0x10) carries texflags other than the client's sky surface id 0x6e (shots into it would play impacts and lay marks)";
     BrushHelper = "brush.helper", Error, "a brush model carries a plane-only or flag-less polygon (helpers belong to the level model only)";

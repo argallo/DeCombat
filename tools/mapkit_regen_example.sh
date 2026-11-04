@@ -17,7 +17,7 @@ trap 'rm -rf "$WORK"' EXIT
 if [ -n "${1:-}" ]; then
   MAPKIT=("$1")
 else
-  MAPKIT=(cargo run -q -p dc-mapkit --manifest-path "$HERE/Cargo.toml" --)
+  MAPKIT=(cargo run -q -p dc-mapkit --bin dc-mapkit --manifest-path "$HERE/Cargo.toml" --)
 fi
 
 "${MAPKIT[@]}" new "$WORK/starter" --template starter --name "Starter Map" --author "DeCombat" --seed 1

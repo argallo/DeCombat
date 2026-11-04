@@ -3726,6 +3726,10 @@ impl WorldSource for NetWorld {
             let weapon = r.read_u16();
             g.sound_cues.push(SoundCue::OwnWeapon { k, weapon });
         }
+        // CLI-1845: the inspect's sounds play here only, nothing goes out
+        for (k, weapon) in g.arsenal.take_inspect_sounds() {
+            g.sound_cues.push(SoundCue::OwnWeapon { k, weapon });
+        }
         for m in out {
             g.outgoing.push((m.shell, m.body));
         }
@@ -4133,6 +4137,7 @@ fn view_weapon(a: &mut Arsenal, now: u32) -> Option<ViewWeapon> {
         model,
         clip,
         pos,
+        inspect: a.inspect_pose(now),
     })
 }
 

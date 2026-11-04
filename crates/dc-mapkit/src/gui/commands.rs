@@ -781,6 +781,8 @@ mod tests {
         let made = make(Template::Flat, "cmd", "", 1);
         let (mut p, mut h) = (made.project.clone(), made.heights.clone());
         let g = Gesture::Settings(Box::new(Op::SettingsSet {
+            bake_shadow: None,
+            bake_lightmap: None,
             fog_enable: Some(false),
             fog_near: None,
             fog_far: None,
@@ -839,6 +841,8 @@ mod tests {
         assert_eq!(e.items[0].code, crate::diag::Code::ModeUnknown);
         assert!(e.has_errors());
         let bad = Op::SettingsSet {
+            bake_shadow: None,
+            bake_lightmap: None,
             fog_enable: None,
             fog_near: None,
             fog_far: None,
@@ -853,6 +857,8 @@ mod tests {
         };
         assert!(apply(&mut p, &mut h, &[bad]).is_err());
         let bad = Op::SettingsSet {
+            bake_shadow: None,
+            bake_lightmap: None,
             fog_enable: None,
             fog_near: None,
             fog_far: None,

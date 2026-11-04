@@ -196,6 +196,10 @@ fn letterbox_bars_grow_in_over_one_second_at_any_frame_rate() {
                 return;
             }
         };
+        if r.adapter.is_none() {
+            println!("no GPU adapter: the HUD checks are skipped");
+            return;
+        }
         let marks = r.letterbox_marks;
         assert!(!marks.is_empty(), "the HUD ran");
         // bar height at clock time t: the last change at or before t

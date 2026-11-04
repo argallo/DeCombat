@@ -987,6 +987,8 @@ pub struct ViewWeapon {
     pub model: Option<ModelRef>,
     /// Composed clip index and time (ms) into it.
     pub clip: Option<(usize, f32)>,
+    /// The inspect pose this frame (DC-DEFAULT: CLI-1845).
+    pub inspect: Option<crate::inspect::ViewPose>,
     /// The weapon row's first-person model position (eye space; zero without a row).
     pub pos: [f32; 3],
 }

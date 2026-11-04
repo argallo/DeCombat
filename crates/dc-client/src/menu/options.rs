@@ -172,6 +172,10 @@ pub const ROW_FRAME_RATE: i32 = 100;
 pub const ROW_SHOW_FPS: i32 = 101;
 /// CLI-1599: our "BGM Music" row of the Sound tab (after the music switch).
 pub const ROW_BGM: i32 = 102;
+/// CLI-1845: the gap above our key row, as between the ROM's key rows.
+const KEY_ROW_GAP: i32 = 8;
+/// CLI-1845: our weapon inspect key on the Control tab.
+pub const ROW_INSPECT: i32 = 103;
 pub const OWN_LABEL_X: i32 = 24;
 pub const OWN_WORD_DX: i32 = STEP_SIZE[0] + 8;
 pub const OWN_ROW_BLANK: i32 = 13;
@@ -239,6 +243,8 @@ pub enum Knob {
     Bgm,
     /// Key boxes: the bindable command table rows of the boxes.
     Keys(Vec<usize>),
+    /// CLI-1845: our key box for a command with no row in the table.
+    OwnKey(i32),
     /// Drawn and stored, no effect here (`<page>.<element index>`).
     // DC-DEFAULT: CLI-556 (proposed)
     Inert(String),
@@ -341,6 +347,26 @@ pub fn knob_of(tab: usize, kind: i32, index: i32, cmd: i32) -> Option<Knob> {
         _ => Knob::Inert(format!("{}.{index}", TAB_NAMES[tab])),
     };
     Some(k)
+}
+
+/// A key box's command: through the table's row, or our own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyRef {
+    Row(usize),
+    Command(i32),
+}
+
+/// The key boxes of a row.
+fn key_refs(knob: &Option<Knob>) -> Option<Vec<KeyRef>> {
+    match knob {
+        Some(Knob::Keys(rows)) => Some(rows.iter().map(|r| KeyRef::Row(*r)).collect()),
+        Some(Knob::OwnKey(c)) => Some(vec![KeyRef::Command(*c)]),
+        _ => None,
+    }
+}
+
+fn key_boxes(knob: &Option<Knob>) -> Option<usize> {
+    key_refs(knob).map(|k| k.len())
 }
 
 /// The number of choice buttons of a row type (0: not a choice row).
@@ -586,6 +612,13 @@ impl Options {
                 (ROW_SHOW_FPS, 2, STEP_SIZE[1] + 1, Knob::ShowFps),
             ],
             1 => vec![(ROW_BGM, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::Bgm)],
+            // DC-DEFAULT: CLI-1845 our key row after the last key row of the Control tab
+            2 => vec![(
+                ROW_INSPECT,
+                TYPE_KEYS_ONE,
+                KEY_BOX[1],
+                Knob::OwnKey(crate::settings::CMD_INSPECT),
+            )],
             _ => Vec::new(),
         };
         let anchor = match self.tab {
@@ -594,7 +627,18 @@ impl Options {
             _ => None,
         };
         if !own.is_empty() {
-            if let Some(at) = self.rows.iter().position(|r| r.knob == anchor) {
+            let at = if self.tab == 2 {
+                self.rows
+                    .iter()
+                    .rposition(|r| matches!(r.knob, Some(Knob::Keys(_))))
+            } else {
+                self.rows.iter().position(|r| r.knob == anchor)
+            };
+            if let Some(at) = at {
+                // the key rows' own spacing before our key row
+                if self.tab == 2 {
+                    self.rows[at].blank += KEY_ROW_GAP;
+                }
                 let y0 = self.rows[at].at[1] + self.rows[at].height + self.rows[at].blank;
                 let mut y = y0;
                 let mut ours = Vec::new();
@@ -648,6 +692,7 @@ impl Options {
             Knob::FrameRate => Some(("Frame Rate", &[])),
             Knob::ShowFps => Some(("Show FPS", &["On", "Off"])),
             Knob::Bgm => Some(("BGM Music", &[])),
+            Knob::OwnKey(_) => Some(("Inspect Weapon", &[])),
             _ => None,
         }
     }
@@ -888,9 +933,9 @@ impl Options {
                         },
                     ),
                 );
-            } else if let Some(Knob::Keys(cmds)) = &row.knob {
+            } else if let Some(boxes) = key_boxes(&row.knob) {
                 let first_col = usize::from(row.kind == TYPE_KEYS_RIGHT);
-                for (b, _) in cmds.iter().enumerate() {
+                for b in 0..boxes {
                     let col = (first_col + b).min(1);
                     let mut p = Part::synthetic(
                         WidgetKind::Button,
@@ -1174,7 +1219,7 @@ impl Options {
                     centre,
                     VALUE_COLOUR,
                 ));
-            } else if let Some(Knob::Keys(cmds)) = &row.knob {
+            } else if let Some(cmds) = key_refs(&row.knob) {
                 let first_col = usize::from(row.kind == TYPE_KEYS_RIGHT);
                 let y = top + KEY_BOX[1] / 2;
                 for (b, c) in cmds.iter().enumerate() {
@@ -1183,7 +1228,15 @@ impl Options {
                     let k = if waiting {
                         "?".to_string()
                     } else {
-                        self.key_text(data, *c)
+                        match c {
+                            KeyRef::Row(c) => self.key_text(data, *c),
+                            KeyRef::Command(c) => self
+                                .edit
+                                .binds
+                                .key_of(*c)
+                                .map(scan_name)
+                                .unwrap_or_default(),
+                        }
                     };
                     if !k.is_empty() {
                         out.push(text(
@@ -1225,10 +1278,14 @@ impl Options {
         let Some((r, b)) = self.capture.take() else {
             return;
         };
-        if let Some(Knob::Keys(cmds)) = self.rows.get(r).and_then(|x| x.knob.clone()) {
-            if let Some(row) = cmds.get(b).and_then(|c| data.commands.row(*c)) {
-                self.edit.binds.bind(row.command, Some(scan));
+        match self.rows.get(r).and_then(|x| x.knob.clone()) {
+            Some(Knob::Keys(cmds)) => {
+                if let Some(row) = cmds.get(b).and_then(|c| data.commands.row(*c)) {
+                    self.edit.binds.bind(row.command, Some(scan));
+                }
             }
+            Some(Knob::OwnKey(c)) => self.edit.binds.bind(c, Some(scan)),
+            _ => {}
         }
         self.build_rows();
     }
@@ -1375,7 +1432,7 @@ impl Screen for Options {
                         }
                         _ => {}
                     }
-                } else if matches!(row.knob, Some(Knob::Keys(_))) {
+                } else if matches!(row.knob, Some(Knob::Keys(_) | Knob::OwnKey(_))) {
                     self.capture = Some((r, ctl as usize));
                 }
                 let row = self.rows[r].clone();

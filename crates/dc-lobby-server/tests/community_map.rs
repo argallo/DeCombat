@@ -116,8 +116,9 @@ fn a_declared_map_mod_is_offered_picked_and_launched_with_the_world_flags() {
         "log:\n{}",
         l.log_text()
     );
+    // a line of its own, written after the one above
     assert!(
-        l.log_has("community maps 1"),
+        l.wait_log("community maps 1", T),
         "the start-up line counts it:\n{}",
         l.log_text()
     );

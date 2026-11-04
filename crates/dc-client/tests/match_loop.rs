@@ -208,6 +208,10 @@ fn client_takes_damage_dies_respawns_and_leaves_the_result_screen() {
         .client_id
         .map(|c| c.0 as u8)
         .expect("the shooter's id");
+    if r.adapter.is_none() {
+        println!("no GPU adapter: the HUD checks are skipped");
+        return;
+    }
     let marks = &r.hud_marks;
     assert!(r.hud.is_some(), "a HUD ran");
 

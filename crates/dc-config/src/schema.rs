@@ -226,6 +226,9 @@ impl Default for DirectorySection {
     }
 }
 
+/// The largest mod package: what the client will download, so the default and the most a server may set (MOD-29).
+pub const MAX_ZIP_BYTES: u64 = 32 * 1024 * 1024;
+
 /// One mod in the server's declared set. SPEC: HOSTING_AND_MODS.md §3, §8.2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -258,7 +261,7 @@ impl Default for ModsSection {
         ModsSection {
             policy: "vanilla".into(),
             client_visual_allowed: false,
-            max_zip_bytes: 16 * 1024 * 1024,
+            max_zip_bytes: MAX_ZIP_BYTES,
             set: Vec::new(),
             catalog: Vec::new(),
         }

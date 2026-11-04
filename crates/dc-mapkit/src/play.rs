@@ -72,6 +72,12 @@ pub struct PlayOptions {
     /// `--modded`: the stage-3 shape (a modded lobby with the zip as its lobby-wide set) instead of the Vanilla++
     /// entry shape ([`Shape`]).
     pub modded: bool,
+    /// Mod folders to play the map with (validated and packed like an export), as the entry's set holds them.
+    pub with_mods: Vec<PathBuf>,
+    /// What a new character starts with, as the lobby's `--start-loadout` takes it (`0:25,1:1`), to try a gun.
+    pub loadout: Option<String>,
+    /// Items a new character owns in the inventory, not equipped (`27,502`).
+    pub inventory: Option<String>,
 }
 
 /// The shape of the play instance (MAP-68, MAP-89).
@@ -367,8 +373,27 @@ pub fn server_toml(
     version: &str,
     sha256: &str,
     name: &str,
+    with: &[dc_modkit::ModSetEntry],
 ) -> String {
     let name = name.replace('"', "'");
+    let entry_extra: String = with
+        .iter()
+        .map(|m| {
+            format!(
+                "  {{ id = \"{}\", version = \"{}\", sha256 = \"{}\" }},\n",
+                m.id, m.version, m.sha256
+            )
+        })
+        .collect();
+    let set_extra: String = with
+        .iter()
+        .map(|m| {
+            format!(
+                "\n[[mods.set]]\nid = \"{}\"\nversion = \"{}\"\nsha256 = \"{}\"\n",
+                m.id, m.version, m.sha256
+            )
+        })
+        .collect();
     let (server_name, head, set) = match shape {
         Shape::Entry => (
             ENTRY_NAME.to_string(),
@@ -388,7 +413,7 @@ pub fn server_toml(
                  name = \"{ENTRY_NAME}\"\n\
                  capacity = {ENTRY_CAPACITY}\n\
                  mods = [\n\
-                 \x20 {{ id = \"{mod_id}\", version = \"{version}\", sha256 = \"{sha256}\" }},\n\
+                 \x20 {{ id = \"{mod_id}\", version = \"{version}\", sha256 = \"{sha256}\" }},\n{entry_extra}\n\
                  ]\n"
             ),
         ),
@@ -404,7 +429,7 @@ pub fn server_toml(
                  [[mods.set]]\n\
                  id = \"{mod_id}\"\n\
                  version = \"{version}\"\n\
-                 sha256 = \"{sha256}\"\n"
+                 sha256 = \"{sha256}\"\n{set_extra}"
             ),
         ),
     };
@@ -820,7 +845,17 @@ pub fn play(dir: &Path, opts: &PlayOptions) -> Result<PlayReport, Diagnostics> {
     // 3. export
     let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     let (p, h) = Project::open(&dir)?;
+    // a lit map takes a while to bake and nothing else shows until the game opens
+    eprintln!(
+        "dc-mapkit play: building the map{}...",
+        if p.build.bake.lightmap > 0.0 {
+            " and baking its light"
+        } else {
+            ""
+        }
+    );
     let built = build::build(&p, &h, &build::Assets::new(&dir), &p.build)?;
+    eprintln!("dc-mapkit play: packing it as a mod...");
     let e = export::export(
         &p,
         &built,
@@ -864,6 +899,20 @@ pub fn play(dir: &Path, opts: &PlayOptions) -> Result<PlayReport, Diagnostics> {
             "no free loopback ports for the lobby (auth, auth + 2, auth + 3, auth + 8080), the admin endpoint and the game servers",
         ))
     })?;
+    // DC-DEFAULT: MAP-112 (proposed) `--with-mod`: other mods in the map's set, packed as `dc-modkit pack` does
+    let mut with = Vec::new();
+    for folder in &opts.with_mods {
+        let (bytes, entry) = dc_modkit::pack_mod_bytes(folder).map_err(|errors| {
+            Diagnostics::one(Diagnostic::new(
+                Code::PlayConfig,
+                folder.display().to_string(),
+                errors.join("; "),
+            ))
+        })?;
+        let copy = play_dir.join("mods").join(format!("{}.zip", entry.sha256));
+        std::fs::write(&copy, bytes).map_err(|e| io_diag(Code::ProjectIo, &copy, &e))?;
+        with.push(entry);
+    }
     let shape = Shape::of(opts);
     let config = play_dir.join("server.toml");
     let text = server_toml(
@@ -875,6 +924,7 @@ pub fn play(dir: &Path, opts: &PlayOptions) -> Result<PlayReport, Diagnostics> {
         &p.mod_meta.version,
         &sha256,
         &p.name,
+        &with,
     );
     write_atomic(&config, text.as_bytes()).map_err(|e| io_diag(Code::ProjectIo, &config, &e))?;
     // 5. the config check
@@ -883,9 +933,16 @@ pub fn play(dir: &Path, opts: &PlayOptions) -> Result<PlayReport, Diagnostics> {
         diags.warn(Code::PlayConfig, config.display().to_string(), w);
     }
     // 6. the lobby
+    eprintln!("dc-mapkit play: starting a local server...");
     let lobby_log = out.join("lobby.log");
     let lobby_out = out.join("lobby.out");
     let mut cmd = Command::new(&binaries.lobby);
+    if let Some(l) = &opts.loadout {
+        cmd.args(["--start-loadout", l]);
+    }
+    if let Some(i) = &opts.inventory {
+        cmd.args(["--start-items", i]);
+    }
     cmd.arg("--config")
         .arg(&config)
         .arg("--dserver")
@@ -1008,6 +1065,7 @@ pub fn play(dir: &Path, opts: &PlayOptions) -> Result<PlayReport, Diagnostics> {
         && opts.headless
         && client_takes_flag(&client_usage(&binaries.client), PILOT_ENTRY_FLAG);
     // 7. the client
+    eprintln!("dc-mapkit play: opening the game...");
     let client_log = out.join("client.log");
     let seconds = opts.seconds.unwrap_or(DEFAULT_SECONDS);
     let mut cmd = Command::new(&binaries.client);
@@ -1238,6 +1296,7 @@ mod tests {
             "0.1.0",
             &sha,
             "Play \"x\"",
+            &[],
         );
         assert!(text.contains("policy = \"vanilla\""), "{text}");
         assert!(text.contains("[[lobby.servers]]"), "{text}");
@@ -1272,6 +1331,7 @@ mod tests {
             "0.1.0",
             &sha,
             "Play \"x\"",
+            &[],
         );
         assert!(text.contains("policy = \"modded\""));
         assert!(text.contains("id = \"starter_map\""));
@@ -1340,6 +1400,9 @@ mod tests {
         assert_eq!(
             Shape::of(&PlayOptions {
                 modded: true,
+                with_mods: Vec::new(),
+                loadout: None,
+                inventory: None,
                 ..PlayOptions::default()
             }),
             Shape::Modded

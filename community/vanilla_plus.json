@@ -7,6 +7,20 @@
       "sha256": "047b499fa80a8a12ea35baed172d907be852409a735b3856229f286877e8f55e",
       "source_repo": "https://github.com/argallo/DeCombat",
       "reviewer_note": "Shipping Container, a close-quarters cargo deck map built with dc-mapkit from the owner's top view. Owner approved 2026-11-02. Adds only a map. Surfaces are ROM texture paths; the pack's pictures are plain name cards with no ROM pixels. Source stays outside this repository (CLEANROOM.md section 4)."
+    },
+    {
+      "id": "freight_hall",
+      "version": "0.1.0",
+      "sha256": "f54655f5f28991af0da745a2e21188998115ad16c4a95979825d65924bb33175",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Freight Hall, a small 3v3 warehouse built with dc-mapkit from the owner's drawing. Owner approved 2026-11-04. Adds only a map. Models and textures are NVIDIA SimReady (CC BY 4.0, listed in CREDITS.txt), the graffiti our own, no game files. Source in examples/mapkit/freight_hall. Needs clients and servers with credited packs and the 32 MiB limit (MOD-28, MOD-29)."
+    },
+    {
+      "id": "inspect_g36e_l96a1",
+      "version": "0.1.0",
+      "sha256": "2cda9e8435b55525d4f09da1305b013e4661fc21bf85fb751ddd5eb5dde24836",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Inspect for the G36E and the L96A1 (and so their camos), owner approved 2026-11-04. Adds inspect poses only (CLI-1845): drawn on the player's own screen, no stat or sound changes, cancelled by firing, reloading or switching. Our own poses, no game files. Source in examples/mods/inspect_g36e_l96a1. Needs clients with weapon inspect (6664ad1b or later)."
     }
   ]
 }

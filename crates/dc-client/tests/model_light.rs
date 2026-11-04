@@ -224,6 +224,7 @@ fn one_map(rom: &std::path::Path, ctx: &GpuContext, map: &str, spawn_no: usize) 
     let pv = row.pv_model.clone().expect("first-person model");
     let clips = WeaponClips::load(&vfs, &pv).expect("clips");
     let held = ViewWeapon {
+        inspect: None,
         weapon: 145,
         model: Some(ModelRef {
             model: pv.clone(),

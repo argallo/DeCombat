@@ -246,6 +246,8 @@ pub struct WeaponRow {
     // EVIDENCE: cshell+0x17bd20 (row loader: `Pos` -> row +0x14..+0x1c), cshell+0x232c10 (every frame the first-person
     // model position := row +0x14 plus the bob and recoil terms; DISASM)
     pub pv_pos: Option<[f32; 3]>,
+    /// The row's inspect, from a pack's keys (DC-DEFAULT: CLI-1845).
+    pub inspect: Option<std::sync::Arc<crate::inspect::InspectAnim>>,
     /// The row's muzzle point relative to `pv_pos` (eye space).
     // EVIDENCE: cshell+0x17bd20 (row loader: `MuzzlePos` -> row +0x20..+0x28; DISASM)
     pub muzzle_pos: Option<[f32; 3]>,
@@ -424,6 +426,8 @@ impl WeaponTable {
                     pv_model,
                     pv_skins: numbered(sec, key::PV_SKIN, 16),
                     pv_pos: crate::fx::row_vec3(sec.get(key::PV_POS)),
+                    inspect: crate::inspect::InspectAnim::from_row(&|k| text(sec.get(k)))
+                        .map(std::sync::Arc::new),
                     muzzle_pos: crate::fx::row_vec3(sec.get(key::MUZZLE_POS)),
                     pv_models,
                     hide_when_empty: u(key::HIDE_WHEN_EMPTY).map(|v| v != 0),
@@ -1033,6 +1037,8 @@ pub struct WeaponCommands {
     pub fire_press: bool,
     /// The reload key was pressed since the last frame.
     pub reload: bool,
+    /// The weapon inspect key was pressed since the last frame (DC-DEFAULT: CLI-1845).
+    pub inspect: bool,
     /// The use key was pressed since the last frame (the frame loop asks for the drop under the player, CLI-675).
     pub use_key: bool,
     /// The use key is held down (a hold to plant / defuse, CLI-1054).
@@ -1198,6 +1204,7 @@ pub struct Arsenal {
     /// The zoom key was held in the last step (the press edge cycles the level) and the control word was sprinting.
     zoom_key: bool,
     was_sprinting: bool,
+    inspector: crate::inspect::Inspector,
     /// The normal horizontal field of view of the frame (radians) the zoom changes run against.
     normal_fov_x: f32,
     /// The triple-shot mode of the held weapon.
@@ -1274,6 +1281,7 @@ impl Arsenal {
             zoom_override: None,
             zoom_key: false,
             was_sprinting: false,
+            inspector: crate::inspect::Inspector::default(),
             normal_fov_x: dc_render::fov_pair_2009(dc_render::FOV_Y_DEFAULT_DEG, 4, 3).0,
             triple: false,
             mods: BTreeMap::new(),
@@ -2421,11 +2429,60 @@ impl Arsenal {
         // CLI-982: a live world camera holds the weapons
         let held = WeaponCommands::default();
         let cmd = if self.cinematic { &held } else { cmd };
+        self.inspect_frame(now, cmd, aim);
         let out = self.step_weapon(now, cmd, aim, targets, world);
         self.motion.zoomed = self.zoom_active();
         self.spread_frame(now);
         self.sprint_frame(now, aim);
         out
+    }
+
+    /// The inspect of the frame, before the weapon runs: anything the player does with the weapon ends it, and that
+    /// action then runs as usual (DC-DEFAULT: CLI-1845).
+    fn inspect_frame(&mut self, now: u32, cmd: &WeaponCommands, aim: &Aim) {
+        let held = self.held().map(|c| c.weapon).filter(|_| self.alive);
+        let anim = held.and_then(|w| self.inspect_anim(w));
+        let busy = cmd.fire
+            || cmd.fire_press
+            || cmd.reload
+            || cmd.select.is_some()
+            || cmd.wheel != 0
+            || cmd.class_key.is_some()
+            || cmd.zoom
+            || aim.control & dc_sim::player::bits::SPRINT != 0
+            || self.phase != Phase::Idle
+            || self.scope.active()
+            || self.cinematic;
+        self.inspector.step(
+            now,
+            crate::inspect::InspectFrame {
+                press: cmd.inspect,
+                held,
+                busy,
+            },
+            anim.as_deref(),
+        );
+    }
+
+    /// What `weapon`'s row says of its inspect; a variant has its base gun's.
+    fn inspect_anim(&self, weapon: u16) -> Option<std::sync::Arc<crate::inspect::InspectAnim>> {
+        self.row(weapon)
+            .and_then(|r| r.inspect.clone())
+            .or_else(|| {
+                self.row(crate::camo::base_weapon(weapon))
+                    .and_then(|r| r.inspect.clone())
+            })
+    }
+
+    /// The first-person model's inspect pose now (`None`: at rest).
+    pub fn inspect_pose(&self, now: u32) -> Option<crate::inspect::ViewPose> {
+        let anim = self.held().and_then(|c| self.inspect_anim(c.weapon));
+        self.inspector.pose(now, anim.as_deref())
+    }
+
+    /// The inspect's sounds that came due: (weapon sound number, weapon). They are not sent.
+    pub fn take_inspect_sounds(&mut self) -> Vec<(u8, u16)> {
+        self.inspector.take_sounds()
     }
 
     /// The scope sway of the frame, before the weapon runs: while the scope is up the view (and so the shot) turns

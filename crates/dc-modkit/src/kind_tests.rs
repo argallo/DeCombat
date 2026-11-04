@@ -787,7 +787,7 @@ fn example_starter_map_validates_lints_packs_and_its_world_parses() {
     assert!(entry.capabilities.contains(&"content.maps".to_string()));
     assert!(
         zip.len() < 16 << 20,
-        "the package stays under the lobby's 16 MiB default: {} bytes",
+        "the package stays under 16 MiB: {} bytes",
         zip.len()
     );
     // the manifest is a shared mod with the two capabilities a map needs, and own textures only

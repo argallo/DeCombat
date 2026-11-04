@@ -668,6 +668,7 @@ fn rom_characters(rom: &Path) -> Option<SceneRun> {
         textures: row.hh_skins.clone(),
     });
     let held = row.pv_model.clone().map(|m| ViewWeapon {
+        inspect: None,
         weapon: WEAPON,
         model: Some(ModelRef {
             model: m,
@@ -954,6 +955,7 @@ fn rom_fx(rom: &Path) -> Option<SceneRun> {
     let row = table.get(WEAPON).expect("weapon row").clone();
     let ammo_id = row.ammo.unwrap_or(0);
     let held = row.pv_model.clone().map(|m| ViewWeapon {
+        inspect: None,
         weapon: WEAPON,
         model: Some(ModelRef {
             model: m,

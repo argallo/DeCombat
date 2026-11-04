@@ -121,6 +121,8 @@ pub enum DeviceInput {
     Fire(bool),
     /// The reload key was pressed.
     Reload,
+    /// The weapon inspect key was pressed (DC-DEFAULT: CLI-1845).
+    Inspect,
     /// The use key was pressed (take the dropped weapon under the player, [`crate::drops::USE_REACH`]).
     // DC-DEFAULT: CLI-675 (proposed)
     Use,
@@ -204,6 +206,7 @@ pub struct KeyboardMouse {
     /// The fire button went down since the last weapon read (CLI-1601).
     fire_press: bool,
     reload: bool,
+    inspect: bool,
     use_key: bool,
     use_held: bool,
     slot: Option<u8>,
@@ -362,6 +365,7 @@ impl InputSource for KeyboardMouse {
                 self.fire = down;
             }
             DeviceInput::Reload => self.reload = true,
+            DeviceInput::Inspect => self.inspect = true,
             DeviceInput::Use => {
                 self.use_key = true;
                 self.use_held = true;
@@ -391,6 +395,7 @@ impl InputSource for KeyboardMouse {
             fire: self.fire,
             fire_press: std::mem::take(&mut self.fire_press),
             reload: std::mem::take(&mut self.reload),
+            inspect: std::mem::take(&mut self.inspect),
             use_key: std::mem::take(&mut self.use_key),
             use_held: self.use_held,
             select: self.slot.take(),

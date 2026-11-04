@@ -15,7 +15,7 @@ mod write;
 pub use command::{parse_command, CommandSet, MaterialDirective, MaterialKind};
 pub use header::{DtxHeader, HEADER_LEN};
 pub use pcx::{decode_pcx, PcxError, PcxImage};
-pub use write::write_bgra8;
+pub use write::{write_bgra8, write_dxt1_cutout, write_dxt1_mipped};
 
 use std::fmt;
 

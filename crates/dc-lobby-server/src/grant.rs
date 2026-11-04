@@ -224,6 +224,45 @@ pub fn options_for_account_with(o: &Options, login: &str, rom: Option<&RomData>)
     o
 }
 
+/// Puts the `--start-items` in a new player character's inventory: owned for good, not equipped, for trying them out
+/// (DC-DEFAULT: CD-99). Bots get none. Returns the items added.
+pub fn apply_start_items(
+    c: &Connection,
+    o: &Options,
+    login: &str,
+    account: u32,
+    now_ticks: i64,
+) -> Result<Vec<i64>, String> {
+    if is_bot_name(login) {
+        return Ok(Vec::new());
+    }
+    let mut added = Vec::new();
+    for part in o
+        .start_items
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        let item: i64 = part
+            .parse()
+            .map_err(|_| format!("--start-items: '{part}' is not an item number"))?;
+        db::add_item(
+            c,
+            &db::NewItem {
+                user_no: account,
+                item_no: item,
+                start_time: now_ticks,
+                end_time: 0,
+                slot: -1,
+                default_type: 0,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        added.push(item);
+    }
+    Ok(added)
+}
+
 /// Equips the `--start-loadout` items on a new character: whatever the starter kit put in a seeded slot is
 /// unequipped (it stays in the inventory with its default mark, so the slot repair can bring it back later), the
 /// seeded item is granted permanent and equipped. Returns the pairs applied.

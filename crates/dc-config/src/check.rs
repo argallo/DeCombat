@@ -330,6 +330,12 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             format!("'{other}' is not one of vanilla, modded"),
         )),
     }
+    if m.max_zip_bytes > crate::schema::MAX_ZIP_BYTES {
+        out.push(Issue::error(
+            "mods.max_zip_bytes",
+            "must be at most 33554432 (32 MiB), the largest package a client will download",
+        ));
+    }
     if m.max_zip_bytes == 0 {
         out.push(Issue::error("mods.max_zip_bytes", "must be greater than 0"));
     }

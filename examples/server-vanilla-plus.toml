@@ -23,5 +23,5 @@ name = "Vanilla++"
 capacity = 1000
 host = ""
 mods = [
-  { id = "starter_map", version = "0.1.0", sha256 = "69338cf475385bc111322e422d8a555cb368add8f8ba1afca36790bdba6377e1" },
+  { id = "starter_map", version = "0.1.0", sha256 = "a3e196620794c64527a06a985e5d8c89d8c60cec8ea4a2bd7da21da55b795ce8" },
 ]

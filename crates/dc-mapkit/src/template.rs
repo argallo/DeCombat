@@ -177,6 +177,8 @@ pub fn make(t: Template, name: &str, author: &str, seed: u64) -> Made {
                 solid: true,
                 no_step: false,
                 sky: *sky,
+                hidden: false,
+                skin: false,
             }),
             fit: None,
         })

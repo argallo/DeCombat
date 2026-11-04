@@ -43,7 +43,7 @@ must settle. Rules land in `DC_DEFAULTS.md` under the new prefix **MAP-nn**.
   (map, mode mask) pairs; the 2009 client cannot play a community map and a modded lobby refuses it at login anyway
   (MOD-1 is not implemented; `allow_legacy_clients` does not exist). Vanilla++ is DeCombat-client-only.
 - **Mods**: a `shared` mod (needs description, author, one screenshot) is hash-pinned, downloaded by the client
-  (32 MiB hard cap per package, lobby default 16 MiB `mods.max_zip_bytes`), unpacked under
+  (32 MiB hard cap per package, also the lobby default of `mods.max_zip_bytes`), unpacked under
   `<profile>/mods/unpacked/<sha>/` (client) and `<data>/mod_cache/<sha>/` (lobby). `mod.content.<domain>` is driven
   by one list (`CONTENT_DOMAINS`); only `weapons` has a Rust accessor today. `@mod:<id>/assets/<rel>` resolves
   only under `assets/`. The game server runs no Lua and gets mod data only through launch flags (`-content`).

@@ -78,6 +78,7 @@ fn rom_first_person_weapon_is_drawn_in_front_of_the_eye() {
     let clips = WeaponClips::load(&dc_rez::RezVfs::new(&rom), &pv).expect("clips");
     let mut models = ModelScene::open(&rom).unwrap();
     let held = |clip: Option<(usize, f32)>| ViewWeapon {
+        inspect: None,
         weapon: 145,
         model: Some(ModelRef {
             model: pv.clone(),

@@ -113,6 +113,7 @@ fn rom_weapon_effects_and_view_models() {
             .find_map(|p| WeaponClips::load(&vfs, p).ok().map(|c| (p.clone(), c)))
             .expect("clips");
         ViewWeapon {
+            inspect: None,
             weapon,
             model: Some(ModelRef {
                 model: pv,

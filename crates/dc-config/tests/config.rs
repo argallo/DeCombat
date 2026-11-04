@@ -676,6 +676,21 @@ fn landing_data_matches_directory() {
     );
 }
 
+/// MOD-29: the default is the most a client will download, a server may stay lower and may not go higher.
+#[test]
+fn the_package_limit_is_what_a_client_will_download() {
+    assert_eq!(Config::default().mods.max_zip_bytes, 32 * 1024 * 1024);
+    let flagged = |bytes: u64| {
+        let mut c = Config::default();
+        c.mods.max_zip_bytes = bytes;
+        has_err(&check(&c, CheckOptions::default()), "mods.max_zip_bytes")
+    };
+    assert!(!flagged(32 * 1024 * 1024));
+    assert!(!flagged(16 * 1024 * 1024));
+    assert!(flagged(32 * 1024 * 1024 + 1));
+    assert!(flagged(0));
+}
+
 #[test]
 fn landing_files_exist_and_name_the_project() {
     for f in ["index.html", "app.js", "style.css"] {

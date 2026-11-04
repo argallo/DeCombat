@@ -38,10 +38,13 @@ serde_json = "1"
 # CLEANROOM.md 4a: command-line parsing of the mapkit verbs (the same feature set as dc-lobby-server: `--flag value`,
 # unknown flag = exit 2); MIT OR Apache-2.0.
 clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context"] }
-# CLEANROOM.md 4a: PNG read / write for the project's OWN textures (the templates generate procedural PNGs under
+# CLEANROOM.md 4a: PNG read / write (and WebP read, for `asset`) for the project's OWN textures (the templates generate procedural PNGs under
 # `assets/`, `validate` reads their dimensions for the size estimate, `render` writes PNGs); already in the lock
 # through dc-client / dc-render; png only; MIT OR Apache-2.0.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+# CLEANROOM.md 4a: `asset` reads web-compressed glTF models (EXT_meshopt_compression) and simplifies them to the game's budgets
+# (MAP-104); pure Rust, no game data; MIT.
+meshopt-rs = { version = "0.1", features = ["experimental"] }
 # CLEANROOM.md 4a: the world-level checks of `build` / `validate --world` (MAPKIT_PLAN.md 5.3 step 6) sweep the
 # standing box and rays against the built world through the same collision code the game server and the client
 # run (`dc_sim::from_world::collision_world`); workspace crate, `std` + `world` features only (no ROM speed rows);

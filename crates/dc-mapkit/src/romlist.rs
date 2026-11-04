@@ -103,6 +103,9 @@ pub struct RomEntry {
     /// A surface row's own name, read from the ROM (MAP-91).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Whether a shot leaves a bullet hole on this surface, read from the ROM (MAP-111).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marks: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,6 +121,7 @@ impl RomEntry {
             size: None,
             id: None,
             name: None,
+            marks: None,
             width: None,
             height: None,
             thumb: None,
@@ -397,10 +401,18 @@ fn surfaces(rom: &Path, filter: Option<&str>) -> Result<Vec<RomEntry>, Diagnosti
                 t.strip_suffix(['f', 'F']).unwrap_or(t).parse::<f32>().ok()
             })
             .map(|f| f.max(0.0) as u32);
+        let field = |key: &str| {
+            sec.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, val)| val.trim())
+                .filter(|t| !t.is_empty())
+        };
+        let shown = field("ShowsMark").is_some_and(|v| v != "0");
         rows.push(RomEntry {
             path: name.to_string(),
             id,
             name: label,
+            marks: Some(shown && field("BulletHoleSpr").is_some()),
             ..RomEntry::path_only(String::new())
         });
     }

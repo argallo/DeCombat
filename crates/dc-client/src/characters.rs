@@ -780,14 +780,16 @@ impl ModelScene {
             return;
         };
         // SPEC: RENDER_2009.md §4.2 (positioned in eye space by the game)
-        inst.rotation = Quat::IDENTITY;
+        inst.rotation = vw.inspect.map_or(Quat::IDENTITY, |p| p.rotation);
         let tr: Vec<Tracker> = clip
             .map(|(clip, t)| vec![Tracker::main(clip, t)])
             .unwrap_or_default();
         inst.set_pose(&tr);
         // EVIDENCE: cshell+0x232c10 (the row's `Pos` is the model position in eye space; DISASM); the playing clip's
         // offset (CLI-575, see `view_model_origin`); the rig root keeps its animated translation (CLI-191 retired)
-        inst.position = view_model_origin(vw.pos, clip.map(|c| inst.anim.clip_offset(c.0)));
+        let origin = view_model_origin(vw.pos, clip.map(|c| inst.anim.clip_offset(c.0)));
+        // DC-DEFAULT: CLI-1845 the inspect turns the whole model about its pivot
+        inst.position = vw.inspect.map_or(origin, |p| p.place(origin));
         // DC-DEFAULT: REN-13 (proposed), see DC_DEFAULTS.md (an eye-attached model is lit at the eye)
         inst.lights = light_set_for(SunObject::ViewWeapon, eye, inst.radius, lights);
         self.stats.view_weapon = true;

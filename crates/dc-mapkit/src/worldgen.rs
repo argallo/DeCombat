@@ -228,6 +228,9 @@ pub fn vertex_bytes(pos: V3, uv: [f32; 2], colour: u32, normal: V3) -> [u8; 68] 
     o
 }
 
+/// What makes two vertices the same one: position, texture coordinates, colour and normal, rounded.
+type VertexKey = ([u32; 3], [i32; 2], u32, [i32; 3]);
+
 /// One render world of one block: sections grouped by texture name (kind 1, vertex-lit), one vertex per polygon
 /// corner, fan triangles in the polygon's stored order (the order the renderer draws as front faces with
 /// `FrontFace::Cw`; OBSERVED: the ROM's render triangles follow the same order as its BSP polygons,
@@ -254,12 +257,15 @@ pub fn render_world(
     let mut lo = V3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
     let mut hi = -lo;
     let mut counts = RenderCounts::default();
+    // a corner that is the same in every field is one vertex, a smooth model costs a third of the bytes; texture
+    // coordinates and normals compare after rounding, each triangle works them out with its own floats (MAP-104)
+    let mut seen: BTreeMap<VertexKey, u32> = BTreeMap::new();
     for (name, idxs) in groups {
         let mut tris = 0u32;
         for i in idxs {
             let p = &polys[i];
             let k = p.corners.len();
-            let base = block.vertices.len() as u32;
+            let mut at = Vec::with_capacity(k);
             let n = if inside { -p.plane.n } else { p.plane.n };
             let order = |j: usize| if inside { k - 1 - j } else { j };
             for j in 0..k {
@@ -272,12 +278,200 @@ pub fn render_world(
                     .and_then(|cs| cs.get(ci))
                     .copied()
                     .unwrap_or(0xFF80_8080);
-                block.vertices.push(vertex_bytes(c, p.uv(c), colour, n));
+                let uv = p
+                    .corner_uvs
+                    .as_ref()
+                    .and_then(|u| u.get(ci))
+                    .copied()
+                    .unwrap_or_else(|| p.uv(c));
+                let n = p
+                    .corner_normals
+                    .as_ref()
+                    .and_then(|ns| ns.get(ci))
+                    .map_or(n, |m| if inside { -*m } else { *m });
+                let round = |v: f32, scale: f32| (v * scale).round() as i32;
+                let key = (
+                    [c.x.to_bits(), c.y.to_bits(), c.z.to_bits()],
+                    [round(uv[0], 8192.0), round(uv[1], 8192.0)],
+                    colour,
+                    [round(n.x, 1024.0), round(n.y, 1024.0), round(n.z, 1024.0)],
+                );
+                at.push(*seen.entry(key).or_insert_with(|| {
+                    block.vertices.push(vertex_bytes(c, uv, colour, n));
+                    block.vertices.len() as u32 - 1
+                }));
             }
-            for j in 1..k as u32 - 1 {
-                block
-                    .triangles
-                    .push([base, base + j, base + j + 1, i as u32]);
+            for j in 1..k - 1 {
+                block.triangles.push([at[0], at[j], at[j + 1], i as u32]);
+                tris += 1;
+            }
+        }
+        block.sections.push(SynthSection {
+            textures: [name.to_vec(), Vec::new()],
+            shader_kind: 1,
+            triangles: tris,
+            effect: Vec::new(),
+            lightmap_w: 0,
+            lightmap_h: 0,
+            lightmap: Vec::new(),
+        });
+        counts.sections += 1;
+        counts.triangles += tris as usize;
+    }
+    counts.vertices = block.vertices.len();
+    if block.vertices.is_empty() {
+        lo = V3::ZERO;
+        hi = V3::ZERO;
+    }
+    block.center = ((lo + hi) * 0.5).to_array();
+    block.half = ((hi - lo) * 0.5).to_array();
+    for p in portals {
+        block.sky_portals.push((
+            p.corners.iter().map(|c| c.to_array()).collect(),
+            p.plane.n.to_array(),
+            p.plane.d,
+        ));
+    }
+    (
+        SynthRenderWorld {
+            blocks: vec![block],
+            models: Vec::new(),
+        },
+        counts,
+    )
+}
+
+/// The render world of a lit map: for each lightmap page a kind-2 section with its pieces' triangles at their lightmap
+/// coordinates, the same triangles again per texture as kind 4 (RENDER_2009.md 5.2), and the models vertex-lit as kind 1.
+pub fn render_world_lit(
+    polys: &[Poly],
+    baked: &crate::lightmap::Baked,
+    textures: &[Vec<u8>],
+    portals: &[Poly],
+) -> (SynthRenderWorld, RenderCounts) {
+    let mut block = SynthBlock::default();
+    let mut lo = V3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+    let mut hi = -lo;
+    let mut counts = RenderCounts::default();
+    let mut seen: BTreeMap<VertexKey, u32> = BTreeMap::new();
+    let mut add = |c: V3, uv: [f32; 2], colour: u32, n: V3, block: &mut SynthBlock| -> u32 {
+        lo = lo.min(c);
+        hi = hi.max(c);
+        let round = |v: f32, scale: f32| (v * scale).round() as i32;
+        let key = (
+            [c.x.to_bits(), c.y.to_bits(), c.z.to_bits()],
+            [round(uv[0], 32768.0), round(uv[1], 32768.0)],
+            colour,
+            [round(n.x, 1024.0), round(n.y, 1024.0), round(n.z, 1024.0)],
+        );
+        *seen.entry(key).or_insert_with(|| {
+            block.vertices.push(vertex_bytes(c, uv, colour, n));
+            block.vertices.len() as u32 - 1
+        })
+    };
+    const WHITE: u32 = 0xFFFF_FFFF;
+    // the pages
+    for (page, data) in baked.pages.iter().enumerate() {
+        let mut tris = 0u32;
+        for piece in baked.pieces.iter().filter(|p| p.page == page) {
+            let corners = &piece.poly.corners;
+            let at: Vec<u32> = corners
+                .iter()
+                .zip(&piece.lm_uv)
+                .map(|(c, uv)| add(*c, *uv, WHITE, piece.poly.plane.n, &mut block))
+                .collect();
+            for j in 1..at.len().saturating_sub(1) {
+                block.triangles.push([at[0], at[j], at[j + 1], 0]);
+                tris += 1;
+            }
+        }
+        block.sections.push(SynthSection {
+            textures: [b"lightmap".to_vec(), Vec::new()],
+            shader_kind: 2,
+            triangles: tris,
+            effect: Vec::new(),
+            lightmap_w: crate::lightmap::PAGE,
+            lightmap_h: crate::lightmap::PAGE,
+            lightmap: data.clone(),
+        });
+        counts.sections += 1;
+        counts.triangles += tris as usize;
+    }
+    // the same pieces with their textures
+    let mut groups: BTreeMap<&[u8], Vec<usize>> = BTreeMap::new();
+    for (i, piece) in baked.pieces.iter().enumerate() {
+        let name = textures
+            .get(piece.poly.material)
+            .map_or(&b""[..], Vec::as_slice);
+        groups.entry(name).or_default().push(i);
+    }
+    for (name, idxs) in groups {
+        let mut tris = 0u32;
+        for i in idxs {
+            let p = &baked.pieces[i].poly;
+            let at: Vec<u32> = p
+                .corners
+                .iter()
+                .map(|c| add(*c, p.uv(*c), WHITE, p.plane.n, &mut block))
+                .collect();
+            for j in 1..at.len().saturating_sub(1) {
+                block.triangles.push([at[0], at[j], at[j + 1], 0]);
+                tris += 1;
+            }
+        }
+        block.sections.push(SynthSection {
+            textures: [name.to_vec(), Vec::new()],
+            shader_kind: 4,
+            triangles: tris,
+            effect: Vec::new(),
+            lightmap_w: 0,
+            lightmap_h: 0,
+            lightmap: Vec::new(),
+        });
+        counts.sections += 1;
+        counts.triangles += tris as usize;
+    }
+    // the models
+    let mut models: BTreeMap<&[u8], Vec<usize>> = BTreeMap::new();
+    for (i, p) in polys.iter().enumerate() {
+        if p.corner_normals.is_some() && p.corners.len() >= 3 {
+            let name = textures.get(p.material).map_or(&b""[..], Vec::as_slice);
+            models.entry(name).or_default().push(i);
+        }
+    }
+    for (name, idxs) in models {
+        let mut tris = 0u32;
+        for i in idxs {
+            let p = &polys[i];
+            let colours = &baked.vertex_colours[i];
+            let at: Vec<u32> = p
+                .corners
+                .iter()
+                .enumerate()
+                .map(|(j, c)| {
+                    let uv = p
+                        .corner_uvs
+                        .as_ref()
+                        .and_then(|u| u.get(j))
+                        .copied()
+                        .unwrap_or_else(|| p.uv(*c));
+                    let n = p
+                        .corner_normals
+                        .as_ref()
+                        .and_then(|m| m.get(j))
+                        .copied()
+                        .unwrap_or(p.plane.n);
+                    add(
+                        *c,
+                        uv,
+                        colours.get(j).copied().unwrap_or(0xFF80_8080),
+                        n,
+                        &mut block,
+                    )
+                })
+                .collect();
+            for j in 1..at.len().saturating_sub(1) {
+                block.triangles.push([at[0], at[j], at[j + 1], i as u32]);
                 tris += 1;
             }
         }
@@ -697,6 +891,8 @@ mod tests {
             surface: 0,
             uv_scale: 0.0,
             uv_frame: None,
+            corner_normals: None,
+            corner_uvs: None,
             group: None,
         });
         let m2 = bsp_model("level", &polys, &t2, V3::ZERO, 0, &textures);

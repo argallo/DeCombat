@@ -406,6 +406,50 @@ pub fn weapon_sounds(doc: &ButeDoc) -> BTreeMap<u16, WeaponSounds> {
     out
 }
 
+/// Sound number of the dry fire.
+const SOUND_DRY_FIRE: u8 = 7;
+/// A dry-fire sound of at least this length is no click (seconds).
+const DRY_FIRE_NO_CLICK_S: f32 = 0.6;
+/// A dry-fire sound this short or longer can stand in for one that is no click (seconds).
+const DRY_FIRE_CLICK_MIN_S: f32 = 0.1;
+
+/// Dry fire that sounds like dry fire: a row whose dry-fire file is no click takes the first row's click instead, and
+/// plays nothing when there is none. `seconds` reads a file's length, `None` when it cannot be read (the row stays).
+// OBSERVED: 2026-11-03, the ROM's rows name 78 distinct dry-fire files: 44 last under 0.6 s (clicks of 0.06 .. 0.28 s
+// among them) and 34 last 1.87 s at full level, with the falling shape of a shot (counts only)
+// DC-DEFAULT: CLI-1844 (proposed; USER REPORT 2026-11-03 "when you run out of bullets you gun still makes shooting
+// sounds"); the row's own file is what cshell+0x17bd20 reads, and what the 2009 client did with these is not known
+pub fn click_dry_fire(
+    weapons: &mut BTreeMap<u16, WeaponSounds>,
+    seconds: &mut dyn FnMut(&str) -> Option<f32>,
+) {
+    let i = usize::from(SOUND_DRY_FIRE) - 1;
+    let mut known: BTreeMap<String, Option<f32>> = BTreeMap::new();
+    let mut length = |file: &str| {
+        *known
+            .entry(file.to_string())
+            .or_insert_with(|| seconds(file))
+    };
+    let mut click = None;
+    for w in weapons.values() {
+        let Some(file) = w.files.get(i).filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        if length(file).is_some_and(|s| (DRY_FIRE_CLICK_MIN_S..DRY_FIRE_NO_CLICK_S).contains(&s)) {
+            click = Some(file.clone());
+            break;
+        }
+    }
+    for w in weapons.values_mut() {
+        let Some(file) = w.files.get_mut(i).filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        if length(file).is_some_and(|s| s >= DRY_FIRE_NO_CLICK_S) {
+            *file = click.clone().unwrap_or_default();
+        }
+    }
+}
+
 /// Footstep keys of the clips of one character model: per combined clip index, its length and its footstep keys
 /// (time, foot argument: `Some(true)` the right foot, `Some(false)` the left one, `None` no argument).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1082,6 +1126,11 @@ impl SoundDirector {
             }
             if let Some(w) = doc(WEAPONS_ENTRY) {
                 d.weapons = weapon_sounds(&w);
+                click_dry_fire(&mut d.weapons, &mut |file| {
+                    let bytes = crate::modassets::read_entry(&vfs, file).ok()?;
+                    let info = dc_audio::decode::wav_info(&bytes).ok()?;
+                    (info.rate > 0).then(|| info.frames as f32 / info.rate as f32)
+                });
                 d.silenced = cues::silenced_sounds(&w);
                 d.mod_rows = cues::mod_sounds(&w);
                 d.shot_rows = crate::fx::FxTables::from_docs(
@@ -2838,6 +2887,51 @@ ReloadSndRadius=50
         assert_eq!(w[&16].sound(6), Some(("f.wav", 1000.0)));
         assert_eq!(w[&17].sound(1), Some(("a.wav", 50.0)));
         assert_eq!(w[&17].sound(6), Some(("f.wav", 8000.0)));
+    }
+
+    #[test]
+    fn a_dry_fire_sound_that_is_no_click_takes_a_click() {
+        let row = |dry: &str| WeaponSounds {
+            files: (1..=14)
+                .map(|k| {
+                    if k == 7 {
+                        dry.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect(),
+            radius: vec![100.0; 14],
+            silenced: Vec::new(),
+        };
+        let lengths = |file: &str| match file {
+            "tiny.wav" => Some(0.06),
+            "click.wav" => Some(0.28),
+            "bang.wav" => Some(1.87),
+            _ => None,
+        };
+        let mut w: BTreeMap<u16, WeaponSounds> = [
+            (1, row("tiny.wav")),
+            (2, row("bang.wav")),
+            (3, row("click.wav")),
+            (4, row("gone.wav")),
+            (5, row("")),
+        ]
+        .into_iter()
+        .collect();
+        click_dry_fire(&mut w, &mut |f| lengths(f));
+        let dry =
+            |w: &BTreeMap<u16, WeaponSounds>, n: u16| w[&n].sound(7).map(|(f, _)| f.to_string());
+        assert_eq!(dry(&w, 1).as_deref(), Some("tiny.wav"), "a click stays");
+        assert_eq!(dry(&w, 2).as_deref(), Some("click.wav"), "the bang goes");
+        assert_eq!(dry(&w, 3).as_deref(), Some("click.wav"));
+        assert_eq!(dry(&w, 4).as_deref(), Some("gone.wav"), "unread: it stays");
+        assert_eq!(dry(&w, 5), None);
+
+        // no click anywhere: silence rather than a shot
+        let mut w: BTreeMap<u16, WeaponSounds> = [(2, row("bang.wav"))].into_iter().collect();
+        click_dry_fire(&mut w, &mut |f| lengths(f));
+        assert_eq!(dry(&w, 2), None);
     }
 
     fn look(clip: usize, t: f32) -> RemoteLook {

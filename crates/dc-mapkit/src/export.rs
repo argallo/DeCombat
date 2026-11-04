@@ -23,7 +23,7 @@
 //! hashes); `zip` writes `<out_dir>/<mod id>.zip`. `no_rom_paths` refuses a project with any `{"rom": ...}`
 //! texture (CLEANROOM §4: committed examples use own textures only); without it a ROM texture path is warned
 //! `rom.unverified` (the client resolves it from its own ROM at run time). The size of the folder is compared
-//! with the 16 MiB lobby default (`size.estimate`) and the 32 MiB client cap (`size.limit`).
+//! near the 32 MiB cap (`size.estimate`) and over it (`size.limit`).
 
 use crate::build::Built;
 use crate::diag::{Code, Diagnostic, Diagnostics, Severity};
@@ -106,7 +106,22 @@ pub fn dtx_path_of(rel: &str) -> String {
     crate::worldgen::dtx_rel_path(&under_assets)
 }
 
-/// PNG bytes -> one-level 32-bit DTX bytes.
+/// PNG bytes -> DTX bytes.
+/// A material's texture: as [`png_to_dtx`], but holes in a picture of a power-of-two size stay holes: paint on a wall
+/// (DC-DEFAULT: MAP-110).
+pub fn material_png_to_dtx(png: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(png)
+        .map_err(|e| e.to_string())?
+        .to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    if w <= u16::MAX as u32 && h <= u16::MAX as u32 && img.pixels().any(|p| p[3] < 128) {
+        if let Some(dtx) = dc_tex::write_dxt1_cutout(w as u16, h as u16, img.as_raw()) {
+            return Ok(dtx);
+        }
+    }
+    png_to_dtx(png)
+}
+
 pub fn png_to_dtx(png: &[u8]) -> Result<Vec<u8>, String> {
     let img = image::load_from_memory(png)
         .map_err(|e| e.to_string())?
@@ -114,6 +129,31 @@ pub fn png_to_dtx(png: &[u8]) -> Result<Vec<u8>, String> {
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return Err(format!("{w} x {h} is not a texture size (1..65535)"));
+    }
+    // opaque and a power of two: compressed with a mip chain, sharper for the bytes and no shimmer at a distance;
+    // anything else as it is, 32 bits a texel (DC-DEFAULT: MAP-107)
+    let opaque = img.pixels().all(|p| p[3] == 255);
+    if opaque {
+        if let Some(dtx) = dc_tex::write_dxt1_mipped(w as u16, h as u16, img.as_raw()) {
+            return Ok(dtx);
+        }
+    }
+    // a large opaque picture of another shape (a 1024 x 768 loading page, 3 MB as it is): the game stretches it over
+    // the page anyway, so the nearest powers of two lose nothing that shows
+    let down = |v: u32| {
+        let p = v.next_power_of_two();
+        if p > v {
+            p / 2
+        } else {
+            p
+        }
+    };
+    if opaque && w >= 256 && h >= 256 {
+        let (pw, ph) = (down(w), down(h));
+        let small = image::imageops::resize(&img, pw, ph, image::imageops::FilterType::Triangle);
+        if let Some(dtx) = dc_tex::write_dxt1_mipped(pw as u16, ph as u16, small.as_raw()) {
+            return Ok(dtx);
+        }
     }
     dc_tex::write_bgra8(w as u16, h as u16, img.as_raw())
         .ok_or_else(|| "the texture could not be written".to_string())
@@ -396,7 +436,7 @@ pub fn export(
                 continue;
             }
         };
-        match png_to_dtx(&png) {
+        match material_png_to_dtx(&png) {
             Ok(dtx) => w.put(&target, &dtx)?,
             Err(e) => d.error(
                 Code::TextureFormat,
@@ -511,6 +551,37 @@ pub fn export(
     manifest.homepage = m.homepage.clone();
     manifest.tags = m.tags.clone();
     manifest.screenshots = vec![SCREENSHOT.into()];
+    // MOD-28: somebody else's work ships with its credit, in the pack and where players read about it
+    if !m.credits.is_empty() {
+        manifest.asset_policy = dc_mod_lua::AssetPolicy::Credited;
+        manifest.credits = m
+            .credits
+            .iter()
+            .map(|c| dc_mod_lua::ModCredit {
+                title: c.title.clone(),
+                author: c.author.clone(),
+                license: c.license.clone(),
+                source: c.source.clone(),
+                changes: c.changes.clone(),
+            })
+            .collect();
+        let mut text = format!("Credits for {}\n\n", p.name);
+        for c in &m.credits {
+            text.push_str(&format!(
+                "{}\n  by {}\n  license {}\n  source {}\n  changes: {}\n\n",
+                c.title, c.author, c.license, c.source, c.changes
+            ));
+        }
+        w.put("CREDITS.txt", text.as_bytes())?;
+        let mut authors: Vec<&str> = m.credits.iter().map(|c| c.author.as_str()).collect();
+        authors.sort_unstable();
+        authors.dedup();
+        manifest.description = format!(
+            "{} Uses models by {}; see CREDITS.txt.",
+            manifest.description,
+            authors.join(", ")
+        );
+    }
     if let Err(e) = manifest.check_metadata() {
         return Err(Diagnostics::one(Diagnostic::new(
             Code::MetaInvalid,
@@ -539,10 +610,7 @@ pub fn export(
         d.warn(
             Code::SizeEstimate,
             dir.display().to_string(),
-            format!(
-                "{} KiB is above the lobby's 16 MiB default (`mods.max_zip_bytes`)",
-                w.bytes >> 10
-            ),
+            format!("{} KiB is near the 32 MiB cap", w.bytes >> 10),
         );
     }
 

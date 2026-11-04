@@ -27,6 +27,126 @@ pub struct BakeInput<'a> {
     pub settings: &'a WorldSettings,
     pub bake: &'a Bake,
     pub terrain: Option<(&'a Terrain, &'a Heights)>,
+    /// What casts shadows when `bake.shadow` is above 0 (see [`Occluder::of`]).
+    pub occluders: &'a [Occluder],
+}
+
+/// One polygon that casts a shadow, with its bounds for a quick refusal.
+#[derive(Debug, Clone)]
+pub struct Occluder {
+    lo: V3,
+    hi: V3,
+    corners: Vec<V3>,
+}
+
+impl Occluder {
+    pub fn of(p: &Poly) -> Occluder {
+        let (mut lo, mut hi) = (p.corners[0], p.corners[0]);
+        for c in &p.corners {
+            lo = lo.min(*c);
+            hi = hi.max(*c);
+        }
+        Occluder {
+            lo,
+            hi,
+            corners: p.corners.clone(),
+        }
+    }
+
+    /// Whether the segment from `o` along `d` (length `len`) crosses the polygon. Fixed f32 steps, no hashing.
+    fn hit(&self, o: V3, d: V3, len: f32) -> bool {
+        let e = (o + d * len).min(o);
+        let f = (o + d * len).max(o);
+        if e.x > self.hi.x
+            || e.y > self.hi.y
+            || e.z > self.hi.z
+            || f.x < self.lo.x
+            || f.y < self.lo.y
+            || f.z < self.lo.z
+        {
+            return false;
+        }
+        for i in 1..self.corners.len() - 1 {
+            let (a, b, c) = (self.corners[0], self.corners[i], self.corners[i + 1]);
+            let (e1, e2) = (b - a, c - a);
+            let h = V3::new(
+                d.y * e2.z - d.z * e2.y,
+                d.z * e2.x - d.x * e2.z,
+                d.x * e2.y - d.y * e2.x,
+            );
+            let det = e1.dot(h);
+            if det.abs() < 1e-6 {
+                continue;
+            }
+            let s = o - a;
+            let u = s.dot(h) / det;
+            if !(0.0..=1.0).contains(&u) {
+                continue;
+            }
+            let q = V3::new(
+                s.y * e1.z - s.z * e1.y,
+                s.z * e1.x - s.x * e1.z,
+                s.x * e1.y - s.y * e1.x,
+            );
+            let v = d.dot(q) / det;
+            if v < 0.0 || u + v > 1.0 {
+                continue;
+            }
+            let t = e2.dot(q) / det;
+            if t > 0.0 && t < len {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// How far a ray to the sun looks (world units), and how far the contact shadow reaches.
+const SUN_REACH: f32 = 4096.0;
+const CONTACT_REACH: f32 = 220.0;
+/// The sun's disc: rays around its direction, so that a shadow's edge is soft.
+const SUN_SPREAD: [[f32; 3]; 5] = [
+    [0.0, 0.0, 0.0],
+    [0.05, 0.0, 0.0],
+    [-0.05, 0.0, 0.0],
+    [0.0, 0.0, 0.05],
+    [0.0, 0.0, -0.05],
+];
+/// Low rays around a corner: what is close by darkens the corner, whichever way the sun comes from.
+const CONTACT_RAYS: [[f32; 3]; 8] = [
+    [0.8, 0.6, 0.0],
+    [-0.8, 0.6, 0.0],
+    [0.0, 0.6, 0.8],
+    [0.0, 0.6, -0.8],
+    [0.566, 0.6, 0.566],
+    [0.566, 0.6, -0.566],
+    [-0.566, 0.6, 0.566],
+    [-0.566, 0.6, -0.566],
+];
+
+/// `(share of the sun's disc in view, share of the contact rays blocked)` at a corner.
+fn shade(input: &BakeInput<'_>, n: V3, p: V3) -> (f32, f32) {
+    let start = p + n * 2.0;
+    let blocked = |d: V3, len: f32| input.occluders.iter().any(|o| o.hit(start, d, len));
+    let sun = sun_towards(input.settings);
+    let mut lit = 0;
+    for s in SUN_SPREAD {
+        let d = (sun + V3::from_array(s)).normalized().unwrap_or(sun);
+        if !blocked(d, SUN_REACH) {
+            lit += 1;
+        }
+    }
+    let mut near = 0;
+    for r in CONTACT_RAYS {
+        // a ray that points into its own surface says nothing about the things around it
+        if V3::from_array(r).dot(n) > 0.0 && blocked(V3::from_array(r), CONTACT_REACH) {
+            near += 1;
+        }
+    }
+    (
+        lit as f32 / SUN_SPREAD.len() as f32,
+        near as f32 / CONTACT_RAYS.len() as f32,
+    )
 }
 
 /// The unit vector towards the sun (`-sun_dir`), or straight up for a zero vector.
@@ -78,11 +198,16 @@ fn byte(v: f32) -> u32 {
 
 /// The ARGB colour of a corner with normal `n` at `p`.
 pub fn colour_at(input: &BakeInput<'_>, n: V3, p: V3) -> u32 {
+    shaded_colour(input, n, p, (1.0, 0.0))
+}
+
+/// [`colour_at`] with the result of [`shade`].
+fn shaded_colour(input: &BakeInput<'_>, n: V3, p: V3, shade: (f32, f32)) -> u32 {
     let s = input.settings;
     let b = input.bake;
-    let n_dot_l = n.dot(sun_towards(s)).max(0.0);
+    let n_dot_l = n.dot(sun_towards(s)).max(0.0) * (1.0 - b.shadow * (1.0 - shade.0));
     let hemi = 0.5 + 0.5 * n.y;
-    let ao = 1.0 - b.ao * occlusion(input.terrain, p);
+    let ao = (1.0 - b.ao * occlusion(input.terrain, p)) * (1.0 - b.shadow * 0.5 * shade.1);
     let r = byte(channel(b, s, s.ambient[0], s.sun_color[0], n_dot_l, hemi) * ao);
     let g = byte(channel(b, s, s.ambient[1], s.sun_color[1], n_dot_l, hemi) * ao);
     let bl = byte(channel(b, s, s.ambient[2], s.sun_color[2], n_dot_l, hemi) * ao);
@@ -93,13 +218,85 @@ pub fn colour_at(input: &BakeInput<'_>, n: V3, p: V3) -> u32 {
 pub fn bake_poly(input: &BakeInput<'_>, poly: &Poly) -> Vec<u32> {
     poly.corners
         .iter()
-        .map(|c| colour_at(input, poly.plane.n, *c))
+        .enumerate()
+        .map(|(i, c)| {
+            let n = poly.corner_normals.as_ref().and_then(|n| n.get(i)).copied();
+            // a model's corners keep plain light: its own simple core would shade them in patches
+            if input.bake.shadow > 0.0 && n.is_none() && !input.occluders.is_empty() {
+                let at = shade(input, poly.plane.n, *c);
+                shaded_colour(input, poly.plane.n, *c, at)
+            } else {
+                colour_at(input, n.unwrap_or(poly.plane.n), *c)
+            }
+        })
         .collect()
 }
 
 /// Colours of every corner of every polygon.
 pub fn bake_polys(input: &BakeInput<'_>, polys: &[Poly]) -> Vec<Vec<u32>> {
     polys.iter().map(|p| bake_poly(input, p)).collect()
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    use super::*;
+
+    #[test]
+    fn a_floor_is_darker_under_a_core_and_a_model_is_left_alone() {
+        let s = WorldSettings {
+            sun_dir: [0.0, -1.0, 0.0],
+            ..Default::default()
+        };
+        let b = Bake {
+            lightmap: 0.0,
+            shadow: 1.0,
+            ..Default::default()
+        };
+        // a roof at height 50 over x, z in -10 .. 10
+        let roof = Poly::new(
+            vec![
+                V3::new(-10.0, 50.0, -10.0),
+                V3::new(10.0, 50.0, -10.0),
+                V3::new(10.0, 50.0, 10.0),
+                V3::new(-10.0, 50.0, 10.0),
+            ],
+            V3::new(0.0, -1.0, 0.0),
+            crate::geom::Surface::default(),
+            None,
+        )
+        .unwrap();
+        let occluders = [Occluder::of(&roof)];
+        let input = BakeInput {
+            settings: &s,
+            bake: &b,
+            terrain: None,
+            occluders: &occluders,
+        };
+        let floor = |x: f32| {
+            Poly::new(
+                vec![
+                    V3::new(x, 0.0, 0.0),
+                    V3::new(x + 1.0, 0.0, 0.0),
+                    V3::new(x, 0.0, 1.0),
+                ],
+                V3::UP,
+                crate::geom::Surface::default(),
+                None,
+            )
+            .unwrap()
+        };
+        let red = |c: u32| c >> 16 & 0xFF;
+        let (mut under, open) = (floor(0.0), floor(500.0));
+        let dark = bake_poly(&input, &under)[0];
+        let lit = bake_poly(&input, &open)[0];
+        assert!(red(dark) < red(lit), "{dark:x} {lit:x}");
+        under.corner_normals = Some(vec![under.plane.n; 3]);
+        assert_eq!(
+            bake_poly(&input, &under)[0],
+            lit,
+            "a model's corners keep plain light"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -133,12 +330,15 @@ mod tests {
             ..Default::default()
         };
         let b = Bake {
+            lightmap: 0.0,
+            shadow: 0.0,
             ambient: 0.5,
             sun: 0.5,
             hemisphere: 0.0,
             ao: 0.0,
         };
         let input = BakeInput {
+            occluders: &[],
             settings: &s,
             bake: &b,
             terrain: None,
@@ -183,6 +383,7 @@ mod tests {
         };
         let lit = colour_at(
             &BakeInput {
+                occluders: &[],
                 settings: &s,
                 bake: &b,
                 terrain: Some((&t, &h)),
@@ -192,6 +393,7 @@ mod tests {
         );
         let open = colour_at(
             &BakeInput {
+                occluders: &[],
                 settings: &s,
                 bake: &b,
                 terrain: Some((&t, &h)),

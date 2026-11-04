@@ -49,6 +49,7 @@ fn rom_the_loadouts_mod_models_sit_on_their_first_person_sockets() {
             .find_map(|p| WeaponClips::load(&vfs, p).ok().map(|c| (p.clone(), c)))
             .expect("clips");
         let vw = ViewWeapon {
+            inspect: None,
             weapon,
             model: Some(ModelRef {
                 model: pv_model.clone(),
@@ -174,6 +175,7 @@ fn rom_attach_scale_two_draws_the_mod_model_at_double_size() {
         .find_map(|p| WeaponClips::load(&vfs, p).ok().map(|c| (p.clone(), c)))
         .expect("clips");
     let vw = ViewWeapon {
+        inspect: None,
         weapon,
         model: Some(ModelRef {
             model: pv_model,
@@ -273,6 +275,7 @@ fn rom_a_zoomed_sniper_draws_no_first_person_weapon() {
         .find_map(|p| WeaponClips::load(&vfs, p).ok().map(|c| (p.clone(), c)))
         .expect("clips");
     let vw = ViewWeapon {
+        inspect: None,
         weapon: 27,
         model: Some(ModelRef {
             model: pv_model,

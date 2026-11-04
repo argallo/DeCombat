@@ -38,6 +38,8 @@ pub struct Options {
     pub start_rank: String,
     /// Raw `--start-loadout` text (`<slot>:<item>,...` or bare item numbers); resolved by `grant::start_loadout`.
     pub start_loadout: String,
+    /// Raw `--start-items` text: item numbers a new player character owns, not equipped (DC-DEFAULT: CD-99).
+    pub start_items: String,
     /// Raw `--bot-start-loadout` text (same syntax); replaces `start_loadout` for new accounts named `Bot<digits>` in any case (LG-7, LG-9).
     pub bot_start_loadout: String,
     /// LG-260 `--bot-kits random|off`: a new bot account gets a random GP primary and secondary of the ROM shop.
@@ -198,6 +200,7 @@ pub fn command() -> Command {
         .arg(opt("start-exp", "starting experience of new characters").default_value("0").value_parser(clap::value_parser!(i64)))
         .arg(opt("start-rank", "starting rank of new characters (number 0..55 or name); overrides --start-exp").default_value(""))
         .arg(opt("start-loadout", "equipped items of new characters: <slot>:<item>,... or <item> (slot from the ROM)").default_value(""))
+        .arg(opt("start-items", "items a new player character owns in the inventory, not equipped: <item>,...").default_value(""))
         .arg(opt("bot-kits", "random (default): a new bot account (name ending in bot<digits>) gets a random GP primary and secondary of the ROM shop; off: the starter kit (LG-260)").default_value("random"))
         .arg(opt("bot-faces", "random (default): a new bot account gets a random face of the creation table; off: the face the bot asked for (LG-260)").default_value("random"))
         .arg(opt("bot-start-loadout", "equipped items of new accounts named Bot<digits>, any case (same syntax as --start-loadout); empty = they get --start-loadout").default_value(""))
@@ -534,6 +537,7 @@ pub fn resolve_with(m: &ArgMatches, conf: Option<&ServerConf>) -> Options {
         new_exp: *m.get_one::<i64>("start-exp").unwrap_or(&0),
         start_rank: s(m, "start-rank"),
         start_loadout: s(m, "start-loadout"),
+        start_items: s(m, "start-items"),
         bot_start_loadout: s(m, "bot-start-loadout"),
         bot_kits_random: s(m, "bot-kits") != "off",
         bot_faces_random: s(m, "bot-faces") != "off",

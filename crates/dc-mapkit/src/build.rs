@@ -63,6 +63,9 @@ pub struct BuildStats {
     pub vertices: usize,
     pub triangles: usize,
     pub sections: usize,
+    /// Lightmap pages and their packed bytes (MAP-108).
+    pub lightmap_pages: usize,
+    pub lightmap_bytes: usize,
     pub bytes: usize,
 }
 
@@ -110,6 +113,100 @@ fn oversized(polys: &[geom::Poly]) -> Vec<usize> {
         .collect()
 }
 
+/// Pairs of drawn faces on nearly one plane that overlap: they fight over the same pixels (DC-DEFAULT: MAP-109).
+fn overlapping_faces(level: &Level, baked: bool) -> Vec<(String, String)> {
+    struct Face<'a> {
+        source: &'a str,
+        material: usize,
+        n: geom::V3,
+        d: f32,
+        lo: [f32; 2],
+        hi: [f32; 2],
+    }
+    let mut faces: Vec<Face<'_>> = Vec::new();
+    for (p, source) in level.polys.iter().zip(&level.poly_sources) {
+        if p.corner_normals.is_some() || p.corners.len() < 3 || source == "terrain" {
+            continue;
+        }
+        let n = p.plane.n;
+        let (a, b) = if n.y.abs() > 0.7 {
+            (0, 2)
+        } else if n.x.abs() > n.z.abs() {
+            (1, 2)
+        } else {
+            (0, 1)
+        };
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for c in &p.corners {
+            let q = c.to_array();
+            lo = [lo[0].min(q[a]), lo[1].min(q[b])];
+            hi = [hi[0].max(q[a]), hi[1].max(q[b])];
+        }
+        // nobody looks at a thing from under the floor, and one material on both faces hardly shows
+        if n.y < -0.5 && p.corners.iter().all(|c| c.y < 4.0) {
+            continue;
+        }
+        // the thin edges of a strip are not seen
+        if hi[0] - lo[0] < 3.0 || hi[1] - lo[1] < 3.0 {
+            continue;
+        }
+        faces.push(Face {
+            source,
+            material: p.material,
+            n,
+            d: p.plane.d,
+            lo,
+            hi,
+        });
+    }
+    let mut out = Vec::new();
+    for (i, f) in faces.iter().enumerate() {
+        for g in &faces[i + 1..] {
+            // one material on both is the same picture, unless each has its own light (DC-DEFAULT: MAP-110)
+            if f.source != g.source
+                && (baked || f.material != g.material)
+                && f.n.dot(g.n) > 0.999
+                && (f.d - g.d).abs() < 1.0
+                && f.lo[0].max(g.lo[0]) + 1.0 < f.hi[0].min(g.hi[0])
+                && f.lo[1].max(g.lo[1]) + 1.0 < f.hi[1].min(g.hi[1])
+            {
+                out.push((f.source.to_string(), g.source.to_string()));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// True for a texture with holes, which the export keeps (DC-DEFAULT: MAP-110).
+fn material_has_holes(m: &Material, assets: &Assets) -> bool {
+    let crate::project::TextureRef::Own(rel) = &m.texture else {
+        return false;
+    };
+    image::open(Project::resolve(&assets.dir, rel))
+        .is_ok_and(|img| img.to_rgba8().pixels().any(|p| p[3] < 128))
+}
+
+/// A material's average colour, 0 .. 1, for the light a surface bounces (grey for a texture only the user's ROM has).
+fn material_albedo(m: &Material, assets: &Assets) -> [f32; 3] {
+    let crate::project::TextureRef::Own(rel) = &m.texture else {
+        return [0.5; 3];
+    };
+    let Ok(img) = image::open(Project::resolve(&assets.dir, rel)) else {
+        return [0.5; 3];
+    };
+    let img = img.to_rgb8();
+    let n = (img.width() as u64 * img.height() as u64).max(1) as f32;
+    let mut sum = [0f32; 3];
+    for p in img.pixels() {
+        for c in 0..3 {
+            sum[c] += p[c] as f32 / 255.0;
+        }
+    }
+    sum.map(|v| v / n)
+}
+
 /// The `bsp.budget` diagnostic of a model whose tree ran past its node budget, naming the solids / imports /
 /// terrain the offending cell's polygons came from (`sources` parallel to the polygons).
 fn budget_diagnostic(model: &str, hit: &bsp::BudgetHit, sources: &[String]) -> Diagnostic {
@@ -148,6 +245,10 @@ make them brushes (world_model)",
 pub fn level_of(p: &Project, h: &Heights, assets: &Assets) -> Result<Level, Diagnostics> {
     let mut diags = Diagnostics::new();
     let mut level = Level::default();
+    let hidden = |id: &str| {
+        p.material_index(id)
+            .is_some_and(|i| p.materials[i].flags.hidden)
+    };
     let surf = |id: &str| -> Option<Surface> {
         p.material_index(id).map(|i| surface_of(&p.materials[i], i))
     };
@@ -189,6 +290,13 @@ pub fn level_of(p: &Project, h: &Heights, assets: &Assets) -> Result<Level, Diag
             }
         };
         match s.brush {
+            None if hidden(&s.material) => {
+                // a hidden material: collision only, never drawn (DC-DEFAULT: MAP-104)
+                for poly in polys {
+                    level.hidden.push(poly);
+                    level.hidden_sources.push(s.id.clone());
+                }
+            }
             None => {
                 for poly in polys {
                     level.push_from(poly, &s.id);
@@ -308,7 +416,22 @@ pub fn build(
     if diags.has_errors() {
         return Err(diags);
     }
+    let occluders: Vec<bake::Occluder> = if p.build.bake.shadow > 0.0 {
+        level
+            .polys
+            .iter()
+            .zip(&level.poly_sources)
+            .filter(|(poly, source)| poly.flags & SURF_SOLID != 0 && source.as_str() != "terrain")
+            .map(|(poly, _)| poly)
+            .chain(level.hidden.iter())
+            .filter(|poly| poly.corners.len() >= 3)
+            .map(bake::Occluder::of)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let bake_in = BakeInput {
+        occluders: &occluders,
         settings: &p.settings,
         bake: &settings.bake,
         terrain: p.terrain.as_ref().map(|t| (t, h)),
@@ -360,10 +483,20 @@ pub fn build(
         }
     }
 
-    // the level: every level polygon plus the sky faces in the BSP model; render data without the sky faces
-    let mut level_polys = level.polys.clone();
+    // the level's BSP model: what can be hit (solid level polygons, hidden cores, sky faces); render data without
+    // the sky faces and the hidden cores. A see-through model has nothing the walk could sweep, so a dense mesh
+    // costs neither nodes nor bytes here and cannot blow the budget (DC-DEFAULT: MAP-104).
+    let mut level_polys = Vec::new();
+    let mut level_sources = Vec::new();
+    for (poly, source) in level.polys.iter().zip(&level.poly_sources) {
+        if poly.flags & SURF_SOLID != 0 {
+            level_polys.push(poly.clone());
+            level_sources.push(source.clone());
+        }
+    }
+    level_polys.extend(level.hidden.iter().cloned());
+    level_sources.extend(level.hidden_sources.iter().cloned());
     level_polys.extend(level.sky_faces.iter().cloned());
-    let mut level_sources = level.poly_sources.clone();
     level_sources.extend(level.sky_sources.iter().cloned());
     let level_tree = bsp::build(
         &level_polys,
@@ -388,9 +521,77 @@ pub fn build(
         0,
         &textures,
     )];
-    let colours = bake::bake_polys(&bake_in, &level.polys);
-    let (level_render, counts) =
-        worldgen::render_world(&level.polys, &colours, &textures, false, &level.sky_faces);
+    for (a, b) in overlapping_faces(&level, p.build.bake.lightmap > 0.0)
+        .into_iter()
+        .take(40)
+    {
+        diags.push(Diagnostic::new(
+            Code::FaceOverlap,
+            format!("solids.{a}"),
+            format!("{a} and {b} share a plane and overlap, so they will flicker"),
+        ));
+    }
+    // lightmaps when the project asks for them (DC-DEFAULT: MAP-108), else light per corner
+    let baked = (p.build.bake.lightmap > 0.0).then(|| {
+        let means: Vec<[f32; 3]> = p
+            .materials
+            .iter()
+            .map(|m| material_albedo(m, assets))
+            .collect();
+        let albedo = |i: usize| means.get(i).copied().unwrap_or([0.5; 3]);
+        let holes: Vec<bool> = p
+            .materials
+            .iter()
+            .map(|m| material_has_holes(m, assets))
+            .collect();
+        let paint = |i: usize| holes.get(i).copied().unwrap_or(false);
+        let skin = |i: usize| p.materials.get(i).is_some_and(|m| m.flags.skin);
+        let input = crate::lightmap::LightInput {
+            settings: &p.settings,
+            density: p.build.bake.lightmap,
+            ambient: p.build.bake.ambient,
+            sun: p.build.bake.sun,
+            bounce: 1.0,
+            lamps: p
+                .objects
+                .iter()
+                .filter_map(crate::lightmap::Lamp::of)
+                .collect(),
+            albedo: &albedo,
+            paint: &paint,
+            skin: &skin,
+        };
+        crate::lightmap::bake(&level, &input)
+    });
+    if let Some(b) = &baked {
+        let mut seen = std::collections::BTreeSet::new();
+        for i in &b.paint_off_wall {
+            let source = level
+                .poly_sources
+                .get(*i)
+                .map(String::as_str)
+                .unwrap_or("?");
+            if seen.insert(source) {
+                diags.push(
+                    Diagnostic::new(
+                        Code::PaintOffWall,
+                        format!("imports.{source}"),
+                        format!("{source} hangs off its wall or sits behind another surface"),
+                    )
+                    .with_fix("place it wholly on the wall, up to 12 units off it and in front of anything painted on it"),
+                );
+            }
+        }
+        stats.lightmap_pages = b.pages.len();
+        stats.lightmap_bytes = b.pages.iter().map(Vec::len).sum();
+    }
+    let (level_render, counts) = match &baked {
+        Some(b) => worldgen::render_world_lit(&level.polys, b, &textures, &level.sky_faces),
+        None => {
+            let colours = bake::bake_polys(&bake_in, &level.polys);
+            worldgen::render_world(&level.polys, &colours, &textures, false, &level.sky_faces)
+        }
+    };
     stats.vertices += counts.vertices;
     stats.triangles += counts.triangles;
     stats.sections += counts.sections;
@@ -471,6 +672,21 @@ pub fn build(
     };
     let span = extent_max - extent_min;
     let a = p.settings.ambient;
+    let flat_grid = (
+        [1u32, 1, 1],
+        extent_min.to_array(),
+        [span.x.max(1.0), span.y.max(1.0), span.z.max(1.0)],
+        vec![a[0], a[1], a[2]],
+    );
+    let (grid_dims, grid_origin, grid_cell, grid_rgb) = match baked {
+        Some(b) => (
+            b.grid_dims,
+            b.grid_origin.to_array(),
+            b.grid_cell.to_array(),
+            b.grid_rgb,
+        ),
+        None => flat_grid,
+    };
     let world = SynthWorld {
         info: INFO_TEXT.as_bytes().to_vec(),
         extent_min: extent_min.to_array(),
@@ -480,10 +696,10 @@ pub fn build(
         models,
         objects,
         blind: Vec::new(),
-        grid_origin: extent_min.to_array(),
-        grid_cell: [span.x.max(1.0), span.y.max(1.0), span.z.max(1.0)],
-        grid_dims: [1, 1, 1],
-        grid_rgb: vec![a[0], a[1], a[2]],
+        grid_origin,
+        grid_cell,
+        grid_dims,
+        grid_rgb,
         blockers: Vec::new(),
         particle_blockers: Vec::new(),
         render,
@@ -508,6 +724,184 @@ pub fn build(
 mod tests {
     use super::*;
     use crate::project::{BrushRole, MaterialFlags, Solid, Terrain, TerrainLayer, TextureRef};
+
+    /// A hidden core stops a shot and is not drawn; a see-through model is drawn and stops nothing, and however
+    /// dense it is it does not reach the collision tree (MAP-104), all read back through the world file.
+    #[test]
+    fn a_core_stops_shots_unseen_and_a_model_is_seen_and_stops_nothing() {
+        use dc_sim::from_world::{collision_world, WorldFilter};
+        let dir = std::env::temp_dir().join(format!("dc-mapkit-build-core-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let made = crate::template::make(crate::template::Template::Flat, "Core", "tests", 1);
+        for file in &made.files {
+            std::fs::write(dir.join(&file.path), &file.bytes).unwrap();
+        }
+        let (mut p, h) = (made.project, made.heights);
+        // a fan of 400 triangles through one point, the shape that used to run the tree out of its budget
+        let mut obj = String::from("v 0 0 0\n");
+        for i in 0..=400 {
+            let a = i as f32 * 0.0157;
+            obj.push_str(&format!(
+                "v {} {} {}\n",
+                100.0 * a.cos(),
+                50.0 + 40.0 * (a * 7.0).sin(),
+                100.0 * a.sin()
+            ));
+        }
+        for i in 0..400 {
+            obj.push_str(&format!("f 1 {} {}\n", i + 2, i + 3));
+        }
+        std::fs::write(dir.join("assets/fan.obj"), obj).unwrap();
+        let fan = p.alloc_id("import");
+        p.imports.push(crate::project::Import {
+            id: fan,
+            file: "assets/fan.obj".into(),
+            pos: [600.0, 0.0, 600.0],
+            rot_y_deg: 0.0,
+            scale: 1.0,
+            material: "wall".into(),
+            collision: false,
+        });
+        p.materials.push(Material {
+            id: "core".into(),
+            texture: TextureRef::Own("assets/wall.png".into()),
+            flags: MaterialFlags {
+                hidden: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let id = p.alloc_id("solid");
+        p.solids.push(Solid {
+            id,
+            pos: [-600.0, 50.0, 600.0],
+            size: [100.0, 100.0, 100.0],
+            material: "core".into(),
+            ..Default::default()
+        });
+        let built =
+            build(&p, &h, &Assets::new(&dir), &BuildSettings::default()).expect("it builds");
+        assert!(
+            built.stats.triangles >= 400,
+            "the model is drawn: {:?}",
+            built.stats
+        );
+        let w = dc_world::World::parse(&built.dat).expect("the world parses");
+        let cw = collision_world(&w, &WorldFilter::default());
+        let shot = |x: f32| {
+            cw.ray(
+                dc_sim::V3::new(x, 50.0, 300.0),
+                dc_sim::V3::new(x, 50.0, 900.0),
+            )
+        };
+        assert!(shot(-600.0).is_some(), "the core stops a shot");
+        assert!(shot(600.0).is_none(), "the model does not");
+        assert!(
+            built.stats.triangles >= built.stats.polys + 300,
+            "the model is drawn but not in the collision model: {:?}",
+            built.stats
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_faces_on_one_plane_are_reported_and_a_gap_is_not() {
+        let s = Surface::default();
+        let quad = |x: f32, z: f32| {
+            geom::Poly::new(
+                vec![
+                    geom::V3::new(x, 0.0, z),
+                    geom::V3::new(x + 10.0, 0.0, z),
+                    geom::V3::new(x + 10.0, 10.0, z),
+                    geom::V3::new(x, 10.0, z),
+                ],
+                geom::V3::new(0.0, 0.0, -1.0),
+                s,
+                None,
+            )
+            .unwrap()
+        };
+        let mut l = Level::default();
+        l.push_from(quad(0.0, 0.0), "a");
+        let mut other = quad(5.0, 0.0);
+        other.material = 1;
+        l.push_from(other, "b");
+        l.push_from(quad(0.0, 8.0), "c");
+        assert_eq!(
+            overlapping_faces(&l, false),
+            vec![("a".to_string(), "b".to_string())]
+        );
+        // one material with its own light on each flickers too
+        let mut same = Level::default();
+        same.push_from(quad(0.0, 0.0), "a");
+        same.push_from(quad(5.0, 0.0), "d");
+        assert!(overlapping_faces(&same, false).is_empty());
+        assert_eq!(
+            overlapping_faces(&same, true),
+            vec![("a".to_string(), "d".to_string())]
+        );
+    }
+
+    /// A lit project writes what the renderer reads (RENDER_2009.md 5.2, 6.1): page sections that unpack to the full
+    /// size, the same triangle count again as textured sections, and a grid of light that varies (MAP-108).
+    #[test]
+    fn a_lit_map_writes_lightmap_pages_and_a_varied_grid() {
+        let dir = std::env::temp_dir().join(format!("dc-mapkit-build-lit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let made = crate::template::make(crate::template::Template::Flat, "Lit", "tests", 1);
+        for file in &made.files {
+            std::fs::write(dir.join(&file.path), &file.bytes).unwrap();
+        }
+        let (mut p, h) = (made.project, made.heights);
+        p.build.bake.lightmap = 32.0;
+        let mut lamp = crate::project::MapObject {
+            id: p.alloc_id("point_light"),
+            class: crate::vocab_names::CLASS_POINT_LIGHT.to_string(),
+            name: "lamp".into(),
+            pos: [0.0, 200.0, 0.0],
+            ..Default::default()
+        };
+        lamp.props.insert(
+            crate::vocab_names::PROP_RADIUS.to_string(),
+            crate::project::PropValue::Num(800.0),
+        );
+        p.objects.push(lamp);
+        let settings = p.build.clone();
+        let built = build(&p, &h, &Assets::new(&dir), &settings).expect("it builds");
+        assert!(built.stats.lightmap_pages > 0, "{:?}", built.stats);
+        let w = dc_world::World::parse(&built.dat).expect("the world parses");
+        w.check_layout().expect("layout");
+        let render = w.render.as_ref().expect("render data");
+        let block = &render.world.blocks[0];
+        let (mut kind2, mut kind4) = (0u64, 0u64);
+        for s in &block.sections {
+            match s.shader_kind {
+                2 => {
+                    kind2 += s.triangles as u64;
+                    assert_eq!((s.lightmap_w, s.lightmap_h), (256, 256));
+                    assert_eq!(
+                        crate::lightmap::tests_unpack(s.lightmap).len(),
+                        256 * 256 * 3,
+                        "a page unpacks to its whole size"
+                    );
+                }
+                4 => kind4 += s.triangles as u64,
+                _ => {}
+            }
+        }
+        assert!(kind2 > 0);
+        assert_eq!(
+            kind2, kind4,
+            "the page sections duplicate the textured triangles"
+        );
+        let grid = w.light_grid.expand();
+        assert!(grid.len() > 3);
+        let (lo, hi) = (grid.iter().min().unwrap(), grid.iter().max().unwrap());
+        assert!(hi > lo, "the grid holds the lamp's pool, not one colour");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn level_of_assembles_terrain_solids_and_brushes() {

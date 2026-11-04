@@ -1598,6 +1598,8 @@ impl Editor {
             .show(ui, |ui| {
                 let s = doc.project.settings.clone();
                 let mut op = Op::SettingsSet {
+                    bake_shadow: None,
+                    bake_lightmap: None,
                     fog_enable: None,
                     fog_near: None,
                     fog_far: None,

@@ -137,6 +137,7 @@ fn rom_view_model_matches_the_2009_size() {
     let pv = row.pv_model.clone().expect("first-person model");
     let clips = WeaponClips::load(&dc_rez::RezVfs::new(&rom), &pv).expect("clips");
     let held = ViewWeapon {
+        inspect: None,
         weapon: M4,
         model: Some(ModelRef {
             model: pv,
@@ -327,6 +328,7 @@ fn rom_sprint_clips_play_on_the_first_person_model() {
         ("exit", exit.index, exit.len_ms as f32 * 0.5),
     ] {
         let held = ViewWeapon {
+            inspect: None,
             weapon: M4,
             model: Some(ModelRef {
                 model: pv.clone(),
