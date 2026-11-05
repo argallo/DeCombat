@@ -434,16 +434,26 @@ fn replies_over_the_cap_are_refused() {
     );
 }
 
-/// An auth port P with a fake web port at P + 8080 (the client's default), retried until both bind.
+/// An auth port P with a fake web port at P + 8080 (the client's default), retried until both bind. P is drawn from
+/// 20000..40000 (a clock-, pid- and call-seeded start): port 0 hands out the dynamic range above 49152, parts of
+/// which Windows reserves, and on a CI runner 50 draws of that range found no pair at all (windows-i686).
 fn auth_and_web(routes: Routes) -> (TcpListener, SocketAddr) {
-    for _ in 0..50 {
-        // the web port from the free range, the auth port 8080 below it
-        let w = TcpListener::bind("127.0.0.1:0").unwrap();
-        let wp = w.local_addr().unwrap().port();
-        let Some(p) = wp.checked_sub(8080).filter(|p| *p > 1024) else {
+    static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos()
+        ^ std::process::id().wrapping_mul(2_654_435_761)
+        ^ call.wrapping_mul(40_503);
+    let start = (seed % 20000) as u16;
+    for i in 0..20000u16 {
+        let p = 20000 + (start.wrapping_add(i * 7)) % 20000;
+        let wp = p + 8080;
+        let Ok(a) = TcpListener::bind(("127.0.0.1", p)) else {
             continue;
         };
-        let Ok(a) = TcpListener::bind(("127.0.0.1", p)) else {
+        let Ok(w) = TcpListener::bind(("127.0.0.1", wp)) else {
             continue;
         };
         drop(w);

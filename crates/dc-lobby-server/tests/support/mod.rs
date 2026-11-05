@@ -366,9 +366,18 @@ impl Lobby {
         let log = dir.join("server.log");
         let fake_dir = dir.join("fake");
         std::fs::create_dir_all(&fake_dir).unwrap();
-        if let Some(j) = &o.lobby_json {
-            std::fs::write(dir.join("lobby.json"), j).unwrap();
-        }
+        // A small bot pool unless the test sets one: the default 100 pool characters per lobby, times the lobbies the
+        // tests of one binary start at once, stalled a shared CI runner's disk for over 120 s (linux servers lane).
+        let json = match &o.lobby_json {
+            Some(j) if j.contains("bots.pool_size") => j.clone(),
+            Some(j) => match j.trim().strip_prefix('{') {
+                Some(rest) if rest.trim() == "}" => r#"{"bots.pool_size": 4}"#.to_string(),
+                Some(rest) => format!(r#"{{"bots.pool_size": 4, {rest}"#),
+                None => j.clone(),
+            },
+            None => r#"{"bots.pool_size": 4}"#.to_string(),
+        };
+        std::fs::write(dir.join("lobby.json"), json).unwrap();
         // every listener on its own port; the clan lobby must not be lobbyport + 1 of another listener
         let (port, lport, cport, web) = loop {
             let p = (
