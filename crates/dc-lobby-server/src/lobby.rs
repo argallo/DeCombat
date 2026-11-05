@@ -209,12 +209,14 @@ fn on_equipment(st: &mut Core, sid: Sid) -> HResult {
     inventory::expire(st, Some(a), true)?;
     inventory::repair_defaults(st, a)?;
     let items = inventory::visible_items(st, a, db::items(&st.db, a)?);
+    // LG-407: the free weapons of the Weapon Free Passes hold their slots, flagged at +0x4e
+    let items = crate::freepass::equipped_view(st, a, items);
     let slots = inventory::equipment_slots(&items);
     st.send(
         sid,
         wire::equipment_reply(
             &slots,
-            &[0; 15],
+            &crate::freepass::flags(st, a),
             &crate::loadout::function_slots(&st.db, a)?,
         ),
     );

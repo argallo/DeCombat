@@ -1102,3 +1102,85 @@ fn a_connection_that_never_logs_in_is_closed() {
         "closed by the limit, not by the test's own timeout"
     );
 }
+/// LG-408 (OWNER REPORT 2026-11-05: a founder created a second clan from the find page): a create from a character
+/// in a clan is refused on every path (text form, HTML form, chat) with no new clan row; a member's pages carry no
+/// create link; after a plain leave, a hand-over leave and a disband the same character creates again.
+#[test]
+fn a_member_cannot_create_a_second_clan_until_he_leaves() {
+    let mut st = state();
+    let carol = player(&mut st, 1, "carol", "Carol", true);
+    let _dan = player(&mut st, 2, "dan", "Dan", true);
+    get(
+        &mut st,
+        "/clan/create?p=carol&name=Wolves&emblem=1&bg=1&fmt=text",
+    );
+    let k = crate::clan::clan_by_name(&st.db, "Wolves")
+        .unwrap()
+        .unwrap();
+    get(&mut st, &format!("/clan/join?p=dan&c={}&fmt=text", k.uid));
+    // the founder and the plain member are both refused, the text form and the HTML form alike
+    for (who, n) in [("carol", "Again"), ("dan", "Other")] {
+        let (_, body) = get(
+            &mut st,
+            &format!("/clan/create?p={who}&name={n}&emblem=2&bg=2&fmt=text"),
+        );
+        assert_eq!(
+            body,
+            format!(
+                "me\t{}\t{}\nmsg\t0\tCannot create the clan: you are already in clan Wolves.\n",
+                k.uid,
+                u8::from(who == "carol")
+            ),
+            "{who}"
+        );
+        let (_, page) = get(&mut st, &format!("/clan/create?p={who}&name={n}"));
+        assert!(
+            page.contains("Cannot create the clan: you are already in clan Wolves."),
+            "{page}"
+        );
+    }
+    assert_eq!(crate::clan::all_clans(&st.db).unwrap().len(), 1);
+    assert_eq!(st.character(carol).unwrap().clan_uid, k.uid);
+    // a member's pages offer no create link; a clanless viewer's do
+    let eve = player(&mut st, 3, "eve", "Eve", true);
+    for (who, link) in [("carol", false), ("dan", false), ("eve", true)] {
+        let (_, page) = get(&mut st, &format!("/clan?url=guild/list&p={who}"));
+        assert_eq!(page.contains("url=guild/create"), link, "{who}: {page}");
+    }
+    let (_, page) = get(&mut st, "/clan?url=guild/create&p=dan");
+    assert!(!page.contains("action=\"/clan/create\""), "{page}");
+    // a plain member leaves and creates
+    get(&mut st, "/clan/leave?p=dan&fmt=text");
+    let (_, body) = get(
+        &mut st,
+        "/clan/create?p=dan&name=Ravens&emblem=3&bg=3&fmt=text",
+    );
+    assert!(body.contains("msg\t1\tClan Ravens created.\n"), "{body}");
+    // the founder with a member left: hand-over, then a create of his own
+    get(&mut st, &format!("/clan/join?p=eve&c={}&fmt=text", k.uid));
+    let (_, body) = get(&mut st, "/clan/leave?p=carol&fmt=text");
+    assert!(body.contains("msg\t1\t"), "{body}");
+    assert_eq!(
+        crate::clan::clan_by_name(&st.db, "Wolves")
+            .unwrap()
+            .unwrap()
+            .master,
+        eve
+    );
+    let (_, body) = get(
+        &mut st,
+        "/clan/create?p=carol&name=Hawks&emblem=4&bg=4&fmt=text",
+    );
+    assert!(body.contains("msg\t1\tClan Hawks created.\n"), "{body}");
+    // a founder alone disbands by leaving and creates again (the old name is free)
+    get(&mut st, "/clan/leave?p=carol&fmt=text");
+    assert!(crate::clan::clan_by_name(&st.db, "Hawks")
+        .unwrap()
+        .is_none());
+    let (_, body) = get(
+        &mut st,
+        "/clan/create?p=carol&name=Hawks&emblem=5&bg=5&fmt=text",
+    );
+    assert!(body.contains("msg\t1\tClan Hawks created.\n"), "{body}");
+    assert_eq!(crate::clan::all_clans(&st.db).unwrap().len(), 3);
+}

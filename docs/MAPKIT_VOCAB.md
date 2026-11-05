@@ -110,13 +110,12 @@ Geometry: brush. Role: `KillVolume`. Consumer: dserver kill shapes (`ObjectRole:
 
 #### `dc.hazard`
 
-Geometry: brush. Role: `HazardVolume`. Consumer: as kill volume (`ObjectRole::HazardVolume`, brush; no server behaviour today).
+Geometry: brush. Role: `HazardVolume`. Consumer: dserver hazards (`ObjectRole::HazardVolume`, brush; hurts a player inside every 500 ms).
 
 | property | type | required | default | meaning |
 |---|---|---|---|---|
-| `pending_sec` | real | no | 0 (at once) | delay before the kill, seconds |
-| `damage` | real | no | - | reserved: the server kills outright |
-| `damage_kind` | text | no | - | reserved |
+| `damage` | real | yes | - | damage per second to a player inside (> 0) |
+| `damage_kind` | text | no | unspecified | `poison`, else the unspecified type |
 
 #### `dc.ladder`
 

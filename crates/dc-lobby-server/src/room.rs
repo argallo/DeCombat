@@ -1274,6 +1274,7 @@ fn arms_ok(st: &Core, key: RoomKey, account: u32) -> bool {
         return true;
     };
     let items = crate::inventory::visible_items(st, account, items);
+    let items = crate::freepass::equipped_view(st, account, items);
     let items = crate::game::match_items(st, limit, &items);
     let types = items
         .iter()

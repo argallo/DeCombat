@@ -211,6 +211,11 @@ pub struct InvRecord {
     pub slot_kind: u32,
     pub function: u32,
     pub period: u32,
+    /// free-pass-tab: 0 for a record of the inventory; for a record the client makes for a weapon of a Weapon Free
+    /// Pass in use, the pass's item number (the 2009 record's free-pass flag +0x5d, the pass found by the weapon).
+    // EVIDENCE: cshell+0x28b550 (the free-pass records: flag +0x5d = 1, their own map), cshell+0x287eb0 (the pass
+    // entry of a weapon; its first word is the pass's item number, cshell+0x289ba0)
+    pub free_pass: u32,
 }
 
 /// Width of an `inventory_record`.
@@ -240,6 +245,7 @@ pub fn inventory_records(d: &[u8]) -> Option<Vec<InvRecord>> {
                 slot_kind: u32_at(d, o + 0x28),
                 function: u32_at(d, o + 0x2c),
                 period: u32_at(d, o + 0x30),
+                free_pass: 0,
             })
             .collect(),
     )
@@ -254,6 +260,21 @@ pub fn equipment_slots(d: &[u8]) -> Option<[i32; 15]> {
     let mut s = [-1; 15];
     for (i, v) in s.iter_mut().enumerate() {
         *v = i32_at(d, 0x12 + 4 * i);
+    }
+    Some(s)
+}
+
+/// free-pass-tab: the free-pass flag per equipment slot of an equipment reply 0x323 (+0x4e i32[15]; none when its ok
+/// word is 0 or the reply is short).
+// SPEC: PROTOCOL_2009.md §3.3 (0x323 +0x4e i32[15] slot flags)
+// EVIDENCE: cshell+0x229ca0 (each word != 0 -> the slot's flag byte +4, the free-pass flag cshell+0x225220 compares)
+pub fn free_pass_flags(d: &[u8]) -> Option<[bool; 15]> {
+    if u32_at(d, 6) == 0 || d.len() < 0x4e + 4 * 15 {
+        return None;
+    }
+    let mut s = [false; 15];
+    for (i, v) in s.iter_mut().enumerate() {
+        *v = u32_at(d, 0x4e + 4 * i) != 0;
     }
     Some(s)
 }
@@ -285,6 +306,21 @@ pub fn function_slot_message(put: bool, uid: u32, item: u32) -> PktWriter {
         FUNCTION_UNEQUIP
     });
     w.u32(item).u32(uid);
+    w
+}
+
+/// free-pass-tab: 0x35e (`put`) / 0x360, each its own frame of 0x12 bytes: +6 the weapon's item number, +0xa the
+/// pass's item number, +0xe the slot.
+// SPEC: PROTOCOL_2009.md §4.2 (0x35e / 0x360)
+// EVIDENCE: cshell+0x18ee60 (frame id = the message id, the 0x12 bytes as built), cshell+0x147e40 / 0x14baa0 (0x35e:
+// the record's +8, the pass entry's first word, the slot), cshell+0x145ed0 (0x360 with the same fields)
+pub fn free_pass_message(put: bool, item: u32, pass: u32, slot: u32) -> PktWriter {
+    let mut w = PktWriter::new(if put {
+        FUNCTION_ITEM_A
+    } else {
+        FUNCTION_ITEM_B
+    });
+    w.u32(item).u32(pass).u32(slot);
     w
 }
 
@@ -542,13 +578,19 @@ pub fn send_reply(d: &[u8]) -> SendReply {
 }
 
 /// use-items: the megaphone send 0x36c (0x26a bytes): the item, 1, the message (at most 65 characters) and the colour
-/// runs (none: the default colour).
+/// runs ({colour index, characters} u16 pairs; at most 100 pairs fit, the rest of the field stays 0).
 // SPEC: PROTOCOL_2009.md §4.3 0x36c (+6 u32 unique id; +0xa u32 1; +0xe wstr[101] message; +0xd8 wstr[201] colour runs)
-// EVIDENCE: cshell+0x2a5be0 (the composer's send: the text copied, 0x41 characters, 1), cshell+0x18f470 (the sender)
-pub fn megaphone_packet(uid: u32, text: &str) -> PktWriter {
+// EVIDENCE: cshell+0x2a5be0 (the composer's send: the text copied, 0x41 characters, 1, the runs of the window's +0x24),
+// cshell+0x18f470 (the sender)
+pub fn megaphone_packet(uid: u32, text: &str, runs: &[(u16, u16)]) -> PktWriter {
     let mut w = PktWriter::new(MEGAPHONE_SEND);
     let text: String = text.chars().take(MEGAPHONE_MAX).collect();
-    w.u32(uid).u32(1).wstr(&text, 101).pad(402);
+    w.u32(uid).u32(1).wstr(&text, 101);
+    let runs = &runs[..runs.len().min(100)];
+    for &(colour, len) in runs {
+        w.u16(colour).u16(len);
+    }
+    w.pad(402 - 4 * runs.len());
     w
 }
 
@@ -874,6 +916,14 @@ pub enum LinkCmd {
         item: u32,
         slot: u32,
     },
+    /// free-pass-tab: put weapon `item` of the Weapon Free Pass `pass` (its item number) into slot `slot` (0x35e,
+    /// `put`) or take it out (0x360).
+    FreePass {
+        put: bool,
+        item: u32,
+        pass: u32,
+        slot: u32,
+    },
     /// function-unequip: put the in-use function item `uid` (item number `item`) into its function slot (0x368,
     /// `put`) or take it out (0x36a); both travel in frame 0x324.
     FunctionSlot {
@@ -947,10 +997,11 @@ pub enum LinkCmd {
         uid: u32,
         face: u32,
     },
-    /// use-items: broadcast `text` with megaphone `uid` (0x36c; the answer 0x36d).
+    /// use-items: broadcast `text` with megaphone `uid` and its colour runs (0x36c; the answer 0x36d).
     MegaphoneSend {
         uid: u32,
         text: String,
+        runs: Vec<(u16, u16)>,
     },
     /// name-change: is this name free (0x346; the rename window reads the answer 0x347).
     NameCheck(String),
@@ -1117,6 +1168,20 @@ impl std::fmt::Debug for LinkCmd {
             LinkCmd::Inventory => write!(f, "Inventory"),
             LinkCmd::Equip { uid, item, slot } => write!(f, "Equip({uid}, {item}, {slot})"),
             LinkCmd::Unequip { uid, item, slot } => write!(f, "Unequip({uid}, {item}, {slot})"),
+            LinkCmd::FreePass {
+                put,
+                item,
+                pass,
+                slot,
+            } => write!(
+                f,
+                "{}({item}, {pass}, {slot})",
+                if *put {
+                    "FreePassEquip"
+                } else {
+                    "FreePassUnequip"
+                }
+            ),
             LinkCmd::FunctionSlot {
                 put: true,
                 uid,
@@ -1165,7 +1230,7 @@ impl std::fmt::Debug for LinkCmd {
                 write!(f, "MarkCheck({emblem}, {background})")
             }
             LinkCmd::FaceUse { uid, face } => write!(f, "FaceUse({uid}, {face})"),
-            LinkCmd::MegaphoneSend { uid, text } => write!(f, "MegaphoneSend({uid}, {text:?})"),
+            LinkCmd::MegaphoneSend { uid, text, .. } => write!(f, "MegaphoneSend({uid}, {text:?})"),
             LinkCmd::NameCheck(name) => write!(f, "NameCheck({name:?})"),
             LinkCmd::OwnName(name) => write!(f, "OwnName({name:?})"),
             LinkCmd::ClanInfo => write!(f, "ClanInfo"),
@@ -1382,6 +1447,8 @@ pub enum LinkEvent {
     Inventory(Vec<InvRecord>),
     /// w3-shop: the item number per equipment slot of 0x323.
     Equipment([i32; 15]),
+    /// free-pass-tab: the free-pass flag per equipment slot of 0x323 (+0x4e).
+    FreePassSlots([bool; 15]),
     /// function-unequip: the seven function-slot item numbers of 0x323 (+0x8a, -1 empty).
     FunctionSlots([i32; 7]),
     /// function-unequip: the answer to 0x368 (`put`, 0x369) or 0x36a (0x36b): ok and the item's unique id.
@@ -1607,6 +1674,7 @@ fn event_label(e: &LinkEvent) -> &'static str {
         LinkEvent::ProfileInfo(_) => "ProfileInfo",
         LinkEvent::Inventory(_) => "Inventory",
         LinkEvent::Equipment(_) => "Equipment",
+        LinkEvent::FreePassSlots(_) => "FreePassSlots",
         LinkEvent::FunctionSlots(_) => "FunctionSlots",
         LinkEvent::FunctionSlotDone { .. } => "FunctionSlotDone",
         LinkEvent::ShopView(_) => "ShopView",
@@ -2014,6 +2082,9 @@ const HANDLED: &[u16] = &[
     // function-unequip
     FUNCTION_EQUIP_REPLY,
     FUNCTION_UNEQUIP_REPLY,
+    // free-pass-tab
+    FUNCTION_ITEM_A_REPLY,
+    FUNCTION_ITEM_B_REPLY,
     // lobby-fixes10: the Modification screen's attach / detach
     ATTACH,
     ATTACH_REPLY,
@@ -3094,6 +3165,7 @@ impl Worker {
         let d = link.recv_until(EQUIPMENT_REPLY, t).map_err(|e| e.0)?;
         p.equipped = (0..15).map(|i| i32_at(&d, 0x12 + 4 * i)).collect();
         let slots = equipment_slots(&d);
+        let free = free_pass_flags(&d);
         let fslots = function_slots(&d);
         link.send_empty(INVENTORY).map_err(|e| e.0)?;
         let d = link.recv_until(INVENTORY_REPLY, t).map_err(|e| e.0)?;
@@ -3129,6 +3201,9 @@ impl Worker {
         }
         if let Some(s) = slots {
             self.emit(LinkEvent::Equipment(s));
+        }
+        if let Some(s) = free {
+            self.emit(LinkEvent::FreePassSlots(s));
         }
         if let Some(s) = fslots {
             self.emit(LinkEvent::FunctionSlots(s));
@@ -3434,6 +3509,12 @@ impl Worker {
                 w.u32(uid).u32(item).u32(slot);
                 s.link.send(&w)
             }
+            LinkCmd::FreePass {
+                put,
+                item,
+                pass,
+                slot,
+            } => s.link.send(&free_pass_message(put, item, pass, slot)),
             // SPEC: PROTOCOL_2009.md §1.2 (0x368 / 0x36a in frame 0x324)
             LinkCmd::FunctionSlot { put, uid, item } => s
                 .link
@@ -3524,7 +3605,9 @@ impl Worker {
                 s.link.send(&mark_check_packet(emblem, background))
             }
             LinkCmd::FaceUse { uid, face } => s.link.send(&face_use_packet(uid, face)),
-            LinkCmd::MegaphoneSend { uid, text } => s.link.send(&megaphone_packet(uid, &text)),
+            LinkCmd::MegaphoneSend { uid, text, runs } => {
+                s.link.send(&megaphone_packet(uid, &text, &runs))
+            }
             // SPEC: PROTOCOL_2009.md §4.3 0x346 (+6 wstr[17] name)
             // EVIDENCE: cshell+0x18e410 (the sender), cshell+0x242660 (the rename window's check)
             LinkCmd::NameCheck(name) => {
@@ -3961,6 +4044,7 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
         INVENTORY_REPLY => ev.extend(inventory_records(d).map(LinkEvent::Inventory)),
         EQUIPMENT_REPLY => {
             ev.extend(equipment_slots(d).map(LinkEvent::Equipment));
+            ev.extend(free_pass_flags(d).map(LinkEvent::FreePassSlots));
             ev.extend(function_slots(d).map(LinkEvent::FunctionSlots));
         }
         // function-unequip: the function-slot answers (+6 ok, +0xe unique id); an ok one is applied by the store
@@ -3993,14 +4077,19 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
         // SPEC: PROTOCOL_2009.md §4.2 (0x325 / 0x327: +6 ok; the 2009 client moves the item itself)
         // DC-DEFAULT: CLI-547 after an ok equip, unequip or purchase the menu reads equipment and
         // inventory again (0x322 / 0x320) instead of editing its own copy
-        EQUIP_REPLY | UNEQUIP_REPLY => {
+        // free-pass-tab: the free weapon answers 0x35f / 0x361 (+6 ok; a failed one shows res 0x506 / 0x4dd as the
+        // equip answers do)
+        // EVIDENCE: cshell+0x339d0 (0x35f -> cshell+0x14eac0, 0x361 -> cshell+0x14e8d0 while the Shop / Storage screen
+        // 0x16 is up: an ok one sets / clears the slot in the client's own copy, else the box)
+        // DC-DEFAULT: CLI-547 / CLI-1888 after an ok answer the menu reads equipment and inventory again
+        EQUIP_REPLY | UNEQUIP_REPLY | FUNCTION_ITEM_A_REPLY | FUNCTION_ITEM_B_REPLY => {
             let ok = u32_at(d, 6) != 0;
             if ok {
                 let _ = reread_items(&mut s.link);
             }
             ev.push(LinkEvent::EquipDone {
                 ok,
-                unequip: id == UNEQUIP_REPLY,
+                unequip: matches!(id, UNEQUIP_REPLY | FUNCTION_ITEM_B_REPLY),
             });
         }
         // SPEC: PROTOCOL_2009.md §4.2 (0x337 / 0x339: +6 ok)
@@ -4196,6 +4285,35 @@ impl Wait {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CLI-1888: 0x35e / 0x360 travel in their own frame, 0x12 bytes: weapon, pass item number, slot; 0x323 +0x4e
+    /// gives one free-pass flag per slot.
+    #[test]
+    fn free_pass_messages_and_the_equipment_flags_have_the_2009_layout() {
+        let f = free_pass_message(true, 25, 9022, 0).into_frame();
+        let (frames, used) = dc_wire::parse_tcp_frames(&f).unwrap();
+        assert_eq!(used, f.len());
+        let (id, p) = &frames[0];
+        assert_eq!(*id, 0x35e, "frame id = the message id");
+        assert_eq!(p.len(), 0x12);
+        assert_eq!(u16::from_le_bytes([p[0], p[1]]), 0x35e);
+        assert_eq!(u32_at(p, 6), 25);
+        assert_eq!(u32_at(p, 0xa), 9022);
+        assert_eq!(u32_at(p, 0xe), 0);
+        let p = free_pass_message(false, 25, 9022, 11).into_payload();
+        assert_eq!(
+            (u16::from_le_bytes([p[0], p[1]]), u32_at(&p, 0xe)),
+            (0x360, 11)
+        );
+        let mut d = vec![0u8; 0xa6];
+        d[6] = 1;
+        d[0x4e + 4 * 3] = 1;
+        let flags = free_pass_flags(&d).unwrap();
+        assert!(flags[3] && flags.iter().filter(|f| **f).count() == 1);
+        assert!(free_pass_flags(&d[..0x60]).is_none(), "short reply");
+        d[6] = 0;
+        assert!(free_pass_flags(&d).is_none(), "failed reply");
+    }
 
     #[test]
     fn the_report_packet_has_the_0x312_layout() {
@@ -4579,11 +4697,14 @@ mod tests {
         let p = payload(&mark_check_packet(12, 34));
         assert_eq!((p.len(), u32_at(&p, 6), u32_at(&p, 0xa)), (0xe, 12, 34));
         let long: String = "x".repeat(80);
-        let p = payload(&megaphone_packet(7, &long));
+        let p = payload(&megaphone_packet(7, &long, &[]));
         assert_eq!((p.len(), u32_at(&p, 6), u32_at(&p, 0xa)), (0x26a, 7, 1));
         assert_eq!(wstr_at(&p, 0xe, 101).chars().count(), MEGAPHONE_MAX);
-        let p = payload(&megaphone_packet(7, "hello"));
+        let p = payload(&megaphone_packet(7, "hello", &[(3, 2), (0x6363, 3)]));
         assert_eq!(wstr_at(&p, 0xe, 101), "hello");
+        // the colour runs at +0xd8: {index, characters} pairs, the rest zero
+        assert_eq!(&p[0xd8..0xe0], &[3, 0, 2, 0, 0x63, 0x63, 3, 0]);
+        assert!(p[0xe0..].iter().all(|&b| b == 0));
         let (mut w, _rx, _peer) = held_worker(None);
         let s = w.session.as_mut().unwrap();
         let mut ev = Vec::new();

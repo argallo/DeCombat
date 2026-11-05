@@ -167,6 +167,14 @@ CREATE TABLE IF NOT EXISTS function_slots (
     user_no  INTEGER NOT NULL,
     slot     INTEGER NOT NULL
 );
+-- LG-407: a Weapon Free Pass's weapon in an equipment slot (no item row of its own; the pass's row is pass_uid)
+CREATE TABLE IF NOT EXISTS free_pass_slots (
+    user_no  INTEGER NOT NULL,
+    slot     INTEGER NOT NULL,
+    item_no  INTEGER NOT NULL,
+    pass_uid INTEGER NOT NULL,
+    PRIMARY KEY (user_no, slot)
+);
 CREATE TABLE IF NOT EXISTS clan_colours (
     clan_uid  INTEGER PRIMARY KEY,
     colour    INTEGER NOT NULL DEFAULT 0

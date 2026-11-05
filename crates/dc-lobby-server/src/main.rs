@@ -26,6 +26,7 @@ mod delivery;
 mod deploy;
 mod diag;
 mod doctor;
+mod freepass;
 mod game;
 mod gm;
 mod grant;

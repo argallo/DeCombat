@@ -291,7 +291,42 @@ impl Game {
         );
         self.plunge = None;
     }
+
+    /// A step of a hazard volume's damage on a living player inside it: `amount` of damage type `dtype` through the
+    /// DSV-30 path (the worn armour takes the share its gear rows give that type), no attacker, `from_dir` up and
+    /// `dmg_kind` 0 as a fall's, the pain sound; a lethal step dies with no killer and the drawn weapon in the kill
+    /// feed (the DSV-52 form). Nothing while the round is not running.
+    // SPEC: GAME_MESSAGES_2009_S2C.md §3.3.1 field 2 (`killer` 0xff = no killer), §4.3 (0x74 after the damage)
+    // DC-DEFAULT: DSV-607 (proposed) hazard volumes hurt on the server
+    pub fn hazard_damage(&mut self, pid: u8, amount: f32, dtype: u8, now: Millis) {
+        let Some(p) = self.players.get(&pid) else {
+            return;
+        };
+        if p.life != Life::Alive
+            || !matches!(self.phase, super::RoundPhase::Running { .. })
+            || !(amount.is_finite() && amount > 0.0)
+        {
+            return;
+        }
+        let weapon = p.hand_weapon.unwrap_or(VOLUME_DEATH_WEAPON);
+        let src = super::combat::DamageSource { weapon, dtype };
+        self.apply_hit_as(
+            pid,
+            None,
+            amount,
+            amount,
+            [0.0, 1.0, 0.0],
+            src,
+            super::TODO_KILL_ZONE_BODY,
+            HAZARD_DAMAGE_KIND,
+            now,
+        );
+    }
 }
+
+/// `dmg_kind` of a hazard volume's `GS_DAMAGE_TAKEN`: the no-attacker kind of a fall.
+// DC-DEFAULT: DSV-607 (proposed), as `fall::FALL_DAMAGE_KIND`
+pub const HAZARD_DAMAGE_KIND: u8 = 0;
 
 #[cfg(test)]
 mod dc_mode_tests {

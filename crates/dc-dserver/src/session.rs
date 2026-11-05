@@ -31,6 +31,9 @@ const SEAT_REFUSALS_LOGGED: u32 = 20;
 /// First object id handed out (lowest free id from here, CD-66 proposed). 0 is avoided as a DeCombat choice.
 // DC-DEFAULT: CD-66 (proposed) lowest free id; start value DSV-3 (staged proposal, dserver-slice1)
 pub const FIRST_OBJECT_ID: u16 = 1;
+/// The length of a hazard volume's damage step (a player inside takes one step on entering and one per period).
+// DC-DEFAULT: DSV-607 (proposed) 500 ms
+pub const HAZARD_STEP_MS: u32 = 500;
 /// Client ids are the lowest free id below this limit. The 2009 host allows 0..29999, but the game layer sends the
 /// client id as the `u8` player id of every roster message and uses 0xff as "no killer", so ids stay below 255.
 // SPEC: UDP_SESSION_2009_A.md §4.3 (host engine+0x8e9f0); GAME_MESSAGES_2009_S2C.md §1.1, §3.1 (ids < 256),
@@ -148,7 +151,7 @@ pub struct ServerTuning {
     // DC-DEFAULT: DSV-47 (proposed) world, no others
     pub evars: crate::evars::EvarMode,
     pub extra_evars: Vec<(String, String)>,
-    /// Kill volumes kill on the server (`-killvolumes on|off`).
+    /// Kill volumes kill and hazard volumes hurt on the server (`-killvolumes on|off`; DSV-52, DSV-607).
     // DC-DEFAULT: DSV-52 (proposed) on
     pub kill_volumes: bool,
     /// The world's sliding doors are created and move (`-doors on|off`).
@@ -406,6 +409,12 @@ pub struct Server<A: Ord + Clone + Display> {
     /// The kill volumes a mission world's statements switched off (DSV-571).
     kill_off: BTreeSet<usize>,
     kill_inside: BTreeMap<(u8, usize), Millis>,
+    /// The hazard volumes that act (indexes into the world's hazards: the ones the room's start scripts left on),
+    /// the ones a mission world's statements switched off, and per player and volume when its next damage step is
+    /// due (DSV-607).
+    hazard_active: Vec<usize>,
+    hazard_off: BTreeSet<usize>,
+    hazard_next: BTreeMap<(u8, usize), Millis>,
     /// The doors on the clients and the time of their last step (DSV-46).
     doors: Vec<crate::doors::Door>,
     doors_at: Option<Millis>,
@@ -535,6 +544,9 @@ impl<A: Ord + Clone + Display> Server<A> {
             kill_active: Vec::new(),
             kill_off: BTreeSet::new(),
             kill_inside: BTreeMap::new(),
+            hazard_active: Vec::new(),
+            hazard_off: BTreeSet::new(),
+            hazard_next: BTreeMap::new(),
             doors: Vec::new(),
             doors_at: None,
             turns: Vec::new(),
@@ -857,9 +869,32 @@ impl<A: Ord + Clone + Display> Server<A> {
             })
             .map(|(i, _)| i)
             .collect();
+        // DC-DEFAULT: DSV-607 (proposed) the hazard volumes act unless the room's start scripts switch them off (they
+        // have no object on the clients; with `-worldobjects all` no scripts run, with `off` none acts)
+        self.hazard_active = match self.cfg.world_objects {
+            crate::worldobj::WorldObjects::Off => Vec::new(),
+            which => {
+                let ov = if which == crate::worldobj::WorldObjects::World {
+                    crate::worldobj::run_start_scripts(&self.world.scripts, trig.as_deref())
+                } else {
+                    Default::default()
+                };
+                self.world
+                    .hazards
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| {
+                        ov.get(&h.shape.name.to_ascii_lowercase())
+                            .and_then(|o| o.on)
+                            != Some(false)
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+        };
         self.log(format!(
             "world objects: {} ({} zones, {} flags, {} brushes, {} volumes, {} sprites, {} effects), {} world \
-             sounds; {} doors, {} kill volumes act",
+             sounds; {} doors, {} kill volumes act, {} hazard volumes act",
             objs.len() - n[6],
             n[0],
             n[1],
@@ -869,7 +904,8 @@ impl<A: Ord + Clone + Display> Server<A> {
             n[5],
             n[6],
             self.doors.len(),
-            self.kill_active.len()
+            self.kill_active.len(),
+            self.hazard_active.len()
         ));
         // DC-DEFAULT: DSV-115 (proposed) the created breakables take damage (`crate::destructibles`)
         let breakables: Vec<(u16, Vec<u8>, [f32; 3])> = objs
@@ -3875,6 +3911,7 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.expire_corpses(now);
         self.expire_event_sounds(now);
         self.kill_volume_tick(now);
+        self.hazard_tick(now);
         self.door_tick(now);
         self.camshot_tick(now);
         let t = self.server_time(now);
@@ -4063,6 +4100,66 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.apply_game(now);
     }
 
+    /// Hurts the living players inside an acting hazard volume: on entering one a player takes a step of its damage
+    /// at once and another every [`HAZARD_STEP_MS`] while it stays inside, each step the volume's damage per second
+    /// times the step length, of the volume's damage type. The test point is the reported body position (the box
+    /// centre), as for the kill volumes. Leaving the volume or dying drops the player's steps.
+    // DC-DEFAULT: DSV-607 (proposed)
+    fn hazard_tick(&mut self, now: Millis) {
+        if !self.cfg.kill_volumes || self.hazard_active.is_empty() {
+            self.hazard_next.clear();
+            return;
+        }
+        let alive: Vec<(u8, [f32; 3])> = self
+            .game
+            .players()
+            .values()
+            .filter(|p| p.life == crate::game::Life::Alive && p.visible)
+            .map(|p| (p.pid, p.pos))
+            .collect();
+        let mut steps = Vec::new();
+        let mut inside = BTreeSet::new();
+        let mut entered = Vec::new();
+        for (pid, pos) in alive {
+            for &i in &self.hazard_active {
+                if self.hazard_off.contains(&i) {
+                    continue;
+                }
+                let Some(h) = self.world.hazards.get(i) else {
+                    continue;
+                };
+                if !h.shape.contains(pos) {
+                    continue;
+                }
+                inside.insert((pid, i));
+                let due = match self.hazard_next.get(&(pid, i)) {
+                    Some(&t) => !later(t, now),
+                    None => {
+                        entered.push((pid, i));
+                        true
+                    }
+                };
+                if due {
+                    self.hazard_next
+                        .insert((pid, i), now.wrapping_add(HAZARD_STEP_MS));
+                    let amount = h.damage_per_sec * HAZARD_STEP_MS as f32 / 1000.0;
+                    steps.push((pid, amount, h.dtype));
+                }
+            }
+        }
+        self.hazard_next.retain(|k, _| inside.contains(k));
+        for (pid, i) in entered {
+            self.log(format!("client {pid}: entered hazard volume {i}"));
+        }
+        if steps.is_empty() {
+            return;
+        }
+        for (pid, amount, dtype) in steps {
+            self.game.hazard_damage(pid, amount, dtype, now);
+        }
+        self.apply_game(now);
+    }
+
     /// One step of every door: opened by a living player near it, closed a while after the last one left; each door
     /// that moved goes to every in-world client as a change record (one object group per tick), and the planned
     /// world object keeps the position for clients that join later.
@@ -4228,6 +4325,16 @@ impl<A: Ord + Clone + Display> Server<A> {
                         }
                     }
                 }
+                // DC-DEFAULT: DSV-607 (proposed) and its hazard volumes of that name
+                for (i, h) in self.world.hazards.iter().enumerate() {
+                    if h.shape.name.eq_ignore_ascii_case(&name) {
+                        if on {
+                            self.hazard_off.remove(&i);
+                        } else {
+                            self.hazard_off.insert(i);
+                        }
+                    }
+                }
             }
         }
         // DC-DEFAULT: DSV-579..DSV-581 (proposed) what a mission or round world's statements show: the camera
@@ -4264,6 +4371,7 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.door_delays.clear();
         self.script_texts.clear();
         self.kill_off.clear();
+        self.hazard_off.clear();
         // DC-DEFAULT: DSV-571 (proposed) a mission world's start texts again
         if !self.mission_start.is_empty() {
             let texts = self.mission_start.clone();
@@ -4557,6 +4665,11 @@ impl<A: Ord + Clone + Display> Server<A> {
     /// The kill volumes the session acts on (indexes into the world's kill shapes; tests).
     pub fn active_kill_volumes(&self) -> &[usize] {
         &self.kill_active
+    }
+
+    /// The hazard volumes the session acts on (indexes into the world's hazards; tests).
+    pub fn active_hazards(&self) -> &[usize] {
+        &self.hazard_active
     }
 }
 

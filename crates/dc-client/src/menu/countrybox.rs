@@ -656,6 +656,24 @@ mod tests {
         CountryBox::open(&c, 9, current, table())
     }
 
+    #[test]
+    fn our_united_states_row_follows_the_rom_rows_once() {
+        use crate::menu::charinfo::add_own_countries;
+        let row = |f: &str, s: &str| (f.to_string(), s.to_string(), format!("{s}.dtx"));
+        let mut rows = vec![row("Land 0", "L0"), row("Land 1", "L1")];
+        add_own_countries(&mut rows);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[2],
+            ("United States".into(), "USA".into(), String::new())
+        );
+        add_own_countries(&mut rows);
+        assert_eq!(rows.len(), 3, "added once");
+        let mut none = Vec::new();
+        add_own_countries(&mut none);
+        assert!(none.is_empty(), "no table, no window rows");
+    }
+
     fn at(b: &CountryBox, q: [i32; 2]) -> [f32; 2] {
         let l = b.layout;
         [

@@ -136,6 +136,9 @@ pub const PROP_TEAM: Key = Key::new("5985039f106df054", 4, "team");
 pub const PROP_DAMAGE: Key = Key::new("0c874f581a4534f1", 6, "damage");
 /// Damage kind (text) on kill volumes; reserved in the vocabulary.
 pub const PROP_DAMAGE_KIND: Key = Key::new("29df1a8f796fdf57", 10, "damage_kind");
+/// Damage-kind value: poison (the ROM hazard volumes' kind; `dc-dserver killvol::damage_type_of`).
+// OBSERVED: the damage-kind texts of the ROM worlds' hazard volumes (hash only, 2026-11-05 survey)
+pub const DAMAGE_KIND_POISON: Key = Key::new("500177cd8f619d5c", 6, "poison");
 /// Box extent (vec3, flags 0x4) of box classes: HALF extents in the vocabulary.
 pub const PROP_EXTENT: Key = Key::new("2d7b3d0c6d75ff11", 4, "extent");
 
@@ -388,6 +391,7 @@ pub const ALL: &[&Key] = &[
     &PROP_TEAM,
     &PROP_DAMAGE,
     &PROP_DAMAGE_KIND,
+    &DAMAGE_KIND_POISON,
     &PROP_EXTENT,
     &CLASS_PLAYER_SPAWN,
     &CLASS_ITEM_SPAWN,

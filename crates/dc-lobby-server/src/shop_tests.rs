@@ -255,6 +255,11 @@ SubType=6
 [UseItem23]
 ItemID=107
 SubType=7
+[UseItem24]
+ItemID=126
+SubType=16
+FreePassItemID0=110
+FreePassItemID1=111
 [BackpackItem0]
 ItemID=1
 MultyInvenSlot=1
@@ -1978,4 +1983,123 @@ fn the_game_server_gets_the_name_and_clan_colour_words() {
         .unwrap();
     let c = st.character(a).unwrap();
     assert!(!crate::game::badge_tokens(&st, a, &c).contains("namecolour="));
+}
+
+/// 0x35e / 0x360 {weapon, pass item number, slot} and their replies.
+fn free_pass(c: &mut Client, st: &mut Core, put: bool, item: u32, pass: u32, slot: u32) -> u32 {
+    use crate::freepass::*;
+    let (id, reply) = if put {
+        (FREE_PASS_EQUIP, FREE_PASS_EQUIP_REPLY)
+    } else {
+        (FREE_PASS_UNEQUIP, FREE_PASS_UNEQUIP_REPLY)
+    };
+    c.send(st, id, &u32s(&[item, pass, slot]));
+    let d = c.take(reply);
+    assert_eq!(d.len(), 0xa, "+6 ok");
+    u32_at(&d, 6)
+}
+
+/// The 0x323 view: the item and the free-pass flag (+0x4e) of slot `slot`.
+fn slot_view(c: &mut Client, st: &mut Core, slot: usize) -> (i32, u32) {
+    c.send(st, crate::msg::EQUIPMENT, &[]);
+    let d = c.take(crate::msg::EQUIPMENT_REPLY);
+    (
+        u32_at(&d, 0x12 + 4 * slot) as i32,
+        u32_at(&d, 0x4e + 4 * slot),
+    )
+}
+
+/// LG-407: a Weapon Free Pass (kind 16) in use lets 0x35e put one of its ROM weapons (FreePassItemID<n>) into the
+/// weapon's own slot without owning it: 0x323 shows it with the slot's flag set, the game server gets it in
+/// `loadout=`; refused before the use, for a weapon the pass does not list and for a slot the weapon does not take;
+/// 0x360 takes it out again (the owned weapon under it is back), an owned weapon equipped into the slot replaces it.
+#[test]
+fn a_weapon_free_pass_puts_its_weapons_into_their_slot_while_in_use() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let own = slot_view(&mut c, &mut st, 0);
+    assert_eq!(own.1, 0, "an owned primary, no flag");
+    let pass = give(&st, a, 9126, 1, 1);
+    assert_eq!(
+        free_pass(&mut c, &mut st, true, 110, 9126, 0),
+        0,
+        "not in use yet"
+    );
+    let d = use_window(&mut c, &mut st, pass, "", 0, 0, 0, 0);
+    assert_eq!(u32_at(&d, 6), 1, "the pass is used");
+    assert_eq!(
+        free_pass(&mut c, &mut st, true, 112, 9126, 0),
+        0,
+        "not on the pass"
+    );
+    assert_eq!(
+        free_pass(&mut c, &mut st, true, 110, 9126, 1),
+        0,
+        "not its slot"
+    );
+    assert_eq!(
+        free_pass(&mut c, &mut st, true, 110, 9122, 0),
+        0,
+        "not a pass item"
+    );
+    assert_eq!(free_pass(&mut c, &mut st, true, 110, 9126, 0), 1);
+    assert_eq!(slot_view(&mut c, &mut st, 0), (110, 1));
+    let me = st.character(a).unwrap();
+    assert!(crate::game::loadout_tokens(&st, a, &me).contains(" loadout=0:110"));
+    // the other weapon of the pass replaces it in the slot
+    assert_eq!(free_pass(&mut c, &mut st, true, 111, 9126, 0), 1);
+    assert_eq!(slot_view(&mut c, &mut st, 0), (111, 1));
+    // 0x360 takes it out: the owned primary is back
+    assert_eq!(
+        free_pass(&mut c, &mut st, false, 110, 9126, 0),
+        0,
+        "not in the slot"
+    );
+    assert_eq!(free_pass(&mut c, &mut st, false, 111, 9126, 0), 1);
+    assert_eq!(slot_view(&mut c, &mut st, 0), (own.0, 0));
+    // an owned primary equipped into the slot replaces the free one
+    assert_eq!(free_pass(&mut c, &mut st, true, 110, 9126, 0), 1);
+    let gun = give(&st, a, 111, 0, 0);
+    c.send(&mut st, EQUIP, &u32s(&[gun as u32, 111, 0]));
+    assert_eq!(u32_at(&c.take(EQUIP_REPLY), 6), 1);
+    assert_eq!(slot_view(&mut c, &mut st, 0), (111, 0));
+    let rows: i64 = st
+        .db
+        .query_row("SELECT COUNT(*) FROM free_pass_slots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// LG-407: the free weapon lasts as long as its pass: once the pass has expired (or is gone) the slot shows the owned
+/// weapon again, unflagged, the game server no longer gets the free one, and the row is dropped.
+#[test]
+fn a_free_weapon_leaves_its_slot_when_the_pass_ends() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let own = slot_view(&mut c, &mut st, 0);
+    let pass = give(&st, a, 9126, 1, 1);
+    let d = use_window(&mut c, &mut st, pass, "", 0, 0, 0, 0);
+    assert_eq!(u32_at(&d, 6), 1);
+    assert_ne!(
+        db::item(&st.db, pass).unwrap().unwrap().end_time,
+        0,
+        "the day starts at the use (CD-53)"
+    );
+    assert_eq!(free_pass(&mut c, &mut st, true, 110, 9126, 0), 1);
+    assert_eq!(slot_view(&mut c, &mut st, 0), (110, 1));
+    st.db
+        .execute("UPDATE items SET end_time = 1 WHERE uid = ?1", [pass])
+        .unwrap();
+    let me = st.character(a).unwrap();
+    assert!(!crate::game::loadout_tokens(&st, a, &me).contains("0:110"));
+    assert_eq!(slot_view(&mut c, &mut st, 0), (own.0, 0));
+    assert!(
+        db::item(&st.db, pass).unwrap().is_none(),
+        "the expiry scan took the pass"
+    );
+    let rows: i64 = st
+        .db
+        .query_row("SELECT COUNT(*) FROM free_pass_slots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "pruned with the repair");
 }

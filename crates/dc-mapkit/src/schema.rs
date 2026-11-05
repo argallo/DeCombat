@@ -377,7 +377,7 @@ pub const CLASSES: &[(&str, &str)] = &[
     (v::CLASS_SOUND, "file, volume, inner_radius, outer_radius, loop, ambient"),
     (v::CLASS_SPRITE, "file, scale_x, scale_y, color, alpha"),
     (v::CLASS_KILL_VOLUME, "brush (solid with brush: kill_volume): pending_sec"),
-    (v::CLASS_HAZARD, "brush: as kill volume (no server behaviour today)"),
+    (v::CLASS_HAZARD, "brush: damage (per second, > 0), damage_kind (poison)"),
     (v::CLASS_LADDER, "brush (solid with brush: ladder): none"),
     (v::CLASS_WORLD_MODEL, "brush (solid with brush: world_model): visible, solid, rayhit, blend, alpha"),
     (v::CLASS_BREAKABLE, "brush (solid with brush: breakable): hit_points"),

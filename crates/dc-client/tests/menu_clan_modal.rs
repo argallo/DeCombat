@@ -4,7 +4,7 @@
 //! ROM-gated (skipped without `CA_ROM`), no lobby.
 
 use dc_client::hud::items::DrawItem;
-use dc_client::menu::clan::{CMD_CREATE, CMD_NOTICE, CMD_WEB_CLOSE, NOTICE_WINDOW, WEB_WINDOW};
+use dc_client::menu::clan::{CMD_LEAVE, CMD_NOTICE, CMD_WEB_CLOSE, NOTICE_WINDOW, WEB_WINDOW};
 use dc_client::menu::link::{ClanInfoView, LinkOptions, CLAN_ROLE_LEADER};
 use dc_client::menu::{Go, Menu, MenuInput, MenuOptions};
 use dc_ui_data::WidgetKind;
@@ -45,7 +45,7 @@ fn rom_web_window_is_drawn_after_the_chat_lines() {
         eprintln!("skipped: no CA_ROM");
         return;
     };
-    m.input(MenuInput::Command(CMD_CREATE));
+    m.input(MenuInput::Command(CMD_LEAVE));
     assert!(
         m.sheet()
             .part(WEB_WINDOW, WEB_WINDOW, WidgetKind::Window)
@@ -60,8 +60,8 @@ fn rom_web_window_is_drawn_after_the_chat_lines() {
         })
     };
     let chat = pos("LONGCHATLINE").expect("chat line drawn");
-    // the window's title (the create page's 0x4ff text) is the sheet's first item of window 5
-    let title = m.cat.text(0x4ff);
+    // the window's title (the leave page's 0x500 text; a leader has no create page, CLI-1889) comes first
+    let title = m.cat.text(0x500);
     let title_at = pos(&title).expect("title drawn");
     assert!(
         title_at > chat,
@@ -86,7 +86,7 @@ fn rom_web_window_takes_the_clicks_over_the_buttons_behind() {
         (notice[0] + notice[2] / 2) as f32,
         (notice[1] + notice[3] / 2) as f32,
     ];
-    m.input(MenuInput::Command(CMD_CREATE));
+    m.input(MenuInput::Command(CMD_LEAVE));
     let own = m
         .sheet()
         .parts
@@ -145,7 +145,7 @@ fn rom_the_bar_shop_button_works_on_the_clan_screen() {
         };
         assert_eq!(m.screen_name(), "clan");
         if modal {
-            m.input(MenuInput::Command(CMD_CREATE));
+            m.input(MenuInput::Command(CMD_LEAVE));
         }
         press_cmd(&mut m, CMD_BAR_SHOP);
         assert!(wait_screen(&mut m, "shop"), "Shop from the clan screen (modal {modal}): {}", m.screen_name());

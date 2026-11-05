@@ -18,6 +18,10 @@ pub struct Store {
     pub items: Vec<InvRecord>,
     /// Item number per equipment slot (-1 empty), 0x323.
     pub equipped: [i32; 15],
+    /// free-pass-tab: the slot holds a free weapon of a Weapon Free Pass (0x323 +0x4e).
+    pub free_slots: [bool; 15],
+    /// free-pass-tab: a record per free-pass slot (the equipped view of [`Store::in_slot`]).
+    pub free_equipped: Vec<InvRecord>,
     /// function-unequip: the function-slot item numbers of 0x323 +0x8a (-1 empty; empty until the first reply).
     pub function_slots: Vec<i32>,
     /// The products the shop shows (0x351); `None` until the first reply.
@@ -45,7 +49,12 @@ impl Store {
     pub fn apply(&mut self, e: &LinkEvent) {
         match e {
             LinkEvent::Inventory(v) => self.items = v.clone(),
-            LinkEvent::Equipment(s) => self.equipped = *s,
+            // free-pass-tab: an equipment reply without flags (an older lobby) holds no free weapon
+            LinkEvent::Equipment(s) => {
+                self.equipped = *s;
+                self.set_free_slots([false; 15]);
+            }
+            LinkEvent::FreePassSlots(f) => self.set_free_slots(*f),
             LinkEvent::FunctionSlots(s) => self.function_slots = s.to_vec(),
             // function-unequip: an ok slot answer edits the held slots at once (the reread that follows replaces them)
             // EVIDENCE: cshell+0x14cea0 (0x369 ok: cshell+0x22cb50 enters the record in the function list and its item
@@ -97,9 +106,30 @@ impl Store {
         }
     }
 
-    /// The equipment slot `item` sits in (by its item number in 0x323).
+    /// free-pass-tab: the slots' free-pass flags and the records of the free weapons they hold.
+    pub fn set_free_slots(&mut self, flags: [bool; 15]) {
+        self.free_slots = flags;
+        self.free_equipped = (0..15)
+            .filter(|&s| flags[s] && self.equipped[s] >= 0)
+            .map(|s| InvRecord {
+                uid: free_pass_uid(None, self.equipped[s] as u32),
+                item_no: self.equipped[s] as u32,
+                free_pass: FREE_PASS_SLOT,
+                ..InvRecord::default()
+            })
+            .collect();
+    }
+
+    /// The equipment slot `item` sits in (by its item number in 0x323). A slot is matched with its free-pass flag: a
+    /// free-pass record only to a flagged slot, an inventory record only to an unflagged one.
+    // EVIDENCE: cshell+0x225220 (the slot of a type, then the backpack slots 10..13, each matched on the item number and
+    // the record's flag +0x5d against the slot's flag byte)
     pub fn slot_of(&self, item: &InvRecord) -> Option<usize> {
-        let mut taken = [false; 15];
+        if item.free_pass != 0 {
+            return (0..15)
+                .find(|&s| self.free_slots[s] && self.equipped[s] == item.item_no as i32);
+        }
+        let mut taken = self.free_slots;
         // a number equipped twice is matched to the records in their order
         for r in &self.items {
             let slot = (0..15).find(|&s| !taken[s] && self.equipped[s] == r.item_no as i32);
@@ -145,8 +175,14 @@ impl Store {
         self.function_slot_of(item).is_some()
     }
 
-    /// The record in equipment slot `slot`.
+    /// The record in equipment slot `slot` (a free-pass slot's free weapon record).
     pub fn in_slot(&self, slot: usize) -> Option<&InvRecord> {
+        if self.free_slots.get(slot) == Some(&true) {
+            return self
+                .free_equipped
+                .iter()
+                .find(|r| r.item_no as i32 == self.equipped[slot]);
+        }
         self.items.iter().find(|r| self.slot_of(r) == Some(slot))
     }
 
@@ -160,6 +196,21 @@ impl Store {
         }
         Some(if held == 0 { 1 } else { (held - 1) / 4 + 1 })
     }
+}
+
+/// free-pass-tab: [`InvRecord::free_pass`] of a free weapon known only from its slot's flag (0x323), whose pass the
+/// view does not tell.
+pub const FREE_PASS_SLOT: u32 = u32::MAX;
+
+/// free-pass-tab: the `SubType` of the Weapon Free Pass items.
+// EVIDENCE: cshell+0x22a320 / 0x289ba0 (an inventory record of type 0x15 in use whose row's SubType is 0x10 is a pass)
+pub const SUB_FREE_PASS: i32 = 16;
+
+/// free-pass-tab: the client's own unique id of a free-pass record of item `n` of type `ty`: `((ty | 0x700) << 20) |
+/// n`, the 2009 form, which no lobby id reaches; the type is left out (0) where it is not known.
+// EVIDENCE: cshell+0x28b550 / 0x28b050 (the record's +0 = ((type | 0x700) << 0x14) | the item number)
+pub fn free_pass_uid(ty: Option<i32>, n: u32) -> u32 {
+    (((ty.unwrap_or(0) as u32 & 0xff) | 0x700) << 20) | (n & 0xf_ffff)
 }
 
 /// storage-functions: the box strings of the storage page's Discard (1011).
@@ -367,6 +418,11 @@ pub struct ItemArt {
     // (their readers)
     pub preview_icon: String,
     pub shape: i32,
+    /// free-pass-tab: a Weapon Free Pass row's weapons (`FreePassItemID<n>`, read until a key is missing; empty for
+    /// every other row).
+    // EVIDENCE: cshell+0x25dd60 / cshell+0xe5280 (`FreePassItemID0`, `FreePassItemID1`, ... into the record's list at
+    // +0x3f0), cshell+0x289ba0 (the list read for a pass in use; -1 entries skipped)
+    pub free_pass_items: Vec<i32>,
 }
 
 /// The item-table columns of the eighteen modifier values a detail panel lists, in the order of their labels.
@@ -523,6 +579,11 @@ pub fn item_art(doc: &dc_bute::ButeDoc) -> BTreeMap<i32, ItemArt> {
                 can_unequip: text("IsCanUnEquip").parse::<i32>().is_ok_and(|v| v != 0),
                 preview_icon: text("PreViewIcon"),
                 shape: table_float(&text("ShapeType")).map_or(0, |v| v as i32),
+                free_pass_items: (0..)
+                    .map_while(|k| d.get(&format!("FreePassItemID{k}")).map(|v| table_text(v)))
+                    .filter_map(|v| v.parse::<i32>().ok())
+                    .filter(|n| *n >= 0)
+                    .collect(),
             });
         }
     }
@@ -779,6 +840,43 @@ impl Wares {
             }
         }
         list
+    }
+
+    /// free-pass-tab: the records of the Free Pass storage page: for every inventory record in use whose row is a Weapon
+    /// Free Pass (SubType 16), one record per weapon of the pass's list the item table knows (a weapon two passes list
+    /// once, with the first pass), each with its pass's item number, ordered by its 2009 unique id (type, then number).
+    // EVIDENCE: cshell+0x22a320 (the passes: records of type 0x15 in use, row SubType 0x10), cshell+0x289ba0 (each
+    // pass's entry: its item number and its weapon list), cshell+0x28b550 (a record per weapon of the joined lists: item
+    // number and type from cshell+0x25c010, flag +0x5d = 1, kept in a map by its unique id), cshell+0x287eb0 (a weapon's
+    // pass: the first entry whose list holds it)
+    // DC-DEFAULT: CLI-1888 (proposed) the page lists them in unique-id order (the 2009 shelf build cshell+0x28a170 is
+    // not traced)
+    pub fn free_pass_records(&self, store: &Store) -> Vec<InvRecord> {
+        let mut out: Vec<InvRecord> = Vec::new();
+        for pass in store.items.iter().filter(|r| r.in_use) {
+            let Some(art) = self
+                .art_of(pass.item_no as i32)
+                .filter(|a| a.sub_type == SUB_FREE_PASS && (9000..10000).contains(&pass.item_no))
+            else {
+                continue;
+            };
+            for &n in &art.free_pass_items {
+                let Some(ty) = self.kind_of(n) else {
+                    continue;
+                };
+                if out.iter().any(|r| r.item_no == n as u32) {
+                    continue;
+                }
+                out.push(InvRecord {
+                    uid: free_pass_uid(Some(ty), n as u32),
+                    item_no: n as u32,
+                    free_pass: pass.item_no,
+                    ..InvRecord::default()
+                });
+            }
+        }
+        out.sort_by_key(|r| r.uid);
+        out
     }
 
     /// The extra weapon slots of backpack item `n` (the item table's `MultyInvenSlot`; 0 when unknown).
@@ -1059,6 +1157,17 @@ pub fn stored(store: &Store, wares: &Wares, tab: usize, cat: usize) -> Vec<InvRe
         .collect()
 }
 
+/// free-pass-tab: the Free Pass page's records on shelf (`tab`, `cat`).
+// EVIDENCE: cshell+0x14ad00 (the page's six cells: cshell+0x2282c0(tab, category, index, 1), the free-pass shelf
+// cshell+0x287bf0)
+pub fn stored_free(store: &Store, wares: &Wares, tab: usize, cat: usize) -> Vec<InvRecord> {
+    wares
+        .free_pass_records(store)
+        .into_iter()
+        .filter(|r| wares.kind_of(r.item_no as i32).and_then(shelf_of) == Some((tab, cat)))
+        .collect()
+}
+
 /// The equipment slot of an item type.
 // EVIDENCE: cshell+0x259f00 (dc_bute::equip_slot_by_class_code)
 pub fn own_slot(wares: &Wares, item_no: u32) -> Option<u32> {
@@ -1196,6 +1305,67 @@ mod tests {
         assert_eq!(s.slot_of(&s.items[1].clone()), None);
         assert_eq!(s.in_slot(9).map(|r| r.uid), Some(12));
         assert!(s.in_slot(0).is_none());
+    }
+
+    /// CLI-1888: a pass in use (kind 16) gives one free-pass record per listed weapon the table knows (a weapon of two
+    /// passes once), with its pass's item number; a flagged slot matches only a free-pass record, an unflagged one
+    /// only an inventory record.
+    #[test]
+    fn free_pass_records_and_flagged_slots() {
+        let mut wares = Wares::default();
+        for (n, list) in [(9022, vec![4001, 7, 4002]), (9023, vec![4002, 4003])] {
+            wares.art.insert(
+                n,
+                ItemArt {
+                    sub_type: SUB_FREE_PASS,
+                    free_pass_items: list,
+                    ..ItemArt::default()
+                },
+            );
+        }
+        let pass = |uid, n, in_use| InvRecord {
+            in_use,
+            ..rec(uid, n)
+        };
+        let mut store = Store {
+            items: vec![pass(1, 9022, true), pass(2, 9023, true), rec(3, 4001)],
+            ..Store::default()
+        };
+        // item 7: a weapon number the table does not type (no ROM): left out
+        let got: Vec<(u32, u32)> = wares
+            .free_pass_records(&store)
+            .iter()
+            .map(|r| (r.item_no, r.free_pass))
+            .collect();
+        assert_eq!(got, [(4001, 9022), (4002, 9022), (4003, 9023)]);
+        store.items[1].in_use = false;
+        assert_eq!(
+            wares.free_pass_records(&store).len(),
+            2,
+            "a pass not in use lists nothing"
+        );
+        let mut slots = [-1; 15];
+        slots[4] = 4001;
+        store.apply(&LinkEvent::Equipment(slots));
+        assert_eq!(store.slot_of(&store.items[2].clone()), Some(4));
+        let mut flags = [false; 15];
+        flags[4] = true;
+        store.apply(&LinkEvent::FreePassSlots(flags));
+        let free = wares.free_pass_records(&store)[0].clone();
+        assert_eq!(
+            store.slot_of(&store.items[2].clone()),
+            None,
+            "the slot holds the free one"
+        );
+        assert_eq!(store.slot_of(&free), Some(4));
+        assert_eq!(
+            store.in_slot(4).map(|r| (r.item_no, r.free_pass != 0)),
+            Some((4001, true))
+        );
+        // a reply without flags (an older lobby) clears them
+        store.apply(&LinkEvent::Equipment(slots));
+        assert_eq!(store.slot_of(&free), None);
+        assert_eq!(store.in_slot(4).map(|r| r.uid), Some(3));
     }
 
     #[test]

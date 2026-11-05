@@ -16,11 +16,11 @@ use dc_ui_data::pages::Align;
 use std::path::Path;
 
 use super::catalog::{argb, int, key, pair, Catalog, KeyPin};
-use super::popup::{wrap_runs, BoxTag, Popup};
+use super::popup::{BoxTag, Popup};
 use super::sheet::{image, image_fit, place_text, ALIGN_CENTRE, ALIGN_LEFT};
 use super::usebox::{
-    draw_button, fill, inside, measure, NameArt, BUTTON_SIZE, CANCEL_TEXT, FONT, FONT_SIZE,
-    NOTICE_TITLE, OK_TEXT, TITLE_COLOUR,
+    draw_button, fill, inside, NameArt, BUTTON_SIZE, CANCEL_TEXT, FONT, FONT_SIZE, NOTICE_TITLE,
+    OK_TEXT, TITLE_COLOUR,
 };
 use crate::hud::items::DrawItem;
 
@@ -49,18 +49,28 @@ pub const EXTEND_TEXT: i32 = 0x183d;
 pub const NEW_COLOUR_TEXT: i32 = 0x183c;
 
 /// The preview name's font size and the page links' size and colours.
-// EVIDENCE: cshell+0x248660 (PreViewPos text: size 0x10, flags 0x44, black until a pick; page links size 0x14,
-// colours 0xffaaaaaa / 0xff666666)
+// EVIDENCE: cshell+0x248660 (PreViewPos text: size 0x10, flags 0x44, black until a pick; page links: text controls
+// of font 0xe, size 0xe, flags 0x14 (the 0x14 is the flags word, not the size), colours white (selected), 0xffaaaaaa
+// (normal), 0xff666666 (disabled), white (pressed))
 pub const PREVIEW_SIZE: i32 = 0x10;
+/// The page links' flags word (also the side of our own hit square of a link, CLI-1876, and the clan mark window's
+/// link size).
 pub const PAGE_SIZE: i32 = 0x14;
+pub const PAGE_FONT_SIZE: i32 = 0xe;
 pub const PAGE_COLOUR: u32 = 0xffaa_aaaa;
 pub const PAGE_OFF_COLOUR: u32 = 0xff66_6666;
 pub const WHITE: u32 = 0xffff_ffff;
-/// The page links shown at most.
-// EVIDENCE: cshell+0x248660 (five number links), cshell+0x246de0 (links past the last page hidden)
+/// The captions of OK / Cancel and of the confirmation's buttons: white in every state.
+// EVIDENCE: cshell+0x248660 (the four caption colours of the buttons 0x268, 0x267, 0x271 and 0x272 are -1)
+pub const CAPTION_COLOUR: u32 = 0xffff_ffff;
+/// The page links shown.
+// EVIDENCE: cshell+0x248660 (five number links), cshell+0x246de0 (all five numbered from the group's first page; a
+// link past the last page disabled, not hidden; `<` and `>` disabled unless there is a group before / after)
 pub const PAGE_LINKS: usize = 5;
-/// The reticle shown "before" without one in use: the plain cross in green.
-// DISASM: cshell+0x24a840 (0xff00ff00), cshell+0x24a8b7 (the Type0 picture)
+/// The reticle shown "before": this item's picture in green without a record of its number in use; the plain Type0
+/// picture only when the item has none.
+// DISASM: cshell+0x24a840 (0xff00ff00), cshell+0x24a855..0x24a8a8 (this record's PreViewIcon, the colour of the record
+// of its item number, cshell+0x228810), cshell+0x24a8b7 (the Type0 picture without a PreViewIcon)
 pub const NO_RETICLE_COLOUR: u32 = 0xff00_ff00;
 /// The confirmation's frame (the shared popup window picture).
 // EVIDENCE: cshell+0x248660 (Popup_Window 0x1dc x 0x101, centred)
@@ -423,6 +433,8 @@ pub struct ColourBox {
     pub ok_on: bool,
     /// The page shown (0-based).
     pub page: usize,
+    /// The slot of the page that shows the on-slot picture (the last pressed slot; none after a page change).
+    pub mark: Option<usize>,
     pub confirm: bool,
     pub waiting: bool,
     pub in_use: Option<InUse>,
@@ -469,6 +481,7 @@ impl ColourBox {
             picked: in_use.map_or(0, |u| u.colour),
             ok_on: false,
             page: 0,
+            mark: None,
             confirm: false,
             waiting: false,
             in_use,
@@ -526,10 +539,31 @@ impl ColourBox {
         ])
     }
 
-    /// The swatch indices (0-based) on the page shown.
-    fn shown(&self) -> std::ops::Range<usize> {
+    /// The swatch (0-based table index) slot `k` of the page shown holds: the table is laid out from its last entry
+    /// (slot 0 of page 0 holds the last colour, slot 1 the one before it, and so on over the pages).
+    // EVIDENCE: cshell+0x24a5a0 (the window's list in table order, cshell+0x1dde90 / 0x1ddd80), cshell+0x2465f0
+    // (page p of the group shows from index per_page x p), cshell+0x246220 (with n entries left from that index, slot
+    // k takes entry n - 1 - k and its colour number; slots past the entries hidden)
+    pub fn slot_swatch(&self, k: usize) -> Option<usize> {
         let first = self.page * self.per_page();
-        first.min(self.swatches.len())..(first + self.per_page()).min(self.swatches.len())
+        let left = self.swatches.len().checked_sub(first)?;
+        (k < left.min(self.per_page())).then(|| left - 1 - k)
+    }
+
+    /// The slots of the page shown and the swatch each holds.
+    fn shown(&self) -> Vec<(usize, usize)> {
+        (0..self.per_page())
+            .filter_map(|k| self.slot_swatch(k).map(|i| (k, i)))
+            .collect()
+    }
+
+    /// Shows page `page` (the on-slot picture goes; the colour chosen stays).
+    // EVIDENCE: cshell+0x246220 (the marked slot's on-slot picture hidden, the mark reset)
+    fn show_page(&mut self, page: usize) {
+        if page != self.page {
+            self.mark = None;
+        }
+        self.page = page;
     }
 
     /// Picks colour index `n` (1-based).
@@ -555,9 +589,9 @@ impl ColourBox {
         self.abs([l.num_at[0] + k as i32 * l.page_gap, l.num_at[1]])
     }
 
-    /// The first page link's page and the links shown.
-    // EVIDENCE: cshell+0x246de0 (five links from the group of the page shown; a link past the last page hidden; `<`
-    // shown past the first group, `>` before the last)
+    /// The first page link's page and the links that take a press (the other of the five are drawn disabled).
+    // EVIDENCE: cshell+0x246de0 (five links from the group of the page shown, a link past the last page disabled; `<`
+    // enabled past the first group, `>` before the last)
     fn links(&self) -> (usize, usize) {
         let first = self.page / PAGE_LINKS * PAGE_LINKS;
         (first, (self.pages() - first).min(PAGE_LINKS))
@@ -632,8 +666,13 @@ impl ColourBox {
         if inside(self.abs(l.ok_at), BUTTON_SIZE, p) {
             return Some(self.ok());
         }
-        for (k, i) in self.shown().enumerate() {
+        // EVIDENCE: cshell+0x246350 (a press on a slot that holds a colour: the last marked slot's on-slot picture
+        // hidden, this slot's shown, its colour number returned)
+        for (k, i) in self.shown() {
             if inside(self.slot_at(k), l.slot_size, p) {
+                if !self.waiting {
+                    self.mark = Some(k);
+                }
                 self.pick(i as u32 + 1);
                 return Some(ColourStep::None);
             }
@@ -643,14 +682,14 @@ impl ColourBox {
         let (first, n) = self.links();
         for k in 0..n {
             if inside(self.page_link_at(k), link, p) {
-                self.page = first + k;
+                self.show_page(first + k);
                 return Some(ColourStep::None);
             }
         }
         if first > 0 && inside(self.abs(l.prev_at), link, p) {
-            self.page = first - PAGE_LINKS;
+            self.show_page(first - PAGE_LINKS);
         } else if first + PAGE_LINKS < self.pages() && inside(self.abs(l.next_at), link, p) {
-            self.page = first + PAGE_LINKS;
+            self.show_page(first + PAGE_LINKS);
         }
         Some(ColourStep::None)
     }
@@ -692,8 +731,11 @@ impl ColourBox {
             FONT_SIZE,
             WHITE,
         ));
-        // the palette
-        for (k, i) in self.shown().enumerate() {
+        // the palette: each slot the swatch picture at ColorImageSize, the on-slot picture over the pressed one
+        // EVIDENCE: cshell+0x246220 (a slot's picture is its entry's Color<n>Texture), cshell+0x246350 (the on-slot
+        // picture of the pressed slot)
+        // DC-DEFAULT: CLI-1876 (proposed) a swatch without a picture is a fill of its colour
+        for (k, i) in self.shown() {
             let at = self.slot_at(k);
             let s = &self.swatches[i];
             if s.tex.is_empty() {
@@ -702,33 +744,42 @@ impl ColourBox {
             } else {
                 out.push(image(&s.tex, at, l.slot_size));
             }
-            // DC-DEFAULT: CLI-1876 (proposed) the on-slot picture marks the chosen slot (hover is not tracked)
-            if self.picked as usize == i + 1 && !l.slot_on.is_empty() {
+            if self.mark == Some(k) && !l.slot_on.is_empty() {
                 out.push(image(&l.slot_on, at, l.slot_size));
             }
         }
-        // the page links
+        // the page links: `<`, five numbers from the group's first page, `>`; the page shown white, a link that
+        // takes a press 0xffaaaaaa, a disabled one 0xff666666
         let (first, n) = self.links();
-        if first > 0 {
-            out.push(text("<", self.abs(l.prev_at), TL, PAGE_SIZE, PAGE_COLOUR));
-        }
-        for k in 0..n {
+        let link_colour = |on: bool| if on { PAGE_COLOUR } else { PAGE_OFF_COLOUR };
+        out.push(text(
+            "<",
+            self.abs(l.prev_at),
+            TL,
+            PAGE_FONT_SIZE,
+            link_colour(first > 0),
+        ));
+        for k in 0..PAGE_LINKS {
             let c = if first + k == self.page {
                 WHITE
             } else {
-                PAGE_COLOUR
+                link_colour(k < n)
             };
             out.push(text(
                 &(first + k + 1).to_string(),
                 self.page_link_at(k),
                 TL,
-                PAGE_SIZE,
+                PAGE_FONT_SIZE,
                 c,
             ));
         }
-        if first + PAGE_LINKS < self.pages() {
-            out.push(text(">", self.abs(l.next_at), TL, PAGE_SIZE, PAGE_COLOUR));
-        }
+        out.push(text(
+            ">",
+            self.abs(l.next_at),
+            TL,
+            PAGE_FONT_SIZE,
+            link_colour(first + PAGE_LINKS < self.pages()),
+        ));
         // the preview
         if self.kind == SUB_RETICLE {
             let (tex, c) = &self.before;
@@ -755,7 +806,7 @@ impl ColourBox {
                 self.picked_argb(),
             ));
         }
-        draw_button(
+        button(
             cat,
             buttons,
             self.abs(l.ok_at),
@@ -763,7 +814,7 @@ impl ColourBox {
             self.ok_on && !self.waiting,
             out,
         );
-        draw_button(cat, buttons, self.abs(l.cancel_at), CANCEL_TEXT, true, out);
+        button(cat, buttons, self.abs(l.cancel_at), CANCEL_TEXT, true, out);
         if self.confirm {
             self.draw_confirm(cat, art, buttons, out);
         }
@@ -806,23 +857,19 @@ impl ColourBox {
             }
             out.push(it);
         }
-        let notice = cat.text(self.texts.confirm_notice);
-        let n_at = self.c_abs(l.c_notice_at);
-        // DC-DEFAULT: CLI-1876 (proposed) the question wraps at the frame's width less twice its left offset, over 7
-        // pixels a character
-        let width = (CONFIRM_SIZE[0] - 2 * l.c_notice_at[0]).max(70);
-        for (k, line) in wrap_runs(&notice, (width / 7) as usize, WHITE)
-            .iter()
-            .enumerate()
-        {
-            let mut x = n_at[0];
-            let y = n_at[1] + k as i32 * (FONT_SIZE + 2);
-            for (s, c) in line {
-                out.push(place_text(s, [x, y], [0, 0], TL, FONT, FONT_SIZE, *c));
-                x += measure(cat, s);
-            }
-        }
-        draw_button(
+        // the question: one text control (flags 0, no wrap rectangle), white
+        // EVIDENCE: cshell+0x248660 (str_UseMsgBoxNotice at ConFirmBoxNotice: font 0xe, size 0xe, flags 0,
+        // rectangle 0 x 0, colours -1)
+        out.push(place_text(
+            &cat.text(self.texts.confirm_notice),
+            self.c_abs(l.c_notice_at),
+            [0, 0],
+            TL,
+            FONT,
+            FONT_SIZE,
+            WHITE,
+        ));
+        button(
             cat,
             buttons,
             self.c_abs(l.c_ok_at),
@@ -830,7 +877,7 @@ impl ColourBox {
             !self.waiting,
             out,
         );
-        draw_button(
+        button(
             cat,
             buttons,
             self.c_abs(l.c_cancel_at),
@@ -841,15 +888,35 @@ impl ColourBox {
     }
 }
 
-/// The reticle of the match: the in-use reticle item's shape bits and colour (`0xAARRGGBB`, 0 outside the table);
-/// `None` without one.
-// EVIDENCE: cshell+0x1630a0 (the match entry: the in-use function record of kind 11 (cshell+0x227070) -> the mark's
-// colour from its colour index (cshell+0x1dce50) and its shape from the item's ShapeType (cshell+0x25ac80,
-// cshell+0x851f0); none: shape 0 and colour 0, the weapon's)
-// DC-DEFAULT: CLI-1878 (proposed) the first in-use record of SubType 11 in the inventory
+/// A button of this window: the shared button picture with its caption white in every state.
+// EVIDENCE: cshell+0x248660 (OK / Cancel and the confirmation's buttons: caption colours -1)
+fn button(
+    cat: &mut Catalog,
+    art: &NameArt,
+    at: [i32; 2],
+    caption: i32,
+    on: bool,
+    out: &mut Vec<DrawItem>,
+) {
+    let n = out.len();
+    draw_button(cat, art, at, caption, on, out);
+    for it in &mut out[n..] {
+        if let DrawItem::Label { style, .. } = it {
+            style.colour = argb(CAPTION_COLOUR);
+        }
+    }
+}
+
+/// The reticle of the match: the reticle item of the function list (the records of the function slots, then the
+/// in-use rows without `IsCanUnEquip`) gives its shape bits and colour (`0xAARRGGBB`, 0 outside the table); `None`
+/// without one. A reticle taken out of its function slot (Unequip, 0x36a) no longer counts.
+// EVIDENCE: cshell+0x1630a0 (the match entry: the function list's first record of kind 11 (cshell+0x227070) -> the
+// mark's colour from its colour index (cshell+0x1dce50) and its shape from the item's ShapeType (cshell+0x25ac80,
+// cshell+0x851f0); none: shape 0 and colour 0, the weapon's), cshell+0x227070 (walks the list built by
+// cshell+0x2292e0)
 pub fn match_reticle(rom: Option<&Path>, store: &super::storage::Store) -> Option<(u16, u32)> {
     let wares = super::storage::Wares::cached(rom);
-    let (rec, art) = store.items.iter().filter(|r| r.in_use).find_map(|r| {
+    let (rec, art) = wares.function_list(store).into_iter().find_map(|r| {
         wares
             .art_of(r.item_no as i32)
             .filter(|a| a.sub_type == SUB_RETICLE)
@@ -862,8 +929,9 @@ pub fn match_reticle(rom: Option<&Path>, store: &super::storage::Store) -> Optio
 }
 
 /// The in-use question (CLI-1877): Extend / New Color / Cancel for the same item number, OK / Cancel for another.
-// EVIDENCE: cshell+0x244f30 (the boxes and their captions), cshell+0x2431c0 (the same-number box: its first button sends
-// at once, its last cancels), cshell+0x2431f0 (the other box: Cancel cancels the window, OK leaves it open)
+// EVIDENCE: cshell+0x244f30 (the boxes and their captions), cshell+0x2431c0 (the same-number box: Extend sends at once,
+// Cancel cancels, New Color only closes the box), cshell+0x2431f0 (the other box: Cancel cancels the window, OK leaves
+// it open)
 pub fn in_use_box(cat: &Catalog, kind: i32, u: &InUse, uid: u32) -> Popup {
     let text = match (kind, u.same_item) {
         (SUB_RETICLE, true) => RETICLE_SAME_TEXT,
@@ -888,8 +956,13 @@ pub fn in_use_box(cat: &Catalog, kind: i32, u: &InUse, uid: u32) -> Popup {
 }
 
 /// What the in-use question's answer does: `Some(true)` sends at once (Extend), `Some(false)` cancels the window,
-/// `None` leaves it open for a pick.
-// DC-DEFAULT: CLI-1877 (proposed) New Color (the second of three buttons) leaves the window open; Escape cancels
+/// `None` leaves it open for a pick (New Color: the window keeps taking picks and sends the picked colour).
+// EVIDENCE: cshell+0x270000 (the three-button box: caption 1 on the box's button +0x28 at x 63, caption 2 on +0x30 at
+// x 185, caption 3 on +0x2c at x 307), cshell+0x26f3c0 (those buttons' commands 6, 7 and 0x270), cshell+0x271830
+// (Escape -> the answer 0 to the first callback), cshell+0x271680 (a callback the box was not given is not called),
+// cshell+0x244f30 (the first callback cshell+0x2431c0, no second one)
+// DISASM: cshell+0x2719d0..0x271a10 (6 -> the first callback with 1, 7 -> the first callback with 0, 0x270 -> the
+// second callback with 0), cshell+0x2431c0 (1 -> the window's send, 0 -> its 0x267)
 pub fn in_use_answer(same_item: bool, chosen: Option<usize>, yes: bool) -> Option<bool> {
     if same_item {
         match chosen {
@@ -943,27 +1016,16 @@ mod tests {
         let ok = mid(b.abs(b.layout.ok_at));
         // OK is off until a pick
         assert_eq!(b.press(ok), Some(ColourStep::None));
+        // slot 9 holds the table's seventh colour (the table runs from its last entry)
         let slot = mid(b.slot_at(9));
         assert_eq!(b.press(slot), Some(ColourStep::None));
-        assert_eq!((b.picked, b.ok_on), (10, true));
-        assert_eq!(b.picked_argb(), 0xff00_0009);
-        assert_eq!(
-            b.press(ok),
-            Some(ColourStep::Use {
-                colour: 10,
-                used: 0
-            })
-        );
+        assert_eq!((b.picked, b.ok_on, b.mark), (7, true, Some(9)));
+        assert_eq!(b.picked_argb(), 0xff00_0006);
+        assert_eq!(b.press(ok), Some(ColourStep::Use { colour: 7, used: 0 }));
         assert!(b.waiting);
         assert_eq!(b.press(ok), Some(ColourStep::None));
         b.refused();
-        assert_eq!(
-            b.ok(),
-            ColourStep::Use {
-                colour: 10,
-                used: 0
-            }
-        );
+        assert_eq!(b.ok(), ColourStep::Use { colour: 7, used: 0 });
         let cancel = mid(b.abs(b.layout.cancel_at));
         assert_eq!(b.press(cancel), Some(ColourStep::Cancel));
         assert_eq!(b.press([0.0, 0.0]), None);
@@ -1022,11 +1084,15 @@ mod tests {
         let mut b = boxed(SUB_NAME_COLOUR, 40, None);
         assert_eq!(b.pages(), 3);
         assert_eq!(b.links(), (0, 3));
+        b.press(mid(b.slot_at(0)));
+        assert_eq!((b.picked, b.mark), (40, Some(0)));
         b.press(mid(b.page_link_at(2)));
-        assert_eq!(b.page, 2);
-        assert_eq!(b.shown(), 32..40);
+        assert_eq!((b.page, b.mark, b.picked), (2, None, 40));
+        // the last page holds the table's first eight colours, from the eighth down
+        assert_eq!(b.shown(), (0..8).map(|k| (k, 7 - k)).collect::<Vec<_>>());
+        assert_eq!(b.slot_swatch(8), None);
         b.press(mid(b.slot_at(1)));
-        assert_eq!(b.picked, 34);
+        assert_eq!(b.picked, 7);
         let mut out = Vec::new();
         let mut c = Catalog::fallback(None, 1024, 768);
         b.draw(&mut c, &ColourArt::default(), &NameArt::default(), &mut out);
@@ -1051,6 +1117,141 @@ mod tests {
         assert_eq!(in_use_answer(true, None, false), Some(false));
         assert_eq!(in_use_answer(false, Some(0), true), None);
         assert_eq!(in_use_answer(false, Some(1), false), Some(false));
+    }
+
+    fn labels(out: &[DrawItem]) -> Vec<(String, [u8; 4], Option<i32>)> {
+        out.iter()
+            .filter_map(|d| match d {
+                DrawItem::Label { text, style, .. } => {
+                    Some((text.clone(), style.colour, style.size))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Kind 11: one row of slots at the reticle list's point, the table from its last colour, the pressed slot marked,
+    /// all five page links and both arrows drawn (the ones past the last page disabled) in size 14, the captions
+    /// white, the confirmation's question one line.
+    #[test]
+    fn the_reticle_page_lays_out_its_slots_links_and_previews() {
+        let mut b = boxed(SUB_RETICLE, 8, None);
+        b.layout.slot_on = "on.dtx".into();
+        let l = b.layout.clone();
+        assert_eq!((b.per_page(), b.pages()), (8, 1));
+        for k in 0..8 {
+            assert_eq!(
+                b.slot_at(k),
+                b.abs([
+                    l.reticle_list_at[0] + k as i32 * (l.slot_size[0] + l.column_gap),
+                    l.reticle_list_at[1]
+                ])
+            );
+            assert_eq!(b.slot_swatch(k), Some(7 - k));
+        }
+        let mut c = Catalog::fallback(None, 1024, 768);
+        let draw = |b: &ColourBox, c: &mut Catalog| {
+            let mut out = Vec::new();
+            b.draw(c, &ColourArt::default(), &NameArt::default(), &mut out);
+            out
+        };
+        let out = draw(&b, &mut c);
+        let pics: Vec<&str> = out
+            .iter()
+            .filter_map(|d| match d {
+                DrawItem::Image { tex, .. } => Some(tex.as_str()),
+                _ => None,
+            })
+            .collect();
+        // the swatches from the last, the "before" picture; no "after" and no mark before a pick
+        assert_eq!(
+            &pics[..8],
+            &[
+                "sw7.dtx", "sw6.dtx", "sw5.dtx", "sw4.dtx", "sw3.dtx", "sw2.dtx", "sw1.dtx",
+                "sw0.dtx"
+            ]
+        );
+        assert!(
+            pics.contains(&"before.dtx")
+                && !pics.contains(&"after.dtx")
+                && !pics.contains(&"on.dtx")
+        );
+        let ls = labels(&out);
+        let link = |t: &str| ls.iter().find(|(s, ..)| s == t).cloned().expect(t);
+        assert_eq!(link("1").1, argb(WHITE));
+        for t in ["<", "2", "3", "4", "5", ">"] {
+            assert_eq!(link(t).1, argb(PAGE_OFF_COLOUR), "{t}");
+            assert_eq!(link(t).2, Some(PAGE_FONT_SIZE), "{t}");
+        }
+        // a pick: the slot marked, the "after" picture in the picked colour
+        b.press(mid(b.slot_at(2)));
+        assert_eq!((b.picked, b.mark), (6, Some(2)));
+        let out = draw(&b, &mut c);
+        let after = out.iter().find_map(|d| match d {
+            DrawItem::Image { tex, dst, tint, .. } if tex == "after.dtx" => Some((dst[0], *tint)),
+            _ => None,
+        });
+        assert_eq!(
+            after,
+            Some((b.abs(l.after_at)[0] as f32, argb(0xff00_0005)))
+        );
+        let on = out.iter().find_map(|d| match d {
+            DrawItem::Image { tex, dst, .. } if tex == "on.dtx" => {
+                Some([dst[0] as i32, dst[1] as i32])
+            }
+            _ => None,
+        });
+        assert_eq!(on, Some(b.slot_at(2)));
+        // OK: the confirmation; its question is one label, the captions are white
+        b.texts.confirm_notice = 0x42;
+        assert_eq!(b.ok(), ColourStep::None);
+        let out = draw(&b, &mut c);
+        let ls = labels(&out);
+        let notice = c.text(0x42);
+        assert_eq!(
+            ls.iter().filter(|(s, ..)| *s == notice).count(),
+            3,
+            "OK twice and the question"
+        );
+        assert!(ls
+            .iter()
+            .filter(|(s, ..)| *s == c.text(CANCEL_TEXT))
+            .all(|(_, col, _)| *col == argb(CAPTION_COLOUR)));
+    }
+
+    /// CLI-1877: another item of the number in use: the window opens on its colour with OK off; New Color closes the
+    /// question only, a pick then works as without one and the send names the item in use.
+    #[test]
+    fn new_color_leaves_the_window_open_for_a_pick_that_replaces_the_one_in_use() {
+        let u = InUse {
+            uid: 33,
+            colour: 3,
+            same_item: true,
+        };
+        for kind in [SUB_NAME_COLOUR, SUB_RETICLE] {
+            let mut b = boxed(kind, 8, Some(u));
+            assert_eq!((b.picked, b.ok_on, b.mark), (3, false, None));
+            assert_eq!(b.ok(), ColourStep::None, "OK is off before a pick");
+            assert_eq!(in_use_answer(true, Some(1), false), None);
+            b.press(mid(b.slot_at(0)));
+            assert_eq!((b.picked, b.ok_on), (8, true));
+            b.press(mid(b.slot_at(4)));
+            assert_eq!(
+                (b.picked, b.mark),
+                (4, Some(4)),
+                "a second pick replaces the first"
+            );
+            if kind == SUB_RETICLE {
+                assert_eq!(b.ok(), ColourStep::None);
+            }
+            assert_eq!(
+                b.ok(),
+                ColourStep::Use {
+                    colour: 4,
+                    used: 33
+                }
+            );
+        }
     }
 
     #[test]

@@ -608,6 +608,10 @@ pub trait Screen {
     fn animating(&self) -> bool {
         false
     }
+    /// A code-built field of the screen shows a blinking caret (the image is drawn again when its phase flips).
+    fn caret_blinks(&self) -> bool {
+        false
+    }
     /// The lists got their rows (a bar may have moved since): screens that place their rows themselves follow here.
     fn lists_synced(&mut self) {}
     /// CLI-1634: the optional mods' list or the local mods changed.
@@ -2259,7 +2263,8 @@ impl Menu {
             || self.screen.animating()
             || (self.screen.name() == "lobby" && self.data.ticker.active(Instant::now()))
             || (self.loading_up() && self.loading_updates() != self.loading_shown)
-            || (self.screen.sheet().focused().is_some() && self.caret_phase() != self.caret_shown)
+            || ((self.screen.sheet().focused().is_some() || self.screen.caret_blinks())
+                && self.caret_phase() != self.caret_shown)
             || self
                 .figure
                 .as_ref()

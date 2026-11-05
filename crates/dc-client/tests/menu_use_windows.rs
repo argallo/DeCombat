@@ -9,13 +9,18 @@
 
 use dc_client::hud::items::DrawItem;
 use dc_client::menu::clan::ClanLits;
+use dc_client::menu::colorbox::{self, ColourLayout, ColourTables, ColourTexts};
+use dc_client::menu::countrybox::{CountryLayout, ROW_HEIGHT};
 use dc_client::menu::facebox::{self, FaceLayout, FaceTexts};
+use dc_client::menu::link::QueueReply;
 use dc_client::menu::link::{
     ClanInfoView, InboxRow, InvRecord, LinkEvent, LinkOptions, OpenReply, UseReply,
 };
 use dc_client::menu::markbox::{self, MarkLayout};
+use dc_client::menu::megabox::{self, MegaBox};
 use dc_client::menu::shop::CMD_WEAR;
 use dc_client::menu::storage::Wares;
+use dc_client::menu::usebox;
 use dc_client::menu::usebox::{NOTICE_TITLE, WEAPON_CHANGE_ASK};
 use dc_client::menu::{Go, Menu, MenuInput, MenuKey, MenuOptions};
 use dc_client::steps::{resolve, Resolved};
@@ -85,6 +90,16 @@ fn shot(m: &mut Menu, name: &str) {
 /// A menu on the storage page with function item `item` (unique id `uid`) opened from the inbox; `None` without
 /// the ROM or a product of the item.
 fn opened(item: i32, uid: u32, prep: impl FnOnce(&mut Menu)) -> Option<Menu> {
+    opened_with(item, uid, prep, Vec::new())
+}
+
+/// [`opened`] with `extra` inventory records next to the opened one (the inventory answer holds them too).
+fn opened_with(
+    item: i32,
+    uid: u32,
+    prep: impl FnOnce(&mut Menu),
+    extra: Vec<InvRecord>,
+) -> Option<Menu> {
     let mut m = menu()?;
     let wares = Wares::cached(m.cat.rom.as_deref());
     let pid = (0..6000u32).find(|p| {
@@ -94,6 +109,7 @@ fn opened(item: i32, uid: u32, prep: impl FnOnce(&mut Menu)) -> Option<Menu> {
     })?;
     m.detach_link();
     prep(&mut m);
+    m.data.store.items.extend(extra.iter().cloned());
     m.data.store.inbox = vec![InboxRow {
         entry: 41,
         product: pid,
@@ -114,11 +130,13 @@ fn opened(item: i32, uid: u32, prep: impl FnOnce(&mut Menu)) -> Option<Menu> {
         ..Default::default()
     }));
     settle(&mut m);
-    m.feed_event(LinkEvent::Inventory(vec![InvRecord {
+    let mut inv = vec![InvRecord {
         uid,
         item_no: item as u32,
         ..Default::default()
-    }]));
+    }];
+    inv.extend(extra);
+    m.feed_event(LinkEvent::Inventory(inv));
     settle(&mut m);
     Some(m)
 }
@@ -443,4 +461,346 @@ fn rom_face_window_confirms_then_sends_the_face() {
     shot(&mut m, "gender");
     m.input(MenuInput::Key(MenuKey::Escape));
     cancelled(&mut m);
+}
+
+/// The pictures drawn, in order.
+fn pictures(m: &mut Menu) -> Vec<(String, [f32; 4], [u8; 4])> {
+    m.items()
+        .iter()
+        .filter_map(|i| match i {
+            DrawItem::Image { tex, dst, tint, .. } => Some((tex.clone(), *dst, *tint)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn labels(m: &mut Menu) -> Vec<(String, [u8; 4])> {
+    m.items()
+        .iter()
+        .filter_map(|i| match i {
+            DrawItem::Label { text, style, .. } => Some((text.clone(), style.colour)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// colour-window-2009 (CLI-1876, owner report 2026-11-05 "the custom reticle screen still doesn't look exactly the
+/// same"): the ring reticle's window on the ROM layout: the reticle colour table from its last entry in one row at
+/// the reticle list's point, this item's own picture as "before" in green, the page links 2..5 and both arrows
+/// disabled; a pick marks its slot and shows "after"; the confirmation's question is one line; the use enters the
+/// item in a function slot, the match takes its shape and colour, and a reticle taken out of its slot (Unequip) no
+/// longer counts (CLI-1878). PNGs with `DC_USEBOX_PNG` set.
+#[test]
+fn rom_reticle_window_draws_the_2009_page_and_its_unequip_ends_it() {
+    const RING: i32 = 9014;
+    let Some(rom) = dc_rom::resolve_rom().ok() else {
+        eprintln!("skipped: no CA_ROM");
+        return;
+    };
+    let wares = Wares::cached(Some(&rom));
+    let Some(art) = wares.art_of(RING).cloned() else {
+        eprintln!("skipped: no item {RING}");
+        return;
+    };
+    assert_eq!((art.sub_type, art.shape), (colorbox::SUB_RETICLE, 4));
+    // point 3: reticles may be taken out, the name and clan colours not (the ROM rows' IsCanUnEquip)
+    assert!(wares.can_unequip(RING));
+    for n in [9008, 9009] {
+        if wares.art_of(n).is_some() {
+            assert!(!wares.can_unequip(n), "{n}");
+        }
+    }
+    let Some(mut m) = opened(RING, 801, |_| {}) else {
+        eprintln!("skipped: no reticle product");
+        return;
+    };
+    let texts_of = ColourTexts::read(&m.cat, colorbox::SUB_RETICLE);
+    let title = m.cat.text(texts_of.title);
+    assert!(texts(&mut m).contains(&title), "the reticle window");
+    let tables = ColourTables::from_rom(Some(&rom));
+    let swatches: Vec<String> = tables.reticles.iter().map(|s| s.tex.clone()).collect();
+    assert_eq!(swatches.len(), 8);
+    let l = ColourLayout::read(&m.cat);
+    let w = l.window_at();
+    let slot = |k: i32| {
+        [
+            w[0] + l.reticle_list_at[0] + k * (l.slot_size[0] + l.column_gap),
+            w[1] + l.reticle_list_at[1],
+        ]
+    };
+    let pics = pictures(&mut m);
+    let shown: Vec<&(String, [f32; 4], [u8; 4])> =
+        pics.iter().filter(|p| swatches.contains(&p.0)).collect();
+    let want: Vec<String> = swatches.iter().rev().cloned().collect();
+    assert_eq!(
+        shown.iter().map(|p| p.0.clone()).collect::<Vec<_>>(),
+        want,
+        "the table from its last colour"
+    );
+    for (k, p) in shown.iter().enumerate() {
+        let at = slot(k as i32);
+        assert_eq!([p.1[0], p.1[1]], [at[0] as f32, at[1] as f32], "slot {k}");
+    }
+    let before = pics
+        .iter()
+        .find(|p| p.0 == art.preview_icon)
+        .expect("this item's picture as before");
+    assert_eq!(before.2, [0, 255, 0, 255]);
+    assert_eq!(
+        [before.1[0], before.1[1]],
+        [
+            (w[0] + l.before_at[0]) as f32,
+            (w[1] + l.before_at[1]) as f32
+        ]
+    );
+    let ls = labels(&mut m);
+    // the window draws over the storage page (its own page numbers): the last label of a text
+    let colour_of = |t: &str| ls.iter().rev().find(|(s, _)| s == t).map(|(_, c)| *c);
+    assert_eq!(colour_of("1"), Some([255, 255, 255, 255]));
+    for t in ["<", "2", "5", ">"] {
+        assert_eq!(colour_of(t), Some([0x66, 0x66, 0x66, 255]), "{t}");
+    }
+    shot(&mut m, "reticle_window");
+    // a pick on the first slot: the table's last colour, the after picture in it
+    press(&mut m, slot(0));
+    let after = pictures(&mut m)
+        .into_iter()
+        .rfind(|p| p.0 == art.preview_icon)
+        .expect("after");
+    let last = tables.reticles.last().unwrap().argb;
+    assert_eq!(
+        after.2,
+        [(last >> 16) as u8, (last >> 8) as u8, last as u8, 255]
+    );
+    shot(&mut m, "reticle_window_picked");
+    // OK: the confirmation, its question one label
+    m.input(MenuInput::Key(MenuKey::Enter));
+    let notice = m.cat.text(texts_of.confirm_notice);
+    assert!(texts(&mut m).contains(&notice), "the question on one line");
+    shot(&mut m, "reticle_confirm");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(m.link_latest_request(), "ColourUse(801, 8, 0)");
+    m.feed_event(LinkEvent::ItemUsed(UseReply {
+        ok: true,
+        uid: 801,
+        ..Default::default()
+    }));
+    settle(&mut m);
+    let r = m.data.store.items.iter().find(|r| r.uid == 801).cloned();
+    assert_eq!(r.map(|r| (r.in_use, r.function)), Some((true, 8)));
+    assert_eq!(
+        colorbox::match_reticle(Some(&rom), &m.data.store),
+        Some((dc_client::spread::mark::shape_of(4), last))
+    );
+    // Unequip (0x36b ok): out of its function slot, the match no longer takes it
+    m.feed_event(LinkEvent::FunctionSlotDone {
+        put: false,
+        ok: true,
+        uid: 801,
+    });
+    settle(&mut m);
+    assert_eq!(colorbox::match_reticle(Some(&rom), &m.data.store), None);
+}
+
+/// colour-window-2009 (CLI-1877, owner report 2026-11-05 "the player name color change doesn't let you change colors
+/// after you've picked one"): a second Player Name Color item while the first is in use: the question's New Color
+/// closes only the question, a slot press picks a new colour and OK sends it naming the item in use, whose record
+/// goes with the answer.
+#[test]
+fn rom_new_color_picks_a_new_name_colour_over_the_one_in_use() {
+    const NAME: i32 = 9008;
+    let Some(rom) = dc_rom::resolve_rom().ok() else {
+        eprintln!("skipped: no CA_ROM");
+        return;
+    };
+    if Wares::cached(Some(&rom)).art_of(NAME).map(|a| a.sub_type) != Some(colorbox::SUB_NAME_COLOUR)
+    {
+        eprintln!("skipped: no item {NAME}");
+        return;
+    }
+    let in_use = InvRecord {
+        uid: 810,
+        item_no: NAME as u32,
+        in_use: true,
+        function: 3,
+        ..Default::default()
+    };
+    let Some(mut m) = opened_with(
+        NAME,
+        811,
+        |m| {
+            m.data.profile.nick = "Alice".into();
+            m.data.char_extras.name_colour = 3;
+        },
+        vec![in_use],
+    ) else {
+        eprintln!("skipped: no name colour product");
+        return;
+    };
+    let q = m.popup().cloned().expect("the in-use question");
+    assert_eq!(
+        (q.text.clone(), q.title),
+        (m.cat.text(colorbox::IN_USE_TEXT), 0x371)
+    );
+    let buttons = q.buttons();
+    assert_eq!(buttons.len(), 3, "Extend / New Color / Cancel");
+    shot(&mut m, "name_colour_in_use");
+    // New Color: the question goes, the window stays
+    let b = buttons[1];
+    press(&mut m, [b[0] + b[2] / 2 - 5, b[1] + b[3] / 2 - 5]);
+    settle(&mut m);
+    assert!(m.popup().is_none(), "only the question closes");
+    let title = m
+        .cat
+        .text(ColourTexts::read(&m.cat, colorbox::SUB_NAME_COLOUR).title);
+    assert!(texts(&mut m).contains(&title), "the window stays");
+    let n = ColourTables::from_rom(Some(&rom)).names.len() as u32;
+    let l = ColourLayout::read(&m.cat);
+    let w = l.window_at();
+    // the first slot holds the table's last colour, the second the one before it
+    press(&mut m, [w[0] + l.list_at[0], w[1] + l.list_at[1]]);
+    press(
+        &mut m,
+        [
+            w[0] + l.list_at[0] + l.slot_size[0] + l.column_gap,
+            w[1] + l.list_at[1],
+        ],
+    );
+    assert!(
+        texts(&mut m).contains(&"Alice".to_string()),
+        "the preview name"
+    );
+    shot(&mut m, "name_colour_new");
+    press(&mut m, [w[0] + l.ok_at[0], w[1] + l.ok_at[1]]);
+    assert_eq!(
+        m.link_latest_request(),
+        format!("ColourUse(811, {}, 810)", n - 1)
+    );
+    m.feed_event(LinkEvent::ItemUsed(UseReply {
+        ok: true,
+        uid: 811,
+        removed: 810,
+        ..Default::default()
+    }));
+    settle(&mut m);
+    assert_eq!(m.data.char_extras.name_colour, n - 1);
+    assert!(!m.data.store.items.iter().any(|r| r.uid == 810));
+    assert!(m
+        .data
+        .store
+        .items
+        .iter()
+        .any(|r| r.uid == 811 && r.in_use && r.function == n - 1));
+}
+
+/// megaphone-country (CLI-1873, owner report 2026-11-05 "no country code for America"): the country window's list
+/// offers the United States after the ROM's rows, and picking it sends its nation number.
+#[test]
+fn rom_country_window_offers_the_united_states() {
+    let Some(item) = item_of(usebox::SUB_COUNTRY) else {
+        eprintln!("skipped: no CA_ROM or no country code item");
+        return;
+    };
+    let Some(mut m) = opened(item, 705, |m| m.data.char_extras.nation = 2) else {
+        eprintln!("skipped: no country code product");
+        return;
+    };
+    let rows = dc_client::menu::charinfo::Tables::cached(m.cat.rom.as_deref().unwrap()).countries;
+    let usa = rows
+        .iter()
+        .position(|r| r.0 == "United States" && r.1 == "USA")
+        .expect("the United States is a country row");
+    assert!(usa >= 1, "the list shows rows 1..");
+    let l = CountryLayout::read(&m.cat);
+    let abs = |p: [i32; 2]| [l.window_at[0] + p[0], l.window_at[1] + p[1]];
+    // the drop-down opens; the wheel scrolls its list to the end, where the United States is the last row
+    press(&mut m, abs(l.button_at));
+    let wheel_at = [
+        (abs(l.list_at)[0] + 5) as f32,
+        (abs(l.list_at)[1] + 5) as f32,
+    ];
+    m.input(MenuInput::Wheel(wheel_at, -200));
+    assert!(
+        texts(&mut m).iter().any(|t| t.trim() == "United States"),
+        "the list offers the United States"
+    );
+    shot(&mut m, "country_list_usa");
+    let last = (l.list_rows() as i32 - 1).min(rows.len() as i32 - 2);
+    press(
+        &mut m,
+        [abs(l.list_at)[0], abs(l.list_at)[1] + last * ROW_HEIGHT],
+    );
+    m.input(MenuInput::Key(MenuKey::Enter));
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(
+        m.link_latest_request(),
+        format!("ItemUse(705, \"\", 0, {usa})")
+    );
+}
+
+/// megaphone-country (CLI-1874, owner report 2026-11-05 "missing the cursor ... can't type spaces or give it colors"):
+/// the composer takes a space from the Space key, a pick on the colour grid colours what is typed after it, the field
+/// draws its caret, and the send carries the colour runs (ROM only; `DC_USEBOX_PNG` writes the composer's picture).
+#[test]
+fn rom_megaphone_composer_types_spaces_and_colours() {
+    let Some(item) = item_of(usebox::SUB_MEGAPHONE) else {
+        eprintln!("skipped: no CA_ROM or no megaphone item");
+        return;
+    };
+    let Some(mut m) = opened(item, 706, |m| m.data.profile.nick = "Alice".into()) else {
+        eprintln!("skipped: no megaphone product");
+        return;
+    };
+    assert_eq!(m.link_latest_request(), "ItemUse(706, \"\", 0, 0)");
+    m.feed_event(LinkEvent::ItemUsed(UseReply {
+        ok: true,
+        uid: 706,
+        count: 3,
+        ..Default::default()
+    }));
+    settle(&mut m);
+    let title = m.cat.text(megabox::TITLE_TEXT);
+    assert!(texts(&mut m).contains(&title), "the composer");
+    let names = ColourTables::from_rom(m.cat.rom.as_deref()).names;
+    assert!(!names.is_empty(), "the ROM name colours");
+    let probe = MegaBox::open(&m.cat, 706, 3, "Alice", names.clone());
+    assert!(probe.slots() > 0, "the colour grid has slots");
+    for c in "hi".chars() {
+        m.input(MenuInput::Char(c));
+    }
+    m.input(MenuInput::Key(MenuKey::Space));
+    // the first slot shows the table's last colour
+    let k = 0;
+    press(&mut m, probe.slot_at(k));
+    for c in "all".chars() {
+        m.input(MenuInput::Char(c));
+    }
+    let n = probe.slot_colour(k).unwrap();
+    let picked = names[n as usize - 1].argb;
+    let items = m.items_at(0.1);
+    let caret = items.iter().any(|d| {
+        matches!(d, DrawItem::Fill { rect, .. } if rect[2] == dc_client::menu::sheet::CARET_WIDTH as f32)
+    });
+    assert!(caret, "the field draws its caret");
+    let coloured = items.iter().any(|d| {
+        matches!(d, DrawItem::Label { text, style, .. }
+            if text == "all" && style.colour == dc_client::menu::catalog::argb(picked))
+    });
+    assert!(coloured, "the text after the pick is in the picked colour");
+    assert!(texts(&mut m).iter().any(|t| t == "6/65"));
+    shot(&mut m, "megaphone_window");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(m.link_latest_request(), "MegaphoneQueue");
+    m.feed_event(LinkEvent::MegaphoneQueued(QueueReply {
+        ok: true,
+        secs: 30,
+        on_air: 1,
+        last: 2,
+        waiting: 1,
+        ..Default::default()
+    }));
+    settle(&mut m);
+    shot(&mut m, "megaphone_confirm");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(m.link_latest_request(), "MegaphoneSend(706, \"hi all\")");
 }

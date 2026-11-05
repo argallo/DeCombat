@@ -16,7 +16,7 @@ pub const CLASS_FLAG_ZONE: &str = "dc.flag_zone";
 pub const CLASS_CAPTURE_FLAG: &str = "dc.capture_flag";
 /// Kill volume brush (`pending_sec`).
 pub const CLASS_KILL_VOLUME: &str = "dc.kill_volume";
-/// Hazard volume brush (no server behaviour today).
+/// Hazard volume brush (hurts a player inside by its damage per second, DSV-607).
 pub const CLASS_HAZARD: &str = "dc.hazard";
 /// Ladder brush (convex; climbable by its container kind alone).
 pub const CLASS_LADDER: &str = "dc.ladder";

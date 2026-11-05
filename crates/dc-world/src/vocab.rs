@@ -150,6 +150,23 @@ const KILL_VOLUME: [PropSpec; 3] = [
     ),
     p("damage_kind", PropKind::Text, false, None, "reserved"),
 ];
+// DC-DEFAULT: DSV-607 (proposed) the hazard volume's damage per second and kind
+const HAZARD: [PropSpec; 2] = [
+    p(
+        "damage",
+        PropKind::Real,
+        true,
+        None,
+        "damage per second to a player inside (> 0)",
+    ),
+    p(
+        "damage_kind",
+        PropKind::Text,
+        false,
+        Some("unspecified"),
+        "`poison`, else the unspecified type",
+    ),
+];
 const WORLD_MODEL: [PropSpec; 5] = [
     p("visible", PropKind::Bool, false, Some("true"), "drawn"),
     p(
@@ -428,8 +445,8 @@ pub const CLASSES: [ClassSpec; 17] = [
         ObjectRole::HazardVolume,
         &names::CLASS_HAZARD,
         Geometry::Brush,
-        "as kill volume (`ObjectRole::HazardVolume`, brush; no server behaviour today)",
-        &KILL_VOLUME,
+        "dserver hazards (`ObjectRole::HazardVolume`, brush; hurts a player inside every 500 ms)",
+        &HAZARD,
     ),
     role_class(
         ObjectRole::Ladder,
@@ -675,7 +692,9 @@ mod tests {
         let kill = class_named("dc.kill_volume").unwrap();
         assert!(kill.prop("damage").unwrap().doc.contains("reserved"));
         assert!(LEADING[2].doc.contains("ignored on brush"));
-        assert_eq!(class_named("dc.hazard").unwrap().props, kill.props);
+        let hazard = class_named("dc.hazard").unwrap();
+        assert!(hazard.prop("damage").unwrap().required);
+        assert!(hazard.prop("pending_sec").is_none());
     }
 
     #[test]

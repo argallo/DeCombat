@@ -110,6 +110,8 @@ pub struct WorldInfo {
     pub spawn_locked: Vec<bool>,
     /// The closed models of the kill volumes (the server's kill test, DSV-52, proposed).
     pub kill_shapes: Vec<crate::killvol::VolumeShape>,
+    /// The hazard volumes that hurt a player inside them (DSV-607, proposed).
+    pub hazards: Vec<crate::killvol::HazardShape>,
     /// The sliding doors (DSV-46, proposed).
     pub doors: Vec<crate::doors::DoorInfo>,
     /// The rotating doors players may open and the rotating switches (w1-doors DOOR-4, proposed).
@@ -1218,6 +1220,8 @@ pub fn world_from_bytes(data: &[u8], announce: &str, display: &str) -> Result<Wo
             .map(|o| prop_bool(o, crate::doors::PROP_LOCKED).unwrap_or(false))
             .collect(),
         kill_shapes: crate::killvol::kill_shapes(&w),
+        // DC-DEFAULT: DSV-607 (proposed)
+        hazards: crate::killvol::hazard_shapes(&w),
         doors: crate::doors::door_infos(&w),
         turns: crate::doors::turn_infos(&w),
         triggers: crate::doors::script_triggers(&w),

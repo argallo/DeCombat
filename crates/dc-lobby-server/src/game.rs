@@ -1221,6 +1221,8 @@ pub fn loadout_tokens(st: &Core, account: u32, c: &crate::db::Character) -> Stri
     if let Ok(items) = crate::db::items(&st.db, account) {
         // LG-314: a pack item never reaches a game server of a plain entry
         let items = crate::inventory::visible_items(st, account, items);
+        // LG-407: a free weapon of a Weapon Free Pass reaches the game server as an equipped slot
+        let items = crate::freepass::equipped_view(st, account, items);
         let limit = st
             .rooms
             .values()

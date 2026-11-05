@@ -34,7 +34,10 @@ use super::recordbox::{self, RecordStep};
 use super::result::grouped;
 use super::sheet::{image_fit, place_text, Look, Sheet, ALIGN_CENTRE, ALIGN_LEFT, ALIGN_RIGHT};
 use super::slotpick::{self, SlotPick};
-use super::storage::{self, equip_rows, own_slot, stored, Ware, Wares, TAB_BODY, TAB_MARKET};
+use super::storage::{
+    self, equip_rows, own_slot, stored, stored_free, Ware, Wares, FREE_PASS_SLOT, TAB_BODY,
+    TAB_MARKET,
+};
 use super::usebox::{self, NameStep, UseAction};
 use super::{
     build_sheet, frontfx, pages, pane, Ctx, Go, MenuData, MenuKey, Screen, DOUBLE_CLICK_MS,
@@ -85,6 +88,17 @@ pub const CMD_STORAGE_SHOP: i32 = 1010;
 /// storage-functions: the storage page's Discard (window 4 button 0, caption 0x15fe).
 // DISASM: cshell+0x14f830 (1011 = 0x3f3 -> cshell+0x1505df)
 pub const CMD_THROW_OUT: i32 = 1011;
+/// free-pass-tab: the storage page's top strip (window 4): General (control 5, 1037), Special Item (control 6, 1039)
+/// and Free Pass (control 7, 1038), captions 0x1886 / 0x1895 / 0x1887.
+// DISASM: cshell+0x14f830 (1037 = 0x40d -> cshell+0x15088a: page 0, page mode 0 (cshell+0x13fe00(0)), the general
+// cells cshell+0x14a700; 1038 = 0x40e -> cshell+0x1508e6: page 0, page mode 1, the free-pass cells cshell+0x14ad00;
+// 1039 = 0x40f -> cshell+0x15093d: weapons tab category 5, page mode 2)
+pub const CMD_STORE_GENERAL: i32 = 1037;
+pub const CMD_STORE_FREE_PASS: i32 = 1038;
+pub const CMD_STORE_SPECIAL: i32 = 1039;
+pub const GENERAL_TAB: i32 = 5;
+pub const SPECIAL_TAB: i32 = 6;
+pub const FREE_PASS_TAB: i32 = 7;
 /// storage-functions: the money panel's NX Charge (window 9 button 3).
 // DISASM: cshell+0x14f830 (1034 = 0x40a -> cshell+0x15020d: the charge page, CLI-773)
 pub const CMD_CHARGE: i32 = 1034;
@@ -1495,6 +1509,10 @@ pub struct ShopScreen {
     pub xray_controls: super::shopxray::XrayControls,
     /// function-unequip: the layout's caption of the storage Equip button (restored off the function-item shelf).
     wear_caption: i32,
+    /// free-pass-tab: the storage page shows the Free Pass cells (page mode 1, +0x5574).
+    pub free_pass_page: bool,
+    /// free-pass-tab: the pass of the free weapon the open backpack slot window was opened for (its OK sends 0x35e).
+    pick_pass: Option<u32>,
 }
 
 impl ShopScreen {
@@ -1556,6 +1574,8 @@ impl ShopScreen {
             xray_controls: Default::default(),
             pack_count: 0,
             wear_caption: WEAR_CAPTION,
+            free_pass_page: false,
+            pick_pass: None,
         };
         if let Some(c) = s.sheet.parts.iter().find_map(|p| match &p.look {
             Look::Button {
@@ -1599,6 +1619,46 @@ impl ShopScreen {
         }
         self.sync_gift(data);
         self.sync_wear(data);
+        self.sync_free_tab(data);
+    }
+
+    /// free-pass-tab: the storage strip's Free Pass tab (control 7) is shown while the page's shelf holds a free-pass
+    /// record (never on the black market tab), at the Special Item tab's place while that one is hidden (CLI-1001),
+    /// and selected on the Free Pass page; General (control 5) is selected on the general page.
+    // EVIDENCE: cshell+0x141060 (control 7: off on tab 2; on when cshell+0x2282c0(tab, category, 0, 1) holds a record,
+    // placed at control 6's place, 0x5c further right while control 6 is on), cshell+0x13fe00 (page mode 0 / 1 selects
+    // control 5 / 7)
+    // DC-DEFAULT: CLI-1888 (proposed) a Free Pass page whose last record went (the pass ended) falls back to the general
+    // page
+    fn sync_free_tab(&mut self, data: &MenuData) {
+        let shelf = self.pane == Pane::Storage && !self.character_page && self.tab != TAB_MARKET;
+        let any =
+            shelf && !stored_free(&data.store, &self.wares, self.tab, self.category).is_empty();
+        if self.free_pass_page && !any {
+            self.free_pass_page = false;
+            self.page = 0;
+            self.selected = None;
+        }
+        let special = self
+            .sheet
+            .part(STORAGE_WINDOW, SPECIAL_TAB, WidgetKind::Button)
+            .map(|b| (b.pos, b.shown));
+        if let Some(b) = self
+            .sheet
+            .part_mut(STORAGE_WINDOW, GENERAL_TAB, WidgetKind::Button)
+        {
+            b.selected = !self.free_pass_page;
+        }
+        if let Some(b) = self
+            .sheet
+            .part_mut(STORAGE_WINDOW, FREE_PASS_TAB, WidgetKind::Button)
+        {
+            b.shown = any;
+            b.selected = self.free_pass_page;
+            if let Some((at, shown)) = special {
+                b.pos = [at[0] + if shown { 0x5c } else { 0 }, at[1]];
+            }
+        }
     }
 
     /// function-unequip: the storage Equip button on the function-item shelf reads Equip / Unequip for an item in use
@@ -1670,8 +1730,11 @@ impl ShopScreen {
         self.wares.shelf(&data.store, self.tab, self.category)
     }
 
-    /// The items of the current storage page's shelf.
+    /// The items of the current storage page's shelf (the Free Pass page: the free-pass records of the shelf).
     pub fn items_shown(&self, data: &MenuData) -> Vec<super::link::InvRecord> {
+        if self.free_pass_page && !self.character_page {
+            return stored_free(&data.store, &self.wares, self.tab, self.category);
+        }
         if self.character_page {
             return data
                 .store
@@ -1818,6 +1881,7 @@ impl ShopScreen {
         self.look = pane::PaneLook::default();
         self.pack_target = None;
         self.character_page = false;
+        self.free_pass_page = false;
         self.category = 0;
         self.page = 0;
         self.selected = None;
@@ -2040,6 +2104,7 @@ impl ShopScreen {
     pub fn open_storage(&mut self, cat: usize) {
         self.pane = Pane::Storage;
         self.character_page = false;
+        self.free_pass_page = false;
         self.category = cat;
         self.page = 0;
         self.selected = None;
@@ -2073,18 +2138,23 @@ impl ShopScreen {
     // Backpack; a drawer row: Discard at Mod's place, Mod at Backpack's place, Backpack hidden; body and black market
     // tabs: Discard at Backpack's place, Mod and Backpack hidden), cshell+0x14b8a0 (the storage page runs it)
     fn layout_storage_buttons(&mut self) {
-        // CLI-1001: the top tab strip. General (control 5) is the page's mode 0 and is selected; Special Item (7) and
-        // Free Pass (6) are enabled only when the character holds such items
+        // CLI-1001: the top tab strip. General (control 5) is the page's mode 0 and is selected; Special Item (6) and
+        // Free Pass (7) are enabled only when the character holds such items (amended 2026-11-05: the captions are
+        // 0x1895 Special Item on control 6 and 0x1887 Free Pass on control 7; the Free Pass tab is CLI-1888,
+        // [`ShopScreen::sync_free_tab`])
         // EVIDENCE: cshell+0x13fe00 (the page mode 0 / 1 / 2 selects control 5 / 7 / 6, clears the other two),
         // cshell+0x140fe0 (control 6 enabled on the weapons tab when category 5 holds a record), cshell+0x141060
-        // (control 7 enabled when the special list of the page holds one); OBSERVED
+        // (control 7 enabled when the free-pass shelf of the page holds a record); OBSERVED
         // storage-functions/pairs/item1/storage.png (the reference stack draws General alone, selected)
-        // DC-DEFAULT: CLI-1001 no special or free-pass inventory is kept yet (weapons category 5 is empty, the special
-        // list is not on the wire as a separate list), so both tabs stay hidden, as a disabled button draws nothing
-        if let Some(b) = self.sheet.part_mut(STORAGE_WINDOW, 5, WidgetKind::Button) {
-            b.selected = true;
+        // DC-DEFAULT: CLI-1001 no special inventory is kept yet (weapons category 5 is empty), so Special Item stays
+        // hidden, as a disabled button draws nothing
+        if let Some(b) = self
+            .sheet
+            .part_mut(STORAGE_WINDOW, GENERAL_TAB, WidgetKind::Button)
+        {
+            b.selected = !self.free_pass_page;
         }
-        for id in [6, 7] {
+        for id in [SPECIAL_TAB, FREE_PASS_TAB] {
             self.sheet
                 .show(STORAGE_WINDOW, id, WidgetKind::Button, false);
         }
@@ -2306,6 +2376,18 @@ impl ShopScreen {
                 let req = p.request(&self.wares);
                 p.close(&mut self.sheet);
                 self.slot_pick = None;
+                // free-pass-tab: a free weapon's backpack slot goes in 0x35e (cshell+0x14baa0)
+                let req = match (req, self.pick_pass.take()) {
+                    (Some(LinkCmd::Equip { item, slot, .. }), Some(pass)) => {
+                        Some(LinkCmd::FreePass {
+                            put: true,
+                            item,
+                            pass,
+                            slot,
+                        })
+                    }
+                    (req, _) => req,
+                };
                 if let Some(cmd) = req {
                     ctx.send(cmd);
                 }
@@ -2313,6 +2395,7 @@ impl ShopScreen {
             slotpick::CMD_CANCEL => {
                 p.close(&mut self.sheet);
                 self.slot_pick = None;
+                self.pick_pass = None;
             }
             _ => {}
         }
@@ -2332,6 +2415,7 @@ impl ShopScreen {
         match slotpick::pack_check(&ctx.data.store, &self.wares, r.as_ref().map(|r| r.item_no)) {
             Ok(()) => {
                 if let Some(r) = r {
+                    self.pick_pass = self.pass_of(&r, ctx.data);
                     self.open_slot_pick(slotpick::PACK_WINDOW, r.uid, r.item_no, ctx);
                 }
             }
@@ -2510,26 +2594,33 @@ impl ShopScreen {
         } else {
             ctx.data.profile.nick.clone()
         };
-        let after = self
+        // kind 11: this item's picture for "after" and the confirmation, the plain one without it
+        // DISASM: cshell+0x24a8d7..0x24a944 (this record's PreViewIcon, else the Type0 picture, into the "after"
+        // preview and the confirmation's picture)
+        let mut after = self
             .wares
             .art_of(item_no)
             .map(|a| a.preview_icon.clone())
             .unwrap_or_default();
-        let plain = (
-            self.colour_art.plain.clone().unwrap_or_default(),
-            colorbox::NO_RETICLE_COLOUR,
-        );
-        let before = in_use
-            .and_then(|u| {
-                let rec = ctx.data.store.items.iter().find(|r| r.uid == u.uid)?;
-                let tex = self.wares.art_of(rec.item_no as i32)?.preview_icon.clone();
-                let c = self
-                    .colour_tables
-                    .reticle_argb(u.colour)
-                    .unwrap_or(colorbox::NO_RETICLE_COLOUR);
-                Some((tex, c))
-            })
-            .unwrap_or(plain);
+        if after.is_empty() && kind == colorbox::SUB_RETICLE {
+            after = self.colour_art.plain.clone().unwrap_or_default();
+        }
+        // the "before" picture: this item's own picture (the plain one without it), in the colour of an in-use record
+        // of this item number, else green
+        // DISASM: cshell+0x24a826..0x24a8d2 (this record's PreViewIcon, else the Type0 picture; cshell+0x228810 by
+        // its item number: that record's colour word through cshell+0x1dce50, 0 or none -> 0xff00ff00)
+        // DC-DEFAULT: CLI-1876 (proposed) the record of the item number is an in-use record of that number other than
+        // this one
+        let before_tex = after.clone();
+        let before_colour = ctx
+            .data
+            .store
+            .items
+            .iter()
+            .find(|r| r.in_use && r.uid != uid && r.item_no as i32 == item_no)
+            .and_then(|r| self.colour_tables.reticle_argb(r.function))
+            .unwrap_or(colorbox::NO_RETICLE_COLOUR);
+        let before = (before_tex, before_colour);
         let swatches = self.colour_tables.of(kind).to_vec();
         self.colour_box = Some(colorbox::ColourBox::open(
             ctx.cat, kind, uid, swatches, &name, before, &after, in_use,
@@ -2627,7 +2718,8 @@ impl ShopScreen {
     /// use-items: the megaphone composer for `uid` with `uses` left.
     fn open_megaphone(&mut self, uid: u32, uses: u32, ctx: &mut Ctx) {
         let name = ctx.data.profile.nick.clone();
-        self.mega_box = Some(megabox::MegaBox::open(ctx.cat, uid, uses, &name));
+        let swatches = self.colour_tables.names.clone();
+        self.mega_box = Some(megabox::MegaBox::open(ctx.cat, uid, uses, &name, swatches));
     }
 
     /// use-items: what the country window asked for.
@@ -2665,7 +2757,11 @@ impl ShopScreen {
             MegaStep::Queue => ctx.send(LinkCmd::MegaphoneQueue),
             MegaStep::Send(text) => {
                 if let Some(b) = self.mega_box.as_ref() {
-                    ctx.send(LinkCmd::MegaphoneSend { uid: b.uid, text });
+                    ctx.send(LinkCmd::MegaphoneSend {
+                        uid: b.uid,
+                        text,
+                        runs: b.colour_runs(),
+                    });
                 }
             }
             MegaStep::Cancel => {
@@ -2818,6 +2914,18 @@ impl ShopScreen {
             return;
         }
         if r.removed != 0 && r.removed != u.uid {
+            // a replaced reticle leaves its function slot with it (CLI-1878)
+            if u.action
+                == (UseAction::Colour {
+                    kind: colorbox::SUB_RETICLE,
+                })
+            {
+                ctx.data.store.apply(&LinkEvent::FunctionSlotDone {
+                    put: false,
+                    ok: true,
+                    uid: r.removed,
+                });
+            }
             ctx.data.store.remove(r.removed);
         }
         match u.action {
@@ -2918,6 +3026,14 @@ impl ShopScreen {
                 match kind {
                     colorbox::SUB_NAME_COLOUR => ctx.data.char_extras.name_colour = colour,
                     colorbox::SUB_CLAN_COLOUR => ctx.data.char_extras.clan_colour = colour,
+                    // DC-DEFAULT: CLI-1878 (proposed) a used reticle enters a function slot at once, as the lobby
+                    // puts it in one (the 2009 reply reader, DISASM cshell+0x24a3a0, leaves the slots to the lobby's
+                    // lists); the match reads the function list (cshell+0x227070)
+                    colorbox::SUB_RETICLE => ctx.data.store.apply(&LinkEvent::FunctionSlotDone {
+                        put: true,
+                        ok: true,
+                        uid: u.uid,
+                    }),
                     _ => {}
                 }
             }
@@ -2965,6 +3081,10 @@ impl ShopScreen {
             ctx.notice(0x3d2);
             return;
         };
+        if r.free_pass != 0 {
+            self.equip_free(&r, ctx);
+            return;
+        }
         // name-change: Equip on a function item opens its use window (CLI-1365); an item in use opens nothing
         // DISASM: cshell+0x14f8a7..0x14f965 (265 on a type 0x15 cell: in use and kind != 0x16 -> no window)
         if self.wares.kind_of(r.item_no as i32) == Some(usebox::FUNCTION_TYPE) {
@@ -3021,6 +3141,64 @@ impl ShopScreen {
                 slot,
             }),
             (None, None) => ctx.notice(equip_refused_text(false)),
+        }
+    }
+}
+
+impl ShopScreen {
+    /// free-pass-tab: the pass item number of free-pass record `r` (`None` for an inventory record or a weapon no pass
+    /// in use lists any more).
+    fn pass_of(&self, r: &super::link::InvRecord, data: &MenuData) -> Option<u32> {
+        match r.free_pass {
+            0 => None,
+            FREE_PASS_SLOT => self
+                .wares
+                .free_pass_records(&data.store)
+                .into_iter()
+                .find(|f| f.item_no == r.item_no)
+                .map(|f| f.free_pass),
+            p => Some(p),
+        }
+    }
+
+    /// free-pass-tab (CLI-1888): Equip on a Free Pass cell: a free weapon in a slot leaves it (0x360 with that slot),
+    /// else it goes into the backpack slot of the drawer the page was opened from, or its own slot (0x35e), with the
+    /// item number of its pass.
+    // EVIDENCE: cshell+0x147e40 (own slot: +6 the record's item number, +0xa the pass's item number, +0xe the slot of
+    // its type), cshell+0x14baa0 (a drawer's backpack row: the slot row + 10), cshell+0x145ed0 (0x360 for a flagged
+    // record in a slot); DISASM: cshell+0x14fa39..0x14fa85 (Equip 265: the drawer row picks the backpack request)
+    // DC-DEFAULT: CLI-1888 Equip on an equipped free weapon takes it off (as CLI-547 for owned items)
+    fn equip_free(&mut self, r: &super::link::InvRecord, ctx: &mut Ctx) {
+        let Some(pass) = self.pass_of(r, ctx.data) else {
+            ctx.notice(equip_refused_text(false));
+            return;
+        };
+        let item = r.item_no;
+        if let Some(slot) = ctx.data.store.slot_of(r) {
+            ctx.send(LinkCmd::FreePass {
+                put: false,
+                item,
+                pass,
+                slot: slot as u32,
+            });
+            return;
+        }
+        let pack = self.tab == storage::TAB_WEAPONS
+            && self.pack_target.is_some()
+            && slotpick::pack_slots(&ctx.data.store, &self.wares) >= 1;
+        let slot = if pack {
+            Some(slotpick::FIRST_PACK_SLOT + self.pack_target.unwrap_or(0) as u32)
+        } else {
+            own_slot(&self.wares, item)
+        };
+        match slot {
+            Some(slot) => ctx.send(LinkCmd::FreePass {
+                put: true,
+                item,
+                pass,
+                slot,
+            }),
+            None => ctx.notice(equip_refused_text(false)),
         }
     }
 }
@@ -3123,6 +3301,11 @@ impl Screen for ShopScreen {
         self.look.drawers.iter().any(|d| d.moving())
     }
 
+    // use-items: the megaphone composer's field blinks its caret (CLI-1874)
+    fn caret_blinks(&self) -> bool {
+        self.mega_box.as_ref().is_some_and(|b| b.confirm.is_none())
+    }
+
     fn sheet(&self) -> &Sheet {
         &self.sheet
     }
@@ -3210,6 +3393,11 @@ impl Screen for ShopScreen {
             let step = match k {
                 MenuKey::Enter => b.ok(),
                 MenuKey::Escape => b.escape(),
+                // the menu window delivers Space as a key (CLI-483): a space in the message field (CLI-1874)
+                MenuKey::Space => {
+                    b.type_char(' ');
+                    MegaStep::None
+                }
                 _ => MegaStep::None,
             };
             self.mega_step(step, ctx);
@@ -3278,9 +3466,16 @@ impl Screen for ShopScreen {
             CMD_STORAGE_SHOP => {
                 self.pane = Pane::Shop;
                 self.pack_target = None;
+                self.free_pass_page = false;
                 self.page = 0;
                 self.selected = None;
                 self.show_pane();
+            }
+            // free-pass-tab (CLI-1888): the strip's General / Free Pass tabs switch the page mode on page 0
+            CMD_STORE_GENERAL | CMD_STORE_FREE_PASS if self.pane == Pane::Storage => {
+                self.free_pass_page = command == CMD_STORE_FREE_PASS;
+                self.page = 0;
+                self.selected = None;
             }
             CMD_PAGE_BACK | CMD_PAGE_FWD => {
                 let pages = self.pages(ctx.data);
@@ -3343,6 +3538,7 @@ impl Screen for ShopScreen {
             c => {
                 if let Some(cat) = self.category_of(c) {
                     self.character_page = false;
+                    self.free_pass_page = false;
                     self.category = cat;
                     self.page = 0;
                     self.selected = None;
@@ -4098,7 +4294,10 @@ impl Screen for ShopScreen {
                         // count (+0x14 = 0x321 +0x24); no period text in the cell); places: `storage_mark_places`
                         let now = inbox::now_filetime();
                         let at = places.period;
-                        if inbox::has_end(it.end, now) {
+                        // free-pass-tab: a Free Pass cell shows no period mark (cshell+0x14ad00 clears the PERMANENT
+                        // mark and sets none)
+                        if it.free_pass != 0 {
+                        } else if inbox::has_end(it.end, now) {
                             out.push(period_label(
                                 cat,
                                 at,
@@ -4143,8 +4342,12 @@ impl Screen for ShopScreen {
                     );
                     let function =
                         self.wares.kind_of(it.item_no as i32) == Some(usebox::FUNCTION_TYPE);
-                    let line = owned_use_text(cat, it, function, inbox::now_filetime());
-                    draw_period_line(&line, out);
+                    // DC-DEFAULT: CLI-1888 a Free Pass cell's panel has no period line (the 2009 record has no
+                    // period of its own, cshell+0x28b550)
+                    if it.free_pass == 0 {
+                        let line = owned_use_text(cat, it, function, inbox::now_filetime());
+                        draw_period_line(&line, out);
+                    }
                 }
             }
             Pane::Inbox => {
@@ -4167,7 +4370,7 @@ impl Screen for ShopScreen {
             b.draw(cat, &self.country_art, &self.name_art, out);
         }
         if let Some(b) = &self.mega_box {
-            b.draw(cat, &self.mega_art, &self.name_art, out);
+            b.draw(cat, &self.mega_art, &self.name_art, secs, out);
         }
         if let Some(b) = &self.colour_box {
             b.draw(cat, &self.colour_art, &self.name_art, out);
@@ -4404,9 +4607,19 @@ mod crate_title_tests {
         );
         let b = s.mega_box.as_mut().expect("the composer opens");
         assert_eq!((b.uses, b.name.as_str()), (3, "Alice"));
-        for c in "hi all".chars() {
+        assert!(!b.swatches.is_empty(), "the ROM name colours");
+        b.type_char('h');
+        b.type_char('i');
+        // the window delivers Space as a key (CLI-1874 owner report: no space was typed)
+        s.key(MenuKey::Space, &mut ctx);
+        let b = s.mega_box.as_mut().unwrap();
+        b.pick_slot(0);
+        let pen = b.pen;
+        for c in "all".chars() {
             b.type_char(c);
         }
+        assert_eq!(b.text, "hi all");
+        assert_eq!(b.colour_runs(), vec![(megabox::NO_COLOUR, 3), (pen, 3)]);
         let step = b.ok();
         s.mega_step(step, &mut ctx);
         assert_eq!(sent(&link), vec!["MegaphoneQueue".to_string()]);
@@ -4559,7 +4772,11 @@ mod crate_title_tests {
         assert_eq!(q.tag, BoxTag::ColourInUse { uid: 90 });
         s.popup_done(&q, true, &mut ctx);
         let b = s.colour_box.as_mut().expect("the window stays");
-        assert_eq!(b.before.1, s.colour_tables.reticle_argb(3).unwrap());
+        // the "before" picture is this item's own, green: no record of its number is in use
+        assert_eq!(
+            (b.before.0.as_str(), b.before.1),
+            (b.after.as_str(), colorbox::NO_RETICLE_COLOUR)
+        );
         b.pick(6);
         b.ok();
         let step = b.ok();

@@ -18,7 +18,7 @@ use dc_client::menu::clan::{
 };
 use dc_client::menu::clanpage::{
     CELL, CELL_STEP, CREATE_BUTTON, GRID_AT, GRID_DY, LEAVE_BUTTON, NAME_FIELD, PAGE, ROW_BUTTON,
-    ROW_STEP, ROW_Y, T_JOIN, T_LEAVE_QUESTION, T_REMOVE,
+    ROW_STEP, ROW_Y, SECOND_BUTTON, T_CREATE_A_CLAN, T_JOIN, T_LEAVE_QUESTION, T_NAME, T_REMOVE,
 };
 use dc_client::menu::link::LinkOptions;
 use dc_client::menu::{Go, Menu, MenuInput, MenuOptions};
@@ -509,4 +509,92 @@ fn rom_lobby_shows_the_new_clan_after_the_create() {
         other(&b)
     );
     stack.stop();
+}
+
+/// CLI-1889 (OWNER REPORT 2026-11-05: a founder could open Create Clan from the find page and make a second clan):
+/// the clan screen of a member has no create button (2009, cshell+0x104960), its find page has no Create a clan,
+/// a press there and a create command open nothing, and the lobby still holds one clan. After the founder leaves
+/// (alone: the clan is disbanded) the find page offers Create a clan again and the create goes through.
+#[test]
+fn rom_a_member_is_not_offered_a_second_create() {
+    let Some(rom) = rom() else {
+        eprintln!("CA_ROM not set: skipped");
+        return;
+    };
+    let watchdog = Watchdog::arm("menu-clan-twice", Duration::from_secs(240));
+    let stack = Stack::start("menu-clan-twice", &watchdog);
+    let mut a = login(rom, &stack, "Founder");
+    to_clan(&mut a);
+    create(&mut a, "Echo", 1, 1);
+    assert!(until(&mut a, 10, |m| m.popup().is_some()), "created");
+    a.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+    assert!(until(&mut a, 10, |m| info(m, NAME_TEXT) == "Echo"
+        && m.data.char_extras.clan_id != 0));
+    let create_button = |m: &Menu| {
+        m.sheet()
+            .part(
+                INFO_WINDOW,
+                dc_client::menu::clan::CREATE_BUTTON,
+                WidgetKind::Button,
+            )
+            .is_some_and(|p| p.shown)
+    };
+    assert!(!create_button(&a), "the screen's create button is hidden");
+
+    // the find page: the clan listed, no Create a clan; a press at its place and the command open no create page
+    a.input(MenuInput::Command(CMD_FIND));
+    assert!(
+        until(&mut a, 10, |m| texts(m).iter().any(|x| x == "Echo")),
+        "the find page lists the clan"
+    );
+    assert!(!texts(&mut a).iter().any(|t| t == T_CREATE_A_CLAN));
+    click(&mut a, SECOND_BUTTON);
+    a.input(MenuInput::Command(CMD_CREATE));
+    for _ in 0..20 {
+        a.update();
+    }
+    assert!(
+        !texts(&mut a).iter().any(|t| t == T_NAME),
+        "no create page for a member"
+    );
+
+    // the founder leaves alone (the clan is disbanded): the find page offers the create again
+    a.input(MenuInput::Command(CMD_LEAVE));
+    assert!(texts(&mut a).iter().any(|t| t == T_LEAVE_QUESTION));
+    click(&mut a, LEAVE_BUTTON);
+    assert!(until(&mut a, 10, |m| m.popup().is_some()), "left");
+    a.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+    assert!(until(&mut a, 10, |m| m.data.char_extras.clan_id == 0));
+    // a leader's 0x3064 brings the "Log out from Clan" box (0x502) as well
+    assert!(until(&mut a, 10, |m| {
+        if m.popup().is_some() {
+            m.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+        }
+        m.popup().is_none() && m.data.char_extras.clan_role == 0
+    }));
+    a.input(MenuInput::Command(CMD_FIND));
+    assert!(
+        until(&mut a, 10, |m| texts(m)
+            .iter()
+            .any(|t| t == T_CREATE_A_CLAN)),
+        "Create a clan offered again: {:?}",
+        texts(&mut a)
+    );
+    click(&mut a, SECOND_BUTTON);
+    assert!(texts(&mut a).iter().any(|t| t == T_NAME), "the create page");
+    click(&mut a, NAME_FIELD);
+    for c in "Foxtrot".chars() {
+        a.input(MenuInput::Char(c));
+    }
+    click(&mut a, cell(0, 1));
+    click(&mut a, cell(1, 1));
+    click(&mut a, CREATE_BUTTON);
+    assert!(
+        until(&mut a, 10, |m| m.popup().map(|p| p.text.as_str())
+            == Some("Clan Foxtrot created.")),
+        "created again"
+    );
+    let log = stack.stop();
+    assert_eq!(log.matches("created by account").count(), 2, "{log}");
+    assert!(log.contains("'Echo' (Disbanded"), "{log}");
 }

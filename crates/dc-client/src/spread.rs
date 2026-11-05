@@ -910,7 +910,14 @@ pub fn aim_mark_fills(width: u32, height: u32, v: &AimMarkView) -> Vec<[i32; 4]>
         }
     }
     if v.shape & mark::RING != 0 {
-        let r = inner.max(s);
+        // the ring's radius: the gap plus the firing length less the (negative) firing offset plus one, in the same
+        // width / 1024 pixels as the arms (no size of the item row and no other scale enters)
+        // EVIDENCE: cshell+0x845f0 (the firing offset o, the firing length e and the gap d, all times the screen's
+        // width / 1024), cshell+0x1bef80 (that scale)
+        // DISASM: cshell+0x850cf..0x850e1 (the ring's start point at radius o - (e + d) - 1, turned about the screen
+        // centre by pi / 16 for each of the 32 segments)
+        let e = len - mark::LENGTH * s;
+        let r = (inner - 1.0 + e).max(s);
         let step = std::f32::consts::PI / 16.0;
         for k in 0..32 {
             let (a, b) = (k as f32 * step, (k + 1) as f32 * step);
@@ -1130,10 +1137,40 @@ mod tests {
             let (px, py) = (cx + (sx * r).round() as i32, cy + (sy * r).round() as i32);
             assert!(has(&x, px, py), "{sx} {sy}");
         }
-        // shape 4: a ring through the arms' inner ends and the centre pixel
+        // shape 4: a ring of the gap plus one about the centre pixel, and the centre pixel
         let ring = aim_mark_fills(1024, 768, &v(mark::shape_of(4)));
-        assert!(has(&ring, cx + 12, cy) && has(&ring, cx, cy - 12) && has(&ring, cx, cy));
-        assert!(!has(&ring, cx + 14, cy) && !has(&ring, cx + 6, cy));
+        assert!(has(&ring, cx + 11, cy) && has(&ring, cx, cy - 11) && has(&ring, cx, cy));
+        assert!(!has(&ring, cx + 13, cy) && !has(&ring, cx + 6, cy));
+    }
+
+    /// CLI-1878 (owner report 2026-11-05 "the circle reticle is way too small"): the ring's drawn size is the 2009
+    /// one, radius gap + 1 (+ the firing length - the firing offset while firing), every term times width / 1024: at
+    /// 1024 x 768 a gap of 10 gives a 23-pixel ring, at 1920 x 1080 a 41-pixel one.
+    #[test]
+    fn the_circle_reticle_is_the_gap_plus_one_wide_at_each_resolution() {
+        let v = |since: Option<f32>| AimMarkView {
+            shape: mark::shape_of(4),
+            distance: 10.0,
+            since_shot_s: since,
+            colour: mark::COLOUR,
+            rest: 10.0,
+        };
+        let extent = |w: u32, h: u32, since: Option<f32>| {
+            let f = aim_mark_fills(w, h, &v(since));
+            let (cx, cy) = ((w / 2) as i32 - 1, (h / 2) as i32 - 1);
+            let x0 = f.iter().map(|r| r[0]).min().unwrap();
+            let x1 = f.iter().map(|r| r[2]).max().unwrap();
+            let y0 = f.iter().map(|r| r[1]).min().unwrap();
+            let y1 = f.iter().map(|r| r[3]).max().unwrap();
+            assert_eq!((cx - x0, x1 - 1 - cx), (cy - y0, y1 - 1 - cy), "round");
+            (x1 - x0, cx - x0)
+        };
+        // 1024 x 768: scale 1, radius 10 + 1
+        assert_eq!(extent(1024, 768, None), (23, 11));
+        // 1920 x 1080: scale 1.875, radius 18.75 + 1 = 19.75 -> 20 pixels each side
+        assert_eq!(extent(1920, 1080, None), (41, 20));
+        // a shot at t = 0: + 6 firing length + 4 firing offset (scaled): 1024 wide radius 21
+        assert_eq!(extent(1024, 768, Some(0.0)), (43, 21));
     }
 
     #[test]

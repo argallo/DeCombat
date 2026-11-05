@@ -1005,6 +1005,9 @@ pub fn dispatch(st: &mut Core, sid: Sid, id: u16, p: &[u8]) -> Result<bool, Faul
         EQUIP => loadout::on_equip(st, sid, p)?,
         UNEQUIP => loadout::on_unequip(st, sid, p)?,
         FUNCTION_EQUIP | FUNCTION_UNEQUIP => loadout::on_function_slot(st, sid, id, p)?,
+        crate::freepass::FREE_PASS_EQUIP | crate::freepass::FREE_PASS_UNEQUIP => {
+            crate::freepass::on_message(st, sid, id, p)?
+        }
         ITEM_DISCARD => loadout::on_discard(st, sid, p)?,
         ATTACH => loadout::on_attach(st, sid, p)?,
         DETACH => loadout::on_detach(st, sid, p)?,

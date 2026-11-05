@@ -3773,7 +3773,9 @@ impl App {
             .take()
             .or_else(|| self.live.take().and_then(|mut l| l.sound.take()))
             .map(|mut d| {
-                // CLI-1135: the world's sounds end with the match, the menu keeps the director
+                // CLI-1135 / CLI-1890: every voice of the match ends with it (every leave path passes here), the
+                // menu keeps the director and its music
+                // EVIDENCE: engine+0x19d00 -> engine+0xd8eb0 (the world teardown stops every sound instance)
                 d.end_world();
                 d
             });

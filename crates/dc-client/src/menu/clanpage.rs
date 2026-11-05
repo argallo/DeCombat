@@ -566,7 +566,7 @@ fn row_button(i: usize) -> [i32; 4] {
 /// Which list page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListKind {
-    /// Find a clan: clan rows, Join for a viewer without a clan, Refresh and Create a clan.
+    /// Find a clan: clan rows, Join and Create a clan for a viewer without a clan, Refresh.
     Search,
     /// The leader's member page: member rows, Remove on the others for the leader, Refresh.
     Manage,
@@ -581,6 +581,8 @@ pub struct ListPage {
     pub message: Option<String>,
     pub busy: bool,
     pub hover: Option<PageHit>,
+    /// The screen's own clan state (0x303 clan number or a leader role) when the page opened or the state changed.
+    pub member: bool,
 }
 
 impl ListPage {
@@ -592,7 +594,17 @@ impl ListPage {
             message: None,
             busy: false,
             hover: None,
+            member: false,
         }
+    }
+
+    /// Whether the page offers Create a clan: the find page, for a viewer in no clan by the screen's own state and
+    /// by the server's `me` line.
+    // EVIDENCE: cshell+0x104960 / cshell+0x1032e0 (the clan screen hides its create button for roles 5 / 0xf or a
+    // non-zero clan number at shell +0x124 and shows the manage button instead)
+    // DC-DEFAULT: CLI-1889 (proposed) our find page's Create a clan follows the same rule (absent for a member)
+    pub fn offers_create(&self) -> bool {
+        self.kind == ListKind::Search && !self.member && self.reply.clan == 0
     }
 
     /// The page's own request (the list again).
@@ -650,7 +662,7 @@ impl ListPage {
         if inside(REFRESH_BUTTON, p) {
             return Some(PageHit::Refresh);
         }
-        if self.kind == ListKind::Search && inside(SECOND_BUTTON, p) {
+        if self.offers_create() && inside(SECOND_BUTTON, p) {
             return Some(PageHit::Second);
         }
         Some(PageHit::Page)
@@ -734,7 +746,7 @@ impl ListPage {
             self.hover == Some(PageHit::Refresh),
             out,
         );
-        if self.kind == ListKind::Search {
+        if self.offers_create() {
             button(
                 SECOND_BUTTON,
                 T_CREATE_A_CLAN,
@@ -899,5 +911,37 @@ mod tests {
         assert_eq!(c.pick[0], 24, "past the table: no pick");
         c.press(&marks, CreateHit::Cell(1, 5));
         assert_eq!(c.pick[1], 1, "background 6 does not exist");
+    }
+
+    /// CLI-1889: the find page offers Create a clan only to a viewer in no clan (screen state and server line).
+    #[test]
+    fn find_page_offers_create_only_without_a_clan() {
+        let at = [(SECOND_BUTTON[0] + 5) as f32, (SECOND_BUTTON[1] + 5) as f32];
+        let captions = |l: &ListPage| {
+            let mut out = Vec::new();
+            l.draw(1, &mut out);
+            out.into_iter()
+                .filter_map(|i| match i {
+                    DrawItem::Text { text, .. } | DrawItem::Label { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut l = ListPage::new(ListKind::Search);
+        assert!(l.offers_create());
+        assert_eq!(l.hit(at, 1), Some(PageHit::Second));
+        assert!(captions(&l).iter().any(|t| t == T_CREATE_A_CLAN));
+        l.member = true;
+        assert!(!l.offers_create());
+        assert_eq!(l.hit(at, 1), Some(PageHit::Page));
+        assert!(!captions(&l).iter().any(|t| t == T_CREATE_A_CLAN));
+        // the server's `me` line alone also hides it
+        l.member = false;
+        l.answer("me\t4\t0\nclan\t4\tWolves\t2\tCarol\t1\t1\n");
+        assert!(!l.offers_create());
+        assert_eq!(l.hit(at, 1), Some(PageHit::Page));
+        l.answer("me\t0\t0\nclan\t4\tWolves\t1\tCarol\t1\t1\n");
+        assert!(l.offers_create(), "after a leave the page offers it again");
+        assert!(!ListPage::new(ListKind::Manage).offers_create());
     }
 }

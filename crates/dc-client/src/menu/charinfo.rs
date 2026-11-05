@@ -356,6 +356,25 @@ impl CharInfo {
     }
 }
 
+/// Our own countries after the ROM table's rows: (full name, short name).
+// DC-DEFAULT: CLI-1873 (amended 2026-11-05, OWNER REPORT "no country code for America") the 2009 EU ROM's table holds
+// a placeholder row 0 and 63 European and Middle East countries (flag pictures 001..063) and no United States; our row
+// follows the table's last row (nation = the row count: 64 with that ROM), is left out when a row already has its
+// short name, and has no flag picture (none is drawn). The lobby keeps any nation up to 0xff.
+pub const OWN_COUNTRIES: &[(&str, &str)] = &[("United States", "USA")];
+
+/// Appends [`OWN_COUNTRIES`] to a non-empty ROM country table.
+pub fn add_own_countries(rows: &mut Vec<(String, String, String)>) {
+    if rows.is_empty() {
+        return;
+    }
+    for (full, short) in OWN_COUNTRIES {
+        if !rows.iter().any(|r| r.1.trim().eq_ignore_ascii_case(short)) {
+            rows.push((full.to_string(), short.to_string(), String::new()));
+        }
+    }
+}
+
 /// The name colour table and the country table of the user's ROM.
 #[derive(Debug, Clone, Default)]
 pub struct Tables {
@@ -417,6 +436,7 @@ impl Tables {
                     .push((s("FullName"), s("SimpleName"), s("FlagImg")));
                 n += 1;
             }
+            add_own_countries(&mut t.countries);
         }
         t
     }

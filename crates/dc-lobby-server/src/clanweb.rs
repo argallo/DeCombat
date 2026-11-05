@@ -277,12 +277,22 @@ fn link(path: &str, v: &Viewer, extra: &str, text: &str) -> String {
     )
 }
 
+// DC-DEFAULT: LG-408 (proposed) a member's pages carry no create link (the 2009 clan screen hides its create button
+// for a member, EVIDENCE: cshell+0x104960); clan::create refuses a member's create in any case
 fn nav(v: &Viewer) -> String {
+    let create = if v.clan.is_none() {
+        format!(
+            " | {}",
+            link("/clan", v, "&amp;url=guild/create", "Create a clan")
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<p>{} | {} | {}</p>\n",
+        "<p>{} | {}{}</p>\n",
         link("/clan", v, "&amp;url=guild/list", "Find a clan"),
         link("/clan", v, "&amp;url=manager/guildmember", "Members"),
-        link("/clan", v, "&amp;url=guild/create", "Create a clan"),
+        create,
     )
 }
 

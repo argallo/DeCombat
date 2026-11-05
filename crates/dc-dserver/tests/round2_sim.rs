@@ -365,6 +365,64 @@ fn kill_volume_kills_without_a_killer() {
     assert!(net.c(0).seen.kills.is_empty());
 }
 
+/// DSV-607: a hazard volume of made-up name and damage around the blue spawn point hurts the living player in it by
+/// a step of its damage per second every 500 ms, of its damage type, with no attacker (0x74 `zone` = the type,
+/// `dmg_kind` 0), and the lethal step dies with no killer; the player at the red spawn is unhurt; `-killvolumes off`
+/// switches the hazards off too.
+#[test]
+fn hazard_volume_hurts_in_steps_and_kills_without_a_killer() {
+    use dc_dserver::killvol::{box_shape, HazardShape, DAMAGE_TYPE_POISON};
+    use dc_dserver::session::HAZARD_STEP_MS;
+    let hazard_world = || {
+        let mut w = world();
+        let lo = [BLUE[0] - 40.0, -60.0, BLUE[2] - 40.0];
+        let hi = [BLUE[0] + 40.0, 200.0, BLUE[2] + 40.0];
+        w.hazards.push(HazardShape {
+            shape: box_shape(b"Gas", lo, hi, 0),
+            damage_per_sec: 50.0,
+            dtype: DAMAGE_TYPE_POISON,
+        });
+        w
+    };
+    let mut net = Net::with(ServerTuning::default(), hazard_world(), ROOM, &[DAVE, ERIN]);
+    net.add(1, "Dave");
+    net.add(2, "Big Erin");
+    assert!(net.run_until(20_000, |n| !n.c(0).seen.kills.is_empty()));
+    assert_eq!(net.server.active_hazards(), &[0]);
+    let erin = net.c(1).seen.client_id.unwrap().0 as u8;
+    let k = &net.c(0).seen.kills[0];
+    assert_eq!((k.killer, k.victim), (0xff, erin), "no killer");
+    let forms = &net.c(1).seen.damage_forms;
+    // 100 health at 25 a step: four steps (the gear rows of the synthetic tables protect nothing)
+    assert_eq!(forms.len(), 4, "{forms:?}");
+    for f in forms {
+        assert_eq!((f.zone, f.dmg_kind, f.damage), (DAMAGE_TYPE_POISON, 0, 25));
+    }
+    for pair in forms.windows(2) {
+        assert_eq!(pair[1].at - pair[0].at, HAZARD_STEP_MS);
+    }
+    assert!(
+        net.c(0).seen.damage_forms.is_empty(),
+        "the red spawn is unhurt"
+    );
+    assert!(net
+        .logs
+        .iter()
+        .any(|l| l.contains("entered hazard volume 0")));
+
+    let cfg = ServerTuning {
+        kill_volumes: false,
+        ..ServerTuning::default()
+    };
+    let mut net = Net::with(cfg, hazard_world(), ROOM, &[DAVE, ERIN]);
+    net.add(1, "Dave");
+    net.add(2, "Big Erin");
+    net.alive();
+    net.run_for(3000);
+    assert!(net.c(1).seen.damage_forms.is_empty());
+    assert!(net.c(0).seen.kills.is_empty());
+}
+
 /// A sliding door of made-up name next to the red spawn point: its model box, move direction and distance.
 fn world_with_door(near: [f32; 3]) -> WorldInfo {
     let mut w = world();

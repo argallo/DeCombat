@@ -1506,24 +1506,22 @@ impl SoundDirector {
         voice
     }
 
-    /// The match's world is gone (the match window hands the director back to the menu): its tracked world sounds
-    /// (the ambient loops of the world-load group among them) and every other looping voice stop; the music player
-    /// is not a voice and keeps its track. Returns the voices stopped.
+    /// The match's world is gone (the match window hands the director back to the menu): every effect voice stops,
+    /// whatever started it (the tracked world sounds and the ambient loops of the world-load group, untracked loops,
+    /// one-shots still playing such as the 12.7 s Quarantine intro voice, the HUD's interface voices); the music
+    /// player is not a voice and keeps its track (the menu's screen-state cue decides the music next). Returns the
+    /// voices stopped.
+    // EVIDENCE: engine+0x1a2f0 (the server link's teardown) -> engine+0x19f20 -> engine+0x19d00 (the world teardown:
+    // after the client objects are removed, engine+0xd8eb0 calls the stop of EVERY active sound instance, not only the
+    // looping or object-bound ones); engine+0x1a770 (a world load runs the same teardown first); the music streams are
+    // not instances (AUDIO_2009.md §8.1)
     // DC-DEFAULT: CLI-1135 (proposed, playtest report "background noise kept playing even after the game ended and we
-    // went back to lobby") the world's sounds end with the world
+    // went back to lobby"; AMENDED by CLI-1890, owner report 2026-11-05 "when I left the quarantine game the audio still
+    // played until I fully left the lobby") the world's sounds end with the world
     pub fn end_world(&mut self) -> usize {
-        let mut ids: Vec<VoiceId> = self.tracked.drain().map(|(_, id)| id).collect();
-        ids.extend(self.live.iter().filter(|l| l.looped).map(|l| l.id));
-        self.live.retain(|l| !l.looped);
-        ids.sort_by_key(|v| v.0);
-        ids.dedup();
-        let mut m = self.mixer();
-        let before = m.active_voices();
-        for id in ids {
-            m.release(id);
-        }
-        let stopped = before - m.active_voices();
-        drop(m);
+        self.tracked.clear();
+        self.live.clear();
+        let stopped = self.mixer().release_all();
         self.stats.stops += stopped as u64;
         // the per-match tables: the next match restarts its clock at 0 and reuses object ids, so nothing keyed by an
         // object or stamped with the old clock may carry over (a step mute of a body that died as the match ended
@@ -1865,9 +1863,11 @@ impl SoundDirector {
 
     /// Every [`LIVE_EVERY_MS`] of match time: one `live` line with the voices still playing and the music state.
     fn live_line(&mut self, now: u32) {
-        // the game clock restarts per match: forget the previous match's voices and schedule
+        // the game clock restarts per match: a new schedule. The records stay: this runs after the frame's starts, so
+        // a clear here forgot the new match's first voices (the previous match's are gone from the mixer and leave
+        // the list below as finished)
+        // DC-DEFAULT: CLI-1890 (proposed) the voice records survive a clock that goes back
         if self.last_now.is_some_and(|l| now < l) {
-            self.live.clear();
             self.live_at = None;
         }
         self.last_now = Some(now);
@@ -3814,6 +3814,108 @@ ReloadSndRadius=50
         assert_eq!(d.mixer().active_voices(), 0);
         assert!(d.tracked.is_empty());
         assert_eq!(d.end_world(), 0);
+    }
+
+    /// CLI-1890 (owner report 2026-11-05, Quarantine: "the audio still played until I fully left the lobby"): leaving
+    /// the second match of a session stops every voice that match started: the tracked world loop, an untracked loop
+    /// started on the match's first frame (the old clock-back reset of the `live` lines forgot it, so the old
+    /// `end_world` never found it), and a long one-shot interface voice (the Quarantine intro is 12.7 s); the waiting
+    /// room's music plays again once the menu cues its screen.
+    #[test]
+    fn leaving_a_match_stops_every_voice_and_the_room_music_comes_back() {
+        let mut d = SoundDirector::open(None);
+        let music_root = std::env::temp_dir().join(format!("dc_leave_{}", std::process::id()));
+        std::fs::create_dir_all(music_root.join("Game").join("BGM")).unwrap();
+        std::fs::write(music_root.join("Game").join("BGM").join("room.mp3"), b"x").unwrap();
+        d.music = MusicDirector::none()
+            .with_loader(|_| {
+                Ok(Pcm {
+                    rate: 44_100,
+                    channels: 2,
+                    samples: vec![0.1; 8_000],
+                })
+            })
+            .with_files(
+                music_root.clone(),
+                crate::music::MusicFiles {
+                    waiting: "BGM\\room.mp3".into(),
+                    ..Default::default()
+                },
+            );
+        d.music.set_classic(false);
+        let wav = |secs: usize| Pcm {
+            rate: 44_100,
+            channels: 1,
+            samples: vec![0.25; 44_100 * secs],
+        };
+        d.set_sound("TEST\\WIND.WAV", wav(1));
+        d.set_sound("TEST\\INTRO.WAV", wav(13));
+        let world_loop = WireSound {
+            track: Some(0xd6),
+            file: 8,
+            flags: 0x0135,
+            prio: 0,
+            outer: 10000,
+            inner_ratio: 255,
+            volume: 100,
+            pitch: 1.0,
+            start_ms: 0,
+            tag: 0,
+            pos: Some([0.0, 0.0, 0.0]),
+        };
+        let cues = [
+            SoundCue::Server {
+                start: world_loop.clone(),
+                file: Some("TEST\\WIND.WAV".into()),
+                at_load: true,
+            },
+            SoundCue::Server {
+                start: WireSound {
+                    track: None,
+                    flags: flag::POSITIONAL | flag::LOOP,
+                    ..world_loop
+                },
+                file: Some("TEST\\WIND.WAV".into()),
+                at_load: false,
+            },
+            SoundCue::Interface {
+                file: Some("TEST\\INTRO.WAV".into()),
+                what: "quarantine_intro",
+            },
+        ];
+        // match 1 ran for 5 minutes and ended
+        d.frame(&frame(0, &[], &[]));
+        d.frame(&frame(300_000, &[], &[]));
+        d.end_world();
+        // match 2: the three sounds start on its first frame (its clock starts again at 0)
+        d.frame(&frame(0, &cues, &[]));
+        d.frame(&frame(1_000, &[], &[]));
+        {
+            let m = d.mixer();
+            assert_eq!((m.active_voices(), m.looping_voices()), (3, 2));
+        }
+        // the player leaves 1 s in: nothing of the match plays on in the room
+        assert_eq!(d.end_world(), 3);
+        {
+            let m = d.mixer();
+            assert_eq!((m.active_voices(), m.looping_voices()), (0, 0));
+            assert_eq!(m.free_handles(), dc_audio::MAX_VOICES);
+        }
+        // the room screen cues its music (cshell+0x1fba00, state 9) and it plays, looped
+        d.music_cue(MusicCue::WaitingRoom);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while d.music.loading() && std::time::Instant::now() < end {
+            d.music_tick();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        d.music_tick();
+        {
+            let m = d.mixer();
+            assert_eq!(m.bgm.current_key(), Some("BGM\\room.mp3"));
+            assert!(m.bgm.is_playing() && m.bgm.status().is_some_and(|s| s.looped));
+            assert_eq!(m.active_voices(), 0, "the music is no voice");
+        }
+        std::fs::remove_dir_all(music_root).ok();
     }
 
     #[test]

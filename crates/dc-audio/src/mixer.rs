@@ -382,6 +382,26 @@ impl Mixer {
         }
     }
 
+    /// Stops and frees every effect voice (their handles back to the pool); the music player is no voice and keeps
+    /// its streams. Returns the voices released.
+    // EVIDENCE: engine+0xd8eb0 (every entry of the active instance list gets its stop call), engine+0x19d00 (the
+    // world teardown calls it after the world's objects are gone); the music streams are not in that list (the
+    // stream calls of AUDIO_2009.md §8.1)
+    pub fn release_all(&mut self) -> usize {
+        let n = self.voices.len();
+        for v in self.voices.drain(..) {
+            if v.has_handle {
+                self.free_handles += 1;
+            }
+        }
+        n
+    }
+
+    /// Voices of the active list that loop (tests, reports).
+    pub fn looping_voices(&self) -> usize {
+        self.voices.iter().filter(|v| v.req.looped).count()
+    }
+
     /// Nested pause. // SPEC: AUDIO_2009.md §3.7
     pub fn pause(&mut self, id: VoiceId) {
         if let Some(i) = self.idx(id) {
@@ -999,6 +1019,24 @@ mod tests {
         assert!(m.is_finished(b));
         m.release(b);
         assert_eq!(m.free_handles(), MAX_VOICES);
+    }
+
+    /// leave-match-audio: every voice, looped, kept-handle or plain, leaves the list and gives its handle back.
+    #[test]
+    fn release_all_frees_every_voice_and_handle() {
+        let mut m = Mixer::new();
+        let mut looped = PlayRequest::local(dc(10, 0.1));
+        looped.looped = true;
+        m.play(looped).unwrap();
+        let mut kept = PlayRequest::local(dc(10, 0.1));
+        kept.want_handle = true;
+        m.play(kept).unwrap();
+        m.play(PlayRequest::local(dc(100_000, 0.1))).unwrap();
+        assert_eq!((m.active_voices(), m.looping_voices()), (3, 1));
+        assert_eq!(m.release_all(), 3);
+        assert_eq!((m.active_voices(), m.looping_voices()), (0, 0));
+        assert_eq!(m.free_handles(), MAX_VOICES);
+        assert_eq!(m.release_all(), 0);
     }
 
     #[test]

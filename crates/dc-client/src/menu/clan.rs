@@ -674,9 +674,7 @@ impl ClanScreen {
         for w in [WEB_WINDOW, WAR_WINDOW, NOTICE_WINDOW] {
             self.sheet.show_window(w, false);
         }
-        let x = &data.char_extras;
-        let leader = matches!(x.clan_role, CLAN_ROLE_LEADER | CLAN_ROLE_OFFICER);
-        self.set_manage(leader || x.clan_id != 0);
+        self.set_manage(in_clan(data));
         for (id, on) in [
             (WAR_BUTTON, false),
             (CREATE_BUTTON, true),
@@ -1158,6 +1156,14 @@ fn wrap_chars(text: &str, width: f32, measure: &mut dyn FnMut(&str) -> f32) -> V
     lines
 }
 
+/// Whether the character is in a clan by the screen's own state: a leader role, or a clan number from 0x303.
+// EVIDENCE: cshell+0x104960 (roles 5 / 0xf at shell +0x128, else a non-zero clan number at shell +0x124: the manage
+// button shown, the create button hidden through cshell+0x1032e0)
+fn in_clan(data: &MenuData) -> bool {
+    let x = &data.char_extras;
+    matches!(x.clan_role, CLAN_ROLE_LEADER | CLAN_ROLE_OFFICER) || x.clan_id != 0
+}
+
 /// Sends a clan page request; false without a page address.
 fn web_get(ctx: &mut Ctx, target: String) -> bool {
     match clanpage::web_addr(ctx.data.auth) {
@@ -1241,6 +1247,12 @@ impl ClanScreen {
     // DC-DEFAULT: CLI-568 (amended by CLI-791) DeCombat has no embedded browser: the web window opens with its title
     // and the client draws our own page in it
     fn open_page(&mut self, command: i32, ctx: &mut Ctx) {
+        // the 2009 screen never sends 10004 for a member (its create button is hidden, cshell+0x104960); ours drops a
+        // create command that still arrives for one (find page, steps, a stale press)
+        // DC-DEFAULT: CLI-1889 (proposed) no create page for a character in a clan
+        if command == CMD_CREATE && in_clan(ctx.data) {
+            return;
+        }
         let title = WEB_TITLES
             .iter()
             .find(|(c, _)| *c == command)
@@ -1267,6 +1279,7 @@ impl ClanScreen {
                     ListKind::Manage
                 };
                 let mut l = ListPage::new(kind);
+                l.member = in_clan(ctx.data);
                 l.busy = true;
                 if !web_get(ctx, l.request(&ctx.data.user)) {
                     l.busy = false;
@@ -1381,9 +1394,11 @@ impl ClanScreen {
 
     /// The buttons again after the character's clan changed (0x303).
     fn reset_buttons_only(&mut self, data: &MenuData) {
-        let x = &data.char_extras;
-        let leader = matches!(x.clan_role, CLAN_ROLE_LEADER | CLAN_ROLE_OFFICER);
-        self.set_manage(leader || x.clan_id != 0);
+        let member = in_clan(data);
+        self.set_manage(member);
+        if let WebPage::List(l) = &mut self.web {
+            l.member = member;
+        }
     }
 
     /// The member rows: badge, role, name and online state.

@@ -87,7 +87,7 @@ are ours; the readers match them literally (ASCII case-insensitive) next to the 
 | `dc.flag_zone` | `ObjectRole::FlagZone` | `extent`, `team` (`"1"`/`"2"`), `modes` |
 | `dc.capture_flag` | `ObjectRole::CaptureFlag` | `team`, `model` (text, ROM LTB path; empty = the server's default flag look, MAP rule) |
 | `dc.kill_volume` | `ObjectRole::KillVolume` (brush) | `pending_sec` (real); `damage`, `damage_kind` reserved (the server kills outright) |
-| `dc.hazard` | `ObjectRole::HazardVolume` (brush) | as kill volume (no server behaviour today) |
+| `dc.hazard` | `ObjectRole::HazardVolume` (brush) | `damage` (real, per second), `damage_kind` (`poison`, else unspecified) |
 | `dc.ladder` | `ObjectRole::Ladder` (brush, convex) | none (the container kind alone makes it climbable) |
 | `dc.world_model` | `ObjectRole::PlainWorldModel` (brush) | `visible`, `solid`, `rayhit` (bool, default true), `blend` (`opaque`/`translucent`/`additive`), `alpha` (real) |
 | `dc.breakable` | `ObjectRole::Breakable` (brush) | `hit_points` (real) |

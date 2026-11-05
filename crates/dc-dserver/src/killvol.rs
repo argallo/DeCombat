@@ -1,6 +1,7 @@
 //! Kill volumes on the server (DSV-52): the closed model of each kill volume of the world file as a point-inside
 //! test, and the delay its pending property asks for. The session kills a living player whose position lies inside
-//! one of the kill volumes it created on the clients.
+//! one of the kill volumes it created on the clients. The hazard volumes (DSV-607) use the same test and hurt a
+//! living player inside them by their damage property per second, of their damage kind.
 // SPEC: FMT_DAT85.md §5 (BSP model polygons and planes, stored in place), §6.2 (the kill volume role), §6.4 (model
 // link by name)
 // OBSERVED: the ROM worlds' kill volumes are closed six-polygon boxes (the rust3 / tdm6 world: 38 of 38; scratch run
@@ -87,6 +88,25 @@ impl VolumeShape {
     }
 }
 
+/// The polygons of a volume's model as faces of the point-inside test.
+fn model_faces(m: &dc_world::BspModel<'_>) -> Vec<VolumeFace> {
+    m.polygons
+        .iter()
+        .filter_map(|p| {
+            let pl = m.planes.get(p.plane as usize)?;
+            Some(VolumeFace {
+                normal: pl.normal,
+                dist: pl.dist,
+                corners: m
+                    .polygon_points(p)
+                    .iter()
+                    .filter_map(|&i| m.points.get(i as usize).copied())
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
 /// The kill volumes of a parsed world with their models.
 pub fn kill_shapes(w: &World<'_>) -> Vec<VolumeShape> {
     let mut out = Vec::new();
@@ -94,22 +114,7 @@ pub fn kill_shapes(w: &World<'_>) -> Vec<VolumeShape> {
         let Some(m) = w.brush_of(o) else {
             continue;
         };
-        let faces = m
-            .polygons
-            .iter()
-            .filter_map(|p| {
-                let pl = m.planes.get(p.plane as usize)?;
-                Some(VolumeFace {
-                    normal: pl.normal,
-                    dist: pl.dist,
-                    corners: m
-                        .polygon_points(p)
-                        .iter()
-                        .filter_map(|&i| m.points.get(i as usize).copied())
-                        .collect(),
-                })
-            })
-            .collect();
+        let faces = model_faces(m);
         // the pending property by ROM hash or its vocabulary name `pending_sec` (MAP-20)
         let pending = o
             .prop_named(&dc_world::names::PROP_PENDING_SEC)
@@ -124,6 +129,72 @@ pub fn kill_shapes(w: &World<'_>) -> Vec<VolumeShape> {
             hi: m.box_max,
             faces,
             pending_ms: (pending * 1000.0).min(u32::MAX as f32) as u32,
+        });
+    }
+    out
+}
+
+/// The damage type a volume's damage-kind text names: the id of the client's damage-type row whose name it is, for
+/// the kinds the ROM worlds' hurting volumes carry (poison); any other text, or none, is the unspecified type 0.
+// EVIDENCE: cshell+0x282b60, cshell+0x282c20 (the client's lookups over its damage-type table at rva 0x457498: rows
+// of 0x28 bytes, the id at +0, the name at +0x10; the row whose name hashes to `names::DAMAGE_KIND_POISON` has id 9)
+// OBSERVED: the ROM worlds' hazard volumes all carry that poison text (2026-11-05 scratch survey over dc-world: 21
+// worlds, 20 hazard volumes); kill volumes carry the endless-fall text, ladders and water the unspecified one
+pub fn damage_type_of(kind: Option<&[u8]>) -> u8 {
+    match kind {
+        Some(t) if dc_world::names::DAMAGE_KIND_POISON.matches(t) => DAMAGE_TYPE_POISON,
+        _ => DAMAGE_TYPE_UNSPECIFIED,
+    }
+}
+
+/// The client's unspecified damage type (row 0 of its damage-type table).
+// EVIDENCE: cshell+0x282b60 (row 0 of the table at rva 0x457498)
+pub const DAMAGE_TYPE_UNSPECIFIED: u8 = 0;
+/// The client's poison damage type.
+// EVIDENCE: cshell+0x282b60 (row 9 of the table at rva 0x457498)
+pub const DAMAGE_TYPE_POISON: u8 = 9;
+
+/// A hazard volume: its closed model, the damage it does per second to a player inside and the damage type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HazardShape {
+    pub shape: VolumeShape,
+    pub damage_per_sec: f32,
+    pub dtype: u8,
+}
+
+/// The hazard volumes of a parsed world that hurt (a finite damage property above 0), with their models. The
+/// damage property is read as damage per second (DSV-607).
+// SPEC: FMT_DAT85.md §6.2 (the hazard role, brush, name-linked), §6.4 (model link by name)
+// OBSERVED: ROM worlds (2026-11-05 scratch survey: the 20 hazard volumes of 5 worlds carry damage 2..10000 and the
+// poison kind; WarHead's and Two Towers' cover their water)
+// DC-DEFAULT: DSV-607 (proposed)
+pub fn hazard_shapes(w: &World<'_>) -> Vec<HazardShape> {
+    let mut out = Vec::new();
+    for o in w.objects_with_role(ObjectRole::HazardVolume) {
+        let Some(m) = w.brush_of(o) else {
+            continue;
+        };
+        let damage = match o.prop_named(&dc_world::names::PROP_DAMAGE).map(|p| p.value) {
+            Some(dc_world::FieldValue::Real(r)) if r.is_finite() && r > 0.0 => r,
+            _ => continue,
+        };
+        let kind = match o
+            .prop_named(&dc_world::names::PROP_DAMAGE_KIND)
+            .map(|p| p.value)
+        {
+            Some(dc_world::FieldValue::Text(t)) => Some(t),
+            _ => None,
+        };
+        out.push(HazardShape {
+            shape: VolumeShape {
+                name: o.name().map(<[u8]>::to_vec).unwrap_or_default(),
+                lo: m.box_min,
+                hi: m.box_max,
+                faces: model_faces(m),
+                pending_ms: 0,
+            },
+            damage_per_sec: damage,
+            dtype: damage_type_of(kind),
         });
     }
     out
@@ -223,5 +294,16 @@ mod tests {
         l.lo = [0.0, 0.0, 0.0];
         l.hi = [10.0, 20.0, 10.0];
         assert!(!l.contains([5.0, 15.0, 5.0]));
+    }
+
+    /// DSV-607: the damage-kind text names the poison type (the vocabulary's own word too); anything else, or none,
+    /// is the unspecified type.
+    #[test]
+    fn damage_kind_texts_map_to_the_client_types() {
+        assert_eq!(damage_type_of(Some(b"poison")), DAMAGE_TYPE_POISON);
+        assert_eq!(damage_type_of(Some(b"Poison")), DAMAGE_TYPE_POISON);
+        assert_eq!(damage_type_of(Some(b"lava")), DAMAGE_TYPE_UNSPECIFIED);
+        assert_eq!(damage_type_of(Some(b"")), DAMAGE_TYPE_UNSPECIFIED);
+        assert_eq!(damage_type_of(None), DAMAGE_TYPE_UNSPECIFIED);
     }
 }

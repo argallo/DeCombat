@@ -62,6 +62,9 @@ fn clear_backpack_slots(st: &Core, account: u32) -> rusqlite::Result<()> {
             *BACKPACK_SLOTS.end()
         ],
     )?;
+    for slot in BACKPACK_SLOTS {
+        crate::freepass::slot_taken(st, account, slot)?;
+    }
     Ok(())
 }
 
@@ -79,6 +82,7 @@ pub fn repair(st: &Core, account: u32) -> rusqlite::Result<()> {
         "DELETE FROM function_slots WHERE user_no = ?1 AND uid NOT IN (SELECT uid FROM items WHERE user_no = ?1)",
         [account as i64],
     )?;
+    crate::freepass::prune(st, account)?;
     if st.rom.items.is_some() {
         let colour: i64 = st
             .db
@@ -303,6 +307,7 @@ pub fn equip(st: &Core, account: u32, uid: u32, item_no: u32, slot: i64) -> rusq
         params![account as i64, slot, it.uid],
     )?;
     db::set_slot(&st.db, it.uid, slot)?;
+    crate::freepass::slot_taken(st, account, slot)?;
     if slot == SLOT_BACKPACK {
         clear_backpack_slots(st, account)?;
     }
