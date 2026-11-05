@@ -18,12 +18,18 @@ const EXE: &str = env!("CARGO_BIN_EXE_dc-lobby-server");
 
 /// A free loopback TCP port in 20000..40000 (a clock- and pid-seeded start, then the first that binds): port 0 hands
 /// out the dynamic range above 49152, parts of which Windows reserves, so the server could not take it back (CI).
+/// A call counter joins the seed: the tests run on threads, the clock is coarse on Windows (the same reading for every
+/// thread of one tick), and two tests that drew the same start handed the same port to two servers, the second of
+/// which exited before it listened (CI, windows-i686).
 fn free_port() -> u16 {
+    static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos()
-        ^ std::process::id().wrapping_mul(2_654_435_761);
+        ^ std::process::id().wrapping_mul(2_654_435_761)
+        ^ call.wrapping_mul(40_503);
     let start = (seed % 20000) as u16;
     for i in 0..20000u16 {
         let port = 20000 + (start.wrapping_add(i * 7)) % 20000;

@@ -292,9 +292,17 @@ fx {:?} quads {} thrown frames {} (max {})",
         .find(|l| l.contains("session hits:"))
         .cloned()
         .unwrap_or_default();
+    // A swing claimed after the bot's lethal hit and before its kill notice reached the client is refused as
+    // `victim_dead`: a race of the swing clip against the loopback (seen on a slow macOS runner), not a bad claim.
+    // Every other refusal still fails the test.
+    let refused_other = line
+        .split("refused ")
+        .nth(1)
+        .map(|r| r.trim() != "none" && r.split(", ").any(|v| !v.starts_with("victim_dead ")))
+        .unwrap_or(true);
     assert!(
-        line.contains("refused none"),
-        "the server accepted the hits: {line}"
+        !refused_other,
+        "the server accepted the hits (victim_dead alone is the kill notice in flight): {line}"
     );
     if r.adapter.is_none() {
         println!("no GPU adapter: the effect checks are skipped");
