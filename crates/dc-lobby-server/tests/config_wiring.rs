@@ -16,9 +16,22 @@ use std::time::{Duration, Instant};
 
 const EXE: &str = env!("CARGO_BIN_EXE_dc-lobby-server");
 
+/// A free loopback TCP port in 20000..40000 (a clock- and pid-seeded start, then the first that binds): port 0 hands
+/// out the dynamic range above 49152, parts of which Windows reserves, so the server could not take it back (CI).
 fn free_port() -> u16 {
-    let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    l.local_addr().unwrap().port()
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos()
+        ^ std::process::id().wrapping_mul(2_654_435_761);
+    let start = (seed % 20000) as u16;
+    for i in 0..20000u16 {
+        let port = 20000 + (start.wrapping_add(i * 7)) % 20000;
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free TCP port in 20000..40000")
 }
 
 fn temp(name: &str) -> PathBuf {

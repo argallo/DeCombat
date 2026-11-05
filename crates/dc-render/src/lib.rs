@@ -188,9 +188,9 @@ pub mod macwin;
 pub mod perf;
 pub mod warm;
 pub use gpu::{
-    frame_latency_for, probe_adapters, unpack_rows, AdapterChoice, AdapterProbe, FrameImage, FrameOptions,
-    FrameReport, FrameTarget, FrameTimings, GpuContext, GpuScene, OffscreenTarget, RenderError,
-    UploadStats, WorldRenderer, CLEAR_COLOUR, OFFSCREEN_FORMAT,
+    frame_latency_for, probe_adapters, unpack_rows, AdapterChoice, AdapterProbe, FrameImage,
+    FrameOptions, FrameReport, FrameTarget, FrameTimings, GpuContext, GpuScene, OffscreenTarget,
+    RenderError, UploadStats, WorldRenderer, CLEAR_COLOUR, OFFSCREEN_FORMAT,
 };
 pub use lightmap::{decode_lightmap, lightmap_rgba, pack_lightmap, TexelOrder, MAX_LIGHTMAP_BYTES};
 pub use lights::{

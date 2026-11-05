@@ -306,6 +306,19 @@ const LOAD_RETRIES: usize = 2;
 /// 30 Hz server tick carries a new position), 34 ms.
 const UPDATE_PERIOD_MS: u32 = (1000.0 / dc_client::update::SEND_RATE_HZ).ceil() as u32;
 
+/// The median session-clock step between consecutive frames of a run (0 with fewer than two marks).
+fn median_frame_ms(marks: &[dc_client::ClockMark]) -> u32 {
+    let mut d: Vec<u32> = marks
+        .windows(2)
+        .map(|w| w[1].clock_ms.saturating_sub(w[0].clock_ms))
+        .collect();
+    if d.is_empty() {
+        return 0;
+    }
+    d.sort_unstable();
+    d[d.len() / 2]
+}
+
 fn median_gap(gaps: &std::collections::BTreeMap<u32, u32>) -> Option<u32> {
     let n: u32 = gaps.values().sum();
     let mut seen = 0;
@@ -516,17 +529,25 @@ fn trajectory_against_our_dserver_is_the_same_at_30_60_144_and_1000_fps() {
             r.report.stall_note()
         );
         paths.push((r.fps, path, r.sprint_allowed_at));
-        rates.push((r.fps, rate, median_gap(gaps), short));
+        let frame_ms = median_frame_ms(&r.report.clock_marks);
+        println!(
+            "{} fps: median frame period on the session clock {frame_ms} ms",
+            r.fps
+        );
+        rates.push((r.fps, rate, median_gap(gaps), short, frame_ms));
     }
     // the 0x64 gate on the session's own clock: the usual gap is the period (the median within 3 ms: the network
     // thread's poll), never shorter except at a life-state / spawn reset of the gate; on the wall clock never faster
     // than the send rate (CLI-1578). (A busy machine only stretches gaps: the wall-clock rate alone is no evidence.)
     let bound = dc_client::update::SEND_RATE_HZ as f64 * (15.4 / 15.0);
-    for (fps, rate, median, short) in &rates {
+    for (fps, rate, median, short, frame_ms) in &rates {
         assert!(*rate < bound, "{fps} fps: update rate {rate}");
+        // an update goes out on a frame, so the gap is never shorter than the frame period: a machine that cannot
+        // hold the requested rate (a shared CI runner at 30 fps) stretches the gap to its real frame period
+        let high = (UPDATE_PERIOD_MS + 3).max(frame_ms + 3);
         assert!(
-            median.is_some_and(|m| (UPDATE_PERIOD_MS..=UPDATE_PERIOD_MS + 3).contains(&m)),
-            "{fps} fps: median update gap {median:?} (wall rate {rate:.2})"
+            median.is_some_and(|m| (UPDATE_PERIOD_MS..=high).contains(&m)),
+            "{fps} fps: median update gap {median:?} (wall rate {rate:.2}, frame period {frame_ms} ms)"
         );
         assert!(
             *short <= 3,
