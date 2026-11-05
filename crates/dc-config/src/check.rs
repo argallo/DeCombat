@@ -778,6 +778,22 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             "at most 100 characters, no control characters",
         ));
     }
+    // DC-DEFAULT: LG-404 (proposed) the direct zip links are https:// addresses of at most 300 plain characters
+    for (key, v) in [
+        ("client.download.windows", &cfg.client.download.windows),
+        ("client.download.macos", &cfg.client.download.macos),
+    ] {
+        let plain = v.chars().all(|c| {
+            c.is_ascii_graphic()
+                && !matches!(c, '"' | '\\' | '<' | '>' | '^' | '`' | '{' | '|' | '}')
+        });
+        if !v.is_empty() && (!v.starts_with("https://") || v.len() > 300 || !plain) {
+            out.push(Issue::error(
+                key,
+                "an https:// address of at most 300 characters, no spaces or quotes",
+            ));
+        }
+    }
     // DC-DEFAULT: LG-245 (proposed) a mail server needs a port and a sender address with an @
     let m = &cfg.mail;
     if !m.smtp_host.trim().is_empty() {

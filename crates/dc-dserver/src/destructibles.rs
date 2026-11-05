@@ -38,6 +38,7 @@ pub const PROP_IMPACT_FX_NAME: PropHash = ([0xe0, 0xc2, 0x75, 0xf6, 0x43, 0x1c, 
 // OBSERVED: command texts of the ROM world files (hashes only)
 const WORD_MSG: PropHash = ([0xe4, 0x6b, 0x32, 0x01, 0x65, 0xee, 0xc9, 0x1e], 3);
 const WORD_ON: PropHash = ([0xb8, 0xd3, 0x1e, 0x85, 0x27, 0x25, 0xaf, 0xb1], 2);
+const WORD_TRIGGER: PropHash = ([0x68, 0x32, 0x59, 0xfe, 0xab, 0xbf, 0x5e, 0xb3], 7);
 
 /// What a breakable's death switches on.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +59,9 @@ pub struct BreakableInfo {
     pub death: Vec<DeathAction>,
     /// Statements of the death command this server does not run (logged).
     pub skipped: u32,
+    /// The whole death command of a world model that drives the world's trigger network (it fires a trigger): a
+    /// co-op mission room runs it with the world's statements (DSV-575); empty for the breakable class.
+    pub script: Vec<u8>,
 }
 
 /// One explosion object of the world file.
@@ -239,6 +243,49 @@ pub fn destructible_world(w: &World<'_>) -> DestructibleWorld {
             hit_points,
             death,
             skipped,
+            script: Vec::new(),
+        });
+    }
+    // OBSERVED: ROM SANDHOG_CP1 (the armoured vehicle's two engine models: plain world models with hit points whose
+    // death command fires the trigger that opens the way to the last area; no plain world model of the other worlds
+    // has a death command, 2026-11-04 scratch survey)
+    // DC-DEFAULT: DSV-575 (proposed) a plain world model with hit points whose death command fires a trigger breaks
+    // like a breakable; its death command goes to the world's statements
+    for o in &w.objects {
+        if o.role != Some(dc_world::ObjectRole::PlainWorldModel) || w.brush_of(o).is_none() {
+            continue;
+        }
+        let Some(cmd) = prop_text(o, PROP_DEATH_COMMAND).filter(|t| fires_trigger(t)) else {
+            continue;
+        };
+        let hit_points = crate::world::named_real(o, PROP_HIT_POINTS).unwrap_or(0.0);
+        if hit_points.is_nan()
+            || hit_points <= 0.0
+            || prop_bool(o, PROP_CAN_DAMAGE) == Some(false)
+            || prop_bool(o, PROP_NEVER_DESTROY) == Some(true)
+        {
+            continue;
+        }
+        let (on, skipped) = switched_on(cmd);
+        let death = on
+            .into_iter()
+            .map(|t| {
+                match d
+                    .explosions
+                    .iter()
+                    .position(|e| e.name.eq_ignore_ascii_case(&t))
+                {
+                    Some(i) => DeathAction::Explode(i),
+                    None => DeathAction::Effect(t),
+                }
+            })
+            .collect();
+        d.breakables.push(BreakableInfo {
+            name: o.name().map(<[u8]>::to_vec).unwrap_or_default(),
+            hit_points,
+            death,
+            skipped,
+            script: cmd.to_vec(),
         });
     }
     d.add_shapes(w);
@@ -248,6 +295,28 @@ pub fn destructible_world(w: &World<'_>) -> DestructibleWorld {
 /// A breakable brush is bound when the server created it in a state a player can hit (visible, solid or ray-hit).
 pub fn bindable(b: &BrushInfo) -> bool {
     b.class == BrushClass::Breakable && (b.visible || b.solid || b.rayhit)
+}
+
+/// [`bindable`], and a plain world model the destructible data lists with a death command for the world's statements
+/// (DSV-575).
+pub fn bindable_in(b: &BrushInfo, d: &DestructibleWorld) -> bool {
+    bindable(b)
+        || (b.class == BrushClass::Plain
+            && (b.visible || b.solid || b.rayhit)
+            && d.breakable(&b.name).is_some_and(|x| !x.script.is_empty()))
+}
+
+/// Whether a command text fires a trigger (`msg <name> trigger`).
+fn fires_trigger(text: &[u8]) -> bool {
+    text.split(|&b| b == b';' || b == b'\n' || b == b'\r')
+        .any(|st| {
+            let words: Vec<Vec<u8>> = st
+                .split(|b| b.is_ascii_whitespace() || *b == b'(' || *b == b')')
+                .filter(|w| !w.is_empty())
+                .map(<[u8]>::to_ascii_lowercase)
+                .collect();
+            words.len() >= 3 && key_of(&words[0]) == WORD_MSG && key_of(&words[2]) == WORD_TRIGGER
+        })
 }
 
 /// The brush of a dead breakable: not visible, not solid, not hit by rays (the flag words of DSV-37 without bits

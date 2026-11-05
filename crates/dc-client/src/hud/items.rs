@@ -922,6 +922,12 @@ pub fn build_marked(
             right: false,
         });
     }
+    elems.push(("coop_mission", out.len()));
+    // ---- the Fire Team goal list and mission banner (super::mission)
+    // DC-DEFAULT: CLI-1858 (proposed) drawn with the note layer (the 2009 element's layer is not traced)
+    if notes {
+        super::mission::draw(&mut out, &layout.top.mission, s, tex_size);
+    }
     elems.push(("team_counters", out.len()));
     // ---- team counters (classes 1, 4, 7, 8, 10 show the 0xb5 pair; 2, 3, 12, 13 the round wins)
     // EVIDENCE: cshell+0x90a60 (+0x124 / +0x120 for classes 1, 4, 7, 8, 10; +0x138 / +0x13c for 2, 3, 12, 13)

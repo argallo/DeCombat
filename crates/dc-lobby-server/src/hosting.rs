@@ -34,8 +34,10 @@ pub struct Hosting {
     pub folder_packs: std::sync::OnceLock<std::collections::BTreeMap<String, PathBuf>>,
 }
 
-/// `/client_version.json` of `[client]`: `{"latest","min_version","update_url"}`; `None` with neither version set.
+/// `/client_version.json` of `[client]`: `{"latest","min_version","update_url"}`, with `"download":{"windows",
+/// "macos"}` when `[client.download]` names a zip (LG-404); `None` with neither version set.
 // DC-DEFAULT: LG-322 (proposed, USER REQUEST 2026-11-02) the lobby tells clients the current and the oldest allowed version
+// DC-DEFAULT: LG-404 (proposed, USER REQUEST 2026-11-04) and, when set, the direct zip of each platform
 pub fn client_version_doc(c: &dc_config::schema::ClientSection) -> Option<String> {
     if c.latest.is_empty() && c.min_version.is_empty() {
         return None;
@@ -45,6 +47,18 @@ pub fn client_version_doc(c: &dc_config::schema::ClientSection) -> Option<String
     o.insert("latest".to_string(), S(c.latest.clone()));
     o.insert("min_version".to_string(), S(c.min_version.clone()));
     o.insert("update_url".to_string(), S(c.update_url.clone()));
+    let mut d = std::collections::BTreeMap::new();
+    for (k, v) in [
+        ("windows", &c.download.windows),
+        ("macos", &c.download.macos),
+    ] {
+        if !v.is_empty() {
+            d.insert(k.to_string(), S(v.clone()));
+        }
+    }
+    if !d.is_empty() {
+        o.insert("download".to_string(), Object(d));
+    }
     Some(Object(o).to_json_pretty())
 }
 
@@ -242,6 +256,7 @@ mod tests {
             latest: "0.3.0".into(),
             min_version: "0.2.0".into(),
             update_url: "decombat.com".into(),
+            ..Default::default()
         })
         .unwrap();
         for piece in [
@@ -253,6 +268,23 @@ mod tests {
         ] {
             assert!(doc.contains(piece), "{doc}");
         }
+        assert!(!doc.contains("download"), "{doc}");
+        // LG-404: the direct zips, only the platforms named
+        let with = client_version_doc(&ClientSection {
+            latest: "0.3.0".into(),
+            download: dc_config::schema::ClientDownloads {
+                windows: "https://example.org/DeCombat-win-v0.3.0.zip".into(),
+                macos: String::new(),
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&with).unwrap();
+        assert_eq!(
+            v["download"]["windows"],
+            "https://example.org/DeCombat-win-v0.3.0.zip"
+        );
+        assert!(v["download"].get("macos").is_none(), "{with}");
         let d = dir("ver");
         let mut h = hosting(&d);
         assert_eq!(route(&h, "/client_version.json").unwrap().status, 404);

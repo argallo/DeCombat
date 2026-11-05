@@ -120,7 +120,12 @@ fn rom_coop_worlds_spawn_ai_from_their_spawners() {
             plan.difficulty.lives.map(|_| "set")
         );
         let allowed: Vec<[f32; 3]> = if table_spawners.is_empty() {
-            c.spawners.iter().map(|s| s.pos).collect()
+            // a mission world (DSV-571): its statements' spawners and the AI it places live
+            c.spawners
+                .iter()
+                .map(|s| s.pos)
+                .chain(c.templates.iter().filter(|t| !t.template).map(|t| t.pos))
+                .collect()
         } else {
             table_spawners
         };

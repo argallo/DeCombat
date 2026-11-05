@@ -266,6 +266,8 @@ pub struct TopLayout {
     pub qrt: super::qrt::QrtLayout,
     /// The Spy Hunt element (mode class 9).
     pub spy: super::spy::SpyLayout,
+    /// The Fire Team goal list and mission banner (mode class 5).
+    pub mission: super::mission::MissionLayout,
     /// The door use prompt and the activate-type table (CLI-1230).
     pub prompt: super::prompt::PromptLayout,
 }
@@ -815,6 +817,7 @@ impl HudLayout {
             bomb: super::bomb::BombLayout::load(&v),
             qrt: super::qrt::QrtLayout::load(&v),
             spy: super::spy::SpyLayout::load(&v),
+            mission: super::mission::MissionLayout::load(&v),
             prompt: super::prompt::PromptLayout::load(&v),
         };
         let mk = v.pair(K::MkPos).map(|pos| MkLayout {

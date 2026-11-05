@@ -274,7 +274,10 @@ no_key_reason = 153             # HS-7: 0x32f reason (0x99) when no usable key i
 [client]                        # LG-322 (proposed): what clients are told before their login (GET /client_version.json)
 latest = ""                     # newest release, "0.3.0"; an older client shows a notice and goes on; "" = no notice
 min_version = ""                # oldest client this lobby takes; an older one shows why and does not log in; "" = no refusal
-update_url = "decombat.com"     # where to get the client, as the notice shows it
+update_url = "https://github.com/argallo/DeCombat/releases/latest"  # the page the notice's button opens
+[client.download]               # LG-404 (proposed): direct https:// zip links for "Update now"; "" = the newest GitHub release
+windows = ""                    # e.g. https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-win-v0.4.0.zip
+macos = ""                      # e.g. .../DeCombat-mac-v0.4.0.zip
 
 [mail]                          # LG-240..LG-245 (proposed): password-recovery mail of the lobby; empty host = off
 smtp_host = ""                  # e.g. "smtp.example.org"

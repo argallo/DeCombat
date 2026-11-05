@@ -1913,8 +1913,12 @@ fn coop_net(cfg: ServerTuning, room: &str) -> Net {
             right_hand: Some("G3".into()),
             max_health: Some(60.0),
             template: true,
+            death_cmd: Vec::new(),
         }],
         nodes: vec![[0.0, 0.0, 0.0]],
+        mission: false,
+        rounds: None,
+        ..CoopWorld::default()
     };
     let mut server = Server::with_tables(cfg, w, character_tables(), 0);
     server.insert_rig("BODY\\b.ltb", rig());
@@ -5136,6 +5140,7 @@ fn world_with_barrel() -> WorldInfo {
             DeathAction::Explode(0),
         ],
         skipped: 0,
+        script: Vec::new(),
     });
     w
 }

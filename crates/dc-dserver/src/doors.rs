@@ -1046,7 +1046,7 @@ fn word_key(w: &[u8]) -> PropHash {
 
 /// The statement words of a trigger message and of a model's visible / solid switch.
 // OBSERVED: the ROM world files' command texts (hashes only)
-const WORD_TRIGGER: PropHash = ([0x68, 0x32, 0x59, 0xfe, 0xab, 0xbf, 0x5e, 0xb3], 7);
+pub(crate) const WORD_TRIGGER: PropHash = ([0x68, 0x32, 0x59, 0xfe, 0xab, 0xbf, 0x5e, 0xb3], 7);
 const WORD_VISIBLE: PropHash = ([0xd4, 0x2e, 0xf1, 0x49, 0x79, 0x00, 0xbc, 0x6e], 7);
 const WORD_SOLID: PropHash = ([0x4b, 0x3d, 0x4a, 0x0d, 0xd7, 0x32, 0xf7, 0x91], 5);
 
@@ -1200,6 +1200,9 @@ pub struct Triggers {
     /// The `lock` / `unlock` statements of the runs (target, lock), for the objects outside doors and triggers: the
     /// session hands them to the player spawn points (DSV-569) and empties the list.
     pub locks: Vec<(Vec<u8>, bool)>,
+    /// The variables, counters, timers and activation boxes of the world's statements and what the statements ask
+    /// of the game (DSV-570..DSV-574).
+    pub net: crate::script::Network,
 }
 
 /// How far around its box a player's position still touches a trigger (the body's half width).
@@ -1225,7 +1228,16 @@ impl Triggers {
             inside: vec![false; n],
             over_budget: 0,
             locks: Vec::new(),
+            net: crate::script::Network::default(),
             list,
+        }
+    }
+
+    /// [`Triggers::new`] with the world's mission objects and the room's draw seed (DSV-570).
+    pub fn with_network(list: Vec<ScriptTrigger>, net: crate::script::Network) -> Triggers {
+        Triggers {
+            net,
+            ..Triggers::new(list)
         }
     }
 
@@ -1247,7 +1259,9 @@ impl Triggers {
     /// The state of a new round: no trigger fired, the file's locks, nobody inside a box.
     // DC-DEFAULT: DSV-564 (proposed)
     pub fn reset(&mut self) {
-        *self = Triggers::new(std::mem::take(&mut self.list));
+        let mut net = std::mem::take(&mut self.net);
+        net.reset();
+        *self = Triggers::with_network(std::mem::take(&mut self.list), net);
     }
 
     /// Fires trigger `name` (names compare without case): its command texts, `None` when it is unknown, locked or
@@ -1370,8 +1384,261 @@ fn apply(
     }
 }
 
-/// Statements waiting for their time (`delay`).
-pub type DelayedStatements = Vec<(dc_net_engine::Millis, DoorStatement)>;
+/// A statement body waiting for its time (`delay`, `delayid`, `delayvariable`) and the id an `abort` names it by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Delayed {
+    pub id: Option<Vec<u8>>,
+    pub body: Vec<crate::script::Stmt>,
+}
+
+/// Statements waiting for their time.
+pub type DelayedStatements = Vec<(dc_net_engine::Millis, Delayed)>;
+
+/// Most statement bodies waiting at once in a room (more are dropped).
+// DC-DEFAULT: DSV-570 (proposed) 1024 (was 256 for the doors' delays, DSV-270; a mission world keeps a few hundred
+// respawn and caption delays waiting)
+pub const DELAYED_MAX: usize = 1024;
+
+/// One run of statements (DSV-562 / DSV-570): the objects they act on, what is pending, the budget.
+struct Run<'r> {
+    doors: &'r mut [Door],
+    turns: &'r mut [TurnDoor],
+    triggers: &'r mut Triggers,
+    delayed: &'r mut DelayedStatements,
+    now: dc_net_engine::Millis,
+    pending: Vec<Vec<u8>>,
+    models: Vec<ModelSwitch>,
+    taken: usize,
+    cut: bool,
+}
+
+impl Run<'_> {
+    fn exec(&mut self, list: &[crate::script::Stmt]) {
+        use crate::script::Stmt;
+        for st in list {
+            if self.cut {
+                return;
+            }
+            self.taken += 1;
+            if self.taken > TRIGGER_STATEMENTS {
+                self.cut = true;
+                return;
+            }
+            match st {
+                Stmt::Msg { target, words } => self.msg(target, words),
+                Stmt::Delay { wait, id, body } => {
+                    let secs = self.triggers.net.value(wait);
+                    let ms = if secs.is_finite() {
+                        (secs.max(0.0) * 1000.0).min(600_000.0) as u32
+                    } else {
+                        0
+                    };
+                    if ms == 0 && id.is_none() {
+                        self.exec(body);
+                    } else if self.delayed.len() < DELAYED_MAX {
+                        self.delayed.push((
+                            self.now.wrapping_add(ms),
+                            Delayed {
+                                id: id.clone(),
+                                body: body.clone(),
+                            },
+                        ));
+                    }
+                }
+                Stmt::Abort(id) => self.delayed.retain(|d| d.1.id.as_ref() != Some(id)),
+                Stmt::Var { op, name, value } => {
+                    let v = self.triggers.net.value(value);
+                    self.triggers.net.set_var(*op, name, v);
+                }
+                Stmt::If { cond, then } => {
+                    if self.triggers.net.test(cond) {
+                        self.exec(then);
+                    }
+                }
+                Stmt::Rand(options) => {
+                    let i = self.triggers.net.draw(options.len());
+                    self.exec(&options[i]);
+                }
+                Stmt::Other => {
+                    self.triggers.net.skipped = self.triggers.net.skipped.saturating_add(1)
+                }
+            }
+        }
+    }
+
+    /// One `msg <target> <words>` statement: the mission words (DSV-571..DSV-574) or the doors', triggers' and models'
+    /// words (DSV-270, DSV-562).
+    fn msg(&mut self, target: &[u8], words: &[Vec<u8>]) {
+        use crate::script::{self as sc, Cue, Effect, GoalOp};
+        let Some(w) = words.first().map(|w| word_key(w)) else {
+            self.triggers.net.skipped = self.triggers.net.skipped.saturating_add(1);
+            return;
+        };
+        let arg = words.get(1).map(Vec::as_slice);
+        let num = arg.and_then(|a| {
+            std::str::from_utf8(a)
+                .ok()
+                .and_then(|t| t.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+        });
+        let net = &mut self.triggers.net;
+        if w == sc::WORD_SPAWN {
+            net.push_effect(Effect::Spawn {
+                spawner: target.to_vec(),
+                name: arg.map(<[u8]>::to_vec),
+            });
+            return;
+        }
+        if w == sc::WORD_INC || w == sc::WORD_DEC {
+            let by = num.unwrap_or(1.0) as i32;
+            let by = if w == sc::WORD_DEC { -by } else { by };
+            if !net.count(target, by) {
+                net.skipped = net.skipped.saturating_add(1);
+            }
+            return;
+        }
+        if (w == sc::WORD_START || w == sc::WORD_STOP || w == sc::WORD_TIMEAMOUNT)
+            && net.timer(target, w, num, self.now)
+        {
+            return;
+        }
+        let goal = if w == sc::WORD_ADD {
+            Some(GoalOp::Add)
+        } else if w == sc::WORD_CHECK {
+            Some(GoalOp::Check)
+        } else if w == sc::WORD_FAIL {
+            Some(GoalOp::Fail)
+        } else {
+            None
+        };
+        if let (Some(op), Some(n)) = (goal, num) {
+            if n >= 0.0 {
+                net.push_effect(Effect::Goal(op, n as u32));
+            }
+            return;
+        }
+        if w == sc::WORD_INCLIFECOUNT {
+            net.push_effect(Effect::Lives(num.unwrap_or(1.0) as i32));
+            return;
+        }
+        if w == sc::WORD_MISSIONCOMPLETE {
+            if num.unwrap_or(1.0) != 0.0 {
+                net.push_effect(Effect::Complete);
+            }
+            return;
+        }
+        if w == sc::WORD_AIFREEZE {
+            net.push_effect(Effect::Freeze(arg.is_none_or(script_flag)));
+            return;
+        }
+        if w == sc::WORD_HEALINPART {
+            net.push_effect(Effect::HealInPart);
+            return;
+        }
+        if w == sc::WORD_PAUSE {
+            // DC-DEFAULT: DSV-578 (proposed) `pause` to an effect object freezes a cut-scene effect on the clients;
+            // this server sends no effect object state: taken, nothing sent
+            net.client_only = net.client_only.saturating_add(1);
+            return;
+        }
+        // DC-DEFAULT: DSV-579..DSV-581 (proposed) what the clients are shown: the session and the co-op rules
+        // resolve the names (captions, banners, cameras, music)
+        if w == sc::WORD_PLAY {
+            match arg {
+                Some(key) => net.push_cue(Cue::Play {
+                    trigger: target.to_vec(),
+                    key: key.to_vec(),
+                }),
+                None => net.skipped = net.skipped.saturating_add(1),
+            }
+            return;
+        }
+        if w == sc::WORD_MOVETO {
+            match arg {
+                Some(point) => net.push_cue(Cue::MoveTo {
+                    camera: target.to_vec(),
+                    point: point.to_vec(),
+                }),
+                None => net.skipped = net.skipped.saturating_add(1),
+            }
+            return;
+        }
+        if w == sc::WORD_FOV {
+            let n = |i: usize| {
+                words
+                    .get(i)
+                    .and_then(|v| std::str::from_utf8(v).ok())
+                    .and_then(|v| v.trim().parse::<f32>().ok())
+                    .filter(|v| v.is_finite() && *v > 0.0)
+            };
+            match n(1).zip(n(2)) {
+                Some((x, y)) => net.push_cue(Cue::Fov {
+                    camera: target.to_vec(),
+                    fov: [x, y],
+                }),
+                None => net.skipped = net.skipped.saturating_add(1),
+            }
+            return;
+        }
+        if w == sc::WORD_HIDECHARACTER {
+            net.push_cue(Cue::HideCharacters(arg.is_none_or(script_flag)));
+            return;
+        }
+        // DC-DEFAULT: DSV-582 (proposed) `enable` / `disable` to an AI volume: server state for the AI navigation,
+        // nothing is sent
+        if w == sc::WORD_ENABLE || w == sc::WORD_DISABLE {
+            let name = target.to_ascii_lowercase();
+            if w == sc::WORD_DISABLE {
+                net.ai_volumes_off.insert(name);
+            } else {
+                net.ai_volumes_off.remove(&name);
+            }
+            return;
+        }
+        if w == WORD_ON || w == WORD_OFF {
+            net.push_cue(Cue::Switch {
+                target: target.to_vec(),
+                on: w == WORD_ON,
+            });
+        }
+        if w == sc::WORD_COOPTIMER {
+            net.push_effect(Effect::MissionTimer(
+                arg.is_some_and(|a| word_key(a) == WORD_ON),
+            ));
+            return;
+        }
+        if w == sc::WORD_REMOVE || w == sc::WORD_HIDDEN {
+            // DC-DEFAULT: DSV-571 (proposed) a removed (or hidden) model is switched off: not visible, not solid
+            let off = w == sc::WORD_REMOVE || arg.is_none_or(script_flag);
+            self.models.push(ModelSwitch {
+                name: target.to_vec(),
+                visible: Some(!off),
+                solid: Some(!off),
+            });
+            return;
+        }
+        if w == WORD_LOCK || w == WORD_UNLOCK {
+            net.set_activate_lock(target, w == WORD_LOCK);
+        }
+        if (w == WORD_ON || w == WORD_OFF) && net.switched.len() < sc::EFFECTS_MAX {
+            net.switched.push((target.to_vec(), w == WORD_ON));
+        }
+        let st = DoorStatement {
+            delay_ms: 0,
+            target: target.to_vec(),
+            word: w,
+            value: arg.map(script_flag),
+        };
+        apply(
+            self.doors,
+            self.turns,
+            self.triggers,
+            &st,
+            &mut self.pending,
+            &mut self.models,
+        );
+    }
+}
 
 /// Runs the doors' fired command texts and the delayed statements that are due at `now`; a door that changes state
 /// fires its own commands in turn (bounded).
@@ -1407,48 +1674,67 @@ pub fn run_world(
     texts: Vec<Vec<u8>>,
     now: dc_net_engine::Millis,
 ) -> Vec<ModelSwitch> {
-    let mut models = Vec::new();
+    // DC-DEFAULT: DSV-572 (proposed) the timers that ran out queue their over-time commands
+    triggers.net.timers_due(now);
     let mut due = Vec::new();
-    delayed.retain(|(t, st)| {
+    delayed.retain(|(t, d)| {
         if dc_net_engine::time::since(now, *t) < u32::MAX / 2 {
-            due.push(st.clone());
+            due.push(d.body.clone());
             false
         } else {
             true
         }
     });
     let mut pending = texts;
-    for st in &due {
-        apply(doors, turns, triggers, st, &mut pending, &mut models);
+    pending.append(&mut triggers.net.queued);
+    let mut run = Run {
+        doors,
+        turns,
+        triggers,
+        delayed,
+        now,
+        pending,
+        models: Vec::new(),
+        taken: 0,
+        cut: false,
+    };
+    for body in &due {
+        run.exec(body);
     }
-    let mut taken = 0usize;
-    'rounds: for _ in 0..TRIGGER_DEPTH {
-        let fired: Vec<Vec<u8>> = std::mem::take(&mut pending)
+    for _ in 0..TRIGGER_DEPTH {
+        let mut fired: Vec<Vec<u8>> = std::mem::take(&mut run.pending)
             .into_iter()
-            .chain(doors.iter_mut().flat_map(|d| std::mem::take(&mut d.fired)))
-            .chain(turns.iter_mut().flat_map(|t| std::mem::take(&mut t.fired)))
+            .chain(
+                run.doors
+                    .iter_mut()
+                    .flat_map(|d| std::mem::take(&mut d.fired)),
+            )
+            .chain(
+                run.turns
+                    .iter_mut()
+                    .flat_map(|t| std::mem::take(&mut t.fired)),
+            )
             .collect();
-        if fired.is_empty() {
+        fired.append(&mut run.triggers.net.queued);
+        if fired.is_empty() || run.cut {
             break;
         }
         for text in fired {
-            for st in parse_statements(&text) {
-                taken += 1;
-                if taken > TRIGGER_STATEMENTS {
-                    // DSV-562: the budget is spent: drop what is pending (a self-feeding trigger ends here)
-                    pending.clear();
-                    triggers.over_budget = triggers.over_budget.saturating_add(1);
-                    break 'rounds;
-                }
-                if st.delay_ms == 0 {
-                    apply(doors, turns, triggers, &st, &mut pending, &mut models);
-                } else if delayed.len() < 256 {
-                    delayed.push((now.wrapping_add(st.delay_ms), st));
-                }
+            // DC-DEFAULT: DSV-570 (proposed) every statement form of the world's texts, one parser for all of them
+            let list = crate::script::parse_script(&text);
+            run.exec(&list);
+            if run.cut {
+                break;
             }
         }
     }
-    models
+    if run.cut {
+        // DSV-562: the budget is spent: drop what is pending (a self-feeding trigger ends here)
+        run.pending.clear();
+        run.triggers.net.queued.clear();
+        run.triggers.over_budget = run.triggers.over_budget.saturating_add(1);
+    }
+    run.models
 }
 
 /// The use key of a living player at `at`: the nearest use door, rotating door or switch within [`DOOR_USE_REACH`]
@@ -2222,6 +2508,319 @@ mod script_tests {
         let mut on = vec![TurnDoor::new(6, sw(true))];
         let m = run_world(&mut doors, &mut on, &mut trig, &mut dl, Vec::new(), 0);
         assert_eq!(m.first().map(|m| m.visible), Some(Some(true)));
+    }
+
+    /// DSV-579..DSV-582: `play`, camera `moveto` / `fov`, `on` / `off`, `hidecharacter` and the AI volumes' `enable` /
+    /// `disable`, as the co-op worlds write them (the delayed ones at their time), become cues and server state.
+    #[test]
+    fn presentation_statement_forms_become_cues() {
+        use crate::script::{Cue, MissionObjects, Network};
+        let mut trig =
+            Triggers::with_network(Vec::new(), Network::new(MissionObjects::default(), 1));
+        let mut dl = DelayedStatements::new();
+        let text = [
+            "msg CapTRG (play Cap101);",
+            "msg Ctl (hidecharacter 1);",
+            "msg cam (moveto Point01);",
+            "msg cam (fov 100 84);",
+            "msg cam on;",
+            "msg Vol7 disable;",
+            "msg Vol8 disable;",
+            "msg Vol8 enable;",
+            "delay 4.6 (msg Ctl (hidecharacter 0));",
+            "delay 4.6 (msg Music off);",
+            "msg cam (fov x);",
+            "msg Msg (play)",
+        ]
+        .join("\r\n");
+        run_world(
+            &mut [],
+            &mut [],
+            &mut trig,
+            &mut dl,
+            vec![text.into_bytes()],
+            0,
+        );
+        let cues = std::mem::take(&mut trig.net.cues);
+        assert_eq!(
+            cues,
+            vec![
+                Cue::Play {
+                    trigger: b"CapTRG".to_vec(),
+                    key: b"Cap101".to_vec()
+                },
+                Cue::HideCharacters(true),
+                Cue::MoveTo {
+                    camera: b"cam".to_vec(),
+                    point: b"Point01".to_vec()
+                },
+                Cue::Fov {
+                    camera: b"cam".to_vec(),
+                    fov: [100.0, 84.0]
+                },
+                Cue::Switch {
+                    target: b"cam".to_vec(),
+                    on: true
+                },
+            ]
+        );
+        // the AI volumes are server state; the malformed `fov` and `play` are counted, not cued
+        let off: Vec<&[u8]> = trig.net.ai_volumes_off.iter().map(Vec::as_slice).collect();
+        assert_eq!(off, vec![b"vol7".as_slice()]);
+        assert_eq!(trig.net.skipped, 2);
+        run_world(&mut [], &mut [], &mut trig, &mut dl, Vec::new(), 4_600);
+        assert_eq!(
+            trig.net.cues,
+            vec![
+                Cue::HideCharacters(false),
+                Cue::Switch {
+                    target: b"Music".to_vec(),
+                    on: false
+                }
+            ]
+        );
+        // a new round forgets the disabled volumes
+        trig.net.reset();
+        assert!(trig.net.ai_volumes_off.is_empty() && trig.net.cues.is_empty());
+    }
+
+    /// DSV-570..DSV-574 on a synthetic network: variables and conditions, spawns, delays by time, by variable and by
+    /// id (with `abort`), a draw, a counter whose event unlocks an activation box, a timer stopped in time, the game
+    /// control words, the goal words, `remove` and the `on` / `off` names for the session.
+    #[test]
+    fn mission_statement_forms_run() {
+        use crate::script::{
+            ActivateInfo, CounterInfo, Effect, GoalOp, MissionObjects, Network, TimerInfo,
+        };
+        let net = Network::new(
+            MissionObjects {
+                counters: vec![CounterInfo {
+                    name: b"Locker".to_vec(),
+                    start: 0,
+                    events: vec![(2, b"msg Final unlock;\r\nmsg Fence off;".to_vec())],
+                    unset: Vec::new(),
+                }],
+                timers: vec![TimerInfo {
+                    name: b"Clock".to_vec(),
+                    secs: 60.0,
+                    in_time: b"set Saved 1;\r\nmsg Goals (check 1);".to_vec(),
+                    over_time: b"msg Goals (fail 1);".to_vec(),
+                }],
+                activates: vec![ActivateInfo {
+                    name: b"Final".to_vec(),
+                    dims: [20.0; 3],
+                    locked: true,
+                    max: 1,
+                    secs: 1.0,
+                    activate: b"msg Ctl (aifreeze 1);\r\ndelay 2 (msg Ctl (missioncomplete 1));"
+                        .to_vec(),
+                    ..ActivateInfo::default()
+                }],
+            },
+            42,
+        );
+        let mut trig = Triggers::with_network(
+            vec![
+                trigger(
+                    "Checkpoint",
+                    &[
+                        "msg Ctl (INCLIFECOUNT 1);",
+                        "msg Goals (check 0);\r\nmsg Goals (add 1);",
+                        "msg Clock (timeamount 30);\r\ndelay 0.01 (msg Clock Start);",
+                        "msg Locker (inc 1)",
+                    ],
+                    1,
+                    Some([0.0; 3]),
+                ),
+                trigger(
+                    "Wave",
+                    &["msg S_A (spawn _A);\r\nmsg S_B (spawn _B);"],
+                    0,
+                    None,
+                ),
+                trigger("Pick", &["Rand2 (set Side 1)(set Side 2)"], 0, None),
+            ],
+            net,
+        );
+        let mut dl = DelayedStatements::new();
+        let run = |trig: &mut Triggers, dl: &mut DelayedStatements, text: &str, now: u32| {
+            run_world(
+                &mut [],
+                &mut [],
+                trig,
+                dl,
+                vec![text.as_bytes().to_vec()],
+                now,
+            )
+        };
+        // start-up variables, a death command counting down, the condition firing a trigger
+        run(&mut trig, &mut dl, "int Left 2;\r\nint Wait 0.5;", 0);
+        let death = "sub Left 1;\r\nif (Left <= 0) then (msg Wave trigger);\r\nif (Left >= 0) then (delayvariable Wait (msg S_C (spawn _C)));";
+        run(&mut trig, &mut dl, death, 0);
+        assert!(
+            trig.net.effects.is_empty(),
+            "the respawn waits for the variable's time"
+        );
+        run(&mut trig, &mut dl, "", 500);
+        assert_eq!(
+            std::mem::take(&mut trig.net.effects),
+            [Effect::Spawn {
+                spawner: b"S_C".to_vec(),
+                name: Some(b"_C".to_vec())
+            }]
+        );
+        run(&mut trig, &mut dl, death, 600);
+        let e = std::mem::take(&mut trig.net.effects);
+        assert_eq!(e.len(), 2, "the wave trigger's two spawns: {e:?}");
+        assert_eq!(trig.net.var(b"left"), 0.0);
+        // a draw sets one value
+        run(&mut trig, &mut dl, "msg Pick trigger;", 700);
+        assert!([1.0, 2.0].contains(&trig.net.var(b"Side")));
+        // `delayid` and `abort`
+        run(
+            &mut trig,
+            &mut dl,
+            "delayid K 1 (msg Lamp (visible 1));\r\nabort K;",
+            800,
+        );
+        assert!(run(&mut trig, &mut dl, "", 5000).is_empty(), "aborted");
+        assert_eq!(
+            std::mem::take(&mut trig.net.effects).len(),
+            1,
+            "the second death's respawn (left 0 is still >= 0)"
+        );
+        // the checkpoint box: a life, the goals, the timer, a count
+        let fired = trig.touch(&[[0.0; 3]]);
+        run_world(&mut [], &mut [], &mut trig, &mut dl, fired, 6000);
+        assert_eq!(
+            std::mem::take(&mut trig.net.effects),
+            [
+                Effect::Lives(1),
+                Effect::Goal(GoalOp::Check, 0),
+                Effect::Goal(GoalOp::Add, 1)
+            ]
+        );
+        run(&mut trig, &mut dl, "", 6010);
+        run(&mut trig, &mut dl, "msg Clock stop;", 20_000);
+        assert_eq!(trig.net.var(b"saved"), 1.0, "stopped in time");
+        assert_eq!(
+            std::mem::take(&mut trig.net.effects),
+            [Effect::Goal(GoalOp::Check, 1)]
+        );
+        // the second count unlocks the final box and switches the fence off
+        run(&mut trig, &mut dl, "msg Locker (inc 1);", 21_000);
+        assert_eq!(trig.net.activate_locked, [false]);
+        assert_eq!(
+            std::mem::take(&mut trig.net.switched),
+            [(b"Fence".to_vec(), false)]
+        );
+        // held for its time: the AI freeze, the mission completes after the delay
+        trig.net.activate_tick(&[(3, [0.0; 3])], 22_000);
+        trig.net.activate_tick(&[(3, [0.0; 3])], 23_000);
+        run(&mut trig, &mut dl, "", 23_000);
+        assert_eq!(
+            std::mem::take(&mut trig.net.effects),
+            [Effect::Freeze(true)]
+        );
+        run(&mut trig, &mut dl, "", 25_000);
+        assert_eq!(trig.net.effects, [Effect::Complete]);
+        // `remove` switches a model off
+        let m = run(&mut trig, &mut dl, "msg Wall remove;", 26_000);
+        assert_eq!(
+            m,
+            [ModelSwitch {
+                name: b"Wall".to_vec(),
+                visible: Some(false),
+                solid: Some(false)
+            }]
+        );
+    }
+
+    /// DSV-576..DSV-578 on a synthetic round world: the round loop is found (the start box nobody fires, the round
+    /// counter, the kill counter whose events are unset), the start box counts round 1, the deaths count the kill
+    /// counter without an event, a round end heals, pauses an effect and counts the next round by its box.
+    #[test]
+    fn round_world_loop_and_words() {
+        use crate::script::{round_network, CounterInfo, Effect, MissionObjects, Network};
+        let objects = MissionObjects {
+            counters: vec![
+                CounterInfo {
+                    name: b"Stages".to_vec(),
+                    start: 0,
+                    events: vec![(1, b"set Shown 1".to_vec()), (3, b"set Shown 3".to_vec())],
+                    unset: Vec::new(),
+                },
+                CounterInfo {
+                    name: b"Kills".to_vec(),
+                    start: 0,
+                    events: Vec::new(),
+                    unset: vec![
+                        (
+                            1,
+                            b"delay 2 (msg Ctl (HEALINPART));\r\ndelay 12 (msg Next trigger);"
+                                .to_vec(),
+                        ),
+                        (2, b"msg Fx pause;\r\nmsg Ctl (missioncomplete 1);".to_vec()),
+                    ],
+                },
+            ],
+            ..MissionObjects::default()
+        };
+        let list = vec![
+            trigger("Begin", &["msg Stages (inc 1)", "msg Music on;"], 1, None),
+            trigger("Next", &["msg Stages (inc 1)"], 0, None),
+            trigger("Lamp", &["msg Light off"], 0, None),
+        ];
+        let death: &[u8] = b"msg Kills (inc 1);";
+        let r = round_network(&list, &objects, &[death, b""]).expect("a round world");
+        assert_eq!(
+            r.start_boxes,
+            [b"Begin".to_vec()],
+            "Next is fired by the round end"
+        );
+        assert_eq!(r.round_counter, b"Stages");
+        assert_eq!(r.kill_counter, b"Kills");
+        assert_eq!(
+            r.clear_events.iter().map(|e| e.0).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(
+            round_network(&list, &objects, &[b""]).is_none(),
+            "no death command counts a counter: no round world"
+        );
+        let mut net = Network::new(objects, 3);
+        net.round_counter = Some(r.round_counter.clone());
+        let mut trig = Triggers::with_network(list, net);
+        let mut dl = DelayedStatements::new();
+        let mut run = |trig: &mut Triggers, text: &[u8], now: u32| {
+            run_world(&mut [], &mut [], trig, &mut dl, vec![text.to_vec()], now);
+            std::mem::take(&mut trig.net.effects)
+        };
+        // the server fires the start box at the match start: round 1, its event
+        assert_eq!(run(&mut trig, b"msg Begin trigger", 0), [Effect::Round(1)]);
+        assert_eq!(trig.net.var(b"shown"), 1.0);
+        // AI deaths count the kill counter; its unset events never run by counting
+        for _ in 0..40 {
+            assert!(run(&mut trig, death, 100).is_empty());
+        }
+        assert_eq!(trig.net.counters[1], 40);
+        assert!(trig.net.queued.is_empty());
+        // the round is cleared: the server runs its round end
+        let end = r.clear_events[0].1.clone();
+        assert!(run(&mut trig, &end, 1000).is_empty());
+        assert_eq!(run(&mut trig, b"", 3000), [Effect::HealInPart]);
+        assert_eq!(run(&mut trig, b"", 13_000), [Effect::Round(2)]);
+        assert_eq!(trig.net.counters[0], 2);
+        // the last round end: `pause` is taken (client only), the mission completes
+        let skipped = trig.net.skipped;
+        let end = r.clear_events[1].1.clone();
+        assert_eq!(run(&mut trig, &end, 20_000), [Effect::Complete]);
+        assert_eq!((trig.net.client_only, trig.net.skipped), (1, skipped));
+        // `healinpart` as the statement reads in any case
+        assert_eq!(
+            run(&mut trig, b"msg Ctl (healinpart)", 21_000),
+            [Effect::HealInPart]
+        );
     }
 
     /// DSV-563: a touched trigger fires when a player enters its box (not again while he stays, at most its number of

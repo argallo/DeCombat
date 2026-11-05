@@ -16,6 +16,7 @@ dc-wire = { path = "../dc-wire" }
 dc-net-engine = { path = "../dc-net-engine" }
 # dc-sim: the shared movement simulation that walks the bot (flat floor, or the ROM world's collision).
 dc-sim = { path = "../dc-sim" }
+dc-nav = { path = "../dc-nav" }
 # dc-world: parses the announced world from the user's ROM (box for pos48, spawn floor, collision).
 dc-world = { path = "../dc-world" }
 # dc-rez: resolves the announced world name in the user's own ROM archive at run time (the client's 0x29 check).

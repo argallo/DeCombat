@@ -299,6 +299,9 @@ pub struct SeenDamage {
     pub damage: u32,
 }
 
+/// A `GS_MUSIC` play order: file, loop, fade seconds.
+pub type MusicPlay = (Vec<u8>, bool, f32);
+
 /// Everything the client observed, for assertions.
 #[derive(Debug, Clone, Default)]
 pub struct Observed {
@@ -455,6 +458,12 @@ pub struct Observed {
     /// `GS_COOP_MISSION` sub 1 (goal count, timers, a, b) and sub 2 banner texts.
     pub missions: Vec<(u32, Vec<f32>, u8, u8)>,
     pub banners: Vec<Vec<u8>>,
+    /// `GS_COOP_MISSION` sub 3 (the mission caption): (time, text, seconds).
+    pub captions: Vec<(Millis, Vec<u8>, f32)>,
+    /// `GS_MUSIC` 0xd9: (time, `Some((file, loop, fade))` for a play, `None` for a stop).
+    pub music: Vec<(Millis, Option<MusicPlay>)>,
+    /// `GS_OBJECT_NOTE` type 0x0d sub 1 (a camera's field of view): (time, object, degrees, blend seconds).
+    pub camera_fov: Vec<(Millis, u16, [f32; 2], f32)>,
     /// `GS_OBJECT_NOTE` type 0x18 sub 0x24: (time, object, health fraction); notes to objects without the NPC tail
     /// are an error (the client leaves the bytes unread).
     pub npc_health: Vec<(Millis, u16, f32)>,
@@ -1949,7 +1958,31 @@ impl SynthClient {
                         r.read_f32();
                         self.seen.banners.push(t);
                     }
+                    // DISASM: cshell+0x81fe0 (the caption: three `|` fields, else nothing is shown)
+                    3 => {
+                        let t = r.read_zstr8();
+                        let secs = r.read_f32();
+                        let fields = t.split(|&b| b == b'|').filter(|f| !f.is_empty()).count();
+                        if !(t.iter().filter(|&&b| b == b'|').count() == 2 && fields == 3) {
+                            return Err("0xc9 sub 3 caption without three fields".into());
+                        }
+                        self.seen.captions.push((now, t, secs));
+                    }
                     other => return Err(format!("0xc9 sub {other} not modelled")),
+                }
+                exact(r)?;
+            }
+            // SPEC: GAME_MESSAGES_2009_S2C.md §4.2 row 0xd9 (op 0 stop; op 1 loop bit, 32-bit value, file)
+            0xd9 => {
+                match r.read_u8() {
+                    0 => self.seen.music.push((now, None)),
+                    1 => {
+                        let looped = r.read_bit();
+                        let fade = r.read_f32();
+                        let file = r.read_zstr8();
+                        self.seen.music.push((now, Some((file, looped, fade))));
+                    }
+                    other => return Err(format!("0xd9 op {other}")),
                 }
                 exact(r)?;
             }
@@ -1958,6 +1991,18 @@ impl SynthClient {
                 let kind = r.read_u8();
                 let obj = r.read_u16();
                 let sub = r.read_u8();
+                // DISASM: cshell+0x20fd00 (note kind 0x0d to the cameras), cshell+0x216800 (sub 1: three f32)
+                if kind == crate::camshot::OBJ_CAMERA_TYPE {
+                    if !self.seen.objects.contains_key(&obj)
+                        || sub != crate::camshot::CAMERA_NOTE_FOV
+                    {
+                        return Err(format!("0xa6 camera note sub {sub} to object {obj}"));
+                    }
+                    let fov = [r.read_f32(), r.read_f32()];
+                    let secs = r.read_f32();
+                    self.seen.camera_fov.push((now, obj, fov, secs));
+                    exact(r)?;
+                }
                 if kind == 0x18 && sub == 0x24 {
                     let has_tail = self
                         .seen

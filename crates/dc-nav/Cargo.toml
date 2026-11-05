@@ -1,0 +1,10 @@
+[package]
+name = "dc-nav"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Navigation grid for a player-sized body over a dc-sim collision world (lattice probed with the body's cylinder, A*), shared by the bots and the server's co-op AI"
+
+[dependencies]
+# dc-sim: the collision world and the body cylinder every link is probed with.
+dc-sim = { path = "../dc-sim" }

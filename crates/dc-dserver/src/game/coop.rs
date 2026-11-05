@@ -23,6 +23,10 @@ use crate::world::CoopWorld;
 use dc_net_engine::time::{later, since};
 use dc_net_engine::Millis;
 
+mod nav;
+use nav::{NavGoal, NavMove};
+pub use nav::{NavSlot, NavStats};
+
 /// Team of the humans and of the AI characters: the NPC bar is drawn only for entries of another team than the
 /// own (FIRETEAM §1.4 draw rule).
 // SPEC: FIRETEAM_2009.md §1.4 (cshell+0x8a420: class 5 and entry team != own team)
@@ -39,6 +43,31 @@ pub const NPC_KIND_BOSS: u8 = 2;
 pub const STAGE_COMPLETE: u8 = 2;
 pub const STAGE_FAILED: u8 = 3;
 pub const STAGE_TIMEOUT: u8 = 5;
+/// States of a mission goal in the goal list.
+// DC-DEFAULT: DSV-574 (proposed; the client's meaning of the state byte is UNPROVEN, V-FT-8)
+pub const GOAL_OPEN: u8 = 0;
+pub const GOAL_DONE: u8 = 1;
+pub const GOAL_FAILED: u8 = 2;
+/// What `healinpart` gives when the difficulty row has no `RecoverRoundTotalHP`.
+// DC-DEFAULT: DSV-578 (proposed) 100
+pub const RECOVER_HP_DEFAULT: f32 = 100.0;
+
+/// `healinpart` for one human: `pool` points, health first up to `max_health`, the rest as armour up to `max_armor`.
+/// Neither value goes down.
+// DC-DEFAULT: DSV-578 (proposed)
+pub fn heal_in_part(
+    health: f32,
+    armor: f32,
+    pool: f32,
+    max_health: f32,
+    max_armor: f32,
+) -> (f32, f32) {
+    let pool = pool.max(0.0);
+    let to_health = (max_health - health).clamp(0.0, pool);
+    let to_armor = (max_armor - armor).clamp(0.0, pool - to_health);
+    (health + to_health, armor + to_armor)
+}
+
 /// The caption of an AI whose ROM row has no display name.
 // DC-DEFAULT: FT-S3 (proposed)
 pub const FALLBACK_CAPTION: &[u8] = b"AI";
@@ -93,6 +122,9 @@ pub struct CoopTuning {
     /// `npc_rank` of every AI (a rank-icon index, FIRETEAM §1.4).
     // DC-DEFAULT: FT-1 (proposed) 0
     pub npc_rank: u8,
+    /// The AI plan their way over the navigation grid and walk with their body (off: FT-S5's steering only).
+    // DC-DEFAULT: FT-S11 (proposed) on
+    pub nav: bool,
 }
 
 impl Default for CoopTuning {
@@ -117,12 +149,13 @@ impl Default for CoopTuning {
             step_ms: 50,
             ray_hits: true,
             npc_rank: 0,
+            nav: true,
         }
     }
 }
 
 /// The `-coop` keys.
-pub const COOP_KEYS: [&str; 12] = [
+pub const COOP_KEYS: [&str; 13] = [
     "max_alive",
     "lives",
     "waves",
@@ -135,6 +168,7 @@ pub const COOP_KEYS: [&str; 12] = [
     "hit_chance",
     "default_damage",
     "ray_hits",
+    "nav",
 ];
 
 impl CoopTuning {
@@ -165,6 +199,13 @@ impl CoopTuning {
             "default_damage" => self.default_damage = num()?,
             "ray_hits" => {
                 self.ray_hits = match v {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(bad()),
+                }
+            }
+            "nav" => {
+                self.nav = match v {
                     "on" => true,
                     "off" => false,
                     _ => return Err(bad()),
@@ -228,6 +269,10 @@ pub struct AiChar {
     spawned_at: Millis,
     pub state: AiState,
     pub wave: usize,
+    /// The name the statement that spawned it gave (`spawn <name>`, DSV-571) and its template (the spawner's
+    /// target): its death runs the template's death command.
+    pub name: Vec<u8>,
+    pub template: Option<Vec<u8>>,
     pub target: Option<u8>,
     next_fire: Millis,
     waypoint: Option<[f32; 3]>,
@@ -323,6 +368,30 @@ pub struct Coop {
     last_step: Option<Millis>,
     /// Log of what the slice did (tests): spawns, kills, hides.
     pub events: Vec<String>,
+    /// A mission world: the AI come from the world's statements, not from a wave plan (DSV-571).
+    pub mission: bool,
+    /// Spawns the statements asked for that wait for a free AI slot: the spot (the spawner's place and target) and
+    /// the new AI's name.
+    mission_queue: VecDeque<(SpawnSpot, Vec<u8>)>,
+    /// The statements' spawns so far (tests, logs) and the ones dropped (unknown spawner, no body).
+    pub mission_spawns: u32,
+    pub mission_dropped: u32,
+    /// The AI stand still and hold fire (`aifreeze 1`, DSV-572).
+    pub frozen: bool,
+    /// The mission goals shown: goal number and state (DSV-574).
+    pub goals: Vec<(u32, u8)>,
+    /// The world's statements run in this room (a mission world or a round world, DSV-570 / DSV-576): AI deaths run
+    /// their templates' death commands and the statements' spawns are made.
+    pub network: bool,
+    /// A round world (DSV-576): the spawn-table rounds start when the world's round counter reaches them and a
+    /// cleared round runs the world's round-end event instead of starting the next round itself.
+    pub round_world: bool,
+    /// The round the world's round counter reached last (0: none yet), and the `healinpart` statements run.
+    pub round: u32,
+    pub heals: u32,
+    /// What the statements showed (DSV-579..DSV-583): the music trigger playing (its index in the world's list),
+    /// the characters hidden by `hidecharacter`, and counts for logs and tests.
+    pub show: super::coop_show::Shown,
 }
 
 /// The account key of a player for the per-account co-op counters (the account id, else the client id).
@@ -407,6 +476,17 @@ impl Coop {
             started: None,
             last_step: None,
             events: Vec::new(),
+            mission: false,
+            mission_queue: VecDeque::new(),
+            mission_spawns: 0,
+            mission_dropped: 0,
+            frozen: false,
+            goals: Vec::new(),
+            network: false,
+            round_world: false,
+            round: 0,
+            heals: 0,
+            show: Default::default(),
         }
     }
 
@@ -511,11 +591,29 @@ impl Game {
             }
             None => (CoopPlan::default(), AiTables::default(), "no ROM".into()),
         };
-        let c = Coop::new(plan, goal, tables, &self.cfg.coop);
+        let mut c = Coop::new(plan, goal, tables, &self.cfg.coop);
+        // DC-DEFAULT: DSV-571 (proposed) a mission world runs its own trigger network: no wave plan
+        // (a world whose GMS has spawn tables keeps its waves: its statements count the rounds, DSV-571)
+        if self.coop_world.mission && c.plan.rounds.is_empty() {
+            c.mission = true;
+            c.waves.clear();
+        }
+        // DC-DEFAULT: DSV-576 (proposed) a world with spawn tables and a round loop of its own runs its statements; its
+        // rounds follow the world's round counter
+        c.round_world = !c.mission && !c.plan.rounds.is_empty() && self.coop_world.rounds.is_some();
+        c.network = c.mission || c.round_world;
         let line = format!(
             "co-op room: difficulty {goal} ({note}), {} wave(s){}, {} spawner(s), {} AI template(s), {} AI node(s), {} AI body row(s)",
             c.waves_total(),
-            if c.plan.rounds.is_empty() { " (synthetic plan)" } else { " (spawn tables)" },
+            if c.mission {
+                " (mission: the world's trigger network)"
+            } else if c.round_world {
+                " (spawn tables; rounds by the world's trigger network)"
+            } else if c.plan.rounds.is_empty() {
+                " (synthetic plan)"
+            } else {
+                " (spawn tables)"
+            },
             self.coop_world.spawners.len(),
             self.coop_world.templates.len(),
             self.coop_world.nodes.len(),
@@ -785,10 +883,338 @@ impl Game {
     /// The round started: the first wave is due.
     pub(super) fn coop_round_started(&mut self, now: Millis) {
         let at = now.wrapping_add(self.cfg.coop.first_wave_ms);
+        if self.coop.as_ref().is_some_and(|c| c.mission) {
+            self.coop_mission_started(now);
+            return;
+        }
+        // DC-DEFAULT: DSV-576 (proposed) a round world's match starts with its start boxes (they count round 1)
+        if self.coop.as_ref().is_some_and(|c| c.round_world) {
+            let boxes = self
+                .coop_world
+                .rounds
+                .as_ref()
+                .map(|r| r.start_boxes.clone())
+                .unwrap_or_default();
+            let Some(c) = self.coop.as_mut() else {
+                return;
+            };
+            if c.started.is_some() {
+                return;
+            }
+            c.started = Some(now);
+            for b in &boxes {
+                let mut t = b"msg ".to_vec();
+                t.extend_from_slice(b);
+                t.extend_from_slice(b" trigger");
+                self.out.push(GameOut::WorldScript(t));
+            }
+            self.log(format!(
+                "co-op: round world starts ({} start box(es); the world's round counter starts the rounds)",
+                boxes.len()
+            ));
+            return;
+        }
         if let Some(c) = self.coop.as_mut() {
             if c.phase == WavePhase::Idle {
                 c.phase = WavePhase::Next { at };
                 c.started = Some(now);
+            }
+        }
+    }
+
+    /// A mission world's round started: the AI the file places live (not as templates) spawn where they stand, and
+    /// the goal list (empty until the statements add goals) goes out with the round's seconds as the mission timer.
+    // DC-DEFAULT: DSV-571 (proposed) the placed live AI; DSV-574 (proposed) the goal list
+    fn coop_mission_started(&mut self, now: Millis) {
+        let live: Vec<(SpawnSpot, Vec<u8>)> = self
+            .coop_world
+            .templates
+            .iter()
+            .filter(|t| !t.template)
+            .map(|t| {
+                (
+                    SpawnSpot {
+                        pos: t.pos,
+                        yaw: t.rot[1],
+                        template: Some(t.name.clone()),
+                    },
+                    t.name.clone(),
+                )
+            })
+            .collect();
+        let Some(c) = self.coop.as_mut() else {
+            return;
+        };
+        if c.started.is_some() {
+            return;
+        }
+        c.started = Some(now);
+        let n = live.len();
+        c.mission_queue.extend(live);
+        self.log(format!(
+            "co-op: mission starts ({n} placed AI; the world's statements drive it)"
+        ));
+        self.coop_send_goals(now);
+        self.coop_tick_mission(now);
+    }
+
+    /// What the world's statements ask of the co-op rules (DSV-571, DSV-572, DSV-574).
+    pub fn coop_effects(&mut self, effects: Vec<crate::script::Effect>, now: Millis) {
+        use crate::script::{Effect, GoalOp};
+        if self.coop.is_none() {
+            return;
+        }
+        for e in effects {
+            match e {
+                Effect::Spawn { spawner, name } => {
+                    // `msg <spawner> spawn` without a name: the AI takes its template's name
+                    let name = name.or_else(|| {
+                        self.coop_world
+                            .spawners
+                            .iter()
+                            .find(|s| s.name.eq_ignore_ascii_case(&spawner))
+                            .and_then(|s| s.target.clone())
+                    });
+                    let name = name.unwrap_or_default();
+                    let spot = self
+                        .coop_world
+                        .spawners
+                        .iter()
+                        .find(|s| s.name.eq_ignore_ascii_case(&spawner))
+                        .map(|s| SpawnSpot {
+                            pos: s.pos,
+                            yaw: s.rot[1],
+                            template: s.target.clone(),
+                        });
+                    let Some(c) = self.coop.as_mut() else {
+                        return;
+                    };
+                    match spot {
+                        // DC-DEFAULT: DSV-571 (proposed) at most 256 waiting spawns
+                        Some(s) if c.mission_queue.len() < 256 => {
+                            c.mission_queue.push_back((s, name))
+                        }
+                        _ => c.mission_dropped += 1,
+                    }
+                }
+                Effect::Lives(n) => self.coop_add_lives(n),
+                Effect::Round(n) => self.coop_round_counted(n, now),
+                Effect::HealInPart => self.coop_heal_in_part(),
+                Effect::Complete => self.coop_finish(now, STAGE_COMPLETE),
+                Effect::Freeze(f) => {
+                    if let Some(c) = self.coop.as_mut() {
+                        c.frozen = f;
+                    }
+                    self.log(format!("co-op: AI {}", if f { "frozen" } else { "go on" }));
+                }
+                Effect::MissionTimer(on) => self.log(format!(
+                    "co-op: mission timer {} (not shown)",
+                    if on { "on" } else { "off" }
+                )),
+                Effect::Goal(op, n) => {
+                    let state = match op {
+                        GoalOp::Add => GOAL_OPEN,
+                        GoalOp::Check => GOAL_DONE,
+                        GoalOp::Fail => GOAL_FAILED,
+                    };
+                    let Some(c) = self.coop.as_mut() else {
+                        return;
+                    };
+                    let added = match c.goals.iter_mut().find(|g| g.0 == n) {
+                        Some(g) => {
+                            if op == GoalOp::Add {
+                                continue;
+                            }
+                            g.1 = state;
+                            false
+                        }
+                        None => {
+                            c.goals.push((n, state));
+                            true
+                        }
+                    };
+                    if op == GoalOp::Check {
+                        c.waves_cleared += 1;
+                    }
+                    let label = c
+                        .plan
+                        .mission_list
+                        .iter()
+                        .find(|m| m.0 == n)
+                        .map(|m| m.1.clone())
+                        .unwrap_or_default();
+                    self.log(format!("co-op: goal {n} {op:?} ({label})"));
+                    self.coop_send_goals(now);
+                    // DC-DEFAULT: DSV-574 (amended by DSV-579, proposed) a world with message triggers shows its own
+                    // banners (`play` of a message trigger): no banner of the goal text there
+                    let own_texts = self.coop_world.texts.iter().any(|t| !t.caption);
+                    if added && op == GoalOp::Add && !label.is_empty() && !own_texts {
+                        self.broadcast(&gs::coop_banner(label.as_bytes(), 3.0));
+                    }
+                }
+            }
+        }
+        self.coop_tick_mission(now);
+    }
+
+    /// Every human gets `n` lives more (`inclifecount`, a checkpoint): 0xd7 sub 2 with the new count to each, which
+    /// also re-arms the respawn wait of a dead one (FIRETEAM §2.2).
+    // SPEC: FIRETEAM_2009.md §2.2 (re-arm: dead and a == b), §2.3
+    // DC-DEFAULT: DSV-572 (proposed) not capped by `MaxLifeCount` (the mission rows give 1 and 1: the checkpoints'
+    // lives would be lost), at most 255
+    fn coop_add_lives(&mut self, n: i32) {
+        let pids: Vec<u8> = self
+            .players
+            .values()
+            .filter(|p| p.introduced)
+            .map(|p| p.pid)
+            .collect();
+        let keys: Vec<(u8, u32)> = pids.iter().map(|p| (*p, self.player_key(*p))).collect();
+        let Some(c) = self.coop.as_mut() else {
+            return;
+        };
+        for v in c.lives.values_mut() {
+            *v = (*v as i64 + n as i64).clamp(0, 255) as u32;
+        }
+        for (pid, k) in keys {
+            let l = c.lives.get(&k).copied().unwrap_or(0).min(255) as u8;
+            self.out.push(GameOut::To(pid, gs::coop_lives(l, l)));
+        }
+        self.log(format!("co-op: {n:+} life for every human"));
+    }
+
+    /// A round world's round counter reached `n`: spawn-table round `n` (the `n`-th row in `Round` order) starts now.
+    /// A count past the last row, or while a round is still spawning or fighting, only moves the number.
+    // DC-DEFAULT: DSV-576 (proposed)
+    fn coop_round_counted(&mut self, n: u32, now: Millis) {
+        let Some(c) = self.coop.as_mut() else {
+            return;
+        };
+        if !c.round_world || n == 0 {
+            return;
+        }
+        c.round = n;
+        let idx = n as usize - 1;
+        let busy = c.phase == WavePhase::Spawning;
+        let fits = idx < c.waves.len();
+        if fits && !busy && c.stage.is_none() {
+            c.wave = idx;
+            c.phase = WavePhase::Next { at: now };
+        }
+        let total = c.waves.len();
+        self.log(format!(
+            "co-op: the world counts round {n} of {total}{}",
+            if !fits {
+                " (no spawn table: nothing spawns)"
+            } else if busy {
+                " (the last round still runs)"
+            } else {
+                ""
+            }
+        ));
+    }
+
+    /// `healinpart`: every living human recovers the difficulty row's round health (`RecoverRoundTotalHP`, 100 when
+    /// absent): health first up to its maximum, the rest as armour up to the armour's maximum; the new values go out
+    /// as player status.
+    // DC-DEFAULT: DSV-578 (proposed)
+    fn coop_heal_in_part(&mut self) {
+        let Some(c) = self.coop.as_mut() else {
+            return;
+        };
+        c.heals += 1;
+        let pool = c.plan.difficulty.recover_hp.unwrap_or(RECOVER_HP_DEFAULT);
+        let max_health = self.cfg.max_health;
+        let pids: Vec<u8> = self
+            .players
+            .values()
+            .filter(|p| p.introduced && p.life == Life::Alive)
+            .map(|p| p.pid)
+            .collect();
+        for pid in pids {
+            let max_armor = self.armour_of(pid).max;
+            let Some(p) = self.players.get_mut(&pid) else {
+                continue;
+            };
+            let (health, armor) = heal_in_part(p.health, p.armor, pool, max_health, max_armor);
+            p.health = health;
+            p.armor = armor;
+            self.send(pid, gs::player_status(gs::STATUS_HEALTH, health));
+            self.send(pid, gs::player_status(gs::STATUS_ARMOR, armor));
+        }
+        self.log(format!("co-op: the living humans recover {pool} points"));
+    }
+
+    /// The goal list (0xc9 sub 1): the goals the statements added, with the difficulty row's texts and their
+    /// states; the round's seconds as the timer; `a` = the goals done + 1, `b` = the difficulty.
+    // SPEC: FIRETEAM_2009.md §2.4 (sub 1; `a` PLAUSIBLY the stage); GAME_MESSAGES_2009_S2C.md §6.2
+    // DC-DEFAULT: DSV-574 (proposed) states 0 open, 1 done, 2 failed (UNPROVEN, V-FT-8)
+    fn coop_send_goals(&mut self, now: Millis) {
+        if let Some(m) = self.coop_goal_list(now) {
+            self.broadcast(&m);
+        }
+    }
+
+    /// The goal list message of [`Game::coop_send_goals`] (also a late joiner's, DSV-584).
+    pub(super) fn coop_goal_list(&self, now: Millis) -> Option<dc_wire::udp::BitWriter> {
+        let c = self.coop.as_ref()?;
+        let goals: Vec<gs::MissionGoal> = c
+            .goals
+            .iter()
+            .map(|(n, st)| gs::MissionGoal {
+                id: *n,
+                label: c
+                    .plan
+                    .mission_list
+                    .iter()
+                    .find(|m| m.0 == *n)
+                    .map(|m| m.1.as_bytes().to_vec())
+                    .unwrap_or_default(),
+                state: *st,
+            })
+            .collect();
+        let done = c.goals.iter().filter(|g| g.1 == GOAL_DONE).count();
+        let goal = c.goal;
+        let secs = self.round_secs_left(now);
+        let timers: Vec<f32> = if secs > 0 {
+            vec![secs as f32]
+        } else {
+            Vec::new()
+        };
+        Some(gs::coop_mission_list(
+            &goals,
+            &timers,
+            (done + 1).min(255) as u8,
+            goal as u8,
+        ))
+    }
+
+    /// The waiting spawns of a mission world, while AI slots are free.
+    fn coop_tick_mission(&mut self, now: Millis) {
+        if !matches!(self.phase, RoundPhase::Running { .. }) {
+            return;
+        }
+        loop {
+            let pool = self.cfg.coop.max_alive as usize;
+            let Some(c) = self.coop.as_ref() else {
+                return;
+            };
+            let free = c.ais.len() < pool || c.ais.iter().any(|a| a.state == AiState::Hidden);
+            let Some((spot, name)) = c.mission_queue.front().cloned() else {
+                return;
+            };
+            if !free {
+                return;
+            }
+            let ok = self.coop_spawn_ai(None, &spot, Some(name.clone()), now);
+            let Some(c) = self.coop.as_mut() else {
+                return;
+            };
+            c.mission_queue.pop_front();
+            if ok {
+                c.mission_spawns += 1;
+            } else {
+                c.mission_dropped += 1;
             }
         }
     }
@@ -867,8 +1293,14 @@ impl Game {
         let Some(wave) = c.waves.get(w).cloned() else {
             return;
         };
-        let total = c.waves.len();
+        // DC-DEFAULT: DSV-584 (proposed) a round world's banner counts to the difficulty's last round
+        let total = if c.round_world {
+            c.plan.last_round()
+        } else {
+            c.waves.len()
+        };
         let goal = c.goal;
+        let round_no = c.plan.rounds.get(w).map(|r| r.round);
         // fixed spots of a ROM row: its spawner names
         let mut spots: Vec<SpawnSpot> = Vec::new();
         if let Some(r) = c.plan.rounds.get(w) {
@@ -922,6 +1354,10 @@ impl Game {
         let text = format!("Wave {} / {}", w + 1, total);
         self.broadcast(&gs::coop_banner(text.as_bytes(), 3.0));
         self.log(format!("co-op: wave {} of {total} starts ({n} AI)", w + 1));
+        // DC-DEFAULT: DSV-583 (proposed) the GMS weapon rows of this round lie at their places
+        if let Some(r) = round_no {
+            self.coop_weapon_rows(r, now);
+        }
     }
 
     /// The next free spawn spot of the wave (round-robin; a spot near a living human or a living AI is skipped).
@@ -966,7 +1402,13 @@ impl Game {
     /// Spawns one AI of the wave at a spot: a hidden slot is reused (new body by `CF_FILES` when the spec differs),
     /// else a new slot is created while the pool has room.
     // DC-DEFAULT: FT-R1 (proposed) hide and reuse; FT-2 (proposed) the pool
-    fn coop_spawn_ai(&mut self, template: Option<Vec<u8>>, spot: &SpawnSpot, now: Millis) -> bool {
+    fn coop_spawn_ai(
+        &mut self,
+        template: Option<Vec<u8>>,
+        spot: &SpawnSpot,
+        name: Option<Vec<u8>>,
+        now: Millis,
+    ) -> bool {
         let want = template.or_else(|| spot.template.clone());
         let Some(spec) = self.ai_spec(want.as_deref()) else {
             return false;
@@ -1016,6 +1458,8 @@ impl Game {
             spawned_at: now,
             state: AiState::Alive,
             wave,
+            name: name.unwrap_or_else(|| want.clone().unwrap_or_default()),
+            template: want.clone(),
             target: None,
             next_fire: now.wrapping_add(fire_ms),
             waypoint: None,
@@ -1088,7 +1532,7 @@ impl Game {
                     let Some(spot) = self.take_spot() else {
                         break;
                     };
-                    if !self.coop_spawn_ai(template, &spot, now) {
+                    if !self.coop_spawn_ai(template, &spot, None, now) {
                         break;
                     }
                     if let Some(c) = self.coop.as_mut() {
@@ -1098,9 +1542,32 @@ impl Game {
                 let Some(c) = self.coop.as_ref() else {
                     return;
                 };
-                if c.queue.is_empty() && c.alive() == 0 {
+                if c.queue.is_empty() && c.alive() == 0 && c.mission_queue.is_empty() {
                     let last = c.wave + 1 >= c.waves.len();
                     let n = c.wave + 1;
+                    // DC-DEFAULT: DSV-576 (proposed) a round world's cleared round runs the round-end event of its
+                    // number (caption, heal, the next round's box, the difficulty's end); the world starts the next
+                    let end = c
+                        .round_world
+                        .then(|| {
+                            let r = self.coop_world.rounds.as_ref()?;
+                            r.clear_events
+                                .iter()
+                                .find(|e| e.0 as usize == n)
+                                .map(|e| e.1.clone())
+                        })
+                        .flatten();
+                    if let Some(cmd) = end {
+                        if let Some(c) = self.coop.as_mut() {
+                            c.waves_cleared += 1;
+                            c.phase = WavePhase::Idle;
+                        }
+                        self.out.push(GameOut::WorldScript(cmd));
+                        self.log(format!(
+                            "co-op: round {n} cleared (the world's round end runs)"
+                        ));
+                        return;
+                    }
                     let at = now.wrapping_add(self.cfg.coop.wave_break_ms);
                     if let Some(c) = self.coop.as_mut() {
                         c.waves_cleared += 1;
@@ -1225,11 +1692,20 @@ impl Game {
             c.last_step = Some(now);
         }
         let dt = (dt_ms.min(200) as f32) / 1000.0;
-        self.coop_tick_waves(now);
+        // DC-DEFAULT: DSV-576 (proposed) a round world makes the statements' spawns beside its waves
+        if self.coop.as_ref().is_some_and(|c| c.network) {
+            self.coop_tick_mission(now);
+        }
+        if self.coop.as_ref().is_some_and(|c| !c.mission) {
+            self.coop_tick_waves(now);
+        }
         let n = self.coop.as_ref().map_or(0, |c| c.ais.len());
+        // DC-DEFAULT: FT-S11 (proposed) the navigation grid grows and the step's plans open before the AI move
+        self.ai_nav_begin(now);
         for slot in 0..n {
             self.ai_step(slot, dt, now);
         }
+        self.ai_nav_end();
         if matches!(self.phase, RoundPhase::Running { .. }) {
             self.coop_check_failure(now);
         }
@@ -1290,6 +1766,17 @@ impl Game {
             AiState::Alive if a.spawned_at == now => return,
             AiState::Alive => {}
         }
+        // DC-DEFAULT: DSV-572 (proposed) frozen AI stand and hold fire
+        if self.coop.as_ref().is_some_and(|c| c.frozen) {
+            if let Some(x) = self.coop.as_mut().and_then(|c| c.ais.get_mut(slot)) {
+                x.vel = [0.0; 3];
+                if x.motion != Motion::Stand {
+                    x.motion = Motion::Stand;
+                    x.motion_since = now;
+                }
+            }
+            return;
+        }
         let cfg = self.cfg.coop.clone();
         let dims = a.dims(self.cfg.player_dims);
         let eye = add3(a.pos, [0.0, dims[1] * 0.8, 0.0]);
@@ -1317,36 +1804,64 @@ impl Game {
                 }
             }
             if !(los && dist <= cfg.hold_range) {
-                // the goal point: the human in sight, else a waypoint toward it
-                let goal = if los {
-                    new.waypoint = None;
-                    tpos
-                } else {
-                    if a.waypoint.is_none_or(|w| len3(sub3(w, a.pos)) < 48.0)
-                        || !later(a.repath_at, now)
-                    {
-                        new.waypoint = self.pick_waypoint(eye, a.pos, tpos);
-                        new.repath_at = now.wrapping_add(1000);
+                // DC-DEFAULT: FT-S11 (proposed) the way over the navigation grid when it has one; else (FT-S5) the
+                // human in sight, else a waypoint toward it
+                let goal = match self.ai_nav_waypoint(&a, tpos, now) {
+                    NavGoal::Way(w) => {
+                        new.waypoint = None;
+                        Some(w)
                     }
-                    new.waypoint.unwrap_or(tpos)
+                    // no way leads from here to the human: the AI holds its place (and fights from there)
+                    NavGoal::Hold => None,
+                    NavGoal::Steer if los => {
+                        new.waypoint = None;
+                        Some(tpos)
+                    }
+                    NavGoal::Steer => {
+                        if a.waypoint.is_none_or(|w| len3(sub3(w, a.pos)) < 48.0)
+                            || !later(a.repath_at, now)
+                        {
+                            new.waypoint = self.pick_waypoint(eye, a.pos, tpos);
+                            new.repath_at = now.wrapping_add(1000);
+                        }
+                        Some(new.waypoint.unwrap_or(tpos))
+                    }
                 };
-                if let Some(dir) = norm2(sub3(goal, a.pos)) {
-                    let stride = cfg.speed * dt;
-                    let reach = stride + dims[0].max(dims[2]) + 4.0;
-                    let chest = add3(a.pos, [0.0, dims[1] * 0.3, 0.0]);
-                    let knee = add3(a.pos, [0.0, -dims[1] * 0.5, 0.0]);
-                    let free = |d: [f32; 3]| {
-                        self.sight_clear(chest, add3(chest, scale3(d, reach)))
-                            && self.sight_clear(knee, add3(knee, scale3(d, reach)))
-                    };
-                    let tries = [0.0f32, 0.785, -0.785, 1.571, -1.571];
-                    if let Some(d) = tries.iter().map(|t| rotate_y(dir, *t)).find(|d| free(*d)) {
-                        let mut p = add3(a.pos, scale3(d, stride));
-                        p = self.follow_floor(p, dims[1]);
+                let stride = cfg.speed * dt;
+                let walked = match goal {
+                    Some(goal) => self.ai_nav_walk(&a, goal, stride, now),
+                    None => NavMove::Blocked,
+                };
+                match walked {
+                    // FT-S11: the body over the navigation world
+                    NavMove::Moved(p, d) => {
                         new.vel = scale3(d, cfg.speed);
                         new.pos = p;
                         new.yaw = d[0].atan2(d[2]);
                         moving = true;
+                    }
+                    NavMove::Blocked => {}
+                    NavMove::Off => {
+                        if let Some(dir) = goal.and_then(|g| norm2(sub3(g, a.pos))) {
+                            let reach = stride + dims[0].max(dims[2]) + 4.0;
+                            let chest = add3(a.pos, [0.0, dims[1] * 0.3, 0.0]);
+                            let knee = add3(a.pos, [0.0, -dims[1] * 0.5, 0.0]);
+                            let free = |d: [f32; 3]| {
+                                self.sight_clear(chest, add3(chest, scale3(d, reach)))
+                                    && self.sight_clear(knee, add3(knee, scale3(d, reach)))
+                            };
+                            let tries = [0.0f32, 0.785, -0.785, 1.571, -1.571];
+                            if let Some(d) =
+                                tries.iter().map(|t| rotate_y(dir, *t)).find(|d| free(*d))
+                            {
+                                let mut p = add3(a.pos, scale3(d, stride));
+                                p = self.follow_floor(p, dims[1]);
+                                new.vel = scale3(d, cfg.speed);
+                                new.pos = p;
+                                new.yaw = d[0].atan2(d[2]);
+                                moving = true;
+                            }
+                        }
                     }
                 }
             }
@@ -1707,6 +2222,16 @@ impl Game {
             total
         };
         if lethal {
+            // DC-DEFAULT: DSV-571 (proposed) a mission AI's death runs its template's death command
+            // DC-DEFAULT: DSV-576 (proposed) also in a round world (the kill counter)
+            let death = self.coop.as_ref().filter(|c| c.network).and_then(|c| {
+                let t = c.ais.get(slot)?.template.clone()?;
+                let cmd = self.coop_world.template(&t)?.death_cmd.clone();
+                (!cmd.is_empty()).then_some(cmd)
+            });
+            if let Some(cmd) = death {
+                self.out.push(GameOut::WorldScript(cmd));
+            }
             if let Some(u) = self.players.get(&pid).and_then(|p| p.uid) {
                 let s = self.stats.entry(u).or_default();
                 s.kills += 1;
@@ -1724,6 +2249,19 @@ impl Game {
                 gained.min(255) as u8,
                 total,
             ));
+        }
+    }
+
+    /// Kills the living AI of this slot as if `pid` had shot it (the harness entry of the mission tests; the
+    /// points, the kill credit and a mission AI's death command follow as for a shot).
+    pub fn coop_kill_ai(&mut self, slot: usize, pid: u8, now: Millis) {
+        let hp = self
+            .ai_chars()
+            .get(slot)
+            .filter(|a| a.state == AiState::Alive)
+            .map(|a| a.health);
+        if let Some(h) = hp {
+            self.ai_damage(slot, pid, h + 1.0, gs::KILL_ZONE_HEAD, now);
         }
     }
 
@@ -1794,6 +2332,19 @@ impl Game {
 mod tests {
     use super::*;
 
+    /// DSV-578: health first, the rest as armour, both capped; nothing goes down.
+    #[test]
+    fn heal_in_part_fills_health_then_armour() {
+        assert_eq!(
+            heal_in_part(30.0, 10.0, 180.0, 100.0, 100.0),
+            (100.0, 100.0)
+        );
+        assert_eq!(heal_in_part(30.0, 10.0, 80.0, 100.0, 100.0), (100.0, 20.0));
+        assert_eq!(heal_in_part(90.0, 0.0, 120.0, 100.0, 50.0), (100.0, 50.0));
+        assert_eq!(heal_in_part(120.0, 60.0, 80.0, 100.0, 50.0), (120.0, 60.0));
+        assert_eq!(heal_in_part(50.0, 0.0, -5.0, 100.0, 100.0), (50.0, 0.0));
+    }
+
     #[test]
     fn slab_test() {
         let c = [100.0, 0.0, 0.0];
@@ -1814,6 +2365,9 @@ mod tests {
         t.set("coop.lives", "3").unwrap();
         t.set("hit_chance", "0.5").unwrap();
         t.set("ray_hits", "off").unwrap();
+        t.set("coop.nav", "off").unwrap();
+        assert!(!t.nav);
+        assert!(t.set("nav", "maybe").is_err());
         assert_eq!(t.lives, Some(3));
         assert_eq!(t.hit_chance, [0.5; 3]);
         assert!(!t.ray_hits);

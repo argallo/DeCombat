@@ -72,16 +72,26 @@ schema: `sudo systemctl start decombat-backup.service`.
 
 ```toml
 [client]
-latest = "0.3.0"             # older clients show "A new DeCombat version (0.3.0) is available. Get it at decombat.com." once, and go on
+latest = "0.3.0"             # older clients show "DeCombat 0.3.0 is out. You have 0.2.1." once, and go on
 min_version = "0.2.0"        # older clients show why they cannot log in, and do not
-update_url = "decombat.com"
+update_url = "https://github.com/argallo/DeCombat/releases/latest"   # what "Open page" opens (this is the default)
+
+[client.download]            # optional: direct zips for "Update now"; empty = the client finds the newest release itself
+windows = "https://github.com/argallo/DeCombat/releases/download/v0.3.0/DeCombat-win-v0.3.0.zip"
+macos = "https://github.com/argallo/DeCombat/releases/download/v0.3.0/DeCombat-mac-v0.3.0.zip"
 ```
 
-`sudo -u decombat /opt/decombat/bin/dc-config check /opt/decombat/config/server.toml` checks the numbers. A client asks
-`GET /client_version.json` on the web port before its login. Only a build from a `v*` tag knows its version: other builds (a friend zip
-from master, a local build) and clients older than this feature never ask. So `min_version` cannot turn away a modified or old client:
-it is a courtesy that replaces a strange failure with a clear message, not access control. Raise it only after the release is out,
-or nobody can log in until they can download it.
+`sudo -u decombat /opt/decombat/bin/dc-config check /opt/decombat/config/server.toml` checks the numbers and that the
+links are `https://`. A client asks `GET /client_version.json` on the web port before its login. Only a build from a `v*`
+tag knows its version: other builds (a friend zip from master, a local build) and clients older than this feature never
+ask. So `min_version` cannot turn away a modified or old client: it is a courtesy that replaces a strange failure with a
+clear message, not access control. Raise it only after the release is out, or nobody can log in until they can download it.
+
+Both boxes have buttons: **Open page** opens `update_url` in the player's browser; **Update now** (Windows) downloads the
+zip (the `[client.download]` link, or the newest release on GitHub), checks it against the release's `SHA256SUMS`,
+replaces the game's files and starts the game again; on macOS **Download** saves the zip in Downloads and shows it in
+Finder. A direct link must point at a release asset (`.../releases/download/<tag>/<file>`) so the client finds the
+`SHA256SUMS` next to it; set it only once the release is published. Docs: docs/RELEASES.md "How a client updates itself".
 
 ## 7. Backups (`tools/vps/backup.sh`)
 

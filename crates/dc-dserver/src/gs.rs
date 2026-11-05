@@ -1594,6 +1594,16 @@ pub const COOP_CLOCK: u8 = 4;
 pub const GS_COOP_MISSION: u8 = 0xc9;
 pub const MISSION_LIST: u8 = 1;
 pub const MISSION_BANNER: u8 = 2;
+pub const MISSION_CAPTION: u8 = 3;
+/// `GS_MUSIC` 0xd9: `[op:u8]`, op 0 stop, op 1 `[loop:bool1][fade:f32][file:zstr8(261)]` (the file relative to the
+/// client's game folder).
+// SPEC: GAME_MESSAGES_2009_S2C.md §4.2 row 0xd9 (cshell+0x5de30)
+// DISASM: cshell+0x5de63..0x5def2 (`read(8)` op; op 1: `read(1)`, `read(32)`, a 0x105-byte string; the game folder
+// prefixed; engine client slot +0x33c called with the path, the loop flag and the 32-bit value)
+pub const GS_MUSIC: u8 = 0xd9;
+pub const MUSIC_STOP: u8 = 0;
+pub const MUSIC_PLAY: u8 = 1;
+pub const MUSIC_FILE_BYTES: usize = 261;
 /// `GS_OBJECT_NOTE` sub of a type-0x18 object with the NPC tail: the health fraction.
 // SPEC: FIRETEAM_2009.md §1.5 (handler cshell+0x206260 case 0x24: read only when object +0x44 is set)
 pub const NOTE_NPC_HEALTH: u8 = 0x24;
@@ -1678,6 +1688,62 @@ pub fn coop_banner(text: &[u8], secs: f32) -> BitWriter {
         w.write_u8(MISSION_BANNER);
         zstr8n(w, text, MISSION_TEXT_BYTES);
         w.write_f32(secs);
+    })
+}
+
+/// `GS_COOP_MISSION` sub 3 `[text:zstr8(1000)][secs:f32]`: the mission caption. The client splits `text` at `|`
+/// into exactly three fields (it appends a last `|` itself): a picture, the speaker and the caption, which it types
+/// out letter by letter and keeps for `secs` seconds once it is complete, with the mode sound; any other field count
+/// shows nothing.
+// SPEC: GAME_MESSAGES_2009_S2C.md §6.2 (sub 3 `[text][v]`, cshell+0x81fe0); FIRETEAM_2009.md §2.4 (the mission
+// captions with a speaker in the co-op HUD layout)
+// DISASM: cshell+0x31490 case 3 (`read_zstr(1000)`, `read(32)` passed on, then the mode sound); cshell+0x81fe0 (split at
+// `|`, the caption only for three fields; the 32-bit value stored at +0xd4); cshell+0x81930 (+0xd4 read as a float of
+// seconds: the caption stays `+0xd4 x 1000` ms after the last letter, then fades over 1000 ms)
+pub fn coop_caption(text: &[u8], secs: f32) -> BitWriter {
+    shell(GS_COOP_MISSION, |w| {
+        w.write_u8(MISSION_CAPTION);
+        // the client appends `|` to the 1000-byte buffer when the text lacks it: room for it
+        zstr8n(w, text, MISSION_TEXT_BYTES - 1);
+        w.write_f32(secs);
+    })
+}
+
+/// `GS_MUSIC` op 1: play `file` (relative to the game folder), looping or once, fading in over `fade` seconds.
+// SPEC: GAME_MESSAGES_2009_S2C.md §4.2 row 0xd9
+// DISASM: cshell+0x5de30 (op 1 read order: loop bit, 32-bit value, file); cshell+0x1fba00 (the shell's own music call
+// passes the name, 1 and 0x3f800000 = 1.0 to the screen manager's music slot: PLAUSIBLY the same third argument, a fade in
+// seconds as a float)
+pub fn music_play(file: &[u8], looped: bool, fade: f32) -> BitWriter {
+    shell(GS_MUSIC, |w| {
+        w.write_u8(MUSIC_PLAY).write_bit(looped).write_f32(fade);
+        zstr8n(w, file, MUSIC_FILE_BYTES);
+    })
+}
+
+/// `GS_MUSIC` op 0: the music stops.
+// SPEC: GAME_MESSAGES_2009_S2C.md §4.2 row 0xd9 (op 0: engine client slot +0x340)
+pub fn music_stop() -> BitWriter {
+    shell(GS_MUSIC, |w| {
+        w.write_u8(MUSIC_STOP);
+    })
+}
+
+/// `GS_OBJECT_NOTE` `[0x0d][obj:objref16][1:u8][fov_x:f32][fov_y:f32][secs:f32]`: a world camera's field of view
+/// (degrees) blends from its current one to the new one over `secs` (0: a cut).
+// DISASM: cshell+0x20fd00 (note kind 0x0d: every camera of the camera list whose engine object is `obj` reads the rest
+// through its slot +0x30); camera method table VA 0x374f04c4 slot +0x30 = cshell+0x216800 (sub 1: the old field of
+// view kept at +0x4c / +0x50, the new one read into +0x44 / +0x48, the blend time into +0x54, elapsed +0x58 := 0);
+// cshell+0x1f8aab..0x1f8b22 (each frame: elapsed += frame time; past the blend time the new value, else the linear
+// blend)
+pub fn camera_fov_note(obj: u16, fov: [f32; 2], secs: f32) -> BitWriter {
+    shell(GS_OBJECT_NOTE, |w| {
+        w.write_u8(crate::camshot::OBJ_CAMERA_TYPE)
+            .write_u16(obj)
+            .write_u8(crate::camshot::CAMERA_NOTE_FOV)
+            .write_f32(fov[0])
+            .write_f32(fov[1])
+            .write_f32(secs);
     })
 }
 
@@ -1829,6 +1895,60 @@ mod coop_tests {
         assert_eq!(shown(npc_health_fraction(0.01, 250.0)), 1);
         // a plain fraction 0.29 would show 28 (the trap of FIRETEAM_2009.md §1.5)
         assert_eq!(shown(0.29), 28);
+    }
+
+    #[test]
+    fn caption_music_and_camera_fov_forms() {
+        // DSV-579: 0xc9 sub 3, the three-field caption and its seconds as f32
+        let m = coop_caption(b"pic.dtx|-Speaker-| Hold on.", 10.0);
+        let mut r = body(&m);
+        assert_eq!(
+            (r.read_u8(), r.read_u8(), r.read_zstr8(), r.read_f32()),
+            (
+                GS_COOP_MISSION,
+                MISSION_CAPTION,
+                b"pic.dtx|-Speaker-| Hold on.".to_vec(),
+                10.0
+            )
+        );
+        assert!(r.at_end());
+        // the client appends `|` in its 1000-byte buffer: at most 998 bytes go out
+        let long = vec![b'a'; 1200];
+        let m = coop_caption(&long, 1.0);
+        let mut r = body(&m);
+        r.read_u8();
+        r.read_u8();
+        assert_eq!(r.read_zstr8().len(), MISSION_TEXT_BYTES - 2);
+        // DSV-581: 0xd9 op 1 `[loop:bool1][fade:f32][file]`, op 0 alone
+        let m = music_play(b"BGM/x.mp3", true, 4.0);
+        let mut r = body(&m);
+        assert_eq!(
+            (
+                r.read_u8(),
+                r.read_u8(),
+                r.read_bit(),
+                r.read_f32(),
+                r.read_zstr8()
+            ),
+            (GS_MUSIC, MUSIC_PLAY, true, 4.0, b"BGM/x.mp3".to_vec())
+        );
+        assert!(r.at_end());
+        let m = music_stop();
+        let mut r = body(&m);
+        assert_eq!((r.read_u8(), r.read_u8()), (GS_MUSIC, MUSIC_STOP));
+        assert!(r.at_end());
+        // DSV-580: 0xa6 note kind 0x0d, sub 1, two degrees and the blend seconds
+        let m = camera_fov_note(77, [100.0, 84.0], 0.0);
+        let mut r = body(&m);
+        assert_eq!(
+            (r.read_u8(), r.read_u8(), r.read_u16(), r.read_u8()),
+            (GS_OBJECT_NOTE, 0x0d, 77, 1)
+        );
+        assert_eq!(
+            (r.read_f32(), r.read_f32(), r.read_f32()),
+            (100.0, 84.0, 0.0)
+        );
+        assert!(r.at_end());
     }
 
     #[test]

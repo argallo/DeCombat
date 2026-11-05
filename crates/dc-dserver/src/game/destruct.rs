@@ -257,6 +257,21 @@ impl Game {
         }
     }
 
+    /// Destroys the living bound breakable of this name (harness entry of the tests); false when there is none.
+    pub fn break_named(&mut self, name: &[u8], now: Millis) -> bool {
+        let Some(i) = self
+            .destruct
+            .items
+            .iter()
+            .position(|b| !b.dead && b.name.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        let left = self.destruct.items[i].left;
+        self.damage_breakable(i, left + 1.0, None, 0, now);
+        true
+    }
+
     fn damage_breakable(&mut self, i: usize, dmg: f32, by: Option<u8>, weapon: u16, now: Millis) {
         let b = &mut self.destruct.items[i];
         if b.dead {
@@ -292,6 +307,16 @@ impl Game {
         ));
         self.out
             .push(GameOut::WorldBreak(Box::new(BreakOut { obj, effects })));
+        // DC-DEFAULT: DSV-575 (proposed) a mission world model's death command runs with the world's statements
+        let script = self
+            .destruct
+            .world
+            .breakable(&self.destruct.items[i].name)
+            .map(|b| b.script.clone())
+            .unwrap_or_default();
+        if !script.is_empty() && self.is_coop() {
+            self.out.push(GameOut::WorldScript(script));
+        }
         for e in blasts {
             self.explode(e, by, weapon, now);
         }

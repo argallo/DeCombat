@@ -29,6 +29,7 @@ pub mod items;
 pub mod layout;
 pub mod letterbox;
 pub mod marks;
+pub mod mission;
 pub mod modetop;
 pub mod modhud;
 pub mod msgs;
@@ -390,6 +391,15 @@ impl Hud {
                 .as_ref()
                 .filter(|_| state.item_target)
                 .map(|i| i.tex.clone()),
+        );
+        // the Fire Team caption's picture, drawn whole into its place (CLI-1860)
+        wanted.extend(
+            state
+                .mission
+                .caption
+                .as_ref()
+                .filter(|c| !c.picture.is_empty())
+                .map(|c| c.picture.clone()),
         );
         if let (Some(g), Some(goal)) = (&self.layout.top.goal, state.goal) {
             let v = goal.min(999);

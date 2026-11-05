@@ -1441,7 +1441,27 @@ fn client_versions_are_checked() {
     assert!(has_err(&issues("0.3.0", "0.4.0"), "client.min_version"));
     let parsed = dc_config::parse_toml("[client]\nlatest = \"0.4.0\"\n").unwrap();
     assert_eq!(parsed.client.latest, "0.4.0");
-    assert_eq!(parsed.client.update_url, "decombat.com");
+    assert_eq!(
+        parsed.client.update_url,
+        "https://github.com/argallo/DeCombat/releases/latest"
+    );
+    // LG-404: the direct zip links are https:// only
+    let parsed = dc_config::parse_toml(
+        "[client]\nlatest = \"0.4.0\"\n[client.download]\nwindows = \"https://example.org/DeCombat-win-v0.4.0.zip\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.client.download.windows,
+        "https://example.org/DeCombat-win-v0.4.0.zip"
+    );
+    let good = check(&parsed, CheckOptions::default());
+    assert!(!has_err(&good, "client.download.windows") && !has_err(&good, "client.download.macos"));
+    let mut bad = parsed.clone();
+    bad.client.download.macos = "http://example.org/x.zip".into();
+    assert!(has_err(
+        &check(&bad, CheckOptions::default()),
+        "client.download.macos"
+    ));
 }
 
 // LG-370: the beta section is off by default and, when on, needs plain origins and one reply address

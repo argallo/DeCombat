@@ -135,6 +135,8 @@ pub enum ShellRead {
     Qrt(super::qrt::QrtEvent),
     /// 0xcb `GS_BOUNTY_MODE` subs 0..6 (Spy Hunt).
     Spy(super::spy::SpyEvent),
+    /// 0xc9 `GS_COOP_MISSION` subs 1 / 2 / 3 / 5 (Fire Team: the goal list, the banner and the caption).
+    Mission(super::mission::MissionEvent),
     /// 0xd7 sub 4: the round clock set to `secs`, running or frozen.
     CoopClock {
         running: bool,
@@ -470,6 +472,97 @@ pub fn read_shell(
                 }
                 _ => return None,
             }
+        }
+        // SPEC: GAME_MESSAGES_2009_S2C.md §6.2 row 0xc9 (sub 1 `[n:u32]` n x `[id:u32][label:zstr8(1000)][state:u8]`
+        // `[m:u32]` m x `[timer:f32]` `[a:u8][b:u8]`; sub 2 `[text:zstr8(1000)][secs:f32]`; sub 3 `[text:zstr8(1000)]`
+        // `[secs:f32]` (DSV-579); sub 5 `[op:u8][id:u32]`, op 1 `[label:zstr8(1000)]`, op 3 `[state:u8]`); the other subs
+        // are not read here (their elements are not drawn)
+        // EVIDENCE: cshell+0x31490 (the reads in this order; the timer read as 32 bits of a float)
+        0xc9 => {
+            use super::mission::{wire_text, Goal, MissionEvent};
+            if !need(8, &r) {
+                return None;
+            }
+            ShellRead::Mission(match r.read_u8() {
+                1 => {
+                    if !need(32, &r) {
+                        return None;
+                    }
+                    let n = r.read_u32() as usize;
+                    // a goal is at least 48 bits: a count past the message's end is a damaged message
+                    if n.saturating_mul(48) > r.remaining_bits() {
+                        return None;
+                    }
+                    let mut goals = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let id = r.read_u32();
+                        let label = wire_text(&r.read_zstr8());
+                        if !need(8, &r) {
+                            return None;
+                        }
+                        goals.push(Goal {
+                            id,
+                            label,
+                            state: r.read_u8(),
+                        });
+                    }
+                    if !need(32, &r) {
+                        return None;
+                    }
+                    let m = r.read_u32() as usize;
+                    if m.saturating_mul(32).saturating_add(16) > r.remaining_bits() {
+                        return None;
+                    }
+                    let timers = (0..m).map(|_| r.read_f32()).collect();
+                    MissionEvent::List {
+                        goals,
+                        timers,
+                        stage: r.read_u8(),
+                        goal: r.read_u8(),
+                    }
+                }
+                2 => {
+                    let text = wire_text(&r.read_zstr8());
+                    if !need(32, &r) {
+                        return None;
+                    }
+                    MissionEvent::Banner {
+                        text,
+                        secs: r.read_f32(),
+                    }
+                }
+                // DISASM: cshell+0x31490 case 3 (`read_zstr(1000)`, `read(32)` read as float seconds at
+                // cshell+0x81930)
+                3 => {
+                    let text = wire_text(&r.read_zstr8());
+                    if !need(32, &r) {
+                        return None;
+                    }
+                    MissionEvent::Caption {
+                        text,
+                        secs: r.read_f32(),
+                    }
+                }
+                5 => {
+                    if !need(40, &r) {
+                        return None;
+                    }
+                    let (op, id) = (r.read_u8(), r.read_u32());
+                    match op {
+                        1 => MissionEvent::Added {
+                            id,
+                            label: wire_text(&r.read_zstr8()),
+                        },
+                        2 => MissionEvent::Removed { id },
+                        3 if need(8, &r) => MissionEvent::State {
+                            id,
+                            state: r.read_u8(),
+                        },
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            })
         }
         0xd7 => {
             if !need(8, &r) || r.read_u8() != 4 || !need(33, &r) {
@@ -841,6 +934,119 @@ mod tests {
                 quiet: true,
             }))
         );
+    }
+
+    /// The 0xc9 bytes our game server sends (its own encoders: the goal list of DSV-574 and the banner) read back as
+    /// the goal list, the timers, the two scoreboard bytes and the banner; a damaged list is ignored.
+    #[test]
+    fn coop_mission_list_and_banner_from_the_servers_encoder() {
+        use super::super::mission::{Goal, MissionEvent};
+        use dc_dserver::gs::{coop_banner, coop_mission_list, MissionGoal};
+        // the server's message is [S2C shell id:u8][shell:u8][body]: the HUD gets the shell id and the body
+        let body = |w: &BitWriter| {
+            let b = w.as_bytes();
+            assert_eq!(b[1], 0xc9);
+            (b[2..].to_vec(), w.bit_len() - 16)
+        };
+        let goals = [
+            MissionGoal {
+                id: 0,
+                label: b"Secure the landing zone".to_vec(),
+                state: 1,
+            },
+            MissionGoal {
+                id: 1,
+                label: b"Rescue the hostage".to_vec(),
+                state: 2,
+            },
+            MissionGoal {
+                id: 4,
+                label: b"Destroy the BTR".to_vec(),
+                state: 0,
+            },
+        ];
+        let (b, bits) = body(&coop_mission_list(&goals, &[300.0], 2, 1));
+        let want = MissionEvent::List {
+            goals: vec![
+                Goal {
+                    id: 0,
+                    label: "Secure the landing zone".into(),
+                    state: 1,
+                },
+                Goal {
+                    id: 1,
+                    label: "Rescue the hostage".into(),
+                    state: 2,
+                },
+                Goal {
+                    id: 4,
+                    label: "Destroy the BTR".into(),
+                    state: 0,
+                },
+            ],
+            timers: vec![300.0],
+            stage: 2,
+            goal: 1,
+        };
+        assert_eq!(
+            read_shell(0xc9, &b, bits, Some(5)),
+            Some(ShellRead::Mission(want))
+        );
+        // the wave HUD's empty list (Cabin Fever) and its banner
+        let (b, bits) = body(&coop_mission_list(&[], &[], 3, 0));
+        assert_eq!(
+            read_shell(0xc9, &b, bits, Some(5)),
+            Some(ShellRead::Mission(MissionEvent::List {
+                goals: vec![],
+                timers: vec![],
+                stage: 3,
+                goal: 0,
+            }))
+        );
+        let (b, bits) = body(&coop_banner(b"Wave 3 / 5", 3.0));
+        assert_eq!(
+            read_shell(0xc9, &b, bits, Some(5)),
+            Some(ShellRead::Mission(MissionEvent::Banner {
+                text: "Wave 3 / 5".into(),
+                secs: 3.0,
+            }))
+        );
+        // sub 3: the caption (DSV-579), its three fields as one text
+        let (b, bits) = body(&dc_dserver::gs::coop_caption(
+            b"t\\face.dtx|Sgt. Ray|Hold the line",
+            4.0,
+        ));
+        assert_eq!(
+            read_shell(0xc9, &b, bits, Some(5)),
+            Some(ShellRead::Mission(MissionEvent::Caption {
+                text: "t\\face.dtx|Sgt. Ray|Hold the line".into(),
+                secs: 4.0,
+            }))
+        );
+        assert_eq!(read_shell(0xc9, &b, bits - 8, Some(5)), None, "short");
+        // sub 5 (the 2009 single-goal forms)
+        let mut w = BitWriter::new();
+        w.write_u8(5).write_u8(1).write_u32(7).write_zstr8(b"Hold");
+        assert_eq!(
+            read_shell(0xc9, w.as_bytes(), w.bit_len(), Some(5)),
+            Some(ShellRead::Mission(MissionEvent::Added {
+                id: 7,
+                label: "Hold".into(),
+            }))
+        );
+        let mut w = BitWriter::new();
+        w.write_u8(5).write_u8(3).write_u32(7).write_u8(1);
+        assert_eq!(
+            read_shell(0xc9, w.as_bytes(), w.bit_len(), Some(5)),
+            Some(ShellRead::Mission(MissionEvent::State { id: 7, state: 1 }))
+        );
+        // a count past the end
+        let mut w = BitWriter::new();
+        w.write_u8(1).write_u32(1000).write_u32(0);
+        assert_eq!(read_shell(0xc9, w.as_bytes(), w.bit_len(), Some(5)), None);
+
+        // the session hands 0xc9 over to the HUD
+        assert!(dc_botclient::session::RAW_SHELL_EVENTS.contains(&0xc9));
     }
 
     #[test]

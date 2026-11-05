@@ -403,6 +403,8 @@ pub struct Server<A: Ord + Clone + Display> {
     /// The kill volumes created on the clients (indexes into the world's kill shapes) and, per player and volume,
     /// since when the player is inside (DSV-52).
     kill_active: Vec<usize>,
+    /// The kill volumes a mission world's statements switched off (DSV-571).
+    kill_off: BTreeSet<usize>,
     kill_inside: BTreeMap<(u8, usize), Millis>,
     /// The doors on the clients and the time of their last step (DSV-46).
     doors: Vec<crate::doors::Door>,
@@ -416,6 +418,11 @@ pub struct Server<A: Ord + Clone + Display> {
     door_triggers: crate::doors::Triggers,
     /// The triggers the start scripts fired (DSV-562 seed, again at each round, DSV-564).
     door_start_fired: Vec<Vec<u8>>,
+    /// Command texts the game asked to run with the world's statements (a mission AI's death command, DSV-571).
+    script_texts: Vec<Vec<u8>>,
+    /// The start texts of a mission world's statements (start-up commands, start triggers, controller), run again at a
+    /// new round (DSV-571).
+    mission_start: Vec<Vec<u8>>,
     /// The round the doors' script state belongs to, and the planned models the statements changed (their state as
     /// planned; `None`: created by a statement) (DSV-564).
     door_round: u32,
@@ -526,6 +533,7 @@ impl<A: Ord + Clone + Display> Server<A> {
             vis,
             corpses: Vec::new(),
             kill_active: Vec::new(),
+            kill_off: BTreeSet::new(),
             kill_inside: BTreeMap::new(),
             doors: Vec::new(),
             doors_at: None,
@@ -533,6 +541,8 @@ impl<A: Ord + Clone + Display> Server<A> {
             door_delays: Vec::new(),
             door_triggers: crate::doors::Triggers::default(),
             door_start_fired: Vec::new(),
+            script_texts: Vec::new(),
+            mission_start: Vec::new(),
             door_round: 0,
             model_start: BTreeMap::new(),
             door_marks: BTreeMap::new(),
@@ -730,6 +740,67 @@ impl<A: Ord + Clone + Display> Server<A> {
             // DSV-562: the triggers the start scripts fired count as fired
             self.door_triggers.seed(&start_fired);
             self.door_start_fired = start_fired;
+            // DC-DEFAULT: DSV-570 / DSV-571 (proposed) a co-op room on a mission world runs the world's trigger network:
+            // its counters, timers and activation boxes, and the start texts (start-up commands, the room's start
+            // triggers, the controller's start command) once more with every statement form (their visible / solid
+            // switches are in the plan already)
+            // DC-DEFAULT: DSV-576 (proposed) also on a round world, whose round counter starts its rounds
+            if self.game.coop().is_some_and(|c| c.network) {
+                let seed = self.cfg.game.rng_seed ^ 0x9e37_79b9_7f4a_7c15;
+                self.door_triggers.net =
+                    crate::script::Network::new(self.world.mission.clone(), seed);
+                if self.game.coop().is_some_and(|c| c.round_world) {
+                    self.door_triggers.net.round_counter = self
+                        .world
+                        .coop
+                        .rounds
+                        .as_ref()
+                        .map(|r| r.round_counter.clone());
+                }
+                let fields: Vec<String> = trig
+                    .as_deref()
+                    .map(|t| t.split('|').map(|f| f.trim().to_string()).collect())
+                    .unwrap_or_default();
+                let mut texts: Vec<Vec<u8>> = self.world.scripts.startup.clone();
+                for f in fields.iter().take(2).filter(|f| !f.is_empty()) {
+                    if let Some(t) = self
+                        .world
+                        .triggers
+                        .iter()
+                        .find(|t| t.name.eq_ignore_ascii_case(f.as_bytes()))
+                    {
+                        texts.extend(t.cmds.iter().cloned());
+                    }
+                }
+                if let Some(ctrl) = fields.get(3).filter(|f| !f.is_empty()) {
+                    if let Some(c) = self
+                        .world
+                        .scripts
+                        .controls
+                        .iter()
+                        .find(|c| c.0.eq_ignore_ascii_case(ctrl.as_bytes()))
+                    {
+                        texts.push(c.1.clone());
+                    }
+                }
+                self.mission_start = texts.clone();
+                let _models = crate::doors::run_world(
+                    &mut self.doors,
+                    &mut self.turns,
+                    &mut self.door_triggers,
+                    &mut self.door_delays,
+                    texts,
+                    0,
+                );
+                self.log(format!(
+                    "mission: the world's trigger network runs ({} triggers, {} counters, {} timers, {} activation boxes, {} start texts)",
+                    self.door_triggers.list.len(),
+                    self.world.mission.counters.len(),
+                    self.world.mission.timers.len(),
+                    self.world.mission.activates.len(),
+                    self.mission_start.len()
+                ));
+            }
         } else if self.cfg.world_objects == crate::worldobj::WorldObjects::All {
             // `-doors off`: no door objects (a door that never opens would be a wall)
             objs.retain(|o| {
@@ -805,7 +876,7 @@ impl<A: Ord + Clone + Display> Server<A> {
             .iter()
             .filter_map(|o| match o {
                 crate::worldobj::WorldObject::Brush { obj, brush }
-                    if crate::destructibles::bindable(brush) =>
+                    if crate::destructibles::bindable_in(brush, &self.world.destructibles) =>
                 {
                     Some((*obj, brush.name.clone(), brush.pos))
                 }
@@ -1456,6 +1527,11 @@ impl<A: Ord + Clone + Display> Server<A> {
                 GameOut::AiShow { slot } => self.on_ai_show(slot),
                 GameOut::AiHide { slot } => self.on_ai_hide(slot),
                 GameOut::AiLook { slot } => self.on_ai_look(slot),
+                GameOut::WorldScript(t) => {
+                    if self.script_texts.len() < crate::doors::DELAYED_MAX {
+                        self.script_texts.push(t);
+                    }
+                }
                 GameOut::Died {
                     pid,
                     pos,
@@ -3910,10 +3986,12 @@ impl<A: Ord + Clone + Display> Server<A> {
         for (pid, pos) in alive {
             if !self.kill_inside.keys().any(|k| k.0 == pid) {
                 let hit = self.kill_active.iter().copied().find(|&i| {
-                    self.world
-                        .kill_shapes
-                        .get(i)
-                        .is_some_and(|s| s.contains(pos))
+                    !self.kill_off.contains(&i)
+                        && self
+                            .world
+                            .kill_shapes
+                            .get(i)
+                            .is_some_and(|s| s.contains(pos))
                 });
                 if let Some(i) = hit {
                     self.kill_inside.insert((pid, i), now);
@@ -3944,7 +4022,11 @@ impl<A: Ord + Clone + Display> Server<A> {
     /// world object keeps the position for clients that join later.
     // DC-DEFAULT: DSV-46 (proposed)
     fn door_tick(&mut self, now: Millis) {
-        if self.doors.is_empty() && self.turns.is_empty() {
+        if self.doors.is_empty()
+            && self.turns.is_empty()
+            && self.door_triggers.net.is_empty()
+            && self.script_texts.is_empty()
+        {
             return;
         }
         let dt = self.doors_at.map_or(0, |t| since(now, t)).min(1000);
@@ -3980,11 +4062,23 @@ impl<A: Ord + Clone + Display> Server<A> {
         // DSV-270: the commands of the doors that changed state and the delayed statements due now
         // DC-DEFAULT: DSV-563 (proposed) a co-op room runs the triggers its living players walk into (their door,
         // trigger and model statements: the mission's door unlocks); other rooms do not
-        let touched = if self.game.is_coop() {
+        let mut touched = if self.game.is_coop() {
             self.door_triggers.touch(&near)
         } else {
             Vec::new()
         };
+        // DC-DEFAULT: DSV-573 (proposed) the activation boxes of a mission world's statements
+        if !self.door_triggers.net.objects.activates.is_empty() {
+            let living: Vec<(u8, [f32; 3])> = self
+                .game
+                .players()
+                .values()
+                .filter(|p| p.life == crate::game::Life::Alive && p.visible)
+                .map(|p| (p.pid, p.pos))
+                .collect();
+            self.door_triggers.net.activate_tick(&living, now);
+        }
+        touched.append(&mut self.script_texts);
         self.run_door_statements(touched, now);
         // DSV-340: a changed activate entry goes to every in-world client as the door's object notes
         self.door_notes();
@@ -4075,6 +4169,42 @@ impl<A: Ord + Clone + Display> Server<A> {
         if !models.is_empty() {
             self.on_model_switches(&models);
         }
+        // DC-DEFAULT: DSV-571 (proposed) a mission world's `on` / `off` messages switch its kill volumes of that name
+        let switched = std::mem::take(&mut self.door_triggers.net.switched);
+        if !self.door_triggers.net.is_empty() {
+            for (name, on) in switched {
+                for (i, k) in self.world.kill_shapes.iter().enumerate() {
+                    if k.name.eq_ignore_ascii_case(&name) {
+                        if on {
+                            self.kill_off.remove(&i);
+                        } else {
+                            self.kill_off.insert(i);
+                        }
+                    }
+                }
+            }
+        }
+        // DC-DEFAULT: DSV-579..DSV-581 (proposed) what a mission or round world's statements show: the camera
+        // statements move the world cameras (DSV-112 records, DSV-580 field of view), the rest goes to the co-op rules
+        let cues = std::mem::take(&mut self.door_triggers.net.cues);
+        if !cues.is_empty() && !self.door_triggers.net.is_empty() {
+            let mut rest = Vec::new();
+            for c in cues {
+                if !self.camshot.statement(&self.world.scripts.cameras, &c, now) {
+                    rest.push(c);
+                }
+            }
+            if !rest.is_empty() {
+                self.game.coop_cues(rest, now);
+                self.apply_game(now);
+            }
+        }
+        // DC-DEFAULT: DSV-571 / DSV-572 / DSV-574 (proposed) what the statements ask of the co-op rules
+        let effects = std::mem::take(&mut self.door_triggers.net.effects);
+        if !effects.is_empty() {
+            self.game.coop_effects(effects, now);
+            self.apply_game(now);
+        }
     }
 
     /// A new round (round modes reuse the server, GMD-24): the triggers as at the start (no fires but the start
@@ -4086,6 +4216,21 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.door_triggers.reset();
         self.door_triggers.seed(&self.door_start_fired);
         self.door_delays.clear();
+        self.script_texts.clear();
+        self.kill_off.clear();
+        // DC-DEFAULT: DSV-571 (proposed) a mission world's start texts again
+        if !self.mission_start.is_empty() {
+            let texts = self.mission_start.clone();
+            crate::doors::run_world(
+                &mut self.doors,
+                &mut self.turns,
+                &mut self.door_triggers,
+                &mut self.door_delays,
+                texts,
+                now,
+            );
+            self.door_triggers.net.effects.clear();
+        }
         // DC-DEFAULT: DSV-569 (proposed) the spawn points' locks as in the file
         self.game.reset_spawn_locks();
         for d in &mut self.doors {
@@ -4297,6 +4442,16 @@ impl<A: Ord + Clone + Display> Server<A> {
         let recs = self
             .camshot
             .due(now, &self.world.scripts.cameras.points, &pbox);
+        // DC-DEFAULT: DSV-580 (proposed) a field-of-view statement: the camera's object note to every in-world client
+        let fovs = self.camshot.take_fov_notes();
+        if !fovs.is_empty() {
+            let viewers = self.world_viewers();
+            for (obj, fov) in fovs {
+                for v in &viewers {
+                    self.send(v, crate::gs::camera_fov_note(obj, fov, 0.0));
+                }
+            }
+        }
         if recs.is_empty() {
             return;
         }
@@ -4317,6 +4472,24 @@ impl<A: Ord + Clone + Display> Server<A> {
     /// The doors on the clients (tests).
     pub fn doors(&self) -> &[crate::doors::Door] {
         &self.doors
+    }
+
+    /// The world's triggers and the state of its statements (tests, DSV-570).
+    pub fn world_statements(&self) -> &crate::doors::Triggers {
+        &self.door_triggers
+    }
+
+    /// Harness entry of the mission tests: the AI of this slot dies as if client `pid` had shot it.
+    pub fn harness_kill_ai(&mut self, now: Millis, slot: usize, pid: u8) {
+        self.game.coop_kill_ai(slot, pid, now);
+        self.apply_game(now);
+    }
+
+    /// Harness entry of the mission tests: the bound breakable of this name is destroyed (as by shots of nobody).
+    pub fn harness_break(&mut self, now: Millis, name: &[u8]) -> bool {
+        let hit = self.game.break_named(name, now);
+        self.apply_game(now);
+        hit
     }
 
     /// The rotating doors and switches on the clients (tests).

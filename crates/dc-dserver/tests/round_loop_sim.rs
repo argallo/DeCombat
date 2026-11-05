@@ -62,6 +62,7 @@ fn world_with_crate() -> WorldInfo {
         hit_points: 60.0,
         death: vec![DeathAction::Effect(b"box1fx".to_vec())],
         skipped: 0,
+        script: Vec::new(),
     });
     w
 }

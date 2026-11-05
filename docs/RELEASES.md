@@ -157,6 +157,39 @@ So in a rollout with `targets: all`, the order is lobby first and host second, a
 - **`targets: hosts` alone.** Old lobby, new agent. An agent line the lobby does not know is logged and ignored. Fine for a host-only
   fix, and the reverse order from the usual, so not for a change the lobby has to know about first.
 
+## How a client updates itself
+
+A release build knows its tag. Before a login it reads the lobby's `/client_version.json` (docs/OPS.md section 6) and,
+when a newer release exists or the lobby needs one, shows a box with **Update now** (Windows), **Download** (macOS),
+**Open page** and **Later** / **Close**.
+
+- **Open page** opens the lobby's `update_url` (default `https://github.com/argallo/DeCombat/releases/latest`) in the
+  browser.
+- **Update now** (Windows): the zip comes from the lobby's `[client.download] windows` link or, without one, from the
+  newest release on GitHub (`DeCombat-win-<tag>.zip`; the API's latest release, or the newest pre-release when there is
+  none). HTTPS only, with the operating system's trusted certificates. The zip is checked against the release's
+  `SHA256SUMS`: a different sum, or a sums file that does not list the zip, stops the update. The zip is unpacked into
+  `dc-update\new` of the game folder, a copy of `dc-client.exe` (the helper) waits for the game to close, moves the new
+  files in (the old ones go to `dc-update\old` and come back if anything fails) and starts the game again with the
+  same arguments. `DeCombat.bat`, settings, trust and log files in the folder are never replaced: a changed one arrives
+  next to it as `DeCombat.bat.new`. The 2009 client folder is never touched and nothing is deleted. The next start
+  clears `dc-update` and shows a failure, if there was one, once.
+- **Download** (macOS) saves the zip in Downloads and shows it in Finder; unzip it and replace the app.
+- Any failure (no write access to the game folder, no network, a bad sum) shows the reason and **Open page**.
+
+Development builds never offer an update from the lobby. `dc-client --update-from <zip>` runs the same swap from a zip
+on disk (no restart; `dc-update\result.txt` says how it went).
+
+### Friend packs that update themselves
+
+`python tools/friend_pack_win.py ... --commit <sha> --update-dir <folder>` writes `pack.json` (the commit and the
+folder) into the pack, copies the zip into the folder and writes `<folder>/latest.json` (`{"commit", "zip"}`) last.
+A pack that names a folder looks there at its first login screen of a run and when the player presses **Check update**
+on the login screen: another commit in `latest.json` offers **Update now**, the same swap as above (the zip's own
+checksums are its check). Building the next pack with the same `--update-dir` is the whole publish step; the folder
+must be one the players' machines can read (a shared or synced folder). Such a pack never asks the lobby about
+versions. Without `--update-dir` a pack still carries `pack.json` (its commit) and updates only as described above.
+
 ## By hand, as before
 
 `tools/ship_servers.sh` builds this checkout and deploys it to both servers: the VPS, then the game host. Its settings file
@@ -178,4 +211,6 @@ a MapKit package from a local build (`cargo build --release -p dc-mapkit --bins`
 Tested without GitHub: `bash tools/host/update_test.sh` (the updater and the VPS deploy helper on fake tarballs made with the
 real packer, with stand-ins for curl, systemctl and pgrep), actionlint on the workflows, `bash -n` on the scripts, and
 `DeCombat.bat` run under cmd on Windows. Still unproven until they run for real: the iOS build and export, notarisation (the
-`DC_MAC_*` secrets are not set), `deploy-servers.yml`, and the systemd units and root behaviour of `update.sh` on a real host.
+`DC_MAC_*` secrets are not set), `deploy-servers.yml`, and the systemd units and root behaviour of `update.sh` on a real host. The client's own update is unit-tested and its swap
+ran headless with `--update-from` on a friend zip; "Update now" from the menu against a real release zip, the restart
+and the macOS download have not run yet.

@@ -101,6 +101,8 @@ pub struct Login {
     recover_ask: Option<Kind>,
     /// CLI-1618: the consent prompt for the unverified mods of the server being joined.
     pub consent: Option<ConsentBox>,
+    /// CLI-1866: a friend pack's "Check update" button (none for other builds).
+    update_button: super::modbrowser::Buttons,
 }
 
 impl Login {
@@ -134,6 +136,7 @@ impl Login {
             asking: false,
             recover_ask: None,
             consent: None,
+            update_button: super::updatebox::check_button(),
         }
     }
 
@@ -398,6 +401,8 @@ impl Screen for Login {
 
     fn enter(&mut self, ctx: &mut Ctx) {
         self.message(Some(MSG_ENTER_ID));
+        // CLI-1866: a friend pack looks into its update folder once per run
+        super::updatebox::check_at_start();
         let user = ctx.data.user.clone();
         self.id_without_box = user.clone();
         if let Some(p) = self.sheet.part_mut(0, ID_BOX, WidgetKind::EditBox) {
@@ -580,7 +585,23 @@ impl Screen for Login {
         }
     }
 
+    // CLI-1866: the friend pack's "Check update" button (a click on press, as the server screen's Test button)
+    fn press(&mut self, p: [f32; 2], ctx: &mut Ctx) -> bool {
+        if self.consent.is_some() || self.signup.is_some() || !self.update_button.press(p) {
+            return false;
+        }
+        self.update_button.release(p);
+        ctx.sound(frontfx::SOUND_SELECT);
+        crate::selfupdate::start_check(true);
+        true
+    }
+
+    fn hover(&mut self, p: [f32; 2], _data: &MenuData) {
+        self.update_button.moved(p);
+    }
+
     fn draw_extra(&self, cat: &mut Catalog, data: &MenuData, secs: f32, out: &mut Vec<DrawItem>) {
+        self.update_button.draw(cat, out);
         // CLI-1616: the server the browser picked (nothing while the configured lobby is used)
         if let Some(name) = &data.picked_server {
             out.push(super::sheet::place_text(
@@ -678,10 +699,7 @@ impl Screen for Login {
                 if let Some(w) = dc_botclient::tls::take_store_warning() {
                     ctx.popups.push(Popup::error(w, BoxTag::None));
                 }
-                // CLI-1651: a newer client exists: the player is told once, the login goes on
-                if let Some(n) = crate::clientver::take_notice() {
-                    ctx.popups.push(Popup::ok(n, BoxTag::None));
-                }
+                // CLI-1651 / CLI-1863: a newer client exists: its box ([`super::updatebox`]) follows once
                 // the 2009 client shows its main screen for about 3 s between the login and the server list
                 // DC-DEFAULT: CLI-176 (proposed) no main screen: the server list opens at once
                 *ctx.go = Some(Go::Servers);
@@ -695,12 +713,15 @@ impl Screen for Login {
                 let first = text.lines().next().unwrap_or_default().to_string();
                 ctx.popups.push(Popup::error(first, BoxTag::None));
             }
-            // CLI-1651: too old for this lobby: our own text in the notice box, not "login failed"
+            // CLI-1651: too old for this lobby: our own text, not "login failed"; CLI-1863: the update box with it
+            // ([`super::updatebox`]) when the offer waits, else the plain notice
             LinkEvent::LoginRefused { text, .. } if crate::clientver::is_refusal(text) => {
                 self.busy.stop();
                 ctx.close_wait();
                 super::moddedrows::restore_home(ctx);
-                ctx.popups.push(Popup::error(text.clone(), BoxTag::None));
+                if !crate::selfupdate::has_offer() {
+                    ctx.popups.push(Popup::error(text.clone(), BoxTag::None));
+                }
             }
             LinkEvent::LoginRefused { reason, .. } => {
                 self.busy.stop();

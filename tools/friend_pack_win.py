@@ -6,11 +6,19 @@ only, so GitHub Actions' Windows runner and the Windows machine run it alike (.g
 
   python tools/friend_pack_win.py --client <dc-client.exe> --server HOST[:PORT] [--fingerprint SHA256]
                                   [--out DIR] [--name NAME] [--commit SHA] [--botclient <dc-botclient.exe>]
+                                  [--update-dir DIR]
 
-Nothing of the game (ROM) and nothing of the building machine goes in.
+Nothing of the game (ROM) and nothing of the building machine goes in, except the --update-dir path.
+
+pack.json next to the exe names the build ({"commit", "update_dir"}). With --update-dir the zip is also copied into
+that folder and latest.json ({"commit", "zip"}) is written there last: a pack that names the folder offers "Update now"
+when the folder holds another build (docs/RELEASES.md, "Friend packs that update themselves"). Building the next pack
+with the same --update-dir is the whole publish step.
 """
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -25,6 +33,7 @@ def main() -> int:
     ap.add_argument("--out", default="out_friend", help="folder for the zip (default out_friend/)")
     ap.add_argument("--name", default="", help="zip base name (default DeCombat-win-<commit>)")
     ap.add_argument("--commit", default="", help="commit id for the name and the README (default: git)")
+    ap.add_argument("--update-dir", default="", help="folder the pack looks into for newer builds; also gets this zip and latest.json")
     a = ap.parse_args()
     if not os.path.isfile(a.client):
         print(f"no such client: {a.client}", file=sys.stderr)
@@ -39,6 +48,12 @@ def main() -> int:
         except Exception:
             commit = "unknown"
     name = a.name or f"DeCombat-win-{commit}"
+    update_dir = os.path.abspath(a.update_dir) if a.update_dir else ""
+    hex_commit = 4 <= len(commit) <= 40 and all(c in "0123456789abcdefABCDEF" for c in commit)
+    if update_dir and not hex_commit:
+        print(f"--update-dir needs a commit id of hex digits, got {commit!r}", file=sys.stderr)
+        return 2
+    pack = json.dumps({"commit": commit, "update_dir": update_dir}, indent=2) + "\n"
     pin = f"--server-fingerprint {a.fingerprint}" if a.fingerprint else ""
 
     # Flow by goto, not by ( ) blocks: a ")" in a message ends a block and cmd then refuses the whole file, and %VAR%
@@ -170,8 +185,21 @@ nothing, you are paid as usual. More in docs/BOTS.md of the source.
         z.write(a.client, f"{name}/dc-client.exe")
         z.writestr(f"{name}/DeCombat.bat", bat.replace("\n", "\r\n"))
         z.writestr(f"{name}/README.md", readme)
+        z.writestr(f"{name}/pack.json", pack)
     size = os.path.getsize(zpath) / 1e6
     print(f"wrote {zpath} ({size:.1f} MB); server {server}; pin: {a.fingerprint or 'none (trust on first use)'}")
+    if update_dir:
+        # the zip first, latest.json last (replaced in one step): a pack never reads a latest.json whose zip is not there
+        os.makedirs(update_dir, exist_ok=True)
+        target = os.path.join(update_dir, name + ".zip")
+        if os.path.abspath(zpath) != os.path.abspath(target):
+            shutil.copyfile(zpath, target)
+        tmp = os.path.join(update_dir, "latest.json.part")
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"commit": commit, "zip": name + ".zip"}, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, os.path.join(update_dir, "latest.json"))
+        print(f"published {target} as the latest build of {update_dir}")
     # the bots go in a zip of their own: a program that starts several network clients is what antivirus heuristics
     # dislike, and the game should not share its fate. Same folder name, so both unzip into one folder.
     if a.botclient:

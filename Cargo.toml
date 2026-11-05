@@ -16,6 +16,7 @@ members = [
     "crates/dc-net-engine",
     "crates/dc-dserver",
     "crates/dc-sim",
+    "crates/dc-nav",
     "crates/dc-cone",
     "crates/dc-render",
     "crates/dc-ui-data",

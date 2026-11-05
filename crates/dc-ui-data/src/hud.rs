@@ -613,6 +613,24 @@ pub enum HudKey {
     GetItemPromptTex,
     GetItemPromptSize,
     GetItemPromptPos,
+    // ---- mission-hud (Fire Team, the co-op section) ----
+    // The co-op element's goal list (cshell+0x7f290 builds five rows of an icon and a text, cshell+0x81930 fills
+    // them from the goal list of 0xc9 sub 1 / 5: the icon by the goal's state) and the mission message banner of
+    // 0xc9 sub 2 (cshell+0xbcfd0 builds it: a back image and a text, cshell+0xbdd20 starts it).
+    CoopGoalFailedIcon,
+    CoopGoalDoneIcon,
+    CoopGoalOpenIcon,
+    CoopGoalIconSize,
+    CoopGoalIconPos,
+    CoopGoalTextPos,
+    CoopGoalTextStep,
+    CoopBannerBackTex,
+    CoopBannerBackPos,
+    CoopBannerBackSize,
+    CoopBannerFont,
+    CoopBannerFontSize,
+    CoopBannerTextPos,
+    CoopBannerColour,
 }
 
 /// `(key, literal rva, sha16, length, evidence rva, value form)` per key.
@@ -1599,15 +1617,18 @@ pub enum HudSection {
     Quarantine,
     /// The Spy Hunt section. EVIDENCE: cshell+0x70880 (section literal pushed with each key)
     SpyHunt,
+    /// The co-op mode's section. EVIDENCE: cshell+0x7f290, cshell+0xbcfd0 (section literal pushed with each key)
+    Coop,
 }
 
 impl HudSection {
     /// The named sections (not [`HudSection::Set`]) in pin order.
-    pub const NAMED: [HudSection; 4] = [
+    pub const NAMED: [HudSection; 5] = [
         HudSection::HiSec,
         HudSection::Misc,
         HudSection::Quarantine,
         HudSection::SpyHunt,
+        HudSection::Coop,
     ];
 
     /// The pinned section-name literal.
@@ -1618,6 +1639,7 @@ impl HudSection {
             HudSection::Misc => (0x3ece74, "5cb0b42660589925", 13),
             HudSection::Quarantine => (0x3d8a1c, "f24a1d904fd1b482", 10),
             HudSection::SpyHunt => (0x3d50dc, "ca06af9676e22991", 15),
+            HudSection::Coop => (0x3d2978, "28d2565664e36a53", 15),
         };
         Some(Pin {
             what: "HUD layout section",
@@ -4951,6 +4973,138 @@ const EXTRA: [(HudKey, u32, &str, usize, u32, ValueKind, HudSection); HudKey::EX
         ValueKind::Pair,
         HudSection::Set,
     ),
+    // EVIDENCE: cshell+0x7f290 (each key pushed with the co-op section literal: the three state icons through the
+    // text getter cshell+0x157ab0, the icon size, icon place, text place and row step through the pair getter
+    // cshell+0x15a6c0)
+    (
+        HudKey::CoopGoalFailedIcon,
+        0x3d600c,
+        "7e8f066ac1fcff05",
+        17,
+        0x7f35f,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopGoalDoneIcon,
+        0x3d5ffc,
+        "079c8f411742d72b",
+        15,
+        0x7f394,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopGoalOpenIcon,
+        0x3d5fec,
+        "3cabf150fd066337",
+        14,
+        0x7f3c7,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopGoalIconSize,
+        0x3d5fdc,
+        "cdac561b44d14e7e",
+        15,
+        0x7f3f5,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopGoalIconPos,
+        0x3d5fc8,
+        "16de33735b2eebfa",
+        18,
+        0x7f41d,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopGoalTextPos,
+        0x3d5fb4,
+        "712e5b2570656f30",
+        18,
+        0x7f448,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopGoalTextStep,
+        0x3d5fa0,
+        "452738f5654f0059",
+        17,
+        0x7f473,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    // EVIDENCE: cshell+0xbcfd0 (each key pushed with the co-op section literal: the back image through the text
+    // getter, its place and size through the pair getter, the font record and size through the integer getter
+    // cshell+0x157b40, the text place, and the colour through the colour getter cshell+0x15a7f0)
+    (
+        HudKey::CoopBannerBackTex,
+        0x3d94a8,
+        "4d2702876c74f31b",
+        24,
+        0xbd2ad,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopBannerBackPos,
+        0x3d948c,
+        "3bb01b43798783dd",
+        24,
+        0xbd2e0,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopBannerBackSize,
+        0x3d9470,
+        "b31e161cb777d8fb",
+        25,
+        0xbd301,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopBannerFont,
+        0x3d9454,
+        "9b5f3f68b0c346f1",
+        26,
+        0xbd36b,
+        ValueKind::Int,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopBannerFontSize,
+        0x3d9438,
+        "eb4c905f9153286b",
+        25,
+        0xbd380,
+        ValueKind::Int,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopBannerTextPos,
+        0x3d9420,
+        "3f3e2195bbf97e63",
+        20,
+        0xbd391,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopBannerColour,
+        0x3d9408,
+        "16b972ddb7a5ce8e",
+        22,
+        0xbd3bc,
+        ValueKind::Colour,
+        HudSection::Coop,
+    ),
 ];
 
 impl HudKey {
@@ -4961,8 +5115,8 @@ impl HudKey {
     /// Search and Destroy (21), modes-r11b Quarantine (26), modes-polish Quarantine (22), modes-polish
     /// Capture the Flag (12), modes-spyhunt Spy Hunt (47), ctf-clan-r12 flag marker texts (4), modes-r12b
     /// Quarantine round pictures (2), class-13 top and team-change sprite (18), modes-r13 host timer scale (1),
-    /// doors-gear-r13 door prompt (3), match-r15 item prompt (3).
-    pub const EXTRA_COUNT: usize = 369;
+    /// doors-gear-r13 door prompt (3), match-r15 item prompt (3), mission-hud co-op goal list and banner (14).
+    pub const EXTRA_COUNT: usize = 383;
 
     /// Every key in table order.
     pub fn all() -> impl Iterator<Item = HudKey> {

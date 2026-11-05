@@ -123,6 +123,8 @@ pub struct WorldInfo {
     pub destructibles: crate::destructibles::DestructibleWorld,
     /// The Spy Hunt places: intel spawn points and the uplink box (DSV-230).
     pub spy: SpyWorld,
+    /// The event counters, timers and activation boxes the world's statements address (DSV-572, DSV-573).
+    pub mission: crate::script::MissionObjects,
 }
 
 /// The Spy Hunt objects of a world (mode class 9): the item spawn points of the mode (the intel places) and its
@@ -249,6 +251,8 @@ pub struct AiTemplate {
     pub right_hand: Option<String>,
     pub max_health: Option<f32>,
     pub template: bool,
+    /// The command its death runs (an AI spawned from it runs it too, DSV-571).
+    pub death_cmd: Vec<u8>,
 }
 
 /// The co-op objects of a world.
@@ -258,7 +262,57 @@ pub struct CoopWorld {
     pub templates: Vec<AiTemplate>,
     /// Positions of the AI patrol, guard and use-object nodes (waypoints of the AI steering).
     pub nodes: Vec<[f32; 3]>,
+    /// The world's statements spawn its AI from its spawners (a mission world, DSV-571): the co-op rules follow the
+    /// world's trigger network instead of a wave plan.
+    pub mission: bool,
+    /// The round loop of a round world (DSV-576): its spawn-table rounds follow the world's round counter.
+    pub rounds: Option<crate::script::RoundNet>,
+    /// The caption and message triggers the statements `play` dialogue texts on (DSV-579).
+    pub texts: Vec<TextTrigger>,
+    /// The music triggers the statements switch on and off (DSV-581).
+    pub music: Vec<MusicTrigger>,
+    /// The named item spawn points (the places the GMS weapon rows name, DSV-583).
+    pub item_points: Vec<ItemPoint>,
 }
+
+/// A caption trigger (a dialogue caption with picture and speaker) or a message trigger (a banner text) of a world.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextTrigger {
+    pub name: Vec<u8>,
+    /// A caption trigger (else a message trigger).
+    pub caption: bool,
+    /// Its show-time property (seconds).
+    pub secs: Option<f32>,
+}
+
+/// A music trigger of a world: the track file (relative to the client's game folder), looping, fade seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MusicTrigger {
+    pub name: Vec<u8>,
+    pub file: Vec<u8>,
+    pub looped: bool,
+    pub fade: Option<f32>,
+}
+
+/// A named item spawn point.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemPoint {
+    pub name: Vec<u8>,
+    pub pos: [f32; 3],
+    pub yaw: f32,
+}
+
+/// The text and music trigger classes of the co-op worlds and their properties (hash keys).
+// OBSERVED: class and property names of the ROM co-op worlds (hashes only; SANDHOG_CP1: one caption trigger, one
+// message trigger, five music triggers; CabinFever: one caption trigger, three music triggers; every caption and
+// message trigger carries a real show time, every music trigger a file name, a fade time and a loop flag)
+pub const CLASS_CAPTION_TRIGGER: PropHash = ([0x6d, 0x0d, 0x76, 0xd5, 0xa7, 0x91, 0x88, 0xc0], 14);
+pub const CLASS_MESSAGE_TRIGGER: PropHash = ([0x45, 0xc6, 0xa1, 0xb8, 0x2c, 0xfa, 0x66, 0x03], 14);
+pub const CLASS_MUSIC_TRIGGER: PropHash = ([0x93, 0xb5, 0x8e, 0x30, 0x28, 0xd9, 0xbc, 0xf0], 10);
+pub const PROP_SHOW_TIME: PropHash = ([0xeb, 0x17, 0xd9, 0xdb, 0x42, 0x10, 0x7e, 0xd2], 8);
+pub const PROP_MUSIC_FILE: PropHash = ([0xe3, 0x16, 0xd2, 0xad, 0x49, 0xb2, 0x58, 0x6a], 8);
+pub const PROP_MUSIC_FADE: PropHash = ([0xf7, 0xa5, 0x68, 0xb4, 0xef, 0xae, 0xf3, 0xcc], 10);
+pub const PROP_MUSIC_LOOP: PropHash = ([0xf2, 0xf6, 0xa0, 0x18, 0x89, 0x95, 0x1e, 0xdc], 4);
 
 impl CoopWorld {
     pub fn is_empty(&self) -> bool {
@@ -309,15 +363,163 @@ pub fn coop_objects(w: &World<'_>) -> CoopWorld {
                 right_hand: text_string(prop_text(o, PROP_AI_RIGHT_HAND)),
                 max_health,
                 template: prop_bool(o, PROP_TEMPLATE).unwrap_or(false),
+                death_cmd: prop_text(o, crate::destructibles::PROP_DEATH_COMMAND)
+                    .unwrap_or_default()
+                    .to_vec(),
             });
         } else if class == CLASS_AI_PATROL_NODE
             || class == CLASS_AI_GUARD_NODE
             || class == CLASS_AI_USE_NODE
         {
             c.nodes.push(pos);
+        } else if class == CLASS_CAPTION_TRIGGER || class == CLASS_MESSAGE_TRIGGER {
+            c.texts.push(TextTrigger {
+                name: o.name().map(<[u8]>::to_vec).unwrap_or_default(),
+                caption: class == CLASS_CAPTION_TRIGGER,
+                secs: prop_real(o, PROP_SHOW_TIME).filter(|s| *s > 0.0),
+            });
+        } else if class == CLASS_MUSIC_TRIGGER {
+            if let Some(file) = prop_text(o, PROP_MUSIC_FILE).filter(|f| !f.is_empty()) {
+                c.music.push(MusicTrigger {
+                    name: o.name().map(<[u8]>::to_vec).unwrap_or_default(),
+                    file: file.to_vec(),
+                    looped: prop_bool(o, PROP_MUSIC_LOOP).unwrap_or(false),
+                    fade: prop_real(o, PROP_MUSIC_FADE).filter(|s| *s >= 0.0),
+                });
+            }
+        } else if o.role == Some(ObjectRole::ItemSpawn) {
+            if let Some(name) = o.name().filter(|n| !n.is_empty()) {
+                c.item_points.push(ItemPoint {
+                    name: name.to_vec(),
+                    pos,
+                    yaw: rot[1],
+                });
+            }
         }
     }
     c
+}
+
+/// Classes and properties of the mission objects beside the triggers (hash keys): the event counter (start value,
+/// per event the value and the command run when the counter gets there), the timer (its in-time and over-time
+/// commands; its time is the activation box's time property).
+// OBSERVED: class and property names of the ROM co-op worlds (hashes only; SANDHOG_CP1: one counter whose first event
+// unlocks the final activation box after seven counts, one timer started by a checkpoint and stopped by the hostage
+// room's door, four activation boxes)
+pub const CLASS_EVENT_COUNTER: PropHash = ([0x6c, 0x64, 0xa5, 0x54, 0x61, 0xd6, 0x5e, 0x44], 12);
+pub const CLASS_TIMER: PropHash = ([0x4c, 0x7e, 0xb7, 0x99, 0x39, 0xe9, 0x93, 0xf1], 12);
+pub const PROP_COUNTER_START: PropHash = ([0x95, 0xd8, 0x70, 0x1a, 0x61, 0x3e, 0x02, 0x72], 13);
+pub const PROP_IN_TIME_COMMAND: PropHash = ([0x55, 0x1f, 0xe2, 0x90, 0x9d, 0x79, 0x07, 0xf4], 14);
+pub const PROP_OVER_TIME_COMMAND: PropHash = ([0xcf, 0x73, 0x9f, 0xde, 0x20, 0x49, 0x0b, 0xd1], 16);
+/// The counter's events: (value, command) property keys (the ROM counters use up to 30).
+pub const PROP_COUNTER_EVENTS: [(PropHash, PropHash); 32] = [
+    (h8(0x207a7e0ece2a173b, 11), h8(0x149687a8df3c0a4d, 17)),
+    (h8(0x82088d083e75cc1b, 11), h8(0x0c451db7ed6ddfa6, 17)),
+    (h8(0xb1085aa1b7196279, 11), h8(0x0a6be5a9fc2235bd, 17)),
+    (h8(0x2b3d35aca9444083, 11), h8(0xd32a3e34531301c2, 17)),
+    (h8(0xf7b44b980b5cd6a6, 11), h8(0xd0e26fd58d1cf41a, 17)),
+    (h8(0xdf049342947b621e, 11), h8(0xd5e0396bcd67f7b3, 17)),
+    (h8(0xd0f21fca2a40fa2c, 11), h8(0x3a0daed6ca9fcac7, 17)),
+    (h8(0x5ca9877e739f9c58, 11), h8(0x39bf4d60e5da0181, 17)),
+    (h8(0xe6fe54a927a1237b, 11), h8(0xbd96b8f98d319560, 17)),
+    (h8(0x202134b3fc00fe2b, 12), h8(0x3b39d3821b6498ab, 18)),
+    (h8(0x644b8ef404dfdf97, 12), h8(0xd5b7b5405f4474e5, 18)),
+    (h8(0x4a2f8fb12ff9b38d, 12), h8(0xf4c61c8a575150cc, 18)),
+    (h8(0x7bc281262b4633c8, 12), h8(0x72403aec1991d8fa, 18)),
+    (h8(0x24ed331bdd99f754, 12), h8(0xdcf44afafe98bbdc, 18)),
+    (h8(0xc07d2b65dc0c85f4, 12), h8(0xf6ae2f794ad870d5, 18)),
+    (h8(0x94f2fb4f5071bc86, 12), h8(0x5a1f1d005e918ce0, 18)),
+    (h8(0x6739c134137b4515, 12), h8(0xd45d7c2768fbd3ed, 18)),
+    (h8(0xac28d24af131a2fe, 12), h8(0x581e7694b0625792, 18)),
+    (h8(0x691d5906901aa754, 12), h8(0x50f05498ded5242c, 18)),
+    (h8(0xcdccf8fcfac4389b, 12), h8(0x8f748c36bf79872b, 18)),
+    (h8(0x2e0270c72d2f6150, 12), h8(0xb86eb9e54374cfe7, 18)),
+    (h8(0x293e35ce1487384b, 12), h8(0xef272f065cfd205b, 18)),
+    (h8(0x7516f7f6d48f56b3, 12), h8(0x06d8aa79532724bd, 18)),
+    (h8(0xa31e38264b4bf8a4, 12), h8(0xac175df6e7226588, 18)),
+    (h8(0x665512ab6a1f2b0b, 12), h8(0xf94b3500feebcb29, 18)),
+    (h8(0xa94b6ae8f99adb2c, 12), h8(0x49f292074cd5d671, 18)),
+    (h8(0xb35eb18ec78ccb39, 12), h8(0xf9f016b3dfbfc160, 18)),
+    (h8(0x1d058d723bfad71f, 12), h8(0xd96c12d5631dc15f, 18)),
+    (h8(0x4ddbb0842c5559b7, 12), h8(0x56c4e507e09ca67d, 18)),
+    (h8(0x28d30f220a8f11fa, 12), h8(0xe2b2ade2e12f4d6f, 18)),
+    (h8(0x9989bc1d639e3611, 12), h8(0x8fb2b1dbe7ae6e69, 18)),
+    (h8(0x3bfd25cc0a73cfe5, 12), h8(0x6f927701521681be, 18)),
+];
+
+const fn h8(v: u64, len: usize) -> PropHash {
+    (v.to_be_bytes(), len)
+}
+
+fn prop_int(o: &dc_world::Object<'_>, k: PropHash) -> Option<i32> {
+    match prop(o, k)? {
+        dc_world::FieldValue::Int(i) | dc_world::FieldValue::Bits(i) => Some(*i),
+        dc_world::FieldValue::Real(r) if r.is_finite() => Some(*r as i32),
+        _ => None,
+    }
+}
+
+/// The event counters, timers and activation boxes of a parsed world (DSV-572, DSV-573).
+// DC-DEFAULT: DSV-572 (proposed) an event value below 0 is no event
+pub fn mission_objects(w: &World<'_>) -> crate::script::MissionObjects {
+    let mut m = crate::script::MissionObjects::default();
+    let text = |o: &dc_world::Object<'_>, k: PropHash| prop_text(o, k).unwrap_or_default().to_vec();
+    for o in &w.objects {
+        let class = key_of(o.class_name);
+        let name = o.name().map(<[u8]>::to_vec).unwrap_or_default();
+        if class == CLASS_EVENT_COUNTER {
+            m.counters.push(crate::script::CounterInfo {
+                name,
+                start: prop_int(o, PROP_COUNTER_START).unwrap_or(0),
+                events: PROP_COUNTER_EVENTS
+                    .iter()
+                    .filter_map(|(v, c)| {
+                        let v = prop_int(o, *v).filter(|v| *v >= 0)?;
+                        let c = text(o, *c);
+                        (!c.is_empty()).then_some((v, c))
+                    })
+                    .collect(),
+                // DC-DEFAULT: DSV-576 (proposed) an event with a command and a value below 0 is kept as unset
+                unset: PROP_COUNTER_EVENTS
+                    .iter()
+                    .zip(1u32..)
+                    .filter_map(|((v, c), n)| {
+                        prop_int(o, *v).filter(|v| *v < 0)?;
+                        let c = text(o, *c);
+                        (!c.iter().all(u8::is_ascii_whitespace)).then_some((n, c))
+                    })
+                    .collect(),
+            });
+        } else if class == CLASS_TIMER {
+            m.timers.push(crate::script::TimerInfo {
+                name,
+                secs: prop_real(o, PROP_TIME_AMOUNT).unwrap_or(0.0).max(0.0),
+                in_time: text(o, PROP_IN_TIME_COMMAND),
+                over_time: text(o, PROP_OVER_TIME_COMMAND),
+            });
+        } else if class == CLASS_ACTIVATE_BOX {
+            let Some(pos) = o.position() else {
+                continue;
+            };
+            m.activates.push(crate::script::ActivateInfo {
+                name,
+                pos,
+                dims: o
+                    .vec3(PropKey::BoxExtent)
+                    .filter(|d| d.iter().all(|c| c.is_finite()))
+                    .map_or([32.0; 3], |d| d.map(f32::abs)),
+                locked: prop_bool(o, PROP_LOCKED).unwrap_or(false),
+                max: prop_int(o, crate::doors::PROP_ACTIVATIONS)
+                    .filter(|n| *n > 0)
+                    .map_or(0, |n| n as u32),
+                secs: prop_real(o, PROP_TIME_AMOUNT).unwrap_or(0.0).max(0.0),
+                work: text(o, PROP_WORK_COMMAND),
+                release: text(o, PROP_RELEASE_COMMAND),
+                activate: text(o, PROP_ACTIVATE_COMMAND),
+            });
+        }
+    }
+    m
 }
 
 /// Property name keys this crate reads from world objects beyond the vocabulary of `dc_world::names` (the co-op,
@@ -953,7 +1155,21 @@ pub fn world_from_bytes(data: &[u8], announce: &str, display: &str) -> Result<Wo
         scripts,
         global_light: crate::worldlight::global_light(&w),
         occluders,
-        coop: coop_objects(&w),
+        coop: {
+            // DC-DEFAULT: DSV-571 (proposed) a world whose triggers or AI death commands spawn AI is a mission world
+            let mut c = coop_objects(&w);
+            let triggers = crate::doors::script_triggers(&w);
+            c.mission = triggers
+                .iter()
+                .flat_map(|t| t.cmds.iter())
+                .chain(c.templates.iter().map(|t| &t.death_cmd))
+                .any(|t| crate::script::spawns_ai(t));
+            // DC-DEFAULT: DSV-576 (proposed) the round loop of a round world
+            let deaths: Vec<&[u8]> = c.templates.iter().map(|t| t.death_cmd.as_slice()).collect();
+            c.rounds = crate::script::round_network(&triggers, &mission_objects(&w), &deaths);
+            c
+        },
+        mission: mission_objects(&w),
         world_vars: crate::evars::world_vars(&w),
         spawn_modes: w
             .objects_with_role(ObjectRole::PlayerSpawn)

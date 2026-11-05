@@ -297,6 +297,8 @@ pub struct HudState {
     pub qrt: super::qrt::QrtHud,
     /// The Spy Hunt state (0xcb, CLI-1080 / CLI-1081).
     pub spy: super::spy::SpyHud,
+    /// The Fire Team mission state (0xc9: goals and the banner, CLI-1858 / CLI-1859).
+    pub mission: super::mission::MissionHud,
     pub life_state: u8,
     /// The activate entry of the door under the cross this frame ([`super::prompt`], CLI-1230).
     pub use_target: Option<super::prompt::UseEntry>,
@@ -815,6 +817,11 @@ impl HudState {
                 head_shot: k.hit_zone == 1,
             });
         }
+        // the co-op class has no kill feed (its goal list sits where the feed would be)
+        // EVIDENCE: cshell+0x9d4a0 (the line builder returns at once in class 5)
+        if self.mode_class == Some(5) {
+            return;
+        }
         let line = FeedLine {
             at_ms: now,
             killer: if k.killer == NO_KILLER {
@@ -1287,6 +1294,8 @@ pub enum HudEvent {
     Qrt(super::qrt::QrtEvent),
     /// 0xcb (Spy Hunt).
     Spy(super::spy::SpyEvent),
+    /// 0xc9 (Fire Team: the goal list and the banner).
+    Mission(super::mission::MissionEvent),
     /// 0xa6 notes the HUD reads.
     Note(ObjectNote),
     /// The own character object.
@@ -1432,6 +1441,7 @@ impl HudState {
             HudEvent::Bomb(b) => self.on_bomb(b, now),
             HudEvent::Qrt(q) => self.on_qrt(q, now),
             HudEvent::Spy(e) => self.on_spy(e, now),
+            HudEvent::Mission(e) => self.on_mission(e, now),
             HudEvent::Note(n) => self.on_note(*n, now),
             HudEvent::ViewObject(o) => self.view_object = *o,
             HudEvent::UseTarget(t) => self.use_target = *t,

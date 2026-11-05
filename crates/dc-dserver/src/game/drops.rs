@@ -330,6 +330,68 @@ impl Game {
         });
     }
 
+    /// The GMS weapon rows of co-op round `round` (DSV-583): each row's weapon lies at its item spawn point as a drop
+    /// (the type-0x17 kind-6 object of DSV-93) with a full clip and the ROM's stock, for the row's lifetime (else the
+    /// drop rules'). Taking it follows the drop rules (DSV-94, the use key DSV-170).
+    // OBSERVED: ROM table key GMS [WeaponSpawn<n>] Round, WeaponID, LifeTime, Position (five rows of the round map:
+    // rounds 11 / 13 at one item spawn point, 16 / 18 / 20 at the other, 180 s each)
+    // DC-DEFAULT: DSV-583 (proposed)
+    pub(super) fn coop_weapon_rows(&mut self, round: i32, now: Millis) {
+        let rows: Vec<crate::coop_rom::WeaponSpawnRow> = match self.coop.as_ref() {
+            Some(c) => c
+                .plan
+                .weapon_spawns
+                .iter()
+                .filter(|r| r.round == round)
+                .cloned()
+                .collect(),
+            None => return,
+        };
+        if rows.is_empty() || self.cfg.drops.max_active == 0 {
+            return;
+        }
+        for r in rows {
+            let Some(at) = self
+                .coop_world
+                .item_points
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(r.place.as_bytes()))
+                .map(|p| (p.pos, p.yaw))
+            else {
+                self.log(format!(
+                    "co-op: weapon row of round {round}: no item spawn point {:?}",
+                    r.place
+                ));
+                continue;
+            };
+            let slot = self
+                .tables
+                .items
+                .weapon_types
+                .get(&r.weapon)
+                .and_then(|t| dc_bute::arms::slot_class(*t))
+                .unwrap_or(0);
+            let w = WeaponState {
+                slot,
+                ..self.new_weapon(r.weapon, None)
+            };
+            let key = self.next_drop_key;
+            self.drop_weapon_at(w, 0, at.0, at.1, [0.0; 3], now);
+            if let Some(d) = self.drops.iter_mut().find(|d| d.key == key) {
+                if let Some(s) = r.life_s {
+                    d.expires = Some(now.wrapping_add((s * 1000.0).min(3_600_000.0) as u32));
+                }
+                if let Some(c) = self.coop.as_mut() {
+                    c.show.weapon_drops += 1;
+                }
+                self.log(format!(
+                    "co-op: round {round}: weapon {} lies at {:?}",
+                    r.weapon, r.place
+                ));
+            }
+        }
+    }
+
     /// The floor point below a victim at `at` with the box `dims` (half extents): the first solid below in the trace
     /// world, else the bottom of the box.
     // DC-DEFAULT: DSV-93 (proposed)

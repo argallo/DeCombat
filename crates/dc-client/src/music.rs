@@ -95,7 +95,7 @@ pub enum MusicOrder {
     /// op 0: stop at once.
     Stop,
     /// op 1: play `file` (relative to the game folder); `looped` from the order's flag; `p` is the order's 32-bit
-    /// word, kept for the log (its use is not traced).
+    /// word, the fade in float seconds ([`order_fade_s`], CLI-1861).
     Play { file: String, looped: bool, p: u32 },
 }
 
@@ -123,6 +123,24 @@ pub fn read_music_order(r: &mut dc_wire::udp::BitReader<'_>) -> Option<MusicOrde
             Some(MusicOrder::Play { file, looped, p })
         }
         _ => None,
+    }
+}
+
+/// Longest fade a server order may ask for (seconds).
+// DC-DEFAULT: CLI-1861 (proposed) our bound; the ROM's music triggers ask for 4 s (DSV-581)
+pub const ORDER_FADE_MAX_S: f32 = 30.0;
+
+/// The fade of a 0xd9 op 1 order: its 32-bit word as float seconds; a value that is not finite, negative or over
+/// [`ORDER_FADE_MAX_S`] is no fade.
+// SPEC: DSV-581 (PLAUSIBLE there: cshell+0x5de63..0x5def2 hands the word to the engine's music slot as the shell's own
+// menu music call hands 1.0, cshell+0x1fba00)
+// DC-DEFAULT: CLI-1861 (proposed)
+pub fn order_fade_s(p: u32) -> f32 {
+    let f = f32::from_bits(p);
+    if f.is_finite() && (0.0..=ORDER_FADE_MAX_S).contains(&f) {
+        f
+    } else {
+        0.0
     }
 }
 
@@ -542,18 +560,19 @@ impl MusicDirector {
     /// Runs a server's music order (S2C 0xd9): stop at once, or play a file of the game folder.
     // SPEC: GAME_MESSAGES_2009_S2C.md §4.2 row 0xd9 (op 0: stop; op 1: the file with its loop flag; the play
     // reading of op 1 is PLAUSIBLE there)
-    // DC-DEFAULT: AUDIO-2 (staged) a server-named track starts without a fade; the order's `p` word is not used
+    // DC-DEFAULT: AUDIO-2 (staged, amended by CLI-1861) a server-named track fades over the order's `p` word read
+    // as float seconds ([`order_fade_s`]; our game server sends it so, DSV-581)
     pub fn order(&mut self, mixer: &mut Mixer, order: &MusicOrder, now_s: f64) {
         match order {
             MusicOrder::Stop => {
                 self.event("order", "server order", None, MusicCue::Stop.rule(), None);
                 self.cue(mixer, MusicCue::Stop, now_s)
             }
-            MusicOrder::Play { file, looped, .. } => {
+            MusicOrder::Play { file, looped, p } => {
                 let rule = CueRule {
                     key: None,
                     looped: *looped,
-                    fade_s: 0.0,
+                    fade_s: order_fade_s(*p),
                     stop_first: false,
                 };
                 self.event("order", "server order", Some(file.as_str()), rule, None);
@@ -846,6 +865,47 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Our game server's 0xd9 encoders (DSV-581) read back; the order's word is the fade in float seconds, a bad
+    /// value is no fade; a track with a fade starts silent and fades in.
+    #[test]
+    fn the_servers_music_orders_read_back_with_their_fade() {
+        use dc_wire::udp::BitReader;
+        // [S2C shell id][0xd9][body]
+        let read = |w: &dc_wire::udp::BitWriter| {
+            let b = w.as_bytes();
+            assert_eq!(b[1], 0xd9);
+            let mut r = BitReader::with_bit_len(&b[2..], w.bit_len() - 16);
+            read_music_order(&mut r)
+        };
+        let play = read(&dc_dserver::gs::music_play(b"BGM\\zed.mp3", true, 4.0)).unwrap();
+        assert_eq!(
+            play,
+            MusicOrder::Play {
+                file: "BGM\\zed.mp3".into(),
+                looped: true,
+                p: 4.0f32.to_bits()
+            }
+        );
+        assert_eq!(read(&dc_dserver::gs::music_stop()), Some(MusicOrder::Stop));
+        assert_eq!(order_fade_s(4.0f32.to_bits()), 4.0);
+        assert_eq!(order_fade_s(0), 0.0);
+        for bad in [f32::NAN, f32::INFINITY, -1.0, ORDER_FADE_MAX_S + 1.0] {
+            assert_eq!(order_fade_s(bad.to_bits()), 0.0, "{bad}");
+        }
+        let root = rom("sf");
+        let mut d = MusicDirector::none()
+            .with_loader(|_| Ok(tone()))
+            .with_files(root.clone(), files());
+        let mut m = Mixer::new();
+        d.order(&mut m, &play, 0.0);
+        pump(&mut d, &mut m, 0.0);
+        assert!(m.bgm.is_playing());
+        assert_eq!(m.bgm.gains(), (Some(0.0), None), "fades in from silence");
+        d.order(&mut m, &MusicOrder::Stop, 1.0);
+        assert!(!m.bgm.is_playing());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

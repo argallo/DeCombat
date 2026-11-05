@@ -70,8 +70,11 @@ pub struct ClientSection {
     pub latest: String,
     /// The oldest client this lobby takes; an older one shows why and does not log in. Empty = no refusal.
     pub min_version: String,
-    /// Where to get the client, as the notice shows it.
+    /// The download page the notice's button opens in the player's browser.
     pub update_url: String,
+    /// Direct links to the platform zips (`[client.download]`): the client's "Update now" takes these instead of
+    /// looking up the newest release.
+    pub download: ClientDownloads,
 }
 
 impl Default for ClientSection {
@@ -79,9 +82,21 @@ impl Default for ClientSection {
         ClientSection {
             latest: String::new(),
             min_version: String::new(),
-            update_url: "decombat.com".into(),
+            update_url: "https://github.com/argallo/DeCombat/releases/latest".into(),
+            download: ClientDownloads::default(),
         }
     }
+}
+
+/// `[client.download]`: the release zip of each platform, `https://` only; empty = the client finds the newest release.
+// DC-DEFAULT: LG-404 (proposed, USER REQUEST 2026-11-04)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientDownloads {
+    /// `DeCombat-win-<tag>.zip` of the release.
+    pub windows: String,
+    /// `DeCombat-mac-<tag>.zip` of the release.
+    pub macos: String,
 }
 
 /// Network identity and ports. Loopback-safe: `bind` stays 127.0.0.1 unless `public = true`.

@@ -39,6 +39,14 @@ pub const NPC_NAME_SECTION: &str = "CooperativeModeNPCNameTable";
 // OBSERVED: ROM table key MODELBUTES.TXT [AIModel<n>] Name, ModelFile, Skin<k>, RenderStyle<k>, Skeleton, AIName,
 // AttachFace, AIFace; [AIFace<n>] Name, ModelFile, Skin0, RenderStyle<k> (FIRETEAM_2009.md §3.2)
 pub const AI_BODY_SECTION: &str = "AIModel";
+/// `[CooperativeModeDialogMsg]`: the dialogue texts the caption and message triggers `play` (DSV-579).
+// OBSERVED: ROM table key GMS [CooperativeModeDialogMsg] Cap<nnn> (three fields: picture, speaker, text, split by `|`),
+// Msg<nnn> (a plain text); FIRETEAM_2009.md §3.1 (32 keys on one map)
+pub const DIALOG_SECTION: &str = "CooperativeModeDialogMsg";
+/// `[WeaponSpawn<n>]` rows and their keys (DSV-583).
+// OBSERVED: ROM table key GMS [WeaponSpawn<n>] Round, WeaponID, LifeTime, Position (five rows on the round map, none on
+// the mission map; Position names an item spawn point of the world)
+pub const WEAPON_SPAWN_SECTION: &str = "WeaponSpawn";
 pub const AI_FACE_SECTION: &str = "AIFace";
 
 fn unquote(s: &str) -> &str {
@@ -74,6 +82,10 @@ pub struct Difficulty {
     pub ai_damage_factor: Option<f32>,
     pub score_factor: Option<f32>,
     pub result_delay_ms: Option<u32>,
+    /// The health and armour a human recovers at `healinpart` (DSV-578).
+    // OBSERVED: ROM table key GMS [Object<n>] RecoverRoundTotalHP (the round map's three rows, falling with the
+    // difficulty)
+    pub recover_hp: Option<f32>,
 }
 
 /// One spawn group of a spawn-table row: `count` AIs of `template`, one every `delay_s` seconds.
@@ -104,6 +116,17 @@ pub struct ScoreTable {
     pub head_kill: Option<f32>,
 }
 
+/// One weapon row of the GMS: a weapon that lies at a named place from a round on (DSV-583).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeaponSpawnRow {
+    pub round: i32,
+    pub weapon: u16,
+    /// Seconds it lies there (`None`: the drop rules' lifetime).
+    pub life_s: Option<f32>,
+    /// The item spawn point's name.
+    pub place: String,
+}
+
 /// What a co-op room takes from its GMS file.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CoopPlan {
@@ -114,6 +137,13 @@ pub struct CoopPlan {
     pub health_rates: Vec<f32>,
     pub score: ScoreTable,
     pub boss_name: Option<String>,
+    /// The difficulty row's goal texts `MissionList<k>` by goal number `k` (the goals a mission world's statements
+    /// add and complete, DSV-574).
+    pub mission_list: Vec<(u32, String)>,
+    /// The dialogue texts by key (DSV-579).
+    pub dialog: Vec<(String, String)>,
+    /// The weapon rows in `Round` order (DSV-583).
+    pub weapon_spawns: Vec<WeaponSpawnRow>,
 }
 
 impl CoopPlan {
@@ -128,6 +158,7 @@ impl CoopPlan {
             ai_damage_factor: num(o, "AIDamageFactor").filter(|v| *v >= 0.0),
             score_factor: num(o, "ScoreFactor").filter(|v| *v >= 0.0),
             result_delay_ms: int("ShowCoopResultDelayTime"),
+            recover_hp: num(o, "RecoverRoundTotalHP").filter(|v| *v >= 0.0),
         };
         let mut rounds: Vec<WaveRow> = doc
             .iter()
@@ -189,6 +220,62 @@ impl CoopPlan {
             health_rates,
             score,
             boss_name: text(doc.get(NPC_NAME_SECTION), "NPCNameBoss"),
+            // OBSERVED: ROM table key GMS [Object<n>] MissionList<k> (five per row on the mission map)
+            mission_list: (0..32u32)
+                .filter_map(|k| Some((k, text(o, &format!("MissionList{k}"))?)))
+                .collect(),
+            dialog: doc
+                .get(DIALOG_SECTION)
+                .map(|sec| {
+                    sec.iter()
+                        .map(|(k, v)| (k.trim().to_string(), unquote(v).to_string()))
+                        .filter(|(_, v)| !v.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            weapon_spawns: weapon_rows(doc),
+        }
+    }
+
+    /// The dialogue text of `key` (ASCII case-insensitive).
+    pub fn dialog_text(&self, key: &[u8]) -> Option<&str> {
+        self.dialog
+            .iter()
+            .find(|(k, _)| k.as_bytes().eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// The `[WeaponSpawn<n>]` rows with a round, a weapon id and a place, in `Round` order (stable).
+fn weapon_rows(doc: &ButeDoc) -> Vec<WeaponSpawnRow> {
+    let mut rows: Vec<WeaponSpawnRow> = doc
+        .iter()
+        .filter(|(n, _)| index_of(n, WEAPON_SPAWN_SECTION).is_some())
+        .filter_map(|(_, sec)| {
+            let sec = Some(sec);
+            Some(WeaponSpawnRow {
+                round: num(sec, "Round")? as i32,
+                weapon: num(sec, "WeaponID").filter(|v| *v >= 0.0 && *v <= 65535.0)? as u16,
+                life_s: num(sec, "LifeTime").filter(|v| *v > 0.0),
+                place: text(sec, "Position")?,
+            })
+        })
+        .collect();
+    rows.sort_by_key(|r| r.round);
+    rows
+}
+
+impl CoopPlan {
+    /// The difficulty's last round on a round world (DSV-584): the highest `Round<k>` of the difficulty's health-rate
+    /// row (its `Round0` stands before the first round), when it lies within the spawn tables; else the spawn-table
+    /// rows.
+    // DC-DEFAULT: DSV-584 (proposed)
+    pub fn last_round(&self) -> usize {
+        let n = self.health_rates.len().saturating_sub(1);
+        if n >= 1 && n <= self.rounds.len() {
+            n
+        } else {
+            self.rounds.len()
         }
     }
 }

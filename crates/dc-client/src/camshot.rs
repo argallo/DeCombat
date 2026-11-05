@@ -177,6 +177,114 @@ pub fn view_settings(
     }
 }
 
+/// The note sub of a world camera's field of view (`GS_OBJECT_NOTE` kind 0x0d).
+// DISASM: cshell+0x216800 (the camera's note reader: `read(8)` sub, sub 1 the field of view)
+pub const CAMERA_NOTE_FOV: u8 = 1;
+
+/// `GS_OBJECT_NOTE` `[0x0d][obj:objref16][1:u8][fov_x:f32][fov_y:f32][secs:f32]`: the world camera `obj` blends
+/// its field of view (degrees) to `fov` over `secs` (0: a cut).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FovNote {
+    pub obj: u16,
+    pub fov: [f32; 2],
+    pub secs: f32,
+}
+
+/// Reads a 0xa6 body (after the shell id) as a camera field-of-view note; `None` for any other note or a short or
+/// non-finite one.
+// SPEC: DSV-580 (the server's `gs::camera_fov_note`)
+// DISASM: cshell+0x20fd00 (note kind 0x0d: every camera whose engine object is `obj` reads the rest), cshell+0x216800
+// (sub 1: `read(32)` x 3, the new horizontal and vertical field of view and the blend time)
+pub fn read_fov_note(body: &[u8], bits: usize) -> Option<FovNote> {
+    let mut r = dc_wire::udp::BitReader::with_bit_len(body, bits);
+    if r.remaining_bits() < 8 + 16 + 8 + 96 || r.read_u8() != OBJ_CAMERA_TYPE {
+        return None;
+    }
+    let obj = r.read_u16();
+    if r.read_u8() != CAMERA_NOTE_FOV {
+        return None;
+    }
+    let fov = [r.read_f32(), r.read_f32()];
+    let secs = r.read_f32();
+    (fov.iter().all(|v| v.is_finite()) && secs.is_finite()).then_some(FovNote { obj, fov, secs })
+}
+
+/// One camera's field-of-view blend: from `from` at `at` (ms) to `to` over `ms`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FovBlend {
+    from: [f32; 2],
+    to: [f32; 2],
+    at: u32,
+    ms: f32,
+}
+
+impl FovBlend {
+    fn value(&self, now: u32) -> [f32; 2] {
+        let t = now.saturating_sub(self.at) as f32;
+        if self.ms <= 0.0 || t >= self.ms {
+            return self.to;
+        }
+        let k = t / self.ms;
+        [
+            self.from[0] + (self.to[0] - self.from[0]) * k,
+            self.from[1] + (self.to[1] - self.from[1]) * k,
+        ]
+    }
+}
+
+/// The field-of-view notes of the world cameras: each camera's field of view replaces its blob's once a note came,
+/// blended linearly from the value it had when the note arrived. A camera that is switched off keeps its value for
+/// its next shot (the own view returns with the player's field of view: [`view_settings`] without a shot).
+// DISASM: cshell+0x216800 (sub 1: the old value kept, the new one, the blend time, elapsed := 0), cshell+0x1f8aab..
+// 0x1f8b22 (per frame: past the blend time the new value, else the linear blend)
+// DC-DEFAULT: CLI-1862 (proposed) the blend runs on the client clock from the note's arrival (the 2009 elapsed time
+// grows only in the frames the camera draws); "from" is the value shown at the arrival
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CameraFovs {
+    blends: BTreeMap<u16, FovBlend>,
+}
+
+impl CameraFovs {
+    /// A note arrived at `now`; `blob_fov` is the camera's create-blob field of view (`None`: no such camera yet,
+    /// the note's value stands at once).
+    pub fn on_note(&mut self, n: FovNote, blob_fov: Option<[f32; 2]>, now: u32) {
+        let from = self
+            .blends
+            .get(&n.obj)
+            .map(|b| b.value(now))
+            .or(blob_fov)
+            .unwrap_or(n.fov);
+        self.blends.insert(
+            n.obj,
+            FovBlend {
+                from,
+                to: n.fov,
+                at: now,
+                ms: n.secs.max(0.0) * 1000.0,
+            },
+        );
+    }
+
+    /// The live camera's field of view at `now`.
+    pub fn apply(&self, view: &mut CamShotView, now: u32) {
+        if let Some(b) = self.blends.get(&view.obj) {
+            view.fov = b.value(now);
+        }
+    }
+
+    /// Forgets the cameras whose object is gone.
+    pub fn retain(&mut self, objects: &BTreeMap<u16, ClientObject>) {
+        if !self.blends.is_empty() {
+            self.blends
+                .retain(|obj, _| objects.get(obj).is_some_and(|o| camera_blob(o).is_some()));
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.blends.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +345,104 @@ mod tests {
         let mut c = CamShot::default();
         assert!(c.frame(None).is_none());
         assert!(!c.locks_movement());
+    }
+
+    /// The server's 0xa6 kind-0x0d note reads back; other kinds and subs are not field-of-view notes.
+    #[test]
+    fn the_servers_fov_note_reads_back() {
+        let w = dc_dserver::gs::camera_fov_note(0x1234, [70.0, 52.5], 1.5);
+        // [S2C shell id][0xa6][body]
+        let b = w.as_bytes();
+        assert_eq!(b[1], 0xa6);
+        let (body, bits) = (&b[2..], w.bit_len() - 16);
+        assert_eq!(
+            read_fov_note(body, bits),
+            Some(FovNote {
+                obj: 0x1234,
+                fov: [70.0, 52.5],
+                secs: 1.5
+            })
+        );
+        assert_eq!(read_fov_note(body, bits - 8), None, "short");
+        let mut w = BitWriter::new();
+        w.write_u8(OBJ_CAMERA_TYPE)
+            .write_u16(3)
+            .write_u8(2)
+            .write_f32(1.0)
+            .write_f32(1.0)
+            .write_f32(0.0);
+        assert_eq!(read_fov_note(w.as_bytes(), w.bit_len()), None, "sub 2");
+        let mut w = BitWriter::new();
+        w.write_u8(0x17)
+            .write_u16(3)
+            .write_u8(1)
+            .write_u32(0)
+            .write_u32(0)
+            .write_u32(0);
+        assert_eq!(read_fov_note(w.as_bytes(), w.bit_len()), None, "kind 0x17");
+    }
+
+    /// A note blends the live camera's field of view linearly from its blob's value; 0 s is a cut; a second note
+    /// starts from the value shown; a camera that is gone is forgotten; the own view has no shot field of view.
+    #[test]
+    fn a_fov_note_blends_the_live_camera() {
+        let mut objs = BTreeMap::new();
+        objs.insert(12, camera(true, [0.0; 3], [0.0, 0.0, 0.0, 1.0]));
+        let view = |f: &CameraFovs, now| {
+            let mut v = live_camera(&objs).unwrap();
+            f.apply(&mut v, now);
+            v.fov
+        };
+        let mut f = CameraFovs::default();
+        assert_eq!(view(&f, 0), [80.0, 60.0], "the blob's value");
+        let blob = camera_blob(&objs[&12]).map(|b| b.2);
+        f.on_note(
+            FovNote {
+                obj: 12,
+                fov: [40.0, 30.0],
+                secs: 2.0,
+            },
+            blob,
+            1000,
+        );
+        assert_eq!(view(&f, 1000), [80.0, 60.0]);
+        assert_eq!(view(&f, 2000), [60.0, 45.0], "half way");
+        assert_eq!(view(&f, 3000), [40.0, 30.0]);
+        assert_eq!(view(&f, 9000), [40.0, 30.0], "held");
+        // a second note mid-blend starts where the view is
+        f.on_note(
+            FovNote {
+                obj: 12,
+                fov: [80.0, 60.0],
+                secs: 2.0,
+            },
+            blob,
+            4000,
+        );
+        f.on_note(
+            FovNote {
+                obj: 12,
+                fov: [20.0, 10.0],
+                secs: 0.0,
+            },
+            blob,
+            5000,
+        );
+        assert_eq!(view(&f, 5000), [20.0, 10.0], "a cut");
+        // the shot's vertical value goes to the frame; without a shot the client's own settings stand
+        let mut c = CamShot::default();
+        let mut v = live_camera(&objs).unwrap();
+        f.apply(&mut v, 5000);
+        assert_eq!(c.frame(Some(&v)).map(|s| s.2), Some(10.0));
+        let own = crate::frame::ViewSettings::default();
+        assert_eq!(view_settings(own, Some(10.0)).fov_y_deg, 10.0);
+        assert_eq!(
+            view_settings(own, None),
+            own,
+            "the camera off: the own view"
+        );
+        // the camera object is gone: forgotten
+        f.retain(&BTreeMap::new());
+        assert!(f.is_empty());
     }
 }

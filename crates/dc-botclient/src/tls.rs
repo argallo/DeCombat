@@ -572,6 +572,47 @@ pub fn connect(addr: SocketAddr, timeout: Duration) -> Result<ClientStream, Stri
     connect_with(addr, timeout, &current())
 }
 
+/// A connection to a public web host by name (the client's download of a release): the certificate must chain to
+/// the operating system's roots for `host`, nothing else is trusted (no pin, no trust on first use, no loopback
+/// exception, no plain fallback). TLS 1.2 or 1.3.
+// DC-DEFAULT: CLI-1864 (proposed, USER REQUEST 2026-11-04) a release download trusts only the OS root store
+pub fn connect_public(host: &str, port: u16, timeout: Duration) -> Result<ClientStream, String> {
+    use std::net::ToSocketAddrs;
+    let verifier = native_roots().ok_or("this computer's trusted certificate store is empty")?;
+    let name = ServerName::try_from(host.to_string()).map_err(|e| format!("{host}: {e}"))?;
+    let cfg = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_webpki_verifier(verifier)
+        .with_no_client_auth();
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("{host}: {e}"))?
+        .collect();
+    let mut last = format!("{host}: no address");
+    for addr in addrs {
+        let mut sock = match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => s,
+            Err(e) => {
+                last = format!("connect {host} ({addr}): {e}");
+                continue;
+            }
+        };
+        let _ = sock.set_read_timeout(Some(timeout));
+        let _ = sock.set_write_timeout(Some(timeout));
+        let mut c = ClientConnection::new(Arc::new(cfg.clone()), name.clone())
+            .map_err(|e| e.to_string())?;
+        while c.is_handshaking() {
+            if let Err(e) = c.complete_io(&mut sock) {
+                let _ = sock.shutdown(Shutdown::Both);
+                return Err(format!("{host}: the secure connection failed: {e}"));
+            }
+        }
+        return Ok(ClientStream::Tls(Box::new(StreamOwned::new(c, sock))));
+    }
+    Err(last)
+}
+
 #[cfg(test)]
 #[path = "tls_tests.rs"]
 mod tests;

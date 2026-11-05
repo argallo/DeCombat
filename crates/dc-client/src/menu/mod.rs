@@ -68,6 +68,7 @@ pub mod storage;
 pub mod sysfont;
 pub mod textbox;
 pub mod tuning;
+pub mod updatebox;
 pub mod usebox;
 #[cfg(feature = "window")]
 pub mod window;
@@ -683,6 +684,8 @@ pub struct Menu {
     popups: Vec<Popup>,
     /// CLI-1841: the diagnostic reports' boxes ([`diagbox`]).
     diag: diagbox::DiagUi,
+    /// CLI-1863: the boxes of a newer client ([`updatebox`]).
+    self_update: updatebox::UpdateUi,
     started: Instant,
     pressed: Option<usize>,
     outcome: Option<MenuOutcome>,
@@ -870,6 +873,7 @@ impl Menu {
             screen,
             popups: Vec::new(),
             diag: diagbox::DiagUi::default(),
+            self_update: updatebox::UpdateUi::default(),
             started: Instant::now(),
             pressed: None,
             outcome: None,
@@ -1462,6 +1466,10 @@ impl Menu {
                         let three = diagbox::is_three(&p);
                         diagbox::answer(self, step, p.chosen, three);
                     }
+                    (BoxTag::Update(step), _) => {
+                        let caption = updatebox::chosen_caption(&p);
+                        updatebox::answer(self, step, caption.as_deref());
+                    }
                     _ => self.with_ctx(|s, ctx| s.popup_done(&p, yes, ctx)),
                 }
             }
@@ -1811,6 +1819,8 @@ impl Menu {
         self.tick_popup_at(Instant::now());
         // CLI-1841: the diagnostic reports: problems to ask about or send, their outcome lines, the test's result
         diagbox::tick(self);
+        // CLI-1863: a newer client: its box, the update's progress, the quit for the swap
+        updatebox::tick(self);
         if self
             .popups
             .first()

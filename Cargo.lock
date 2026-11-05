@@ -788,6 +788,7 @@ dependencies = [
  "dc-cone",
  "dc-hangdump",
  "dc-model",
+ "dc-nav",
  "dc-net-engine",
  "dc-rez",
  "dc-rom",
@@ -871,6 +872,7 @@ dependencies = [
  "dc-config",
  "dc-fx-data",
  "dc-model",
+ "dc-nav",
  "dc-net-engine",
  "dc-rez",
  "dc-sim",
@@ -1007,6 +1009,13 @@ dependencies = [
  "dc-rez",
  "dc-rom",
  "dc-world",
+]
+
+[[package]]
+name = "dc-nav"
+version = "0.1.0"
+dependencies = [
+ "dc-sim",
 ]
 
 [[package]]

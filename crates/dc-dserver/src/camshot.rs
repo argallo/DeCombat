@@ -45,6 +45,9 @@ pub const UFLAG_CAMERA_LIVE: u32 = 0x20;
 /// The blob's third byte (camera +0x40). No reader of it was found; every ROM camera has the candidate switches off.
 // DISASM: cshell+0x217bb3 (read), cshell+0x21688a (stored at +0x40); SPEC: UNPROVEN meaning
 pub const TODO_CAMERA_THIRD: u8 = 0;
+/// The camera object's message sub that sets its field of view (`GS_OBJECT_NOTE` note kind 0x0d, DSV-580).
+// DISASM: cshell+0x216800 (camera slot +0x30: `read(8)`, sub 1 reads three 32-bit values)
+pub const CAMERA_NOTE_FOV: u8 = 1;
 
 /// Class and property keys (hash and length; the names are the ROM's, only their hashes are here).
 // OBSERVED: class and property names of the ROM world files' camera and camera point objects (hashes only; 21 worlds,
@@ -267,7 +270,7 @@ pub enum CamAction {
     Off,
     /// Move to the camera point of this index.
     MoveTo(usize),
-    /// A field-of-view change (the 2009 server sent it as an object message; DeCombat does not send it yet).
+    /// A field-of-view change: an object note to the camera (DSV-580), and the create blob of a later client.
     Fov([f32; 2]),
 }
 
@@ -420,6 +423,8 @@ pub struct CamShot {
     round: u32,
     /// Steps applied so far (logs and tests).
     pub applied: u32,
+    /// Field-of-view changes applied and not yet sent: (camera object, degrees) (DSV-580).
+    fov_notes: Vec<(u16, [f32; 2])>,
 }
 
 impl CamShot {
@@ -546,9 +551,14 @@ impl CamShot {
                         c.rot = p.rot;
                     }
                 }
-                // TODO: the field-of-view message of the 2009 camera object (sub 1 `[fov_x][fov_y][secs]`,
-                // cshell+0x216800) has no known server message id; not sent (TODO_CAMERA_FOV_MESSAGE)
-                CamAction::Fov(_) => continue,
+                // DC-DEFAULT: DSV-580 (proposed) the camera's field of view: an object note (`gs::camera_fov_note`),
+                // kept for the create blob of a client that enters later
+                CamAction::Fov(f) => {
+                    c.info.fov = f;
+                    self.fov_notes.push((c.obj, f));
+                    self.applied += 1;
+                    continue;
+                }
             }
             changed[s.camera] = true;
             self.applied += 1;
@@ -566,10 +576,44 @@ impl CamShot {
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
-}
 
-/// A field-of-view statement is evaluated but not sent (the message that carries it is not known).
-pub const TODO_CAMERA_FOV_MESSAGE: bool = false;
+    /// The field-of-view changes applied since the last call: (camera object, degrees).
+    pub fn take_fov_notes(&mut self) -> Vec<(u16, [f32; 2])> {
+        std::mem::take(&mut self.fov_notes)
+    }
+
+    /// A camera statement of the world's statement runner (a mission or round world, DSV-580): `on` / `off`, a move to
+    /// a camera point, a field of view, applied with the next [`CamShot::due`]. False when `camera` (or the point) is
+    /// not in the world.
+    // DC-DEFAULT: DSV-580 (proposed)
+    pub fn statement(&mut self, cams: &WorldCameras, cue: &crate::script::Cue, now: u32) -> bool {
+        use crate::script::Cue;
+        let (name, action) = match cue {
+            Cue::Switch { target, on } => (
+                target,
+                Some(if *on { CamAction::On } else { CamAction::Off }),
+            ),
+            Cue::MoveTo { camera, point } => (camera, cams.point(point).map(CamAction::MoveTo)),
+            Cue::Fov { camera, fov } => (camera, Some(CamAction::Fov(*fov))),
+            _ => return false,
+        };
+        let Some(camera) = cams.camera(name).filter(|&i| i < self.cameras.len()) else {
+            return false;
+        };
+        let Some(action) = action else {
+            return false;
+        };
+        self.pending.push((
+            now,
+            CamStep {
+                at_ms: 0,
+                camera,
+                action,
+            },
+        ));
+        true
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -782,8 +826,71 @@ mod tests {
         assert_eq!(shot.cameras[0].pos, [-5.0, 0.0, 5.0]);
         assert_eq!(shot.due(1_010, &cams().points, &pbox).len(), 1);
         assert!(!shot.cameras[0].live);
-        // the field-of-view statement is not sent
+        // DSV-580: the field-of-view statement is no change record but a note, and the create blob keeps it
         assert!(shot.due(5_000, &cams().points, &pbox).is_empty());
+        assert_eq!(shot.take_fov_notes(), vec![(5, [55.0, 41.25])]);
+        assert_eq!(shot.cameras[0].info.fov, [55.0, 41.25]);
         assert_eq!(shot.pending(), 0);
+    }
+
+    /// DSV-580: the statement runner's camera cues (a mission or round world): `on`, a move to a point, a field of
+    /// view, applied with the next `due`; names the world does not have are left to the co-op rules.
+    #[test]
+    fn statement_cues_move_the_world_camera() {
+        use crate::script::Cue;
+        let pbox = PosBox {
+            min: [-1000.0; 3],
+            max: [1000.0; 3],
+        };
+        let cams = cams();
+        let mut shot = CamShot::plan(&cams, None, || 9);
+        let cue = |c: &str, w: &str| match w {
+            "on" => Cue::Switch {
+                target: c.as_bytes().to_vec(),
+                on: true,
+            },
+            "off" => Cue::Switch {
+                target: c.as_bytes().to_vec(),
+                on: false,
+            },
+            "fov" => Cue::Fov {
+                camera: c.as_bytes().to_vec(),
+                fov: [100.0, 84.0],
+            },
+            p => Cue::MoveTo {
+                camera: c.as_bytes().to_vec(),
+                point: p.as_bytes().to_vec(),
+            },
+        };
+        assert!(shot.statement(&cams, &cue("CAM", "p1"), 100));
+        assert!(shot.statement(&cams, &cue("cam", "fov"), 100));
+        assert!(shot.statement(&cams, &cue("Cam", "on"), 100));
+        assert!(
+            !shot.statement(&cams, &cue("Music", "on"), 100),
+            "no camera"
+        );
+        assert!(
+            !shot.statement(&cams, &cue("Cam", "nowhere"), 100),
+            "no point"
+        );
+        assert!(!shot.statement(&cams, &Cue::HideCharacters(true), 100));
+        assert!(shot.due(50, &cams.points, &pbox).is_empty(), "not yet due");
+        let recs = shot.due(100, &cams.points, &pbox);
+        assert_eq!(recs.len(), 1, "one change record for the camera");
+        let c = &shot.cameras[0];
+        assert!(c.live);
+        assert_eq!((c.pos, c.info.fov), ([-5.0, 0.0, 5.0], [100.0, 84.0]));
+        assert_eq!(shot.take_fov_notes(), vec![(9, [100.0, 84.0])]);
+        // a later client gets the camera live, at the point, with the new field of view in its blob
+        let blob = camera_blob(&shot.cameras[0].info);
+        let mut r = blob.reader();
+        r.read_u8();
+        r.read_u8();
+        r.read_u8();
+        r.read_u8();
+        assert_eq!((r.read_f32(), r.read_f32()), (100.0, 84.0));
+        assert!(shot.statement(&cams, &cue("cam", "off"), 4_700));
+        assert_eq!(shot.due(4_700, &cams.points, &pbox).len(), 1);
+        assert!(!shot.cameras[0].live);
     }
 }

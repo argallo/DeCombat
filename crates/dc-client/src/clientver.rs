@@ -2,10 +2,11 @@
 //! web port (LG-322). Below `min_version` it shows why and does not log in; below `latest` it tells the player once and
 //! goes on. Only a release build knows its version (the tag, `tools/ci_env.sh`); a development build asks nothing and is
 //! never refused. No answer, or a lobby that names no version, changes nothing: the login's own errors speak for it.
+//! Both boxes offer the download page and "Update now" ([`crate::selfupdate`], `menu::updatebox`).
 // DC-DEFAULT: CLI-1651 (proposed, USER REQUEST 2026-11-02), see DC_DEFAULTS.md
 
+use crate::selfupdate::{self, Offer, Source};
 use std::net::SocketAddr;
-use std::sync::Mutex;
 use std::time::Duration;
 
 /// The whole check may hold the login back this long at most.
@@ -37,41 +38,51 @@ fn show(v: [u32; 3]) -> String {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
     Fine,
-    /// The text of the once-only notice.
-    Newer(String),
-    /// The text of the refusal.
-    TooOld(String),
+    /// A newer release: the once-only box.
+    Newer(Offer),
+    /// Too old for this lobby: the refusal box (its text is the refusal).
+    TooOld(Offer),
 }
 
-/// Reads the document (a broken one is no verdict: `Fine`). The address text is the lobby's, so it is cut and cleaned.
+/// Reads the document (a broken one is no verdict: `Fine`). The page and the direct links are the lobby's, so only
+/// plain `https://` addresses are kept ([`selfupdate::page_url`], [`selfupdate::Downloads`]).
+// DC-DEFAULT: CLI-1863 (proposed, USER REQUEST 2026-11-04) short texts; the box's buttons open the page or update
 pub fn judge(doc: &str, have: [u32; 3]) -> Verdict {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(doc) else {
         return Verdict::Fine;
     };
     let field = |k: &str| v.get(k).and_then(|x| x.as_str()).and_then(parse);
-    let url: String = v
-        .get("update_url")
-        .and_then(|x| x.as_str())
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(100)
-        .collect();
-    let url = if url.is_empty() { "decombat.com" } else { &url };
+    let page = selfupdate::page_url(
+        v.get("update_url")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default(),
+    );
+    let offer = |text: String, too_old: bool| Offer {
+        text,
+        too_old,
+        page: page.clone(),
+        source: Source::Release {
+            have,
+            zip: selfupdate::Downloads::from_doc(&v).for_this(),
+        },
+    };
     if let Some(min) = field("min_version") {
         if have < min {
-            return Verdict::TooOld(format!(
-                "{REFUSAL_START} ({}) is too old for this server (it needs {} or newer). Get the new version at {url}.",
-                show(have),
-                show(min)
+            return Verdict::TooOld(offer(
+                format!(
+                    "{REFUSAL_START} ({}) is too old for this server. It needs {} or newer.",
+                    show(have),
+                    show(min)
+                ),
+                true,
             ));
         }
     }
     if let Some(latest) = field("latest") {
         if have < latest {
-            return Verdict::Newer(format!(
-                "A new DeCombat version ({}) is available. Get it at {url}.",
-                show(latest)
+            return Verdict::Newer(offer(
+                format!("DeCombat {} is out. You have {}.", show(latest), show(have)),
+                false,
             ));
         }
     }
@@ -83,42 +94,50 @@ pub fn is_refusal(text: &str) -> bool {
     text.starts_with(REFUSAL_START)
 }
 
-fn pending() -> &'static Mutex<Option<String>> {
-    static P: Mutex<Option<String>> = Mutex::new(None);
-    &P
-}
-
-/// The notice waiting for the screen after the login, once.
-pub fn take_notice() -> Option<String> {
-    pending().lock().unwrap_or_else(|e| e.into_inner()).take()
-}
-
-/// The check of a login to the lobby at `auth`: `Err(text)` when this client is too old for it.
+/// The check of a login to the lobby at `auth`: `Err(text)` when this client is too old for it. A friend pack with
+/// its own update folder (CLI-1866) and a development build ask nothing.
 pub fn before_login(auth: SocketAddr) -> Result<(), String> {
     match current() {
-        Some(have) => check(auth, have),
-        None => Ok(()),
+        Some(have) if !selfupdate::local_updates() => check(auth, have),
+        _ => Ok(()),
     }
 }
 
-/// [`before_login`] for a client of version `have`.
-pub fn check(auth: SocketAddr, have: [u32; 3]) -> Result<(), String> {
+/// The lobby's verdict for a client of version `have` (`Fine` when it does not answer).
+pub fn ask(auth: SocketAddr, have: [u32; 3]) -> Verdict {
     let Some(web) = crate::menu::clanpage::web_addr(Some(auth)) else {
-        return Ok(());
+        return Verdict::Fine;
     };
-    let Ok(reply) = crate::mods::web_get(web, "/client_version.json", MAX_DOC, TIMEOUT, TIMEOUT, &mut |_, _| {}) else {
-        return Ok(());
+    let Ok(reply) = crate::mods::web_get(
+        web,
+        "/client_version.json",
+        MAX_DOC,
+        TIMEOUT,
+        TIMEOUT,
+        &mut |_, _| {},
+    ) else {
+        return Verdict::Fine;
     };
     if reply.status != 200 {
-        return Ok(());
+        return Verdict::Fine;
     }
-    match judge(&String::from_utf8_lossy(&reply.body), have) {
+    judge(&String::from_utf8_lossy(&reply.body), have)
+}
+
+/// [`before_login`] for a client of version `have`: the offer goes to the menu's update box
+/// ([`selfupdate::post_offer`]), a newer release once per run, a refusal at every refused login.
+pub fn check(auth: SocketAddr, have: [u32; 3]) -> Result<(), String> {
+    match ask(auth, have) {
         Verdict::Fine => Ok(()),
-        Verdict::TooOld(text) => Err(text),
-        Verdict::Newer(text) => {
+        Verdict::TooOld(o) => {
+            let text = o.text.clone();
+            selfupdate::post_offer(o);
+            Err(text)
+        }
+        Verdict::Newer(o) => {
             static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                *pending().lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+                selfupdate::post_offer(o);
             }
             Ok(())
         }
@@ -145,16 +164,30 @@ mod tests {
     #[test]
     fn the_document_decides_refusal_notice_or_nothing() {
         match judge(DOC, [0, 2, 9]) {
-            Verdict::TooOld(t) => {
-                assert!(is_refusal(&t), "{t}");
-                assert!(t.contains("0.2.9") && t.contains("0.3.0") && t.contains("decombat.com"), "{t}");
+            Verdict::TooOld(o) => {
+                assert!(is_refusal(&o.text) && o.too_old, "{o:?}");
+                assert!(
+                    o.text.contains("0.2.9") && o.text.contains("0.3.0"),
+                    "{o:?}"
+                );
+                assert_eq!(o.page, "https://decombat.com");
             }
             v => panic!("{v:?}"),
         }
         match judge(DOC, [0, 3, 0]) {
-            Verdict::Newer(t) => {
-                assert!(!is_refusal(&t), "{t}");
-                assert!(t.contains("0.4.0") && t.contains("decombat.com"), "{t}");
+            Verdict::Newer(o) => {
+                assert!(!is_refusal(&o.text) && !o.too_old, "{o:?}");
+                assert!(
+                    o.text.contains("0.4.0") && o.text.contains("0.3.0"),
+                    "{o:?}"
+                );
+                assert_eq!(
+                    o.source,
+                    Source::Release {
+                        have: [0, 3, 0],
+                        zip: None
+                    }
+                );
             }
             v => panic!("{v:?}"),
         }
@@ -162,14 +195,63 @@ mod tests {
         assert_eq!(judge(DOC, [1, 0, 0]), Verdict::Fine);
     }
 
+    // CLI-1863 / LG-404: the page and the direct zip of this platform come from the document, https:// only
+    #[test]
+    fn the_document_names_the_page_and_the_platform_zips() {
+        let doc = r#"{"latest":"0.4.0","update_url":"https://example.org/get",
+            "download":{"windows":"https://example.org/DeCombat-win-v0.4.0.zip","macos":"https://example.org/DeCombat-mac-v0.4.0.zip"}}"#;
+        let Verdict::Newer(o) = judge(doc, [0, 3, 0]) else {
+            panic!()
+        };
+        assert_eq!(o.page, "https://example.org/get");
+        let want = if cfg!(windows) {
+            Some("https://example.org/DeCombat-win-v0.4.0.zip".to_string())
+        } else if cfg!(target_os = "macos") {
+            Some("https://example.org/DeCombat-mac-v0.4.0.zip".to_string())
+        } else {
+            None
+        };
+        assert_eq!(
+            o.source,
+            Source::Release {
+                have: [0, 3, 0],
+                zip: want
+            }
+        );
+        // no page: the GitHub page; a zip that is not a plain https:// address is dropped
+        let bare = r#"{"latest":"0.4.0","download":{"windows":"http://example.org/x.zip","macos":"https://a b"}}"#;
+        let Verdict::Newer(o) = judge(bare, [0, 3, 0]) else {
+            panic!()
+        };
+        assert_eq!(o.page, selfupdate::DEFAULT_PAGE);
+        assert_eq!(
+            o.source,
+            Source::Release {
+                have: [0, 3, 0],
+                zip: None
+            }
+        );
+        let odd = r#"{"latest":"0.4.0","update_url":"javascript:alert(1)"}"#;
+        let Verdict::Newer(o) = judge(odd, [0, 3, 0]) else {
+            panic!()
+        };
+        assert_eq!(o.page, selfupdate::DEFAULT_PAGE);
+    }
+
     #[test]
     fn a_broken_or_empty_document_stops_nobody() {
-        for doc in ["", "not json", "{}", r#"{"latest":"soon","min_version":7}"#, "[]"] {
+        for doc in [
+            "",
+            "not json",
+            "{}",
+            r#"{"latest":"soon","min_version":7}"#,
+            "[]",
+        ] {
             assert_eq!(judge(doc, [0, 0, 1]), Verdict::Fine, "{doc}");
         }
         let hostile = "{\"min_version\":\"9.0.0\",\"update_url\":\"evil\\r\\nsite\"}";
         match judge(hostile, [0, 0, 1]) {
-            Verdict::TooOld(t) => assert!(t.contains("evilsite"), "{t}"),
+            Verdict::TooOld(o) => assert_eq!(o.page, selfupdate::DEFAULT_PAGE),
             v => panic!("{v:?}"),
         }
     }
@@ -203,21 +285,26 @@ mod tests {
 
     #[test]
     fn a_login_is_refused_told_or_let_through_by_the_lobbys_answer() {
+        assert!(matches!(
+            ask(lobby_answering("200 OK", DOC), [0, 1, 0]),
+            Verdict::TooOld(_)
+        ));
         let e = check(lobby_answering("200 OK", DOC), [0, 1, 0]).unwrap_err();
         assert!(is_refusal(&e), "{e}");
-        check(lobby_answering("200 OK", DOC), [0, 3, 5]).unwrap();
-        let told = take_notice().expect("the notice waits for the next screen");
-        assert!(told.contains("0.4.0"), "{told}");
-        // once per run
-        check(lobby_answering("200 OK", DOC), [0, 3, 5]).unwrap();
-        assert_eq!(take_notice(), None);
+        assert!(
+            matches!(ask(lobby_answering("200 OK", DOC), [0, 3, 5]), Verdict::Newer(o) if o.text.contains("0.4.0"))
+        );
         // a lobby with no version, or no web port at all, changes nothing
         check(lobby_answering("404 Not Found", ""), [0, 1, 0]).unwrap();
         let closed = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap()
         };
-        check(SocketAddr::new(closed.ip(), closed.port().wrapping_sub(8080)), [0, 1, 0]).unwrap();
+        check(
+            SocketAddr::new(closed.ip(), closed.port().wrapping_sub(8080)),
+            [0, 1, 0],
+        )
+        .unwrap();
     }
 
     #[test]

@@ -27,6 +27,7 @@ dc-config = { path = "../dc-config" }
 dc-model = { path = "../dc-model" }
 # dc-sim: the BSP ray of its collision module traces each reported shot against the world (slice 4).
 dc-sim = { path = "../dc-sim" }
+dc-nav = { path = "../dc-nav" }
 # dc-cone: the 2009 shot cone (random table, reads, half-width, pellet direction, inverse) the shot check rebuilds.
 dc-cone = { path = "../dc-cone" }
 # dc-fx-data: the effect group names of the user's ROM (the planted bomb's indicator and blast groups, DSV-220).

@@ -151,6 +151,8 @@ pub enum BoxTag {
     UseConfirm { uid: u32 },
     /// CLI-1841: a box of the diagnostic reports (`menu::diagbox`); the chosen button is [`Popup::chosen`].
     Diag(super::diagbox::Step),
+    /// CLI-1863: a box of a newer client (`menu::updatebox`); the chosen button is [`Popup::chosen`].
+    Update(super::updatebox::Step),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -29,6 +29,7 @@ use dc_wire::udp::BitWriter;
 mod anim;
 mod combat;
 pub mod coop;
+mod coop_show;
 // fall damage (DSV-76)
 pub mod fall;
 pub mod gungame;
@@ -1454,6 +1455,8 @@ pub enum GameOut {
     AiLook {
         slot: usize,
     },
+    /// Co-op: run this command text with the world's statements (a mission AI's death command, DSV-571).
+    WorldScript(Vec<u8>),
     /// The player died: on every client its character is hidden and loses its weapon model, and a corpse object at
     /// `pos` facing `yaw` plays `clip` (combined clip index, length in ms) (DSV-44).
     Died {
@@ -1780,6 +1783,8 @@ pub struct Game {
     centre: [f32; 3],
     /// The world geometry shots are traced against (slice 4, DSV-34).
     trace: Option<std::sync::Arc<dc_sim::CollisionWorld>>,
+    /// The geometry and the navigation grid of the co-op AI (FT-S11).
+    coop_nav: coop::NavSlot,
     /// The surface id of each world polygon (V-SURF-1, DSV-62).
     surfaces: Option<std::sync::Arc<crate::surface::SurfaceProbe>>,
     /// Spawn points with their team (None = any team).
@@ -1919,6 +1924,7 @@ impl Game {
             },
             centre: world.centre(),
             trace: world.trace.clone(),
+            coop_nav: coop::NavSlot::new(world),
             surfaces: world.surfaces.clone(),
             spawns,
             spawn_modes: world.spawn_modes.clone(),
@@ -3126,6 +3132,10 @@ impl Game {
         // DC-DEFAULT: FT-S7 (proposed) the co-op round timer at the round start
         if self.coop.is_some() && left > 0 {
             self.send(pid, gs::coop_round_clock(true, left));
+        }
+        // DC-DEFAULT: DSV-584 (proposed) the running mission's goal list or round, and its music, to this player
+        if self.coop.is_some() {
+            self.coop_catch_up(pid, now);
         }
     }
 

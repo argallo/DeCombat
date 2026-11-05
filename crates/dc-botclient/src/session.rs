@@ -331,12 +331,13 @@ pub enum GameEvent {
 /// line, 0x6c player left (its `kicked` byte; the roster side stays here), 0x77 overlay, 0x7d match settings, 0xa2
 /// ping table (the board's ping column, CLI-1360), 0xa6 object notes, 0xc8 multi-kill, 0xd6 HiSec case, 0xd7 co-op, 0xd9 music order, 0xda player points (the client's
 /// shot counter, WEAPON_FIRE_2009_addendum_cone.md AC-1.5), and the mode messages the client HUD reads: 0x4f / 0x50 /
-/// 0x51 / 0x56 / 0xad Search and Destroy, 0xc6 flag state, 0xcb Spy Hunt, 0xd3 Quarantine; and our own 0xf1, other
-/// players' health in a match with wallhacks (DSV-480, `dc_wire::remotehealth`).
+/// 0x51 / 0x56 / 0xad Search and Destroy, 0xc6 flag state, 0xc9 Fire Team mission (goal list, banner), 0xcb Spy Hunt,
+/// 0xd3 Quarantine; and our own 0xf1, other players' health in a match with wallhacks (DSV-480,
+/// `dc_wire::remotehealth`).
 // DC-DEFAULT: BOT-95 (proposed, playtest report "no flag sounds, no visual when you grab the flag") the mode shells
 // were parsed by the HUD (hud::msgs::read_shell) but never handed over, so no notice, sound or counter followed them
 // SPEC: GAME_MESSAGES_2009_S2C.md Â§2.1, Â§2.4 (0x68), Â§3.2 (0x6c), Â§3.3, Â§3.5, Â§4.2 (0xd9), Â§8.3, 0x77 row, 0xda row
-pub const RAW_SHELL_EVENTS: [u8; 26] = [
+pub const RAW_SHELL_EVENTS: [u8; 27] = [
     0x3f,
     0x45,
     0x46,
@@ -355,6 +356,7 @@ pub const RAW_SHELL_EVENTS: [u8; 26] = [
     0xad,
     0xc6,
     0xc8,
+    0xc9,
     0xcb,
     0xd3,
     0xd6,

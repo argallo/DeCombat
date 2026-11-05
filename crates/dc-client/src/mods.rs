@@ -702,6 +702,12 @@ pub fn crc32(data: &[u8]) -> u32 {
 // Public format: PKWARE APPNOTE.TXT (end of central directory 0x06054b50, central header 0x02014b50, local header
 // 0x04034b50)
 pub fn read_package(b: &[u8], cap: u64) -> Result<Vec<ZipFile>, String> {
+    read_zip(b, cap, false)
+}
+
+/// [`read_package`], with `deflate` also deflated entries (method 8; the game's own release zips, CLI-1865).
+// Public format: PKWARE APPNOTE.TXT section 4.4.5 (method 8 = deflate, RFC 1951)
+pub fn read_zip(b: &[u8], cap: u64, deflate: bool) -> Result<Vec<ZipFile>, String> {
     let min = b.len().saturating_sub(22 + 0xffff);
     let eocd = (min..=b.len().saturating_sub(22))
         .rev()
@@ -752,7 +758,11 @@ pub fn read_package(b: &[u8], cap: u64) -> Result<Vec<ZipFile>, String> {
         if flags & 1 != 0 {
             return Err(format!("entry '{name}' is encrypted"));
         }
-        if method != 0 || csize != usize_ {
+        if csize == u32::MAX as usize || usize_ == u32::MAX as usize {
+            return Err(format!("entry '{name}' is too large (zip64 is not taken)"));
+        }
+        let stored = method == 0 && csize == usize_;
+        if !stored && !(deflate && method == 8) {
             return Err(format!(
                 "entry '{name}' is compressed; only dc-modkit packs (stored entries) are taken"
             ));
@@ -773,10 +783,20 @@ pub fn read_package(b: &[u8], cap: u64) -> Result<Vec<ZipFile>, String> {
             .checked_add(30 + lnlen + lelen)
             .ok_or("the package is damaged")?;
         let end = start.checked_add(csize).ok_or("the package is damaged")?;
-        let data = b
-            .get(start..end)
-            .ok_or("the package is truncated")?
-            .to_vec();
+        let raw = b.get(start..end).ok_or("the package is truncated")?;
+        let data = if stored {
+            raw.to_vec()
+        } else {
+            let mut out = Vec::with_capacity(usize_);
+            flate2::read::DeflateDecoder::new(raw)
+                .take(usize_ as u64 + 1)
+                .read_to_end(&mut out)
+                .map_err(|e| format!("entry '{name}' does not unpack: {e}"))?;
+            if out.len() != usize_ {
+                return Err(format!("entry '{name}' unpacks to the wrong size"));
+            }
+            out
+        };
         if crc32(&data) != crc {
             return Err(format!("entry '{name}' fails its checksum"));
         }

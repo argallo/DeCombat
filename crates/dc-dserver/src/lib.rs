@@ -65,6 +65,7 @@ pub mod objects;
 pub mod pipe;
 pub mod rom_tables;
 pub mod runner;
+pub mod script;
 pub mod session;
 pub mod shell64;
 pub mod sounds;

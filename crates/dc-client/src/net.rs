@@ -1334,6 +1334,8 @@ struct Shared {
     hud_view_object: Option<u16>,
     /// The last countdown sent to each pickup object (shell 0xa6 type 0x17 sub 2).
     case_countdown: BTreeMap<u16, i32>,
+    /// The world cameras' field-of-view notes (shell 0xa6 kind 0x0d, CLI-1862).
+    cam_fovs: crate::camshot::CameraFovs,
     /// Soft failures of the HUD's shell readers (appended to [`NetStats::parse_notes`]).
     hud_notes: Vec<String>,
     /// The own death time (0x67 state 2; cleared by state 1) and the last killer of the local player (0x6d).
@@ -1670,6 +1672,16 @@ impl Shared {
                                     t.aim.get_or_insert_with(Default::default).on_note(n);
                                 }
                             }
+                            // a world camera's field of view (type 0x0d sub 1, CLI-1862)
+                            if let Some(n) = crate::camshot::read_fov_note(&body, bits) {
+                                let blob = s
+                                    .table
+                                    .objects
+                                    .get(&n.obj)
+                                    .and_then(crate::camshot::camera_blob)
+                                    .map(|b| b.2);
+                                self.cam_fovs.on_note(n, blob, now);
+                            }
                         }
                         _ => {}
                     }
@@ -1718,6 +1730,8 @@ impl Shared {
             );
         }
         self.zero_health_logged = zero_alive;
+        // the field-of-view notes of camera objects that are gone
+        self.cam_fovs.retain(&s.table.objects);
         if let Some(c) = s.obs.client_id {
             self.arsenal.set_own_id(c.0 as u8);
         }
@@ -3102,6 +3116,7 @@ impl NetWorld {
             panel_selects: 0,
             hud_view_object: None,
             case_countdown: BTreeMap::new(),
+            cam_fovs: crate::camshot::CameraFovs::default(),
             hud_notes: Vec::new(),
             hud_roster: BTreeMap::new(),
             hud_own: (None, None),
@@ -3494,10 +3509,14 @@ impl WorldSource for NetWorld {
         // DC-DEFAULT: CLI-86 (proposed) no first-person weapon in the not-playing states 2, 3, 5, 6
         let playing = !matches!(g.hud.life_state, 2 | 3 | 5 | 6);
         // a live world camera hides the first-person weapon too (cshell+0x1f50b0, CLI-240)
-        let cam_shot = g
+        let mut cam_shot = g
             .session
             .as_ref()
             .and_then(|s| crate::camshot::live_camera(&s.table.objects));
+        // the camera's field-of-view notes (CLI-1862)
+        if let Some(v) = cam_shot.as_mut() {
+            g.cam_fovs.apply(v, now);
+        }
         let view_weapon =
             view_weapon(&mut g.arsenal, now).filter(|_| playing && cam_shot.is_none());
         let own_pid = g
@@ -4021,6 +4040,7 @@ fn shell_hud_event(
         ShellRead::Bomb(b) => HudEvent::Bomb(b),
         ShellRead::Qrt(q) => HudEvent::Qrt(q),
         ShellRead::Spy(e) => HudEvent::Spy(e),
+        ShellRead::Mission(e) => HudEvent::Mission(e),
         ShellRead::CoopClock { running, secs } => HudEvent::CoopClock { running, secs },
         ShellRead::Note(ObjectNote::Countdown { obj, remaining }) => {
             countdown.insert(obj, remaining);

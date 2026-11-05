@@ -33,6 +33,7 @@ fn rom_breakables_and_explosions_parse_and_name_their_own_world() {
     let rom = dc_rez::dc_rom::rom_or_skip!();
     let mut worlds = 0;
     let (mut breakables, mut explosions, mut actions, mut effects) = (0, 0, 0, 0);
+    let mut script_worlds = 0;
     for listed in world_entries(&rom) {
         let base = listed.rsplit('\\').next().unwrap_or(&listed);
         let arg = format!("Worlds\\{}", &base[..base.len() - WORLD_EXT.len()]);
@@ -44,7 +45,10 @@ fn rom_breakables_and_explosions_parse_and_name_their_own_world() {
                 w.brushes
                     .iter()
                     .any(|x| x.name.eq_ignore_ascii_case(&b.name)
-                        && x.class == dc_dserver::world::BrushClass::Breakable),
+                        && (x.class == dc_dserver::world::BrushClass::Breakable
+                            // DSV-575: a plain world model whose death command drives the triggers
+                            || (x.class == dc_dserver::world::BrushClass::Plain
+                                && !b.script.is_empty()))),
                 "a breakable is a breakable brush"
             );
             for a in &b.death {
@@ -63,10 +67,15 @@ fn rom_breakables_and_explosions_parse_and_name_their_own_world() {
         for e in &d.explosions {
             assert!(e.damage >= 0.0 && e.radius >= 0.0);
         }
+        if d.breakables.iter().any(|b| !b.script.is_empty()) {
+            script_worlds += 1;
+        }
         breakables += d.breakables.len();
         explosions += d.explosions.len();
         worlds += 1;
     }
+    // DSV-575: only the mission world has world models whose death drives its triggers
+    assert!(script_worlds <= 1, "{script_worlds} worlds");
     println!(
         "{worlds} worlds: {breakables} breakables, {explosions} explosion objects, {actions} death actions ({effects} name a placed effect)"
     );

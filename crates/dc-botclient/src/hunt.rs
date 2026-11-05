@@ -228,96 +228,10 @@ impl Hunter {
 pub(crate) mod tests {
     use super::*;
     use crate::motion::{Body, MotionKind};
-    use dc_sim::{CollModel, CollisionWorld, ConvexPoly, SURF_SOLID};
+    use dc_sim::CollisionWorld;
     use std::sync::Arc;
 
-    /// A closed box (6 outward faces) from `lo` to `hi`.
-    pub(crate) fn solid_box(lo: [f32; 3], hi: [f32; 3]) -> CollModel {
-        let p = |x: f32, y: f32, z: f32| V3::new(x, y, z);
-        let (a, b) = (lo, hi);
-        let faces = vec![
-            // -x, +x
-            ConvexPoly::from_corners(
-                vec![
-                    p(a[0], a[1], a[2]),
-                    p(a[0], a[1], b[2]),
-                    p(a[0], b[1], b[2]),
-                    p(a[0], b[1], a[2]),
-                ],
-                SURF_SOLID,
-            ),
-            ConvexPoly::from_corners(
-                vec![
-                    p(b[0], a[1], a[2]),
-                    p(b[0], b[1], a[2]),
-                    p(b[0], b[1], b[2]),
-                    p(b[0], a[1], b[2]),
-                ],
-                SURF_SOLID,
-            ),
-            // -z, +z
-            ConvexPoly::from_corners(
-                vec![
-                    p(a[0], a[1], a[2]),
-                    p(a[0], b[1], a[2]),
-                    p(b[0], b[1], a[2]),
-                    p(b[0], a[1], a[2]),
-                ],
-                SURF_SOLID,
-            ),
-            ConvexPoly::from_corners(
-                vec![
-                    p(a[0], a[1], b[2]),
-                    p(b[0], a[1], b[2]),
-                    p(b[0], b[1], b[2]),
-                    p(a[0], b[1], b[2]),
-                ],
-                SURF_SOLID,
-            ),
-            // -y, +y
-            ConvexPoly::from_corners(
-                vec![
-                    p(a[0], a[1], a[2]),
-                    p(b[0], a[1], a[2]),
-                    p(b[0], a[1], b[2]),
-                    p(a[0], a[1], b[2]),
-                ],
-                SURF_SOLID,
-            ),
-            ConvexPoly::from_corners(
-                vec![
-                    p(a[0], b[1], a[2]),
-                    p(a[0], b[1], b[2]),
-                    p(b[0], b[1], b[2]),
-                    p(b[0], b[1], a[2]),
-                ],
-                SURF_SOLID,
-            ),
-        ];
-        CollModel::from_polys(&faces)
-    }
-
-    /// A floor at y = 0 and a wall across the straight line from (0, 40, 0) to (0, 40, 1200).
-    pub(crate) fn walled() -> Arc<CollisionWorld> {
-        let models = vec![
-            solid_box([-5000.0, -64.0, -5000.0], [5000.0, 0.0, 5000.0]),
-            solid_box([-400.0, 0.0, 580.0], [400.0, 300.0, 620.0]),
-        ];
-        Arc::new(CollisionWorld::from_parts(models, &[]))
-    }
-
-    /// A floor and a cup open toward -z around the start (0, 40, 0): a back wall at z 300..340 across x -500..500 and
-    /// side walls from z -500 to 340 at x = +-500. The goal (0, 40, 1500) lies behind the back wall, so the way out
-    /// starts away from the goal.
-    pub(crate) fn cupped() -> Arc<CollisionWorld> {
-        let models = vec![
-            solid_box([-5000.0, -64.0, -5000.0], [5000.0, 0.0, 5000.0]),
-            solid_box([-540.0, 0.0, 300.0], [540.0, 300.0, 340.0]),
-            solid_box([-540.0, 0.0, -500.0], [-500.0, 300.0, 340.0]),
-            solid_box([500.0, 0.0, -500.0], [540.0, 300.0, 340.0]),
-        ];
-        Arc::new(CollisionWorld::from_parts(models, &[]))
-    }
+    pub(crate) use dc_nav::testworld::{cupped, solid_box, walled};
 
     /// Hunts from `start` toward `goal` on `w` for `secs` (60 Hz body, the session's order: steer, then advance);
     /// returns the time of the first clear line from the eye to the goal (if any), the end position and the hunter.

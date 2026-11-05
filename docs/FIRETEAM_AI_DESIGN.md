@@ -272,6 +272,10 @@ world is parsed once per map into an `Arc<CollisionWorld>` and an `Arc<NavGraph>
 
 ### 4.2 Navigation
 
+> Slice 1 as built (2026-11-05, DC_DEFAULTS FT-S11): the AI use the bots' navigation grid (`dc-nav`, the lattice of
+> 4 below, grown on demand between each AI and its target) over the level model, not the ROM volumes yet; the
+> blocker polygons are player clips and do not stop them. The volumes of 1-3 stay the plan for slice 2.
+
 **Source: the ROM navigation volumes when the world has them** (both co-op worlds do, F9); a baked grid otherwise
 (synthetic worlds, other ROM maps used by a mod for co-op, mod maps).
 
@@ -380,6 +384,9 @@ chances by their key names; missing keys use the defaults in the table.
   (10 s) with a 0xc9 sub 2 banner. Health of an actor = template health x `AIHealthRateRoundTable<difficulty>`
   `Round<n>` (last value repeats past the table). Weapon drops: in the listed rounds a type-0x17 kind-6 pickup of
   `WeaponID` at the named marker for `LifeTime` seconds. The last round cleared = mission success.
+  **Superseded for the ROM wave map on 2026-11-05 (DSV-576..DSV-578):** its own trigger network drives the rounds:
+  the server fires the start box at the match start, the world's round counter starts each round, a cleared round
+  runs the kill counter's (unset) event of its number, and the difficulty's ending statements end the mission.
 - **Mission map (spawners named by the trigger network):** section 4.7.
 - **Any other world (synthetic or mod):** GMD-17's synthetic plan (5 waves of `4 + 2n`, boss in the last) over the
   world's player-spawn-free floor cells of the nav graph farthest from the players, using the first AI template or a
@@ -553,6 +560,9 @@ implementers of W1+ work from the specs and this design, not from the disassembl
   command texts in the user's ROM alone? The texts are allowed ROM data, but the language resembles an engine
   scripting language whose documentation lives only in forbidden SDK trees; a worker must not consult those. Until
   decided, option A.
+  **Decided 2026-11-05 (USER DIRECTION, "Fire Team must be playable as the maps are built"): option B**, the grammar
+  read only from the ROM's own command texts; rows DSV-570..DSV-575 of `DC_DEFAULTS.md`, code `script.rs` and
+  `doors::run_world`.
 - **Q-2 (user):** should co-op rooms start with fewer humans than the ROM row's minimum (the co-op row fixes min =
   max players)? FT-16 proposes yes (1 or more), since DeCombat servers will often be small.
 - **Q-3 (user):** the wave map's special kinds (explode / gas) have no client effect message we know; is "damage only,

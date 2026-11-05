@@ -139,7 +139,10 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   into DC_WATCHDOG_DIR); 6 s later a second dump, then the process aborts (DC_WATCHDOG_ABORT=0 keeps it). A panic
   writes panic_<pid>.txt, an unhandled exception crash_<pid>/ there. DC_FAULT=deadlock_test [DC_FAULT_AT=s]
   deadlocks the frame thread on purpose. --heartbeat FILE writes one JSON line per second (frame, phase, handles,
-  threads, private bytes, voices_looping, corpses) for an external watchdog.";
+  threads, private bytes, voices_looping, corpses) for an external watchdog.
+       dc-client --update-from ZIP   (CLI-1867) swaps this install's files for those of a game zip once this run ends:
+  the zip is unpacked into dc-update/new next to the exe and a helper copy of the exe finishes the swap
+  (dc-update/result.txt says how it went; the player's own files stay).";
 
 struct Args {
     stress: Option<String>,
@@ -1669,6 +1672,30 @@ fn end_scenario(result: &Result<(), String>) {
 }
 
 fn main() -> ExitCode {
+    // CLI-1865: the update helper's run; CLI-1867: an update from a zip on disk
+    let first = std::env::args_os().nth(1);
+    if first.as_deref() == Some(std::ffi::OsStr::new("--finish-update")) {
+        let rest: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+        return ExitCode::from(dc_client::selfupdate::finish_update(&rest).clamp(0, 255) as u8);
+    }
+    if first.as_deref() == Some(std::ffi::OsStr::new("--update-from")) {
+        let Some(zip) = std::env::args_os().nth(2) else {
+            eprintln!("dc-client: --update-from needs a zip");
+            return ExitCode::from(2);
+        };
+        return match dc_client::selfupdate::update_from(std::path::Path::new(&zip)) {
+            Ok(text) => {
+                println!("dc-client: {text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("dc-client: the update failed: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    // CLI-1865: what an earlier update left in the game folder goes (its failure is told once in the menu)
+    dc_client::selfupdate::cleanup_leftovers();
     let a = match parse_args() {
         Ok(a) => a,
         Err(e) => {
