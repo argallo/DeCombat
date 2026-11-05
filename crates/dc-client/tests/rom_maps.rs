@@ -5,7 +5,9 @@
 //! outside the tree (DC_RENDER_OUT or the temp folder) and are never committed.
 // SPEC: MOVEMENT_2009.md §9-§10 (collision, ground), §15; FMT_DAT85.md §6.2 (player spawns)
 
-use dc_client::{run_headless, HeadlessOptions, RomWorld, ScriptedInput, ViewAngles, WorldSource};
+use dc_client::{
+    run_headless, HeadlessOptions, RomWorld, ScriptedInput, ViewAngles, ViewSettings, WorldSource,
+};
 use dc_sim::{drop_to_floor, Cylinder, MovementParams, PlayerState, Simulation, TickInput};
 
 #[test]
@@ -108,4 +110,23 @@ fn rom_client_loop_equals_dc_sim() {
         assert_eq!(r.final_digest, want, "frame {frame_us} us");
     }
     println!("map index 0: client loop digest {want:#018x} equals dc-sim at 3 frame intervals");
+}
+
+/// CLI-1851: a loaded ROM world carries its world settings' far plane and the client camera takes it (Two Towers and
+/// Waverider ask for more than the 12000 default; with the default the distant sea and walls were cut by view angle).
+#[test]
+fn rom_worlds_give_the_camera_their_far_plane() {
+    let rom = dc_rom::rom_or_skip!();
+    for map in ["TWOTOWERS", "WAVERIDER"] {
+        let w = RomWorld::new(&rom, map).load(None).expect("load");
+        let far = w.far_z.unwrap_or_else(|| panic!("{map}: no far plane"));
+        assert!(far > dc_render::DEFAULT_FAR_Z, "{map}: {far}");
+        let c = ViewSettings::default().with_world_far(w.far_z).camera(
+            dc_sim::V3::new(0.0, 0.0, 0.0),
+            &ViewAngles::default(),
+            640,
+            480,
+        );
+        assert_eq!(c.far(), far, "{map}");
+    }
 }

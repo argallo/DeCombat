@@ -959,6 +959,11 @@ pub struct GameTuning {
     /// The Search and Destroy warm-up in seconds (`-warmup <s>`, 0 = none; `None`: the room's `train`, at least
     /// [`warmup::WARMUP_MIN_SECS`]; DSV-512).
     pub warmup_secs: Option<u32>,
+    /// Player damage in the warm-up (`-combat warmup_damage=on|off`): `false` = every damage with a player source
+    /// (shots, melee, grenades, launchers, flames, blasts a player set off, the own grenade) is refused while the
+    /// warm-up runs; damage without a player source (falls, kill volumes) stays.
+    // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04) off
+    pub warmup_damage: bool,
     /// Possession (`-possession`; DSV-483).
     pub possession: bool,
     /// The weapon drop rules (`-drops key=value,...`).
@@ -1064,7 +1069,7 @@ struct SpawnNote {
 /// The `combat.*` keys an operator may set (`-combat key=value[,key=value...]`, later a `[combat]` table of
 /// `server.toml`); every damage multiplier of DSV-30 is one of them.
 // DC-DEFAULT: DSV-30 (proposed) the multipliers are config keys; DSV-34 (proposed) the trace keys
-pub const COMBAT_KEYS: [&str; 33] = [
+pub const COMBAT_KEYS: [&str; 34] = [
     "health_scale",
     "head_factor",
     "body_factor",
@@ -1098,6 +1103,7 @@ pub const COMBAT_KEYS: [&str; 33] = [
     "shot_seed",
     "hit_clip",
     "mod_damage",
+    "warmup_damage",
 ];
 
 impl GameTuning {
@@ -1198,6 +1204,8 @@ impl GameTuning {
             // DC-DEFAULT: DSV-127 (proposed)
             "hit_clip" => self.hit_clip = switch("on", "off")?,
             "mod_damage" => self.mod_damage = switch("on", "off")?,
+            // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04)
+            "warmup_damage" => self.warmup_damage = switch("on", "off")?,
             // DC-DEFAULT: DSV-482 (proposed) Hardcore
             "health_scale" => {
                 let s = num()?;
@@ -1315,6 +1323,8 @@ impl Default for GameTuning {
             health_scale: 1.0,
             gun_game: None,
             warmup_secs: None,
+            // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04)
+            warmup_damage: false,
             possession: false,
             drops: drops::DropTuning::default(),
             destruct: crate::destructibles::DestructTuning::default(),
@@ -3956,6 +3966,27 @@ impl Game {
         }
     }
 
+    /// The weapon a new kit is drawn with (the index into `weapons`): the slot-0 weapon when granted; else the
+    /// carried weapon of the best item slot class (primary, secondary, melee, thrown, then the rest), the lowest slot
+    /// first. A primary in a backpack slot (4..7) so beats the pistol and the knife when slot 0 is empty.
+    // EVIDENCE: cshell+0x259f00 (item type -> slot class 0 primary .. 3 thrown); cshell+0x22ec00 (the 2009 empty
+    // switch prefers the class-1 entry, then class 2, then class 3: rifles before pistols before the knife)
+    // DC-DEFAULT: DSV-568 (proposed, USER REPORT 2026-11-04 "I respawned with my knife instead of my primary gun")
+    pub(crate) fn draw_index(&self, weapons: &[WeaponState]) -> Option<usize> {
+        let class = |w: u16| {
+            self.tables
+                .items
+                .weapon_types
+                .get(&w)
+                .and_then(|t| dc_bute::arms::slot_class(*t))
+                .unwrap_or(u8::MAX)
+        };
+        (0..weapons.len()).min_by_key(|&i| {
+            let w = &weapons[i];
+            (w.slot != 0, class(w.weapon), w.slot, i)
+        })
+    }
+
     /// The spawn set. Spec order: teleport (body on the first spawn), facing, weapons, health / armour, state 1.
     /// Reference order: facing, state 1, maxima and status reset, every weapon given and the drawn one switched to,
     /// body (first spawn) with the friction, teleport, health / armour.
@@ -4002,7 +4033,11 @@ impl Game {
                 .collect();
         }
         let cfg = self.cfg.clone();
-        let spawn_ani = weapons.first().and_then(|w| self.ani_of(w.weapon));
+        // DC-DEFAULT: DSV-568 (proposed) the kit's drawn weapon (slot 0, else the best slot class)
+        let drawn = self.draw_index(&weapons);
+        let spawn_ani = drawn
+            .and_then(|d| weapons.get(d))
+            .and_then(|w| self.ani_of(w.weapon));
         let dims = self.dims_of(pid);
         // DC-DEFAULT: DSV-48 (proposed) the box on the floor below the spawn point
         let pos = self.floor_point(pos, dims);
@@ -4029,7 +4064,7 @@ impl Game {
         p.killed_by = None;
         p.kills_this_life = 0;
         p.weapons = weapons.clone();
-        p.current = (!weapons.is_empty()).then_some(0);
+        p.current = drawn;
         p.motion = Motion::Stand;
         p.motion_since = now;
         p.spawned_at = now;
@@ -4147,9 +4182,8 @@ impl Game {
             slot: w.slot,
             parts: parts.get(i).copied().unwrap_or(gs::NO_PARTS),
         };
-        let command = weapons
-            .first()
-            .and_then(|w| self.tables.weapons.command_of(w.weapon));
+        let drawn_w = drawn.and_then(|d| weapons.get(d).map(|w| (d, *w)));
+        let command = drawn_w.and_then(|(_, w)| self.tables.weapons.command_of(w.weapon));
         // a player frozen at an earlier round result is released before the teleport (the reference stack's spawn set also
         // carried a freeze 0 after its teleport)
         // OBSERVED: capture 20261025_000014_tdm1 c5 seq 410 (`0d a0 80 00 00`; REFERENCE)
@@ -4165,14 +4199,17 @@ impl Game {
             self.send(pid, gs::player_status(gs::STATUS_MAX_ARMOR, armour.max));
             // SPEC: UDP_REFERENCE_FINDINGS_botclient.md reference run (`66 13 01 ..` before the weapons; REFERENCE)
             self.send(pid, gs::player_status_b(gs::STATUS_RESET, 1, 0, 0.0));
-            let skip_drawn = usize::from(command.is_none());
-            for (i, w) in weapons.iter().enumerate().skip(skip_drawn) {
-                self.send(pid, gs::weapon_give(&spec(i, w)));
+            // without a command the drawn weapon goes by 0xb3 alone (not given twice)
+            let given_apart = drawn.filter(|_| command.is_none());
+            for (i, w) in weapons.iter().enumerate() {
+                if Some(i) != given_apart {
+                    self.send(pid, gs::weapon_give(&spec(i, w)));
+                }
             }
-            match (command, weapons.first()) {
+            match (command, drawn_w) {
                 // SPEC: GAME_MESSAGES_2009_S2C.md §4.4 (0x7f auto switch; ammo -1 = the row's default)
                 (Some(c), Some(_)) => self.send(pid, gs::weapon_switch(c, true, -1.0, 0)),
-                (None, Some(w)) => self.send(pid, gs::drawn_weapon(&spec(0, w))),
+                (None, Some((d, w))) => self.send(pid, gs::drawn_weapon(&spec(d, &w))),
                 _ => {}
             }
             if let Some(b) = &body {
@@ -4208,11 +4245,13 @@ impl Game {
                 }),
             );
             self.send(pid, gs::view_angles(gs::ANGLES_ALL, rot));
-            for (i, w) in weapons.iter().enumerate().skip(1) {
-                self.send(pid, gs::weapon_give(&spec(i, w)));
+            for (i, w) in weapons.iter().enumerate() {
+                if Some(i) != drawn {
+                    self.send(pid, gs::weapon_give(&spec(i, w)));
+                }
             }
-            if let Some(w) = weapons.first() {
-                self.send(pid, gs::drawn_weapon(&spec(0, w)));
+            if let Some((d, w)) = drawn_w {
+                self.send(pid, gs::drawn_weapon(&spec(d, &w)));
             }
             self.send(
                 pid,
@@ -4253,8 +4292,12 @@ impl Game {
             });
         }
         self.out.push(GameOut::Mark(pid, Milestone::Spawned));
+        // the drawn weapon in the spawn line: a respawn with the wrong weapon in the hand shows here
+        let hand = drawn_w.map_or("none".to_string(), |(_, w)| {
+            format!("slot {} weapon {}", w.slot, w.weapon)
+        });
         self.log(format!(
-            "client {pid}: spawned (team {team}, seq {seq}) at ({:.1}, {:.1}, {:.1})",
+            "client {pid}: spawned (team {team}, seq {seq}) at ({:.1}, {:.1}, {:.1}), drawn {hand}",
             pos[0], pos[1], pos[2]
         ));
     }
@@ -5598,18 +5641,36 @@ mod tests {
         );
         assert_eq!(g.round_wins, [0, 0]);
         g.take_out();
-        // the warm-up's end: round 1, everyone back, the counters cleared, the banner off
+        // the warm-up's end: the counters cleared and a round end (DSV-567), not round 1 at once
         let end = g.warmup_until().unwrap();
         g.tick(end.wrapping_add(10));
         assert!(!g.in_warmup());
-        assert_eq!(g.round_no, 1);
+        assert!(
+            matches!(g.phase(), RoundPhase::Over { last: false, .. }),
+            "{:?}",
+            g.phase()
+        );
         assert_eq!(g.scores, [0, 0]);
+        assert_eq!(g.round_wins, [0, 0]);
         assert!(g.stats.values().all(|s| s.kills == 0 && s.deaths == 0));
-        assert_eq!(g.players[&1].life, Life::Alive, "the dead are back");
         let o = g.take_out();
         for pid in [0u8, 1] {
             let ids = shell_ids(&o, pid);
             assert!(ids.contains(&gs::GS_SCORES_CLEAR), "{ids:x?}");
+            assert!(ids.contains(&gs::GS_ROUND_RESULT), "{ids:x?}");
+            assert!(!ids.contains(&gs::GS_ROUND_BEGIN), "{ids:x?}");
+        }
+        // after the result pause and the between-round pause: round 1, everyone back, the banner off
+        let (p1, br) = (g.cfg.end_pause_ms.0, g.cfg.between_round_ms);
+        g.tick(end.wrapping_add(10 + p1));
+        g.take_out();
+        let end = end.wrapping_add(20 + p1 + br);
+        g.tick(end);
+        assert_eq!(g.round_no, 1);
+        assert_eq!(g.players[&1].life, Life::Alive, "the dead are back");
+        let o = g.take_out();
+        for pid in [0u8, 1] {
+            let ids = shell_ids(&o, pid);
             assert!(ids.contains(&gs::GS_ROUND_BEGIN), "{ids:x?}");
         }
         let mb: Vec<&BitWriter> = o
@@ -5628,6 +5689,156 @@ mod tests {
         // `-warmup 0`: none
         let g = bomb_room();
         assert!(!g.in_warmup());
+    }
+
+    /// DSV-566: while the bomb warm-up runs no player damage lands: a shot that would kill leaves the victim's
+    /// health as it was (no 0x74, no 0x6d, the shot drawn as a miss), as do a grenade blast and the thrower's own
+    /// blast; damage without a killer (a fall) still hurts. Round 1 damages and kills again; `-combat
+    /// warmup_damage=on` lets the warm-up hurt.
+    #[test]
+    fn the_bomb_warmup_refuses_all_player_damage() {
+        let cfg = GameTuning {
+            move_check: false,
+            trace: false,
+            ..GameTuning::default()
+        };
+        let mut g = bomb_room_with(cfg.clone());
+        assert!(g.in_warmup() && g.warmup_holds_damage());
+        g.tick(100);
+        g.take_out();
+        let src = super::combat::DamageSource {
+            weapon: 3,
+            dtype: super::TODO_DAMAGE_ZONE,
+        };
+        let ids_to = |o: &[GameOut], to: u8| shell_ids(o, to);
+        let kill_sent = |o: &[GameOut]| {
+            o.iter()
+                .any(|x| matches!(x, GameOut::To(_, m) if m.as_bytes()[1] == gs::GS_KILL))
+        };
+        // a lethal shot (the victim at 1 health, no armour) after the spawn window
+        if let Some(v) = g.players.get_mut(&1) {
+            v.health = 1.0;
+            v.armor = 0.0;
+        }
+        let f = hit_report(&g, 0, 1, 0.0, None);
+        g.on_up(0, Up::Fire(Box::new(f)), 5_000);
+        let o = g.take_out();
+        assert_eq!(g.players[&1].health, 1.0, "health unchanged");
+        assert_eq!(g.players[&1].life, Life::Alive);
+        assert!(!kill_sent(&o), "no kill message");
+        assert!(
+            !ids_to(&o, 1).contains(&gs::GS_DAMAGE_TAKEN),
+            "no damage message"
+        );
+        assert_eq!(g.hit_counts.get(hits::HitVerdict::Warmup), 1);
+        assert_eq!(g.hit_counts.accepted(), 0);
+        let e = effects(&o);
+        assert!(
+            !e.is_empty() && e.iter().all(|x| x.0 != g.players[&1].obj),
+            "drawn as a miss: {e:?}"
+        );
+        // a blast of player 0 on player 1 and on himself: nothing
+        g.apply_damage(1, Some(0), 1000.0, [1.0, 0.0, 0.0], src, 2, 5_100);
+        g.apply_damage(0, Some(0), 1000.0, [1.0, 0.0, 0.0], src, 2, 5_100);
+        let o = g.take_out();
+        assert_eq!(g.players[&1].health, 1.0);
+        assert_eq!(g.players[&0].life, Life::Alive, "no own-grenade death");
+        assert!(!kill_sent(&o));
+        assert_eq!(g.scores, [0, 0]);
+        assert!(g.stats.values().all(|s| s.kills == 0 && s.deaths == 0));
+        // a fall (no killer) still hurts
+        if let Some(v) = g.players.get_mut(&1) {
+            v.health = 50.0;
+        }
+        g.apply_hit_as(1, None, 10.0, 10.0, [0.0; 3], src, 2, 0, 5_200);
+        assert_eq!(g.players[&1].health, 40.0, "fall damage stays");
+        g.take_out();
+        // round 1 (after the warm-up's round end and the between-round pause): the same lethal shot kills
+        let end = g.warmup_until().unwrap();
+        g.tick(end.wrapping_add(10));
+        assert!(!g.in_warmup() && !g.warmup_holds_damage());
+        let (p1, br) = (g.cfg.end_pause_ms.0, g.cfg.between_round_ms);
+        g.tick(end.wrapping_add(10 + p1));
+        let end = end.wrapping_add(20 + p1 + br);
+        g.tick(end);
+        assert_eq!(g.round_no, 1);
+        g.tick(end.wrapping_add(5_000));
+        g.take_out();
+        if let Some(v) = g.players.get_mut(&1) {
+            v.health = 1.0;
+            v.armor = 0.0;
+        }
+        let f = hit_report(&g, 0, 1, 0.0, None);
+        g.on_up(0, Up::Fire(Box::new(f)), end.wrapping_add(5_100));
+        let o = g.take_out();
+        assert_eq!(g.players[&1].health, 0.0, "round 1 damages");
+        assert_ne!(g.players[&1].life, Life::Alive);
+        assert!(kill_sent(&o), "kill message in round 1");
+        assert!(ids_to(&o, 1).contains(&gs::GS_DAMAGE_TAKEN));
+        // `-combat warmup_damage=on`: the warm-up hurts
+        let mut on = cfg;
+        on.set_combat("warmup_damage", "on").unwrap();
+        let mut g = bomb_room_with(on);
+        assert!(g.in_warmup() && !g.warmup_holds_damage());
+        g.tick(100);
+        let f = hit_report(&g, 0, 1, 0.0, None);
+        g.on_up(0, Up::Fire(Box::new(f)), 5_000);
+        assert!(g.players[&1].health < 100.0, "warm-up damage on");
+    }
+
+    /// DSV-567: the warm-up ends through the round end of every round: after its 0x43 the same messages, stage by
+    /// stage, as the end of round 1 followed by round 2 (0x46 and 0xb5 with the result, the between-round set
+    /// 0x47 / roster / 0x48 after the first pause, the spawn sets and 0x44 / 0xb5 / 0x45 after the between-round
+    /// pause), with the round wins 0:0 and a draw in the 0x46.
+    #[test]
+    fn the_warmup_ends_like_a_round() {
+        // the shell message ids to client 0 in the ticks at the round end, after the first pause and after the
+        // between-round pause
+        fn stages(g: &mut Game, at: Millis, end: impl FnOnce(&mut Game)) -> [Vec<u8>; 3] {
+            let (p1, br) = (g.cfg.end_pause_ms.0, g.cfg.between_round_ms);
+            g.take_out();
+            end(g);
+            let a = shell_ids(&g.take_out(), 0);
+            g.tick(at.wrapping_add(p1));
+            let b = shell_ids(&g.take_out(), 0);
+            g.tick(at.wrapping_add(p1 + br + 10));
+            let c = shell_ids(&g.take_out(), 0);
+            [a, b, c]
+        }
+        let cfg = GameTuning {
+            move_check: false,
+            ..GameTuning::default()
+        };
+        // the warm-up's end
+        let mut g = bomb_room_with(cfg.clone());
+        g.tick(100);
+        let end = g.warmup_until().unwrap();
+        let w = stages(&mut g, end, |g| g.tick(end));
+        assert_eq!(g.round_no, 1);
+        // a real round end (round 1 of a room without a warm-up, a draw) and round 2
+        let mut r = bomb_room_with(GameTuning {
+            warmup_secs: Some(0),
+            ..cfg
+        });
+        r.tick(100);
+        r.tick(5_000);
+        let at = 6_000;
+        let n = stages(&mut r, at, |r| r.end_round(at, 0));
+        assert_eq!(r.round_no, 2);
+        assert_eq!(w[0].first(), Some(&gs::GS_SCORES_CLEAR), "{:x?}", w[0]);
+        assert_eq!(
+            w[0][1..],
+            n[0][..],
+            "the result tick: {:x?} vs {:x?}",
+            w[0],
+            n[0]
+        );
+        assert_eq!(w[1], n[1], "the between-round set");
+        assert_eq!(w[2], n[2], "the round start");
+        assert!(n[0].contains(&gs::GS_ROUND_RESULT) && n[0].contains(&gs::GS_ROUND_WINS));
+        assert!(n[1].contains(&gs::GS_ROUND_OBJECTS_END) && n[1].contains(&gs::GS_ROUND_CLOSE));
+        assert!(n[2].contains(&gs::GS_ROUND_BEGIN) && n[2].contains(&gs::GS_MATCH_BEGIN));
+        assert!(!n[2].contains(&gs::GS_SCORES_CLEAR));
     }
 
     fn shell_ids(o: &[GameOut], to: u8) -> Vec<u8> {
@@ -7543,6 +7754,144 @@ mod tests {
         );
     }
 
+    /// DSV-565: a 7-round Quarantine ends after round 7 whoever wins each round (humans, infected, draws, mixed);
+    /// before, the goal counted round wins, so a human win made the infected need an 8th round.
+    #[test]
+    fn quarantine_plays_exactly_the_goal_in_rounds_whoever_wins() {
+        use super::infect::COUNTDOWN_SECS;
+        let patterns: [[u8; 7]; 5] = [
+            [1, 1, 1, 1, 1, 1, 1],
+            [2, 2, 2, 2, 2, 2, 2],
+            [2, 1, 2, 2, 2, 2, 2],
+            [0, 0, 1, 0, 2, 0, 1],
+            [1, 2, 1, 2, 0, 1, 2],
+        ];
+        for wins in patterns {
+            let mut g = quarantine_room("7", true);
+            let mut t = 100;
+            g.tick(t);
+            for (i, &w) in wins.iter().enumerate() {
+                while !matches!(g.phase(), RoundPhase::Running { .. }) {
+                    t += 100;
+                    g.tick(t);
+                    assert!(t < 2_000_000, "{wins:?}: no round {}", i + 1);
+                }
+                assert_eq!(g.round_no(), i as u32 + 1, "{wins:?}");
+                // past the outbreak, so the round is a played Quarantine round
+                t += COUNTDOWN_SECS * 1000 + 50;
+                g.tick(t);
+                assert!(matches!(g.phase(), RoundPhase::Running { .. }), "{wins:?}");
+                g.end_round(t, w);
+                let last = matches!(g.phase(), RoundPhase::Over { last: true, .. });
+                assert_eq!(last, i == 6, "{wins:?}: round {} last {last}", i + 1);
+            }
+            let humans = wins.iter().filter(|&&w| w == 1).count() as u32;
+            let infected = wins.iter().filter(|&&w| w == 2).count() as u32;
+            assert_eq!(g.round_wins(), [humans, infected], "{wins:?}");
+            let lead = super::round::lead_of([humans, infected]);
+            assert!(
+                matches!(g.phase(), RoundPhase::Over { last: true, win, .. } if win == lead),
+                "{wins:?}: {:?}",
+                g.phase()
+            );
+            // no 8th round follows
+            for _ in 0..600 {
+                t += 100;
+                g.tick(t);
+            }
+            assert_eq!(g.round_no(), 7, "{wins:?}");
+            assert!(!matches!(g.phase(), RoundPhase::Running { .. }), "{wins:?}");
+        }
+    }
+
+    /// DSV-565 through the real round ends: humans surviving the clock, the last human infected and every infected
+    /// dead each count as one of the goal's rounds.
+    #[test]
+    fn quarantine_counts_each_kind_of_round_end() {
+        use super::infect::COUNTDOWN_SECS;
+        let mut g = quarantine_room("3", true);
+        g.rules.round_secs = 60;
+        let secs = g.rules.round_secs;
+        let mut t = 100;
+        g.tick(t);
+        let wait_running = |g: &mut Game, t: &mut u32| {
+            while !matches!(g.phase(), RoundPhase::Running { .. }) {
+                *t += 100;
+                g.tick(*t);
+                assert!(*t < 3_000_000, "no next round");
+            }
+        };
+        // round 1: every infected dead -> humans
+        t += COUNTDOWN_SECS * 1000 + 50;
+        g.tick(t);
+        let host = *g.infect().infected.iter().next().expect("outbreak");
+        let human = (0..3u8).find(|p| *p != host).unwrap();
+        g.kill(host, Some(human), 10, false, t);
+        t += 100;
+        g.tick(t);
+        assert!(
+            matches!(
+                g.phase(),
+                RoundPhase::Over {
+                    win: 1,
+                    last: false,
+                    ..
+                }
+            ),
+            "{:?}",
+            g.phase()
+        );
+        // round 2: the clock runs out with humans alive -> humans
+        wait_running(&mut g, &mut t);
+        assert_eq!(g.round_no(), 2);
+        let start = t;
+        while matches!(g.phase(), RoundPhase::Running { .. }) {
+            t += 500;
+            g.tick(t);
+            assert!(t < start + secs * 1000 + 30_000, "no timeout");
+        }
+        assert!(
+            matches!(
+                g.phase(),
+                RoundPhase::Over {
+                    win: 1,
+                    last: false,
+                    ..
+                }
+            ),
+            "{:?}",
+            g.phase()
+        );
+        // round 3: no human left -> infected, and the match is over after the goal's 3 rounds
+        wait_running(&mut g, &mut t);
+        assert_eq!(g.round_no(), 3);
+        t += COUNTDOWN_SECS * 1000 + 50;
+        g.tick(t);
+        let host = *g.infect().infected.iter().next().expect("outbreak");
+        let claws = super::combat::DamageSource {
+            weapon: 30,
+            dtype: 0,
+        };
+        for p in (0..3u8).filter(|p| *p != host) {
+            g.apply_damage(p, Some(host), 50.0, [1.0, 0.0, 0.0], claws, 2, t);
+        }
+        t += 100;
+        g.tick(t);
+        assert!(
+            matches!(
+                g.phase(),
+                RoundPhase::Over {
+                    last: true,
+                    win: 1,
+                    ..
+                }
+            ),
+            "{:?}",
+            g.phase()
+        );
+        assert_eq!(g.round_wins(), [2, 1]);
+    }
+
     /// DSV-510: the infected's health is the override row's `MaxHitPoints` x 2 (1000 without the row).
     #[test]
     fn quarantine_infected_health_doubles_the_row() {
@@ -9431,6 +9780,58 @@ mod tests {
         assert_eq!(held(&g, 0), own);
     }
 
+    /// The user's Possession report of 2026-11-04 ("my HP says 0 but I'm still alive"), headless: a grenade blast on
+    /// the mover in the move sends him nothing and leaves his health; the same blast after the closing teleport hurts
+    /// as ever, and a survivor's fraction below 1 (the log's 0.348) goes out as it is, alive, with no kill and no death
+    /// state (the client's block shows 1 for it, CLI-1853).
+    #[test]
+    fn possession_a_blast_in_the_move_does_nothing_and_after_it_hurts_as_ever() {
+        let mut g = possession_game();
+        let nade = |g: &mut Game, at: [f32; 3], now: Millis| {
+            g.flights.push(projectile::Flight {
+                key: 1,
+                owner: 2,
+                owner_obj: g.players[&2].obj,
+                owner_team: g.players[&2].team,
+                weapon: 0,
+                ammo: 0,
+                origin: at,
+                pos: at,
+                vel: [0.0; 3],
+                gravity: 0.0,
+                detonate_at: now,
+                last: now,
+                resting: true,
+                impact: false,
+                burst: false,
+            });
+            g.tick_projectiles(now);
+        };
+        g.kill(1, Some(0), 40, false, 100);
+        g.tick_possession(200);
+        g.take_out();
+        let before = g.players[&0].health;
+        let at = g.players[&0].pos;
+        nade(&mut g, at, 200);
+        let o = g.take_out();
+        assert_eq!(g.players[&0].health, before);
+        let r = received(&o, 0);
+        assert!(r.damage.is_none() && r.health.is_none(), "{r:?}");
+        g.tick_possession(400);
+        assert!(!g.in_flight(0));
+        let dmg = 100.0 * blast_factor(300.0, 400.0, BLAST_INNER_FRACTION);
+        g.players.get_mut(&0).unwrap().health = dmg + 0.348;
+        g.take_out();
+        let at = g.players[&0].pos;
+        nade(&mut g, [at[0] + 300.0, at[1], at[2]], 1_500);
+        let o = g.take_out();
+        let r = received(&o, 0);
+        let h = r.health.expect("the health status");
+        assert!((h - 0.348).abs() < 1e-3, "{r:?}");
+        assert!(matches!(g.players[&0].life, Life::Alive));
+        assert!(!ids(&o, 0).contains(&gs::GS_KILL) && !ids(&o, 0).contains(&gs::GS_PLAYER_STATE));
+    }
+
     /// Sequential kills chain; a kill arriving during the move queues nothing; a knife kill counts.
     #[test]
     fn possession_chains_kills_and_a_kill_in_flight_queues_nothing() {
@@ -9917,6 +10318,105 @@ mod tests {
         g.set_room(&room);
         assert_eq!(g.rules().arms, 6);
         assert_eq!(g.loadout_weapons(Some(&e)), vec![(2, 0), (4, 30)]);
+    }
+
+    /// DSV-568: the spawn set draws the slot-0 weapon; with slot 0 empty a primary in a backpack slot beats the pistol
+    /// and the knife (the 0x7f names it, the server's drawn weapon is it), at the first spawn and at every respawn.
+    /// Sniper Only with the sniper rifle in the backpack draws the sniper rifle, not the knife. A kit with slot 0 is
+    /// drawn as before; without a command (no weapon-order row) the 0xb3 carries the drawn weapon and no 0xb2 gives
+    /// it twice.
+    #[test]
+    fn a_spawn_draws_the_primary_also_from_the_backpack() {
+        let mut t = tables();
+        // synthetic weapon types: 145 rifle (0), 164 pistol (4), 0 knife (7), 7 grenade (6), 30 sniper rifle (2)
+        t.items.weapon_types = [(145, 0), (164, 4), (0, 7), (7, 6), (30, 2), (31, 0)].into();
+        let doc = dc_bute::ButeDoc::parse(concat!(
+            "[Weapon0]\nName = \"K\"\n[Weapon7]\nName = \"N\"\n[Weapon30]\nName = \"S\"\n",
+            "[Weapon145]\nName = \"R\"\n[Weapon164]\nName = \"P\"\n[Weapon31]\nName = \"X\"\n",
+            "[WeaponOrder]\nClass0 = \"A\"\nA0 = \"R\"\nA1 = \"S\"\nClass1 = \"B\"\nB0 = \"P\"\n",
+            "Class2 = \"C\"\nC0 = \"K\"\nClass3 = \"D\"\nD0 = \"N\"\n",
+        ));
+        t.weapons = crate::rom_tables::WeaponTable::from_doc(&doc);
+        let command = |w: u16| t.weapons.command_of(w).expect("in the order");
+        let (rifle_cmd, sniper_cmd) = (command(145), command(30));
+        let switched = |o: &[GameOut]| -> Vec<u8> {
+            o.iter()
+                .filter_map(|x| match x {
+                    GameOut::To(0, m) if m.as_bytes()[1] == 0x7f => Some(m.as_bytes()[2]),
+                    _ => None,
+                })
+                .collect()
+        };
+        let drawn = |g: &Game| {
+            let p = &g.players[&0];
+            p.current.map(|i| (p.weapons[i].slot, p.weapons[i].weapon))
+        };
+        let start = |t: RomTables, loadout: &str, arms: Option<&str>| {
+            let mut g = Game::new(GameTuning::default(), &world(), t);
+            if let Some(a) = arms {
+                let mut room = RoomSettings::default();
+                room.pairs.insert("arms".into(), a.into());
+                g.set_room(&room);
+            }
+            let mut e = entry(7, 0, "Dave");
+            e.extra = vec![("loadout".into(), loadout.into())];
+            g.note_identified(&e);
+            g.add_player(0, Some(&e), None, 1, [0.0; 3], [0.0; 3], 0);
+            g.take_out();
+            g.on_up(0, Up::PlayerInfo(Box::default()), 10);
+            let o = g.take_out();
+            g.on_up(0, Up::WorldReady, 20);
+            g.take_out();
+            (g, o)
+        };
+        // slot 0 empty (the default primary sat in the backpack, LG-403): the backpack rifle, not the pistol
+        let (mut g, o) = start(t.clone(), "1:164,2:0,3:7,10:145", None);
+        assert_eq!(drawn(&g), Some((4, 145)));
+        assert_eq!(switched(&o), vec![rifle_cmd]);
+        g.spawn(0, 5_000);
+        let o = g.take_out();
+        assert_eq!(drawn(&g), Some((4, 145)), "at the respawn too");
+        assert_eq!(switched(&o), vec![rifle_cmd]);
+        assert!(o.iter().any(|x| matches!(x,
+            GameOut::Log(l) if l.contains("spawned") && l.contains("drawn slot 4 weapon 145"))));
+        // no primary anywhere: the pistol before the knife (also when the pistol sits in the backpack)
+        let (g, _) = start(t.clone(), "2:0,3:7,10:164", None);
+        assert_eq!(drawn(&g), Some((4, 164)));
+        // Sniper Only, the sniper rifle in the backpack: the sniper rifle, not the knife
+        let (g, o) = start(t.clone(), "0:145,1:164,2:0,3:7,10:30", Some("6"));
+        assert_eq!(drawn(&g), Some((4, 30)));
+        assert_eq!(switched(&o), vec![sniper_cmd]);
+        // a slot-0 weapon is drawn as ever, also beside a backpack rifle
+        let (g, o) = start(t.clone(), "0:145,1:164,2:0,10:30", None);
+        assert_eq!(drawn(&g), Some((0, 145)));
+        assert_eq!(switched(&o), vec![rifle_cmd]);
+        // weapon 31 has no order row (no command): its 0xb3 draws it and it is not also given by 0xb2
+        let (g, o) = start(t.clone(), "1:164,2:0,11:31", None);
+        assert_eq!(drawn(&g), Some((5, 31)));
+        assert!(switched(&o).is_empty());
+        let weapon_of = |m: &BitWriter| u16::from_le_bytes([m.as_bytes()[2], m.as_bytes()[3]]);
+        let shells = |id: u8| -> Vec<u16> {
+            o.iter()
+                .filter_map(|x| match x {
+                    GameOut::To(0, m) if m.as_bytes()[1] == id => Some(weapon_of(m)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(shells(0xb3), vec![31]);
+        assert_eq!(shells(0xb2), vec![164, 0]);
+        // a list out of slot order (a Possession victim's, a taken drop appended): slot 0 still wins
+        let kit = |list: &[(u8, u16)]| -> Vec<WeaponState> {
+            list.iter()
+                .map(|&(slot, w)| WeaponState {
+                    slot,
+                    ..g.new_weapon(w, None)
+                })
+                .collect()
+        };
+        assert_eq!(g.draw_index(&kit(&[(1, 164), (2, 0), (0, 145)])), Some(2));
+        assert_eq!(g.draw_index(&kit(&[(2, 0), (3, 7), (1, 164)])), Some(2));
+        assert_eq!(g.draw_index(&[]), None);
     }
 
     /// DSV-476: in a Sniper Only match a player spawns with the sniper rifle and the knife; a client that names the

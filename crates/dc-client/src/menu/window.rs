@@ -77,6 +77,9 @@ struct MenuApp<'a> {
     joining: Option<Joining>,
     /// The part of a wheel turn below one notch (touch pads give fractions).
     wheel_rest: f32,
+    /// CLI-1848: frames drawn by the loop when the window system stops delivering redraw events (ms since `epoch`).
+    redraw_keep: crate::redrawkeep::RedrawKeeper,
+    epoch: Instant,
 }
 
 /// The options' volumes and switches in the menu's sound director.
@@ -211,6 +214,7 @@ impl MenuApp<'_> {
         self.menu
             .set_size(live.host.config.width, live.host.config.height);
         live.host.window.request_redraw();
+        self.redraw_keep.arm(self.now_ms());
         // L1: the menu draws the ROM's cursor image; the system cursor is hidden over the window
         // DC-DEFAULT: CLI-480 (proposed) system cursor hidden while the menu window has the focus, shown when it
         // loses it (and the drawn one hidden); the drawn one also hides while the pointer is outside the window
@@ -223,10 +227,26 @@ impl MenuApp<'_> {
         );
     }
 
+    /// Ms since the turn began (the redraw keeper's clock).
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64
+    }
+
     fn redraw(&mut self) {
         let Some(live) = self.live.as_mut() else {
             return;
         };
+        // CLI-1848: focused again or a stalled redraw chain: the surface again at the window's real size
+        if self.redraw_keep.take_reconfigure() {
+            let size = live.host.window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                let h = &mut live.host;
+                h.config.width = size.width;
+                h.config.height = size.height;
+                h.surface.configure(&h.ctx.device, &h.config);
+                self.menu.set_size(size.width, size.height);
+            }
+        }
         let host = &live.host;
         live.painter
             .prepare(&host.ctx, self.menu, &mut crate::prof::Laps::start());
@@ -235,8 +255,16 @@ impl MenuApp<'_> {
             "frame: acquire the surface texture",
             host.surface.get_current_texture()
         ) {
-            Ok(f) => f,
-            Err(_) => {
+            Ok(f) => {
+                self.redraw_keep.on_acquire(true);
+                f
+            }
+            // CLI-1848: any failure configures the surface again and skips the frame
+            // PUBLIC: wgpu 25 docs (SurfaceError)
+            Err(e) => {
+                if self.redraw_keep.on_acquire(false) {
+                    println!("dc-client menu: surface texture not acquired ({e:?}): surface configured again");
+                }
                 host.surface.configure(&host.ctx.device, &host.config);
                 return;
             }
@@ -288,6 +316,102 @@ impl MenuApp<'_> {
         // gate T1: the menu's frames feed the watchdog and the heartbeat
         crate::watchdog::frame();
         crate::watchdog::phase(crate::watchdog::Phase::Menu);
+    }
+
+    /// One frame: for a delivered redraw event (`from_loop` false) or drawn by the loop when the events stopped
+    /// (CLI-1848); the next redraw is asked for either way.
+    fn frame_turn(&mut self, el: &ActiveEventLoop, from_loop: bool) {
+        // CLI-1595: the frame-rate setting's vertical-sync choice, applied to the surface in place
+        if let Some(l) = self.live.as_mut() {
+            let fifo = crate::window::wants_fifo(self.opts.vsync, self.opts.no_vsync);
+            let want = if !fifo && l.host.immediate_ok {
+                wgpu::PresentMode::Immediate
+            } else {
+                wgpu::PresentMode::Fifo
+            };
+            if l.host.config.present_mode != want {
+                l.host.config.present_mode = want;
+                l.host.surface.configure(&l.host.ctx.device, &l.host.config);
+            }
+        }
+        // CLI-890: min(360, monitor refresh) in the front end
+        let hz = self
+            .live
+            .as_ref()
+            .and_then(|l| crate::window::monitor_refresh_mhz(&l.host.window));
+        self.pacer.wait(crate::pacer::menu_cap(hz));
+        // CLI-1596: the "Show FPS" text four times a second
+        let now = Instant::now();
+        if let Some(last) = self.fps_last {
+            self.fps.push((now - last).as_secs_f64());
+        }
+        self.fps_last = Some(now);
+        if crate::settings::show_fps() {
+            if self
+                .fps_shown
+                .is_none_or(|t| now.duration_since(t).as_millis() >= 250)
+            {
+                self.menu
+                    .set_fps_text(Some(format!("{:.0} fps", self.fps.fps())));
+                self.fps_shown = Some(now);
+            }
+        } else {
+            self.menu.set_fps_text(None);
+            self.fps_shown = None;
+        }
+        if crate::gpulost::guard(|| self.redraw()).is_err() {
+            // CLI-460: the lost device's objects are leaked (dropping them can deadlock in wgpu-core), the
+            // old window is hidden and the menu goes on in a new window with a new device
+            if let Some(old) = self.live.take() {
+                old.host.window.set_visible(false);
+                std::mem::forget(old);
+            }
+            // DC-DEFAULT: CLI-460: give up after MAX_MENU_REOPENS losses per process
+            if MENU_REOPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+                > MAX_MENU_REOPENS
+            {
+                eprintln!("dc-client menu: GPU device lost {} times: giving up (the graphics driver keeps resetting)", MAX_MENU_REOPENS + 1);
+                self.error = Some(ClientError::Window("GPU device lost repeatedly".into()));
+                self.end(el);
+                return;
+            }
+            println!("dc-client menu: GPU device lost: reopening the menu window");
+            self.open_window(el);
+            return;
+        }
+        let now = self.now_ms();
+        if from_loop {
+            self.redraw_keep.on_loop_frame(now);
+        } else if let Some(n) = self.redraw_keep.on_redraw_event(now) {
+            println!("{}", crate::redrawkeep::note_line("dc-client menu", n));
+        }
+        if let Some(l) = &self.live {
+            l.host.window.request_redraw();
+        }
+    }
+
+    /// CLI-1848: the loop draws the frame itself when no redraw event came for a while and the window is visible
+    /// (no window query while the events come).
+    fn keep_frames(&mut self, el: &ActiveEventLoop) {
+        // the iPad's driver raises every frame from its tick (CLI-1604)
+        if crate::window::IOS || self.ended {
+            return;
+        }
+        let now = self.now_ms();
+        if !self.redraw_keep.due(now) {
+            return;
+        }
+        let Some(l) = self.live.as_ref() else {
+            return;
+        };
+        let visible = crate::window::window_visible(&l.host.window);
+        let (wake, note) = self.redraw_keep.poll(now, visible);
+        if let Some(n) = note {
+            println!("{}", crate::redrawkeep::note_line("dc-client menu", n));
+        }
+        if wake == crate::redrawkeep::Wake::Draw {
+            self.frame_turn(el, true);
+        }
     }
 
     /// One key press or release of the menu (winit's `KeyboardInput`, or a key of the iPad's keyboard bridge).
@@ -409,6 +533,11 @@ impl ApplicationHandler for MenuApp<'_> {
                     l.host
                         .window
                         .set_cursor_visible(!(on && self.menu.has_cursor_image()));
+                    // CLI-1848: focused again (alt-tab back): the surface again and a frame asked for
+                    if on {
+                        self.redraw_keep.on_shown();
+                        l.host.window.request_redraw();
+                    }
                 }
                 self.menu.set_pointer_shown(on && self.inside);
             }
@@ -486,78 +615,19 @@ impl ApplicationHandler for MenuApp<'_> {
                         h.config.height = size.height;
                         h.surface.configure(&h.ctx.device, &h.config);
                         self.menu.set_size(size.width, size.height);
+                        // CLI-1848: a restored window asks for its frame (the redraw chain may have ended)
+                        h.window.request_redraw();
                     }
                 }
             }
-            WindowEvent::RedrawRequested => {
-                // CLI-1595: the frame-rate setting's vertical-sync choice, applied to the surface in place
-                if let Some(l) = self.live.as_mut() {
-                    let fifo = crate::window::wants_fifo(self.opts.vsync, self.opts.no_vsync);
-                    let want = if !fifo && l.host.immediate_ok {
-                        wgpu::PresentMode::Immediate
-                    } else {
-                        wgpu::PresentMode::Fifo
-                    };
-                    if l.host.config.present_mode != want {
-                        l.host.config.present_mode = want;
-                        l.host.surface.configure(&l.host.ctx.device, &l.host.config);
-                    }
-                }
-                // CLI-890: min(360, monitor refresh) in the front end
-                let hz = self
-                    .live
-                    .as_ref()
-                    .and_then(|l| crate::window::monitor_refresh_mhz(&l.host.window));
-                self.pacer.wait(crate::pacer::menu_cap(hz));
-                // CLI-1596: the "Show FPS" text four times a second
-                let now = Instant::now();
-                if let Some(last) = self.fps_last {
-                    self.fps.push((now - last).as_secs_f64());
-                }
-                self.fps_last = Some(now);
-                if crate::settings::show_fps() {
-                    if self
-                        .fps_shown
-                        .is_none_or(|t| now.duration_since(t).as_millis() >= 250)
-                    {
-                        self.menu
-                            .set_fps_text(Some(format!("{:.0} fps", self.fps.fps())));
-                        self.fps_shown = Some(now);
-                    }
-                } else {
-                    self.menu.set_fps_text(None);
-                    self.fps_shown = None;
-                }
-                if crate::gpulost::guard(|| self.redraw()).is_err() {
-                    // CLI-460: the lost device's objects are leaked (dropping them can deadlock in wgpu-core), the
-                    // old window is hidden and the menu goes on in a new window with a new device
-                    if let Some(old) = self.live.take() {
-                        old.host.window.set_visible(false);
-                        std::mem::forget(old);
-                    }
-                    // DC-DEFAULT: CLI-460: give up after MAX_MENU_REOPENS losses per process
-                    if MENU_REOPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
-                        > MAX_MENU_REOPENS
-                    {
-                        eprintln!("dc-client menu: GPU device lost {} times: giving up (the graphics driver keeps resetting)", MAX_MENU_REOPENS + 1);
-                        self.error = Some(ClientError::Window("GPU device lost repeatedly".into()));
-                        self.end(el);
-                        return;
-                    }
-                    println!("dc-client menu: GPU device lost: reopening the menu window");
-                    self.open_window(el);
-                    return;
-                }
-                if let Some(l) = &self.live {
-                    l.host.window.request_redraw();
-                }
-            }
+            WindowEvent::RedrawRequested => self.frame_turn(el, false),
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         crate::watchdog::pump();
+        self.keep_frames(el);
         if let Some(j) = self.joining.as_mut() {
             // the loading page's turn: the load stage the session reached, until its world is announced or it ends
             self.menu.set_load_stage(j.handle.load_stage());
@@ -660,6 +730,8 @@ impl<'a> MenuApp<'a> {
             clicks: crate::steps::ClickWatch::default(),
             joining,
             wheel_rest: 0.0,
+            redraw_keep: Default::default(),
+            epoch: Instant::now(),
             pacer: Default::default(),
             fps: Default::default(),
             fps_last: None,
@@ -820,7 +892,12 @@ fn lend_live(live: Option<Live>) -> (Option<WindowHost>, Option<MenuPainter>) {
 /// The window back from a match (`None`: lost to a GPU reset).
 fn return_live(host: Option<WindowHost>, painter: Option<MenuPainter>) -> Option<Live> {
     match (host, painter) {
-        (Some(host), Some(painter)) => Some(Live { host, painter }),
+        // gpu-lost-menu: a device the match's recovery replaced takes a new painter (the old one's atlas and pipelines
+        // are of the lost device: the user's "Texture does not exist" panic on the match result screen)
+        (Some(host), Some(painter)) => {
+            let painter = painter.for_device(&host.ctx, host.config.format);
+            Some(Live { host, painter })
+        }
         // CLI-460: the window was lost with the device: its painter's objects are leaked too
         (None, Some(p)) => {
             std::mem::forget(p);

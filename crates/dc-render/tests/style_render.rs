@@ -596,3 +596,49 @@ fn attached_model_hangs_at_the_socket() {
     assert_eq!(body.node_bounds(1), None);
     assert!(body.node_bounds(0).is_some());
 }
+
+/// gpu-prewarm: an upload on a thread that makes no pipelines (a model loader thread) leaves the pipeline of a new
+/// raster state to the frame: the next frame makes it before recording the model, on the frame's thread, and the
+/// model draws what an upload on the frame thread draws.
+#[test]
+fn a_pipeline_a_loader_thread_needs_is_made_by_the_next_frame() {
+    let Some(b) = Bench::new() else {
+        return;
+    };
+    let mut base = pass(3);
+    base.lighting_word = 0;
+    let mut add = pass(2);
+    add.stages[0].colour_arg1 = 3; // TFACTOR
+    add.stages[0].colour_op = 1; // SELECTARG1
+    add.texture_factor = 0xff30_3030;
+    add.blend = 1; // ONE, ONE
+    add.depth_mode = 1;
+    let two = style(white_material(), vec![base, add]);
+    let pipes = b.r.models().pipeline_count();
+    let forbidden = warm::forbidden_creates();
+    let up = b.r.model_uploader(&b.ctx);
+    let (files, styles) = (cube(10.0), vec![Some(two.clone())]);
+    let mut m = std::thread::spawn(move || {
+        warm::forbid_on_this_thread();
+        up.upload_look(
+            &files,
+            ModelLook {
+                textures: &[Some(solid([100, 100, 100, 255]))],
+                styles: StyleChoice::List(&styles),
+            },
+        )
+    })
+    .join()
+    .expect("loader-style thread");
+    assert_eq!(warm::forbidden_creates(), forbidden, "nothing made there");
+    assert_eq!(b.r.models().pipeline_count(), pipes, "left to the frame");
+    lit(&mut m, 255.0, vec![]);
+    let unready = warm::unready_draws();
+    let px = b.centre(&m);
+    assert_eq!(warm::unready_draws(), unready, "every pass drawn");
+    assert!(b.r.models().pipeline_count() > pipes, "the frame made them");
+    let mut fresh = b.model(&cube(10.0), [100, 100, 100, 255], &[Some(two)]);
+    lit(&mut fresh, 255.0, vec![]);
+    assert_eq!(px, b.centre(&fresh));
+    assert!(near(px, [148, 148, 148], 2));
+}

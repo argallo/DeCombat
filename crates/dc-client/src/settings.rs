@@ -784,6 +784,9 @@ pub struct Settings {
     pub fps_cap: u32,
     /// CLI-1596: the Graphic tab's "Show FPS" row: the frame rate drawn in the match and in the front end.
     pub show_fps: bool,
+    /// CLI-1852: the Graphic tab's "Renderer" row (Windows only): the graphics API the NEXT start of the client
+    /// opens its device with, our own section.
+    pub renderer: Renderer,
     /// CLI-1599: the Sound tab's "BGM Music" row: [`BGM_2009`] (the attribute file's tracks) or [`BGM_CLASSIC`]
     /// (the UI loop in the front end, the waiting-room loop in a room), our own section.
     pub bgm: u32,
@@ -847,6 +850,79 @@ pub fn rgba_hex(c: [u8; 4]) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3])
 }
 
+/// CLI-1852: the graphics API the Windows client opens its device with (the Graphic tab's "Renderer" row).
+// DC-DEFAULT: CLI-1852 (proposed; USER DECISION 2026-11-04)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renderer {
+    Vulkan,
+    Dx12,
+}
+
+/// CLI-1852: the Renderer row's choices, in list order.
+pub const RENDERER_CHOICES: [Renderer; 2] = [Renderer::Vulkan, Renderer::Dx12];
+/// CLI-1852: Vulkan is the default (user decision 2026-11-04: perf on low-end PCs; DirectX 12 is the fallback).
+pub const RENDERER_DEFAULT: Renderer = Renderer::Vulkan;
+
+impl Renderer {
+    /// The profile word (and the `--adapter` word of the same backend).
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Vulkan => "vulkan",
+            Renderer::Dx12 => "dx12",
+        }
+    }
+
+    /// The choice of a profile word (case and quotes ignored); `None` for any other value.
+    pub fn from_name(v: &str) -> Option<Renderer> {
+        let v = v.trim().trim_matches('"').to_ascii_lowercase();
+        RENDERER_CHOICES.iter().copied().find(|r| r.name() == v)
+    }
+
+    /// The word the options row shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Renderer::Vulkan => "Vulkan",
+            Renderer::Dx12 => "DirectX 12",
+        }
+    }
+
+    /// The backend the choice asks for.
+    pub fn backends(self) -> wgpu::Backends {
+        match self {
+            Renderer::Vulkan => wgpu::Backends::VULKAN,
+            Renderer::Dx12 => wgpu::Backends::DX12,
+        }
+    }
+}
+
+/// CLI-1852: whether this build offers the Renderer choice (Windows only: macOS is Metal, no choice).
+pub const fn renderer_choosable() -> bool {
+    cfg!(windows)
+}
+
+/// CLI-1852: the adapter choice of a run and whether it is only a first attempt. `--adapter` (`cli`) wins and is
+/// exclusive, as before; without it a build with the Renderer choice asks for the saved backend FIRST and falls back
+/// to the default backends when it has no adapter; any other build keeps [`AdapterChoice::Auto`].
+pub fn adapter_for_run(
+    cli: Option<dc_render::AdapterChoice>,
+    saved: Renderer,
+    choosable: bool,
+) -> (dc_render::AdapterChoice, bool) {
+    match cli {
+        Some(c) => (c, false),
+        None if choosable => (dc_render::AdapterChoice::Backends(saved.backends()), true),
+        None => (dc_render::AdapterChoice::Auto, false),
+    }
+}
+
+/// CLI-1852: the saved Renderer choice of the player's profile (the default without one).
+pub fn saved_renderer(store: &ProfileStore) -> Renderer {
+    store
+        .load()
+        .and_then(|(doc, _)| doc.own_get(OWN_RENDERER).and_then(Renderer::from_name))
+        .unwrap_or(RENDERER_DEFAULT)
+}
+
 /// CLI-1599: the BGM row's choices, in list order.
 pub const BGM_CHOICES: [u32; 2] = [BGM_CLASSIC, BGM_2009];
 /// CLI-1599: the default style: Classic (project decision "let's make classic the default as well").
@@ -893,6 +969,7 @@ impl Default for Settings {
             antialias: 1,
             fps_cap: FPS_CAP_DEFAULT,
             show_fps: false,
+            renderer: RENDERER_DEFAULT,
             bgm: BGM_DEFAULT,
             mods_local_enabled: Vec::new(),
             mods_settings: Default::default(),
@@ -1052,6 +1129,11 @@ impl Settings {
         if let Some(v) = own_int(OWN_SHOW_FPS) {
             s.show_fps = v != 0;
         }
+        // CLI-1852: an unknown or missing value is the default
+        s.renderer = doc
+            .own_get(OWN_RENDERER)
+            .and_then(Renderer::from_name)
+            .unwrap_or(RENDERER_DEFAULT);
         if let Some(v) = own_int(OWN_BGM) {
             s.bgm = BGM_CHOICES
                 .iter()
@@ -1212,6 +1294,7 @@ impl Settings {
         doc.own_set(OWN_ANTIALIAS, &self.antialias.to_string());
         doc.own_set(OWN_FPS_CAP, &self.fps_cap.to_string());
         doc.own_set(OWN_SHOW_FPS, &i32::from(self.show_fps).to_string());
+        doc.own_set(OWN_RENDERER, self.renderer.name());
         doc.own_set(OWN_BGM, &self.bgm.to_string());
         doc.own_set(OWN_MODS_LOCAL_ENABLED, &self.mods_local_enabled.join(","));
         for (id, values) in &self.mods_settings {
@@ -1444,6 +1527,9 @@ pub const OWN_ANTIALIAS: &str = "antialias";
 pub const OWN_FPS_CAP: &str = "fps_cap";
 pub const OWN_SHOW_FPS: &str = "show_fps";
 pub const OWN_BGM: &str = "bgm";
+/// CLI-1852: our own section's key of the Renderer row (`vulkan` / `dx12`).
+// DC-DEFAULT: CLI-1852 (proposed)
+pub const OWN_RENDERER: &str = "renderer";
 /// CLI-1617 / CLI-1618: our own section's keys of the enabled local mods and the accepted server mods.
 // DC-DEFAULT: CLI-1617, CLI-1618 (proposed)
 pub const OWN_MODS_LOCAL_ENABLED: &str = "mods.local_enabled";
@@ -1702,6 +1788,7 @@ mod tests {
         t.antialias = 4;
         t.fps_cap = 120;
         t.show_fps = true;
+        t.renderer = Renderer::Dx12;
         t.bgm = BGM_2009;
         let mut d2 = doc.clone();
         t.to_doc(&mut d2, &table(), &names);
@@ -1726,9 +1813,58 @@ mod tests {
             (4, 120, true),
             "CLI-1594..1596 kept in our own section"
         );
+        assert_eq!(back.renderer, Renderer::Dx12, "CLI-1852 kept in our own section");
+        assert_eq!(s.renderer, Renderer::Vulkan, "CLI-1852: Vulkan without a key");
         assert_eq!(back.bgm, BGM_2009, "CLI-1599 kept in our own section");
         assert_eq!(s.bgm, BGM_CLASSIC, "CLI-1599: Classic without a key");
         assert_eq!(back.effective_music(), 0);
+    }
+
+    /// CLI-1852: the Renderer row's profile word: Vulkan by default, DirectX 12 saved, anything else the default.
+    #[test]
+    fn the_renderer_choice_is_saved_and_unknown_values_fall_back() {
+        let load = |extra: &str| {
+            let text = format!("{SAMPLE}
+[DeCombat]
+{extra}");
+            Settings::from_doc(&ProfileDoc::parse(&text), &table(), &names)
+        };
+        assert_eq!(RENDERER_DEFAULT, Renderer::Vulkan);
+        assert_eq!(Settings::default().renderer, Renderer::Vulkan);
+        assert_eq!(load("").renderer, Renderer::Vulkan, "no key");
+        assert_eq!(load("renderer = dx12
+").renderer, Renderer::Dx12);
+        assert_eq!(load("renderer = \"DX12\"
+").renderer, Renderer::Dx12);
+        assert_eq!(load("renderer = vulkan
+").renderer, Renderer::Vulkan);
+        for old in ["metal", "3", "", "dx11"] {
+            assert_eq!(load(&format!("renderer = {old}
+")).renderer, Renderer::Vulkan, "{old:?}");
+        }
+        let mut doc = ProfileDoc::parse(SAMPLE);
+        let mut s = Settings::default();
+        s.renderer = Renderer::Dx12;
+        s.to_doc(&mut doc, &table(), &names);
+        assert_eq!(doc.own_get(OWN_RENDERER), Some("dx12"));
+        assert_eq!((Renderer::Vulkan.label(), Renderer::Dx12.label()), ("Vulkan", "DirectX 12"));
+        assert_eq!(Renderer::Dx12.backends(), wgpu::Backends::DX12);
+    }
+
+    /// CLI-1852: `--adapter` wins over the setting (and stays exclusive); the setting is a first attempt; builds
+    /// without the choice keep Auto.
+    #[test]
+    fn the_adapter_option_wins_over_the_renderer_setting() {
+        use dc_render::AdapterChoice::{Auto, Backends, Fallback};
+        let dx = Backends(wgpu::Backends::DX12);
+        let vk = Backends(wgpu::Backends::VULKAN);
+        assert_eq!(adapter_for_run(None, Renderer::Vulkan, true), (vk, true));
+        assert_eq!(adapter_for_run(None, Renderer::Dx12, true), (dx, true));
+        assert_eq!(adapter_for_run(Some(dx), Renderer::Vulkan, true), (dx, false));
+        assert_eq!(adapter_for_run(Some(Auto), Renderer::Dx12, true), (Auto, false));
+        assert_eq!(adapter_for_run(Some(Fallback), Renderer::Dx12, true), (Fallback, false));
+        assert_eq!(adapter_for_run(None, Renderer::Dx12, false), (Auto, false), "no choice off Windows");
+        assert_eq!(renderer_choosable(), cfg!(windows));
     }
 
     #[test]

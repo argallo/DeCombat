@@ -78,6 +78,16 @@ it and do the rest. The lobby restarts during a deploy, so it must not be the pr
 `REQUIRED_INSTANCES`, `MATCH_WAIT_MIN` (15), `BUILD_JOBS` (cargo `-j`; empty = all cores; the build runs at nice 10),
 `CARGO` (empty = root's PATH, else `/root/.cargo/bin/cargo`).
 
+## Check now
+
+The fetch timer looks for new commits every 5 minutes. **Check now** (next to the "checked ... ago" line) asks for it
+at once: `POST /ops/updates/fetch` writes `requests/fetch-<unix>.json`; root's `decombat-deploy.path` starts
+`deploy_from_git.sh run`, which removes the file unread and runs one fetch (never a deploy). The button waits until the
+"checked" time changes. Limits: none within 30 s of the last check (429 from the lobby; root ignores it too), 409 while
+a deploy runs or waits. This needs the `deploy_from_git.sh` with the fetch handling in `/opt/decombat/tools`: a normal
+dashboard deploy of this change installs it (install.sh copies `tools/vps/*.sh`); no unit changes. Until then the old
+script deletes the request file unread and the button just times out after 90 s.
+
 ## Deploying
 
 Updates tab: tick **VPS** (the lobbies restart: everyone is disconnected for seconds) and / or **Game hosts**, then

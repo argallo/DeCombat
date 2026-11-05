@@ -289,6 +289,15 @@ pub fn equip(st: &Core, account: u32, uid: u32, item_no: u32, slot: i64) -> rusq
     if !fits {
         return Ok(false);
     }
+    // DC-DEFAULT: LG-403 (proposed, USER DECISION 2026-11-04) a default weapon that holds its own slot (as this
+    // entry shows it) does not go into the backpack: that would leave the slot empty; another gun goes there first
+    if let Some(own) =
+        inventory::default_weapon_slot(&it).filter(|_| BACKPACK_SLOTS.contains(&slot))
+    {
+        if inventory::seen_slot(st, account, it.uid)? == Some(own) {
+            return Ok(false);
+        }
+    }
     st.db.execute(
         "UPDATE items SET equip_slot = -1 WHERE user_no = ?1 AND equip_slot = ?2 AND uid != ?3",
         params![account as i64, slot, it.uid],
@@ -303,11 +312,19 @@ pub fn equip(st: &Core, account: u32, uid: u32, item_no: u32, slot: i64) -> rusq
 
 // DC-DEFAULT: CD-77 (proposed) a default item is never unequipped (0x327 ok = 0); unequipping the backpack
 // empties slots 10..13; CD-52 then returns a default weapon (the backpack slot may stay empty)
+// DC-DEFAULT: LG-403 (proposed, USER DECISION 2026-11-04) except a default weapon in a backpack slot 10..13 (as this
+// entry shows it): it leaves the backpack, back to its own slot when that is empty (CD-52), else to storage
 pub fn unequip(st: &Core, account: u32, uid: u32, item_no: u32) -> rusqlite::Result<bool> {
-    let Some(it) = owned(st, account, uid, item_no)?.filter(|i| i.slot >= 0 && i.default_type == 0)
-    else {
+    let Some(it) = owned(st, account, uid, item_no)?.filter(|i| i.slot >= 0) else {
         return Ok(false);
     };
+    if it.default_type != 0
+        && !(inventory::is_default_weapon(&it)
+            && inventory::seen_slot(st, account, it.uid)?
+                .is_some_and(|s| BACKPACK_SLOTS.contains(&s)))
+    {
+        return Ok(false);
+    }
     db::set_slot(&st.db, it.uid, -1)?;
     if it.slot == SLOT_BACKPACK {
         clear_backpack_slots(st, account)?;

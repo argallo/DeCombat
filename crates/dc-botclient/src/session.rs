@@ -177,6 +177,9 @@ pub struct GameConfig {
     // OBSERVED: captures 20261025_125432_rust6, 20261025_153705_rust7, 20261025_204341_realclient (the real
     // client's last 0x64 at most 63 ms before 0x3f, no 0x64 / 0x89 / 0x8c after it)
     pub frame_ends_at_result: bool,
+    /// BOT-120: the bot opens the doors on its way with the use key and its grid takes doors as ways (false: doors
+    /// are walls, as before; env `DC_BOT_DOORS=off`).
+    pub doors: bool,
 }
 
 /// Period of the client's roster tick that sends the queued roster queries.
@@ -220,6 +223,11 @@ impl GameConfig {
             roster_query: false,
             timeline: None,
             frame_ends_at_result: false,
+            // DC-DEFAULT: BOT-120 (proposed) on; `DC_BOT_DOORS=off` keeps doors as walls (an A/B knob)
+            doors: !matches!(
+                std::env::var("DC_BOT_DOORS").as_deref(),
+                Ok("off" | "0" | "false")
+            ),
         }
     }
 }
@@ -532,6 +540,10 @@ pub struct BotSession {
     /// BOT-111: the kill volumes the server created (the grid keeps its nodes out of them, the greedy way-finder
     /// turns away from them).
     kill_now: Vec<dc_sim::ConvexVolume>,
+    /// BOT-120: the door logic, and the grid's solid set (which linked models the grid takes as solid) last built.
+    doors: crate::doors::DoorMind,
+    nav_key: Option<Vec<bool>>,
+    doors_said: Millis,
     /// When the last `track` event was logged.
     track_said: Millis,
     /// BOT-95: the bot's role in the objective modes.
@@ -585,6 +597,9 @@ impl BotSession {
                     .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)),
             evade_safe: (0, true, true),
             kill_now: Vec::new(),
+            doors: crate::doors::DoorMind::default(),
+            nav_key: None,
+            doors_said: 0,
             track_said: 0,
             role: crate::roles::role_for(&cfg.nick),
             evader: crate::evade::Evader::new(
@@ -1149,13 +1164,19 @@ impl BotSession {
                 );
                 self.table.extents = Some(w.extents);
                 self.obs.world_resolved = Some(Ok(w.listed.clone()));
-                // BOT-93: the navigation grid grows from where the bot stands, on this world
-                self.nav = Some(crate::nav::NavGrid::new(
-                    w.collision.clone(),
-                    BOT_STAND_DIMS,
-                ));
-                self.route.clear();
+                // BOT-120: the world's doors; the grid takes them as ways
+                let boxes = crate::doors::door_boxes(&w);
+                self.rec.event(
+                    "door_set",
+                    json!({"ms": self.ms(now), "doors": boxes.iter().map(|d| json!({
+                        "name": String::from_utf8_lossy(&d.name), "lo": d.lo, "hi": d.hi})).collect::<Vec<_>>()}),
+                );
+                self.doors = crate::doors::DoorMind::new(boxes, self.roam_seed);
                 self.world = Some(w);
+                // BOT-93: the navigation grid grows from where the bot stands, on this world
+                let coll = self.nav_collision();
+                self.nav = coll.map(|c| crate::nav::NavGrid::new(c, BOT_STAND_DIMS));
+                self.route.clear();
                 true
             }
             Ok(Err(e)) => {
@@ -1474,7 +1495,11 @@ impl BotSession {
         };
         let changed = w.follow_server(&self.table);
         let kill = w.active_kill_volumes(&self.table);
-        if changed.is_none() && kill.len() == self.kill_now.len() {
+        // BOT-120: the grid takes doors as ways, so a door that opens or closes does not start it again
+        let key =
+            crate::doors::nav_key(w, &self.doors.boxes, &self.doors.given_up(), self.cfg.doors);
+        let grid_changed = self.nav_key.as_ref() != Some(&key) || kill.len() != self.kill_now.len();
+        if changed.is_none() && !grid_changed {
             return;
         }
         let coll = w.collision.clone();
@@ -1482,16 +1507,97 @@ impl BotSession {
         let linked = w.linked.len();
         let gone = changed.map(|c| c.1).unwrap_or_default();
         if let Some(b) = self.body.as_mut() {
-            b.set_world(coll.clone(), &gone);
+            b.set_world(coll, &gone);
+        }
+        if !grid_changed {
+            return;
         }
         self.kill_now = kill.clone();
-        self.nav = Some(crate::nav::NavGrid::new(coll, self.nav_dims()).with_kill_volumes(kill));
+        let nav_coll = self.nav_collision();
+        self.nav =
+            nav_coll.map(|c| crate::nav::NavGrid::new(c, self.nav_dims()).with_kill_volumes(kill));
         self.route.clear();
         self.rec.event(
             "world_set",
             json!({"ms": self.ms(now), "linked": linked, "solid": solid, "gone": gone.len(),
                    "kill_volumes": self.kill_now.len()}),
         );
+    }
+
+    /// BOT-120: the grid's collision set: the world's solid set with the doors the bot has not given up taken as
+    /// open (doors off: the solid set). Remembers the key it was built for.
+    // DC-DEFAULT: BOT-120 (proposed)
+    fn nav_collision(&mut self) -> Option<std::sync::Arc<dc_sim::CollisionWorld>> {
+        let w = self.world.as_ref()?;
+        let key =
+            crate::doors::nav_key(w, &self.doors.boxes, &self.doors.given_up(), self.cfg.doors);
+        let c = crate::doors::nav_collision(w, &key);
+        self.nav_key = Some(key);
+        Some(c)
+    }
+
+    /// BOT-120: the door on the bot's way: `Some(yaw)` while it stands at a closed door (facing it), the use key
+    /// sent when due. Logs the presses, opens and give-ups, and the counters every 30 s.
+    // DC-DEFAULT: BOT-120 (proposed)
+    fn door_tick(
+        &mut self,
+        now: Millis,
+        alive: bool,
+        pos: [f32; 3],
+        goal: Option<[f32; 3]>,
+    ) -> Option<f32> {
+        let w = self.world.as_ref()?;
+        if self.doors.boxes.is_empty() {
+            return None;
+        }
+        let views = crate::doors::door_views(w, &self.table, &self.doors.boxes);
+        let path: Vec<[f32; 3]> = match goal {
+            None => Vec::new(),
+            Some(_) if !self.route.points.is_empty() => self.route.points.clone(),
+            Some(g) => vec![g],
+        };
+        let mut notes = Vec::new();
+        let hold = self
+            .doors
+            .tick(now, alive, pos, &path, &views, self.cfg.doors, &mut notes);
+        if hold.is_some_and(|h| h.press) {
+            self.send_shell(true, crate::doors::UP_USE, &crate::doors::use_body(), now);
+        }
+        let mut regrid = false;
+        for n in notes {
+            let (what, door, extra) = match n {
+                crate::doors::DoorNote::Press { door, n } => ("door_press", door, n),
+                crate::doors::DoorNote::Opened { door, waited_ms } => {
+                    ("door_opened", door, waited_ms)
+                }
+                crate::doors::DoorNote::GaveUp { door, presses } => {
+                    regrid = true;
+                    ("door_given_up", door, presses)
+                }
+                crate::doors::DoorNote::Back { door } => {
+                    regrid = true;
+                    ("door_back", door, 0)
+                }
+            };
+            let name = String::from_utf8_lossy(&self.doors.boxes[door].name).into_owned();
+            self.rec.event(
+                what,
+                json!({"ms": self.ms(now), "door": name, "n": extra, "pos": pos}),
+            );
+        }
+        if since(now, self.doors_said) >= 30_000 {
+            self.doors_said = now;
+            let s = self.doors.stats;
+            self.rec.event(
+                "door_stats",
+                json!({"ms": self.ms(now), "on": self.cfg.doors, "presses": s.presses, "opened": s.opened,
+                       "given_up": s.given_up, "wait_ms": s.wait_ms, "near_closed_ms": s.near_closed_ms}),
+            );
+        }
+        if regrid {
+            self.follow_world(now);
+        }
+        hold.map(|h| h.yaw)
     }
 
     /// BOT-117: the place a bot with nothing to walk to roams to: a node of the grid at least [`ROAM_MIN`] units away
@@ -2467,9 +2573,9 @@ impl BotSession {
                         // the grid follows the body's box (it arrives with the first teleport)
                         let dims = self.nav_dims();
                         if self.nav.as_ref().is_some_and(|n| n.dims() != dims) {
-                            if let Some(w) = self.world.as_ref() {
+                            if let Some(c) = self.nav_collision() {
                                 self.nav = Some(
-                                    crate::nav::NavGrid::new(w.collision.clone(), dims)
+                                    crate::nav::NavGrid::new(c, dims)
                                         .with_kill_volumes(self.kill_now.clone()),
                                 );
                                 self.route.clear();
@@ -2534,6 +2640,15 @@ impl BotSession {
                     None
                 }
             };
+            // BOT-120: a closed door on the way: stand, face it, press the use key, wait for it to open
+            let door_yaw = match at {
+                Some((pos, true)) => {
+                    let alive = self.life_state == 1 && playing && !paused;
+                    self.door_tick(now, alive, pos, goal.filter(|_| steer.is_some()))
+                }
+                _ => None,
+            };
+            let steer = if door_yaw.is_some() { None } else { steer };
             // BOT-92: a target in sight (no walk goal) is fought on the move: strafe, step back, jump, crouch
             let engaged = steer.is_none()
                 && self.shooter.as_ref().is_some_and(|s| {
@@ -2642,7 +2757,7 @@ impl BotSession {
                 b.goal_y = goal.map(|g| g[1]);
                 b.evade = evade;
             }
-            walk_look = steer.map(|y| (y, 0.0));
+            walk_look = steer.or(door_yaw).map(|y| (y, 0.0));
         }
         let t = self.ms(now) as f32 / 1000.0;
         let dead = self.respawn.dead();

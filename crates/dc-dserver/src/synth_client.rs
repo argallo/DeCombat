@@ -871,7 +871,17 @@ impl SynthClient {
     // SPEC: GAME_MESSAGES_2009_C2S.md §4.6 (0x4d repeats while held; the release is one 0x82 with no extra block and
     // no hit, `last` 1)
     pub fn throw(&mut self, weapon: (u16, u16), dir: [f32; 3]) {
+        self.throw_hold();
+        self.throw_release(weapon, dir);
+    }
+
+    /// One `UP_THROW_HOLD` 0x4d (the throwable held).
+    pub fn throw_hold(&mut self) {
         self.send_shell(0x4d, &BitWriter::new());
+    }
+
+    /// The release alone: one `UP_FIRE` with the throwable's ids from the own position along `dir`, no hit.
+    pub fn throw_release(&mut self, weapon: (u16, u16), dir: [f32; 3]) {
         let origin = self.pos;
         self.send_fire(weapon, origin, dir, None);
     }

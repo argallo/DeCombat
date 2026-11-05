@@ -40,7 +40,7 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
                  [--channel ID] [--goal n|min] [--world-file PATH] [--net-log JSONL] [--capture JSONL]
                  [--sound-log JSONL] [--no-sound] [--audio device|null] [--volume N] [--music-volume N]
                  [--match-wait S] [--load-timeout S] [--leave-after S] [--duration S] [--no-move-notices]
-                 [--shoot-test] [--reality] [--draw-voice] [--solid-bodies on|off]
+                 [--shoot-test] [--draw-voice] [--solid-bodies on|off]
                  [--slots w,w,..] [--debug-boxes] [--net-overlay[=2]] [--no-hud] [--debug-overlay] [--show-board]
                  [--show-board-at A,B] [--result-hold S] [--state-shots]
                  [--test-correction-after N] [window / headless options as above]
@@ -98,8 +98,6 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   --debug-boxes draws the team-coloured boxes of remote players next to their models.
   --net-overlay starts every match with the network overlay on (=2: with the player rows; `/network` in the chat
   line toggles it, DC_NET_OVERLAY=1|2 does the same as the flag).
-  --reality: the 2009 options-menu Reality setting (off by default): a hit jars the camera (2 degrees of pitch
-  or roll by the attacker's side, 0.35 s) and the next shots follow the jarred camera; the HUD's damage arcs light.
   --draw-voice: a drawn round plays a draw voice (the 2009 client plays none).
   --solid-bodies on|off: other players' bodies block the own body (default on; same as DC_SOLID_BODIES).
   HUD: the 2009 in-match HUD from the ROM's UI data (our text layout without a ROM); Tab holds the scoreboard
@@ -172,6 +170,8 @@ struct Args {
     sensitivity: Option<f32>,
     invert_y: bool,
     adapter: AdapterChoice,
+    /// `--adapter` was given: it wins over the saved Renderer choice (CLI-1852) and is exclusive.
+    adapter_given: bool,
     overlay: bool,
     list: bool,
     lobby: Option<SocketAddr>,
@@ -267,6 +267,7 @@ fn parse_args() -> Result<Args, String> {
         sensitivity: None,
         invert_y: false,
         adapter: AdapterChoice::Auto,
+        adapter_given: false,
         overlay: true,
         list: false,
         lobby: None,
@@ -303,7 +304,7 @@ fn parse_args() -> Result<Args, String> {
         leave_after: None,
         duration: None,
         move_notices: true,
-        reality: false,
+        reality: true,
         draw_voice: false,
         shoot_test: false,
         menu_pilot: false,
@@ -453,6 +454,7 @@ fn parse_args() -> Result<Args, String> {
             "--invert-y" => a.invert_y = true,
             "--no-overlay" => a.overlay = false,
             "--adapter" => {
+                a.adapter_given = true;
                 a.adapter = match val("--adapter")?.as_str() {
                     "auto" => AdapterChoice::Auto,
                     "dx12" => AdapterChoice::Backends(wgpu::Backends::DX12),
@@ -592,6 +594,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--no-move-notices" => a.move_notices = false,
             "--reality" => a.reality = true,
+            "--no-reality" => a.reality = false,
             "--draw-voice" => a.draw_voice = true,
             "--shoot-test" => a.shoot_test = true,
             "--menu-pilot" => a.menu_pilot = true,
@@ -1137,6 +1140,26 @@ fn look_of(a: &Args) -> dc_client::LookParams {
     look
 }
 
+/// CLI-1852: the adapter choice of a game window and whether it is only a first attempt: `--adapter` wins, else the
+/// profile's Renderer choice where this build offers it (Windows), else the default backends.
+#[cfg(feature = "window")]
+fn window_adapter(a: &Args) -> (AdapterChoice, bool) {
+    let choosable = dc_client::settings::renderer_choosable();
+    let saved = if choosable && !a.adapter_given {
+        let store = dc_client::settings::ProfileStore::for_client(
+            a.rom
+                .clone()
+                .or_else(|| dc_rom::resolve_rom().ok())
+                .as_deref(),
+            dc_client::settings::own_profile_dir().as_deref(),
+        );
+        dc_client::settings::saved_renderer(&store)
+    } else {
+        dc_client::settings::RENDERER_DEFAULT
+    };
+    dc_client::settings::adapter_for_run(a.adapter_given.then_some(a.adapter), saved, choosable)
+}
+
 #[cfg(feature = "window")]
 fn run_window_mode(
     source: Box<dyn WorldSource>,
@@ -1145,6 +1168,7 @@ fn run_window_mode(
     font_rom: Option<PathBuf>,
 ) -> Result<(), String> {
     use dc_client::window::{run_window, WindowOptions};
+    let window_choice = window_adapter(&a);
     let opts = WindowOptions {
         // CLI-1282: `--size` alone is the test tools' centred borderless window; with a look flag it is the
         // windowed size only (full screen fills the monitor)
@@ -1172,7 +1196,8 @@ fn run_window_mode(
         vsync: a.vsync,
         no_vsync: a.no_vsync,
         font_rom,
-        adapter: a.adapter,
+        adapter: window_choice.0,
+        adapter_first: window_choice.1,
         hud: hud_choice(&a),
         debug_panel: !a.hud || a.debug_overlay,
         board_at: a.board_at,
@@ -1454,6 +1479,7 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
     } else {
         None
     };
+    let window_choice = window_adapter(&a);
     let mut opts = WindowOptions {
         // CLI-1282: `--size` alone is the test tools' centred borderless window; with a look flag it is the
         // windowed size only (full screen fills the monitor)
@@ -1481,7 +1507,8 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
         vsync: a.vsync,
         no_vsync: a.no_vsync,
         font_rom,
-        adapter: a.adapter,
+        adapter: window_choice.0,
+        adapter_first: window_choice.1,
         hud: hud_choice(&a),
         debug_panel: !a.hud || a.debug_overlay,
         board_at: a.board_at,

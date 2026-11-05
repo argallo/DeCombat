@@ -1362,6 +1362,38 @@ fn passes_pay_count_down_and_the_small_function_rules() {
     assert!(crate::room::badge_user(&st, a));
 }
 
+/// LG-401: a GM account buys a ware below its rank requirement; the same purchase is refused once the flag is off.
+#[test]
+fn a_gm_account_buys_below_the_rank_requirement() {
+    let mut st = rom_state();
+    let shop = SHOP.replace(
+        "Itemid=110
+Itemtype=0
+",
+        "Itemid=110
+Itemtype=0
+GP_Unlock=500
+",
+    );
+    Arc::get_mut(&mut st.rom).unwrap().shop.catalog =
+        Some(ShopCatalog::from_doc(&ButeDoc::parse(&shop)));
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let gm = |st: &Core, on: i64| {
+        st.db
+            .execute(
+                "UPDATE accounts SET gm = ?1 WHERE user_no = ?2",
+                [on, a as i64],
+            )
+            .unwrap();
+    };
+    gm(&st, 0);
+    assert_eq!(u32_at(&buy(&mut c, &mut st, 1, 0, 0), 0xa) & 0xffff, 0x60);
+    gm(&st, 1);
+    let d = buy(&mut c, &mut st, 1, 0, 0);
+    assert_eq!(u32_at(&d, 6), 1, "the GM's purchase goes through");
+    assert_eq!(col(&st, a, "gp"), 9900);
+}
+
 /// LG-302: a purchase below the cell's rank requirement (the item row's GP / NX unlock experience) is refused with
 /// reason 0x60 and costs nothing; at the requirement it succeeds; an extension of an owned instance and a prepaid
 /// credit purchase (it waits in the inbox, 0x1824) are not refused.

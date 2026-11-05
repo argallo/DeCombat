@@ -64,7 +64,10 @@ impl Game {
             self.round_wins[(win - 1) as usize] += 1;
         }
         let looped = self.round_loop();
-        let last = !looped || forfeit || self.match_decided();
+        // DC-DEFAULT: DSV-567 (proposed; USER DECISION 2026-11-04) the warm-up's end takes this path too
+        // (`warmup::tick_warmup`): never the match's end, no side switch
+        let warmup_end = self.in_warmup();
+        let last = !looped || forfeit || (!warmup_end && self.match_decided());
         // the 0x3f winner and the lobby's result: the side with more round wins in a round mode (a forfeit goes to
         // the side that stayed)
         let match_win = if looped && !forfeit {
@@ -124,7 +127,7 @@ impl Game {
             // SPEC: GAME_MODES_2009.md §4.1 (0xb5 round wins after each round; PLAUSIBLE, V-GM-1)
             // DC-DEFAULT: GMD-21 (staged) 0xb5 with the round wins right after 0x46
             self.broadcast(&gs::round_wins(self.round_wins));
-            if !last {
+            if !last && !warmup_end {
                 // DC-DEFAULT: GMD-7 (proposed), DSV-147 (proposed) the half-time switch of 3 / 13; DSV-400: tested on
                 // the pair the 0x46 just carried (the round wins after this round)
                 self.side_switch_at_round_end(self.round_wins);
@@ -160,10 +163,19 @@ impl Game {
     }
 
     /// Whether the round wins so far end a round-mode match: a side reached the goal (0 = one round), or the round
-    /// cap (`max_rounds`, default twice the goal) was reached.
+    /// cap (`max_rounds`, default twice the goal) was reached; Quarantine: the goal in rounds played (DSV-565).
     // DC-DEFAULT: GMD-5 (proposed) the goal in rounds; GMD-23 (staged) the cap
     fn match_decided(&self) -> bool {
         let goal = self.rules.goal;
+        // DC-DEFAULT: DSV-565 (proposed; playtest report "Quarantine went to 8 rounds even though it was out of 7
+        // rounds, because humans won a round") Quarantine plays exactly `goal` rounds, whoever wins each one: its
+        // HUD draws the goal as the round limit beside the current round (round / limit with the round word), not
+        // as a win target
+        // EVIDENCE: cshell+0xb29c0 (class-11 element: current round and round limit digits, slash, round word),
+        // cshell+0xb0e30 / cshell+0xb0f70 (the two counters set by 0xd3 sub 1 and 0x44 with round_no / round_limit)
+        if self.is_infect() {
+            return goal == 0 || self.round_no >= goal;
+        }
         if goal == 0 || self.round_wins.iter().any(|&w| w >= goal) {
             return true;
         }

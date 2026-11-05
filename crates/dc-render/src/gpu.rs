@@ -138,6 +138,25 @@ pub(crate) fn adapter_specific_formats(adapter: &wgpu::Adapter) -> bool {
         .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
 }
 
+/// The `desired_maximum_frame_latency` of a window surface on `backend`.
+///
+/// iPadOS: two drawables in flight (one held the present to every other 120 Hz blank, CLI-1604).
+/// DX12 (dx12-perf): 2. wgpu's DX12 swapchain waits in `get_current_texture` on DXGI's frame-latency waitable
+/// object, which with a latency of 1 is signalled only once the previous frame has been presented, so the CPU never
+/// records a frame while the GPU still renders the one before (measured headless as one frame in flight against
+/// none: +0.9 ms per frame at 2560x1440). Vulkan's acquire with latency 1 (two images) waits only for the frame
+/// before the previous one, so DX12 at 2 (three buffers) is the same overlap Vulkan already has, not a deeper queue.
+/// Everything else: 1.
+// ORIGINAL: dx12-perf (wgpu 25 docs: SurfaceConfiguration::desired_maximum_frame_latency; Microsoft docs:
+// IDXGISwapChain2::SetMaximumFrameLatency, GetFrameLatencyWaitableObject); no 2009 behaviour
+pub fn frame_latency_for(backend: wgpu::Backend) -> u32 {
+    if cfg!(target_os = "ios") || backend == wgpu::Backend::Dx12 {
+        2
+    } else {
+        1
+    }
+}
+
 /// Device and queue on one adapter.
 pub struct GpuContext {
     pub instance: wgpu::Instance,
@@ -287,8 +306,10 @@ pub struct WorldRenderer {
     models: std::sync::Arc<ModelPipelines>,
     /// Leave out opaque world batches whose bounds lie outside the view frustum (default on; pixel-neutral).
     world_culling: bool,
-    /// CLI-1624: the x-ray pass's pipelines, built on its first use.
+    /// CLI-1624: the x-ray pass's pipelines, built by [`WorldRenderer::prewarm`] or on first use.
     xray: std::sync::OnceLock<crate::xray::XrayPipes>,
+    /// dx12-perf: the frame's batch of changed model uniforms (kept for its capacity; empty between frames).
+    uploads: std::sync::Mutex<crate::model_gpu::UniformUploads>,
 }
 
 /// How far (world units) a world batch's bounds must lie outside a frustum plane before it is left out: well above
@@ -670,6 +691,7 @@ impl WorldRenderer {
             models: std::sync::Arc::new(models),
             world_culling: true,
             xray: std::sync::OnceLock::new(),
+            uploads: std::sync::Mutex::new(Default::default()),
         }
     }
 
@@ -699,6 +721,25 @@ impl WorldRenderer {
 
     pub fn world_culling(&self) -> bool {
         self.world_culling
+    }
+
+    /// gpu-prewarm: makes, on the calling (frame) thread, every pipeline this renderer makes on demand: the model
+    /// pipelines and samplers of `styles` (and of the built-in styles) and the x-ray pass. The world passes are made
+    /// in [`WorldRenderer::new`]. Call it at match load and after a renderer or device rebuild, before the first frame.
+    pub fn prewarm<'a>(
+        &self,
+        ctx: &GpuContext,
+        styles: impl IntoIterator<Item = &'a crate::RenderStyle>,
+    ) -> crate::PrewarmCount {
+        let n = self.models.prewarm(ctx, styles);
+        self.xray_pipes(ctx);
+        n
+    }
+
+    fn xray_pipes(&self, ctx: &GpuContext) -> &crate::xray::XrayPipes {
+        self.xray.get_or_init(|| {
+            crate::xray::XrayPipes::new(ctx, &self.models, self.colour_format, self.msaa)
+        })
     }
 
     /// The model pipelines.
@@ -1123,6 +1164,9 @@ impl WorldRenderer {
         encoder: &mut wgpu::CommandEncoder,
     ) -> FrameReport {
         let size = frame.size;
+        // gpu-prewarm: the model pipelines a loader thread needed are made here, on the frame thread, before any model
+        // is recorded (one atomic load when there are none)
+        self.models.make_pending(ctx);
         // CLI-1593: the sky pass never resolves (the world pass follows it into the same target)
         let sky_target = FrameTarget {
             resolve: None,
@@ -1210,13 +1254,19 @@ impl WorldRenderer {
             }
             colour_load = wgpu::LoadOp::Load;
         }
-        for m in models {
-            report.uniform_bytes += m.write_fogged(ctx, camera, scene.fog.as_ref());
-        }
-        // SPEC: RENDER_2009.md §4.2 (aspect = width / height of the camera context)
-        let pv_projection = pv.projection(size.0, size.1);
-        for m in view_models {
-            report.uniform_bytes += m.write_view(ctx, camera, pv_projection);
+        // dx12-perf: the changed model uniforms go up as one staged upload plus a copy per buffer, recorded here,
+        // after the sky pass (which reads no model buffer) and before every pass that draws a model
+        {
+            let mut uploads = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+            for m in models {
+                report.uniform_bytes += m.write_fogged(&mut uploads, camera, scene.fog.as_ref());
+            }
+            // SPEC: RENDER_2009.md §4.2 (aspect = width / height of the camera context)
+            let pv_projection = pv.projection(size.0, size.1);
+            for m in view_models {
+                report.uniform_bytes += m.write_view(&mut uploads, camera, pv_projection);
+            }
+            uploads.flush(ctx, encoder);
         }
         // ---- world, models, translucent objects ----
         // SPEC: RENDER_2009.md §5.3 (after the sky: clear depth only so the world draws over it)
@@ -1387,9 +1437,7 @@ impl WorldRenderer {
             frame.encode_resolve_only(encoder);
             return 0;
         }
-        let pipes = self.xray.get_or_init(|| {
-            crate::xray::XrayPipes::new(ctx, &self.models, self.colour_format, self.msaa)
-        });
+        let pipes = self.xray_pipes(ctx);
         pipes.encode(ctx, encoder, frame, camera, draws)
     }
 

@@ -990,6 +990,16 @@ pub fn locked(unlock: u32, exp: u32) -> bool {
     exp < unlock
 }
 
+/// The experience the shop's rank locks compare with: a GM account's shop has every ware unlocked.
+// DC-DEFAULT: LG-401 (proposed) a GM account (the login's operator flag) sees no rank lock in the shop
+pub fn lock_exp(data: &MenuData) -> u32 {
+    if data.gm.operator {
+        u32::MAX
+    } else {
+        data.profile.exp
+    }
+}
+
 /// What a shop cell needs of the character: the level table (badges) and the character's experience.
 pub struct CellRank<'a> {
     pub levels: &'a crate::hud::board::LevelTable,
@@ -2075,7 +2085,7 @@ impl ShopScreen {
     /// rank does not reach, else [`refused_box`].
     fn refusal_box(&self, cat: &Catalog, reason: u16, credit: bool, data: &MenuData) -> Popup {
         match self.buying.as_ref() {
-            Some(w) if reason == 0x60 && locked(w.unlock_exp, data.profile.exp) => {
+            Some(w) if reason == 0x60 && locked(w.unlock_exp, lock_exp(data)) => {
                 buybox::rank_box(&buybox::rank_of_exp(cat, w.unlock_exp).0)
             }
             _ => refused_box(cat, reason, credit),
@@ -2691,7 +2701,7 @@ impl Screen for ShopScreen {
                     Some(w)
                         if w.kind_of == Some(0x14)
                             && w.sale_type == 0
-                            && locked(w.unlock_exp, ctx.data.profile.exp) =>
+                            && locked(w.unlock_exp, lock_exp(ctx.data)) =>
                     {
                         let (name, _) = buybox::rank_of_exp(ctx.cat, w.unlock_exp);
                         ctx.popups.push(buybox::rank_box(&name));
@@ -2717,7 +2727,7 @@ impl Screen for ShopScreen {
                                 &self.wares,
                                 &ctx.data.store,
                                 w.sale_type,
-                                ctx.data.profile.exp,
+                                lock_exp(ctx.data),
                             );
                         }
                         if self.buy_box.is_none() {
@@ -3313,7 +3323,7 @@ impl Screen for ShopScreen {
                 let shown = self.wares_shown(data);
                 let rank = self.art.as_ref().map(|a| CellRank {
                     levels: &a.levels,
-                    exp: data.profile.exp,
+                    exp: lock_exp(data),
                 });
                 for (i, r) in self.shop_cells.iter().enumerate() {
                     match shown.get(self.page * CELLS + i) {
@@ -3336,7 +3346,7 @@ impl Screen for ShopScreen {
                     }
                 }
                 if let Some(w) = self.selected.and_then(|i| shown.get(self.page * CELLS + i)) {
-                    let locked = locked(w.unlock_exp, data.profile.exp);
+                    let locked = locked(w.unlock_exp, lock_exp(data));
                     draw_detail(
                         cat,
                         w,

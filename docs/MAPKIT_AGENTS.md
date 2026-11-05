@@ -163,6 +163,8 @@ client draws its own flag marker; a shot that first meets a sky face (surface fl
 decal; the `dc.world_settings` values are sent as the client's own variable names, which the server resolves from
 the ROM at launch (so a `-worldfile` run without a ROM sends no fog or far-plane values).
 
+In a bomb room the server draws each site's marker on the floor (green, red once planted) and gives every attacker the bomb on key 6; a map places nothing for that (MAP-113). The marker sits on whatever is straight below the box's centre, so keep the centre clear. A `dc.capture_flag` with an empty `model` is drawn as the ROM's flag, 28 units above the floor below its `pos`, and every capture flag gets its team's ring on the floor (MAP-114, MAP-115).
+
 ## 6. Lua generators: `dc-mapkit run` (DC_DEFAULTS.md MAP-56, MAP-57)
 
 A script runs in the mod sandbox (Lua 5.4; `string`, `table`, `math`, `utf8`; no `os`, `io`, `debug`, `load`,

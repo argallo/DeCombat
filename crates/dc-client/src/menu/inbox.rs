@@ -251,7 +251,7 @@ pub fn draw(
         .and_then(|r| wares.ware(r.product, &data.store.prices));
     if let Some(w) = ware {
         let marks = super::shop::DetailMarks {
-            locked: super::shop::locked(w.unlock_exp, data.profile.exp),
+            locked: super::shop::locked(w.unlock_exp, super::shop::lock_exp(data)),
             temporary: selected
                 .and_then(|i| rows.get(i))
                 .is_some_and(|r| has_end(r.end, now)),
@@ -282,7 +282,7 @@ fn draw_row(
     let ware = wares.ware(r.product, &data.store.prices);
     let locked = ware
         .as_ref()
-        .is_some_and(|w| super::shop::locked(w.unlock_exp, data.profile.exp));
+        .is_some_and(|w| super::shop::locked(w.unlock_exp, super::shop::lock_exp(data)));
     if let Some(icon) = ware
         .as_ref()
         .and_then(|w| w.icon.clone())

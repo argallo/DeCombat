@@ -128,8 +128,9 @@
 //!
 //! Further invariants (render-core): culling, run merging and skipped re-binds never reorder the drawn batches and
 //! never change a pixel (`tests/culling.rs`: every ROM map at nine views byte-identical with culling on and off);
-//! nothing here submits during [`WorldRenderer::encode_frame_with_view`] (queue writes: the frame uniform and changed
-//! model uniforms); new passes or draw kinds count their commands in [`FrameReport`].
+//! nothing here submits during [`WorldRenderer::encode_frame_with_view`] (queue writes: the frame uniforms; the
+//! changed model uniforms are one staged upload copied into their buffers in the frame's encoder before the world
+//! pass, dx12-perf); new passes or draw kinds count their commands in [`FrameReport`].
 
 mod anim;
 mod bucket;
@@ -178,15 +179,16 @@ pub use determinism::{
     hex, journal_enable, journal_snapshot, mutation, pipeline_settings, render_pipeline, sampler,
     shader_module, texel_hash, Journal, Mutation, TEXEL_CONTRACT,
 };
-pub use fog::{world_fog, Fog};
+pub use fog::{world_far_z, world_fog, Fog, WORLD_FAR_Z_MIN};
 pub use gamma::{
     apply_ramp, gamma_of_profile_text, profile_gamma, profile_key, ramp_for_gamma, GammaStage,
     PROFILE_GAMMA_DEFAULT,
 };
 pub mod macwin;
 pub mod perf;
+pub mod warm;
 pub use gpu::{
-    probe_adapters, unpack_rows, AdapterChoice, AdapterProbe, FrameImage, FrameOptions,
+    frame_latency_for, probe_adapters, unpack_rows, AdapterChoice, AdapterProbe, FrameImage, FrameOptions,
     FrameReport, FrameTarget, FrameTimings, GpuContext, GpuScene, OffscreenTarget, RenderError,
     UploadStats, WorldRenderer, CLEAR_COLOUR, OFFSCREEN_FORMAT,
 };
@@ -202,7 +204,9 @@ pub use model::{
     ModelMesh, ModelMeshStats, ModelVertex, PieceDraw, MAX_BONES,
 };
 pub use model_gpu::ModelUploader;
-pub use model_gpu::{ModelInstance, ModelLook, ModelPipelines, StyleChoice, StyleStats};
+pub use model_gpu::{
+    ModelInstance, ModelLook, ModelPipelines, PrewarmCount, StyleChoice, StyleStats,
+};
 pub use msaa::{multisample_state, supported_msaa, MsaaTargets, MSAA_COUNTS};
 pub use scene::{
     apply_light_groups, model_visibility, Batch, BlendedModel, LightmapImage, ModelVisibility,

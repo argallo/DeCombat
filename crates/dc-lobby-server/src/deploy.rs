@@ -10,10 +10,13 @@
 //!   (JSON, `Origin`, the page token in `X-Admin-CSRF`); 409 while a deploy runs or waits, or while matches run unless
 //!   `end_matches`; then `requests/<unix>-<8 hex>.json`. Every request and every outcome is an ops event of kind
 //!   `deploy`.
+//! - `POST /ops/updates/fetch`: the same write guard; "Check now": writes `requests/fetch-<unix>.json`, which root's
+//!   unit answers with one fetch of the mirror (a fetch request never starts a deploy). 409 while a deploy runs or
+//!   waits (the deploy fetches itself), 429 within [`FETCH_GAP`] seconds of the last check; an ops event of kind `deploy`.
 //! - Host agents (`hosts.rs`, HA-2): [`host_build`] is the build the lobby offers them.
 // Provenance: ORIGINAL (DeCombat operator tooling)
 // DC-DEFAULT: LG-392 (proposed) the state files and the request; LG-393 (proposed) the write guard and refusals;
-// LG-394 (proposed) ops events of kind `deploy`
+// LG-394 (proposed) ops events of kind `deploy`; LG-402 (proposed) the fetch request ("Check now")
 
 use crate::clanweb::Request;
 use crate::state::{Core, Shared};
@@ -27,6 +30,8 @@ pub const KIND: &str = "deploy";
 const MAX_STATE: u64 = 1024 * 1024;
 /// A deploy whose status has not moved for this long is taken as dead (root's unit times out after 120 min).
 const STALE_SECS: i64 = 3 * 3600;
+/// LG-402: the lobby asks for no check within this many seconds of the last one (root keeps its own limit).
+const FETCH_GAP: i64 = 30;
 /// The last deploys shown.
 const HISTORY: usize = 10;
 
@@ -141,11 +146,22 @@ fn in_progress(status: Option<&Value>, now: i64) -> bool {
     })
 }
 
-/// A request file waiting for root's unit.
+/// A request file waiting for root's unit (a deploy's; `fetch-*.json` is a check request, LG-402).
 fn pending(dir: &Path) -> bool {
+    waiting(dir, false)
+}
+
+/// A fetch request waiting for root's unit.
+fn fetch_pending(dir: &Path) -> bool {
+    waiting(dir, true)
+}
+
+fn waiting(dir: &Path, fetch: bool) -> bool {
     std::fs::read_dir(dir.join("requests")).is_ok_and(|rd| {
-        rd.flatten()
-            .any(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        rd.flatten().any(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.ends_with(".json") && n.starts_with("fetch-") == fetch
+        })
     })
 }
 
@@ -271,6 +287,7 @@ pub fn updates_json(st: &Core, now: i64) -> Value {
         "available": dir.as_ref().and_then(|d| read_json(&d.join("available.json"))),
         "deploying": in_progress(status.as_ref(), now),
         "pending": dir.as_deref().is_some_and(pending),
+        "fetching": dir.as_deref().is_some_and(fetch_pending),
         "status": status,
         "history": dir.as_deref().map(history).unwrap_or_default(),
     })
@@ -410,6 +427,73 @@ pub fn request(st: &mut Core, body: &[u8], by: &str, now: i64) -> Reply {
     )
 }
 
+/// `POST /ops/updates/fetch` after the write guard (LG-402): one `requests/fetch-<unix>.json` for root's unit to
+/// answer with a fetch. Cheap: one pending request at a time, none within [`FETCH_GAP`] s of the last check, none
+/// while a deploy runs or waits (a deploy fetches first anyway).
+pub fn fetch_request(st: &mut Core, by: &str, now: i64) -> Reply {
+    let Some(dir) = st.opts.deploy_dir.clone() else {
+        return refuse(
+            503,
+            "deploys from the dashboard are not set up on this server ([deploy] dir)",
+        );
+    };
+    let req_dir = dir.join("requests");
+    if !req_dir.is_dir() {
+        return refuse(
+            503,
+            "the deploy folder has no requests/: run tools/vps/deploy_setup.sh as root",
+        );
+    }
+    let status = read_json(&dir.join("status.json"));
+    if in_progress(status.as_ref(), now) || pending(&dir) {
+        return refuse(
+            409,
+            "a deploy is running or waiting; it fetches master itself",
+        );
+    }
+    if fetch_pending(&dir) {
+        return reply(
+            200,
+            json!({"ok": true, "message": "a check is already requested"}),
+        );
+    }
+    let checked = read_json(&dir.join("available.json"))
+        .and_then(|a| a.get("checked").and_then(Value::as_i64))
+        .unwrap_or(0);
+    if now - checked < FETCH_GAP {
+        return refuse(
+            429,
+            &format!(
+                "checked {} s ago; wait {FETCH_GAP} s between checks",
+                (now - checked).max(0)
+            ),
+        );
+    }
+    let path = req_dir.join(format!("fetch-{now}.json"));
+    let doc = json!({"by": by, "at": now});
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, doc.to_string().as_bytes()));
+    if let Err(e) = written {
+        event(
+            st,
+            true,
+            &format!(
+                "check for updates could not be requested: {}: {e}",
+                path.display()
+            ),
+        );
+        return refuse(500, &format!("could not write the request: {e}"));
+    }
+    event(st, false, &format!("check for updates requested by {by}"));
+    reply(
+        200,
+        json!({"ok": true, "message": "check requested; the server looks within seconds"}),
+    )
+}
+
 /// The write guard: a JSON body, an `Origin` that is this very page's, and the page token in `X-Admin-CSRF`.
 fn guard_ok(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
     let h = |n: &str| crate::betaweb::header(head, n);
@@ -457,7 +541,7 @@ pub fn serve_at(
     let st = &mut *g;
     match (req.method.as_str(), path) {
         ("GET", "/ops/updates") => reply(200, updates_json(st, now)),
-        ("POST", "/ops/updates/deploy") => {
+        ("POST", "/ops/updates/deploy" | "/ops/updates/fetch") => {
             // LG-393: on the loopback port the page's origin is http://<Host> and its token the per-process one; on the
             // admin web its own origin and the session's token
             let host = crate::betaweb::header(head, "host").unwrap_or("");
@@ -479,9 +563,15 @@ pub fn serve_at(
             if let Err(r) = guard_ok(head, &origin, &csrf) {
                 return r;
             }
-            request(st, body, &by, now)
+            if path.ends_with("/fetch") {
+                fetch_request(st, &by, now)
+            } else {
+                request(st, body, &by, now)
+            }
         }
-        (_, "/ops/updates" | "/ops/updates/deploy") => refuse(405, "method not allowed"),
+        (_, "/ops/updates" | "/ops/updates/deploy" | "/ops/updates/fetch") => {
+            refuse(405, "method not allowed")
+        }
         _ => refuse(404, "not found"),
     }
 }

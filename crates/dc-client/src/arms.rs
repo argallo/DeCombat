@@ -1227,6 +1227,21 @@ pub struct Arsenal {
     class_pos: BTreeMap<u8, u8>,
     /// The first-person sprint clips of the held weapon ([`crate::viewanim`]).
     pub sprint_anim: crate::viewanim::SprintAnim,
+    /// A spawn (0x67 state 1 or a spawn set's status reset) whose first draw is still to be reported.
+    spawn_draw_due: bool,
+    /// The first draw after a spawn, for the log ([`Arsenal::take_spawn_draw`]).
+    spawn_draw: Option<SpawnDraw>,
+}
+
+/// The weapon the first select after a spawn drew and why (one log line per spawn, CLI-1856).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnDraw {
+    pub slot: u8,
+    pub weapon: u16,
+    /// `true`: the slot the server drew (0x7f / 0xb3); `false`: the client's own pick (the lowest slot).
+    pub by_server: bool,
+    /// Every carried `(slot, weapon)` at the draw.
+    pub carried: Vec<(u8, u16)>,
 }
 
 impl Arsenal {
@@ -1293,6 +1308,8 @@ impl Arsenal {
             class_slots: BTreeMap::new(),
             class_pos: BTreeMap::new(),
             sprint_anim: crate::viewanim::SprintAnim::default(),
+            spawn_draw_due: false,
+            spawn_draw: None,
         }
     }
 
@@ -1742,6 +1759,7 @@ impl Arsenal {
         if alive && !self.alive {
             self.spawned_at = Some(now);
             self.need_select = true;
+            self.spawn_draw_due = true;
             self.phase = Phase::Idle;
             self.spreads.clear();
             self.recoil.reset();
@@ -1833,6 +1851,35 @@ impl Arsenal {
     fn want(&mut self, slot: u8) {
         self.need_select = false;
         self.pending_select = Some(slot);
+    }
+
+    /// Server 0x66 kind 0x13, the status reset at the head of every spawn set's weapons: the carried weapons are
+    /// emptied and nothing is in the hand; the grants that follow fill the slots again and the server's draw (0x7f /
+    /// 0xb3) picks the weapon, else the lowest granted slot is drawn. A weapon of the last life (or round) that the
+    /// new kit does not hold is gone, so neither the spawn's own pick nor a key can draw it.
+    // EVIDENCE: cshell+0x5cb80 (kind 0x13 -> status slot +0x48, cshell+0x63160), cshell+0x63160 (every weapon's carried
+    // flags and every ammunition count cleared, then cshell+0x22d500(0xffff, 0xffff): slot +0xd4 on every inventory
+    // weapon, the call the 0xb4 removal makes for its one weapon)
+    // DC-DEFAULT: CLI-1855 (proposed) read as the inventory emptied; the grant wait restarts here (no lobby fallback
+    // between the reset and its grants)
+    pub fn on_status_reset(&mut self, now: u32) {
+        self.slots.clear();
+        self.class_pos.clear();
+        if self.held.take().is_some() {
+            self.reset_zoom();
+        }
+        self.phase = Phase::Idle;
+        self.reload_event_at = None;
+        self.release_wanted = false;
+        self.pending_select = None;
+        self.need_select = true;
+        self.spawned_at = Some(now);
+        self.spawn_draw_due = true;
+    }
+
+    /// The first draw since the last spawn, once (CLI-1856: the log names it).
+    pub fn take_spawn_draw(&mut self) -> Option<SpawnDraw> {
+        self.spawn_draw.take()
     }
 
     /// Server 0xb4.
@@ -2642,19 +2689,28 @@ impl Arsenal {
             if self.slots.is_empty() && waited {
                 self.lobby_inventory();
             }
-            let pick = self
+            let server = self
                 .pending_select
                 .take()
-                .filter(|s| self.slots.contains_key(s))
-                .or_else(|| {
-                    self.need_select
-                        .then(|| self.slots.keys().next().copied())
-                        .flatten()
-                });
+                .filter(|s| self.slots.contains_key(s));
+            let pick = server.or_else(|| {
+                self.need_select
+                    .then(|| self.slots.keys().next().copied())
+                    .flatten()
+            });
             match pick {
                 Some(s) => {
                     self.need_select = false;
                     self.select_now(now, s, &mut out);
+                    // DC-DEFAULT: CLI-1856 (proposed) the spawn's draw is reported once
+                    if std::mem::take(&mut self.spawn_draw_due) {
+                        self.spawn_draw = Some(SpawnDraw {
+                            slot: s,
+                            weapon: self.slots.get(&s).map_or(0xFFFF, |c| c.weapon),
+                            by_server: server.is_some(),
+                            carried: self.slots.values().map(|c| (c.slot, c.weapon)).collect(),
+                        });
+                    }
                 }
                 None if waited => self.need_select = false,
                 None => {}
@@ -4046,6 +4102,50 @@ ModModel0 = 0
         assert_eq!(a.stats.throws, 1);
     }
 
+    /// The user's 2026-11-04 report ("grenades right after throwing instantly explode"): a grenade held through a
+    /// sprint longer than a second and let go while still sprinting is released with no 0x4d for the whole sprint
+    /// (CLI-573, the 2009 gap), so the release 0x82 comes well over the server's 1000 ms hold window (DSV-29) after
+    /// the last 0x4d. The server must still take it as the throw (DSV-29 amendment: a `Type` 2 round is always a
+    /// release); before, it drew a shot record of the grenade, which every client shows as its explosion at once.
+    #[test]
+    fn a_grenade_let_go_while_sprinting_comes_long_after_its_last_hold() {
+        use dc_sim::player::bits;
+        let mut a = arsenal();
+        a.on_grant(&grant(0, 5, 1, 9.0));
+        a.on_grant(&grant(3, 9, 2, 1.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 600, |_| fire_cmd(false), &[]);
+        a.step(600, &pick(3), &aim(), &[], None);
+        run(&mut a, 616, 1200, |_| fire_cmd(false), &[]);
+        // key down standing (wind-up and hold), sprint from 2200, key up at 3800 still sprinting
+        let mut v = Vec::new();
+        let mut t = 1200;
+        while t < 4800 {
+            let mut am = aim();
+            if t >= 2200 {
+                am.control = 0x200 | bits::FWD | bits::RUN | bits::SPRINT;
+            }
+            for m in a.step(t, &fire_cmd(t < 3800), &am, &[], None) {
+                v.push((t, m.shell));
+            }
+            t += 16;
+        }
+        let rel: Vec<u32> = v.iter().filter(|m| m.1 == up::FIRE).map(|m| m.0).collect();
+        assert_eq!(rel.len(), 1, "one release: {rel:?}");
+        let last_hold = v
+            .iter()
+            .filter(|m| m.1 == up::THROW_HOLD && m.0 < rel[0])
+            .map(|m| m.0)
+            .max()
+            .expect("the hold before the sprint");
+        assert!(last_hold < 2200, "no 0x4d while sprinting: {last_hold}");
+        assert!(
+            rel[0] - last_hold > 1000,
+            "release {} ms after the last 0x4d",
+            rel[0] - last_hold
+        );
+    }
+
     /// CLI-676: the pin pulled (wind-up, then the hold with the key down), a slot key cancels the throw: no release
     /// 0x82, the grenade count unchanged, the chosen weapon drawn (select pair), and the key still held does not fire
     /// the new weapon until it went up.
@@ -4491,6 +4591,86 @@ ModModel0 = 0
         assert!(a.may_draw(2));
         a.step(100, &fire_cmd(false), &aim(), &[], None);
         assert_eq!(a.held().map(|c| c.weapon), Some(9));
+    }
+
+    /// CLI-1855 / CLI-1856: a respawn after a life that ended with the knife out draws the primary. The spawn set's
+    /// status reset (0x66 kind 0x13) empties the last life's weapons (a backpack gun the new kit lacks is gone), a
+    /// frame between the reset and the grants draws nothing (no lobby fallback, nothing in the hand), the server's
+    /// draw (0xb3) is taken and reported once. A round's survivor holding the knife (no state change) gets the
+    /// lowest granted slot when the server's draw does not resolve, not the knife he held.
+    #[test]
+    fn a_respawn_draws_the_primary_after_a_life_that_ended_with_the_knife() {
+        let mut a = Arsenal::new(ArmsConfig {
+            lobby_slots: vec![-1, 164, 0, 7],
+            ..ArmsConfig::default()
+        });
+        let kit = [
+            grant(0, 145, 145, 120.0),
+            grant(1, 164, 164, 45.0),
+            grant(2, 0, 0, 1000.0),
+            grant(3, 7, 9, 1.0),
+        ];
+        a.on_life(0, 1);
+        a.on_status_reset(0);
+        for g in kit.iter().chain([&grant(4, 125, 125, 40.0)]) {
+            a.on_grant(g);
+        }
+        a.step(10, &fire_cmd(false), &aim(), &[], None);
+        assert_eq!(a.held().map(|c| c.slot), Some(0));
+        assert_eq!(
+            a.take_spawn_draw().map(|d| (d.slot, d.weapon, d.by_server)),
+            Some((0, 145, false))
+        );
+        assert!(a.take_spawn_draw().is_none(), "once per spawn");
+        a.step(1000, &pick(2), &aim(), &[], None);
+        assert_eq!(a.held().map(|c| c.weapon), Some(0), "the knife out");
+        a.on_life(2000, 2);
+        a.on_life(4000, 3);
+        // the respawn: 0x67 [1], the reset, then (a frame later) the grants and the server's draw of slot 0
+        a.on_life(9000, 1);
+        a.on_status_reset(9000);
+        assert!(a.held().is_none() && a.slots.is_empty());
+        let out = a.step(
+            9000 + GRANT_WAIT_MS + 16,
+            &fire_cmd(false),
+            &aim(),
+            &[],
+            None,
+        );
+        assert!(out.is_empty(), "no draw before the grants: {out:?}");
+        assert!(
+            a.slots.is_empty(),
+            "no lobby fallback between the reset and its grants"
+        );
+        for g in &kit[1..] {
+            a.on_grant(g);
+        }
+        a.on_grant(&WeaponGrant {
+            equip: true,
+            clip: Some(30),
+            ..kit[0]
+        });
+        a.step(9600, &fire_cmd(false), &aim(), &[], None);
+        assert_eq!(a.held().map(|c| (c.slot, c.weapon)), Some((0, 145)));
+        let d = a.take_spawn_draw().expect("the spawn's draw");
+        assert_eq!((d.slot, d.weapon, d.by_server), (0, 145, true));
+        assert_eq!(
+            d.carried,
+            vec![(0, 145), (1, 164), (2, 0), (3, 7)],
+            "the last life's backpack gun is gone"
+        );
+        assert!(a.step(9700, &pick(4), &aim(), &[], None).is_empty());
+        // a survivor with the knife out: the next round's set without a state change, the draw not resolved
+        a.step(20_000, &pick(2), &aim(), &[], None);
+        assert_eq!(a.held().map(|c| c.slot), Some(2));
+        a.on_life(60_000, 1);
+        a.on_status_reset(60_000);
+        for g in &kit {
+            a.on_grant(g);
+        }
+        a.switch_command(0x20, true, -1.0);
+        a.step(60_016, &fire_cmd(false), &aim(), &[], None);
+        assert_eq!(a.held().map(|c| (c.slot, c.weapon)), Some((0, 145)));
     }
 
     #[test]

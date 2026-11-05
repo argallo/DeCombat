@@ -41,6 +41,19 @@ impl ViewSettings {
         v
     }
 
+    /// These settings with the far plane of the world being played: the world settings' far plane when the world
+    /// gives one (`dc_render::world_far_z`, the 2009 client applies the server's far-plane variable above 50), else
+    /// `far_z` unchanged. Two Towers and Waverider ask for far planes past the 12000 default: with the default the
+    /// distant sea and the fogged boundary walls were cut by the far plane and the cut moved with the view direction.
+    // SPEC: CAPTURE_rust3_RUSTSTACK_VALIDATION.md §3.3 (far-plane variable, cshell+0x1a6900 via cshell+0x1a6840)
+    // DC-DEFAULT: CLI-1851 (proposed), see DC_DEFAULTS.md
+    pub fn with_world_far(self, world_far_z: Option<f32>) -> ViewSettings {
+        match world_far_z {
+            Some(f) => ViewSettings { far_z: f, ..self },
+            None => self,
+        }
+    }
+
     /// The render camera at `eye` looking along `view`, for a `w x h` target.
     // EVIDENCE: cshell+0x1f3cb0 (the horizontal field is derived from the vertical one and the target aspect)
     pub fn camera(&self, eye: dc_sim::V3, view: &ViewAngles, w: u32, h: u32) -> Camera {
@@ -220,6 +233,17 @@ mod tests {
         assert!((c.fov_y - 75f32.to_radians()).abs() < 1e-6);
         assert!((c.fov_x.to_degrees() - 91.31).abs() < 0.02);
         assert!(c.fov_y < c.fov_x);
+    }
+
+    #[test]
+    fn the_world_far_plane_replaces_the_default() {
+        let v = ViewSettings::with_reference_fov_x(90.0);
+        let eye = dc_sim::V3::new(0.0, 0.0, 0.0);
+        let far = |s: ViewSettings| s.camera(eye, &ViewAngles::default(), 640, 480).far();
+        assert_eq!(far(v.with_world_far(Some(100_000.0))), 100_000.0);
+        assert_eq!(far(v.with_world_far(None)), dc_render::DEFAULT_FAR_Z);
+        // only the far plane changes
+        assert_eq!(v.with_world_far(Some(30_000.0)).fov_y_deg, v.fov_y_deg);
     }
 
     #[test]

@@ -1144,12 +1144,9 @@ pub fn run_headless(
                     g.overlay.update_panel(&g.ctx, &font.atlas, &lines);
                 }
                 laps.lap(PS::Panel);
-                let mut camera = crate::camshot::view_settings(opts.view, shot_fov).camera(
-                    eye,
-                    &view,
-                    opts.width,
-                    opts.height,
-                );
+                let mut camera =
+                    crate::camshot::view_settings(opts.view.with_world_far(world.far_z), shot_fov)
+                        .camera(eye, &view, opts.width, opts.height);
                 if own_view && shot_fov.is_none() {
                     crate::camfx::roll_camera(&mut camera, kick.camera.roll);
                     // the scope's field of view (cshell+0x1f9100)

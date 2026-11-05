@@ -165,7 +165,7 @@ impl Game {
     }
 
     /// The victim's guns in the same life: the killer's leave (0xb4, no pickup), the new ones come full (0xb2), the
-    /// first is drawn (0x7f); the mode's items stay. A victim without guns leaves the killer his own.
+    /// one a spawn would draw is drawn (0x7f); the mode's items stay. A victim without guns leaves the killer his own.
     fn possession_rearm(&mut self, pid: u8, guns: &[(u8, u16, [i8; 4])]) {
         if guns.is_empty() {
             return;
@@ -195,9 +195,12 @@ impl Game {
                 })
             })
             .collect();
+        // DC-DEFAULT: DSV-568 (proposed) drawn as at a spawn: slot 0, else the best slot class (a victim's list is
+        // not always in slot order: a taken drop is appended)
+        let drawn = self.draw_index(&states[..new_count]).unwrap_or(0);
         if let Some(p) = self.players.get_mut(&pid) {
             p.weapons = states.clone();
-            p.current = Some(0);
+            p.current = Some(drawn);
         }
         for w in &old {
             self.send(pid, gs::weapon_remove(w.slot, w.weapon, w.ammo));
@@ -215,10 +218,10 @@ impl Game {
             self.send(pid, gs::weapon_give(&spec(i, w)));
         }
         self.slot_status(pid, &states[..new_count]);
-        let first = states[0];
+        let first = states[drawn];
         match self.tables.weapons.command_of(first.weapon) {
             Some(c) => self.send(pid, gs::weapon_switch(c, true, -1.0, 0)),
-            None => self.send(pid, gs::drawn_weapon(&spec(0, &first))),
+            None => self.send(pid, gs::drawn_weapon(&spec(drawn, &first))),
         }
         self.hand_weapon_changed(pid, first.weapon);
     }

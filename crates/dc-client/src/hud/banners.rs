@@ -428,7 +428,12 @@ pub fn on_kill(s: &mut HudState, k: &KillRecord, now: u32) {
         return;
     }
     let (head, groin) = (k.hit_zone == ZONE_HEAD, k.hit_zone == ZONE_GROIN);
-    let own_kills = s.roster.get(&k.killer).map_or(0, |r| r.kills);
+    // DC-DEFAULT: CLI-1850 (proposed) in Gun Game the roster's kill column is the rung (0 at the first kill, and it
+    // drops on a knife death), so the banner's number is the HUD's own count of the foe kills it saw
+    let own_kills = match &s.gun_game {
+        Some(g) => g.kills.min(i32::MAX as u32) as i32,
+        None => s.roster.get(&k.killer).map_or(0, |r| r.kills),
+    };
     let pick = pick_kill(
         k.kill_kind,
         k.streak_flag != 0,
@@ -796,6 +801,44 @@ mod tests {
             s.banner.show.map(|b| (b.slot, b.number)),
             Some((Slot::OneKills, Some(8)))
         );
+    }
+
+    /// The first own kill (not the match's first, so no opener flag) shows the singular "1 Kill" banner and the
+    /// one-kill voice, in a normal mode (roster count) and in Gun Game (the roster's kill column is the rung, 0 here).
+    #[test]
+    fn the_first_own_kill_is_a_one_kill_banner_not_zero() {
+        let mut s = state();
+        s.apply(&HudEvent::Kill(kill(1, 0, 1, 2)), 100, 0.0);
+        assert_eq!(
+            s.banner.show.map(|b| (b.slot, b.number)),
+            Some((Slot::OneKill, Some(1)))
+        );
+        assert_eq!(s.banner.voices, vec![Voice::OneKill]);
+        // Gun Game: the rung stays 0 until the server's 0x6b; the banner counts the kills it saw
+        let mut g = state();
+        g.gun_game = Some(crate::hud::state::GunGameHud::new(vec![
+            "A".into(),
+            "B".into(),
+            "C".into(),
+        ]));
+        g.apply(&HudEvent::Kill(kill(1, 0, 1, 2)), 100, 0.0);
+        assert_eq!(
+            g.banner.show.map(|b| (b.slot, b.number)),
+            Some((Slot::OneKill, Some(1)))
+        );
+        assert_eq!(g.banner.voices, vec![Voice::OneKill]);
+        assert_eq!(g.roster[&0].kills, 0, "the kill column stays the rung");
+        // a knife death in between drops the rung but not the count
+        g.apply(&HudEvent::Roster(rec(0, 1)), 150, 0.0);
+        g.apply(&HudEvent::Kill(kill(1, 0, 1, 2)), 200, 0.0);
+        assert_eq!(
+            g.banner.show.map(|b| (b.slot, b.number)),
+            Some((Slot::OneKills, Some(2)))
+        );
+        // another player's kill and a team kill count nothing for the own banner
+        g.apply(&HudEvent::Kill(kill(0, 1, 1, 2)), 300, 0.0);
+        g.apply(&HudEvent::Kill(kill(2, 0, 0, 2)), 400, 0.0);
+        assert_eq!(g.gun_game.as_ref().unwrap().kills, 2);
     }
 
     #[test]

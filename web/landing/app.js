@@ -81,9 +81,7 @@ function showMod(m) {
     node(
       "span",
       m.status === "verified" ? "tag" : "tag amber",
-      m.status === "verified"
-        ? "VERIFIED DIRECTORY ENTRY"
-        : "INCLUDED REFERENCE DEMO",
+      m.status === "verified" ? "VERIFIED DIRECTORY ENTRY" : "BUILT MOD PACK",
     ),
   );
   const title = node("h2", "dialog-title", m.name);
@@ -109,75 +107,91 @@ function showMod(m) {
       "fine",
       m.status === "verified"
         ? "This specific version and hash are listed in the community directory. Review its capabilities before joining a server that uses it."
-        : "This is a built reference example, not a published approval or a claim that a live server is running it. The card uses an illustrated preview.",
+        : "This pack is built and included in the project. Availability depends on your server; it is not listed in the general verified-mod directory.",
     ),
   );
-  const src =
-    safeHttps(m.source_repo) ||
-    `${repo}/tree/${config.branch}/${m.sourcePath || "examples/mods"}`;
+  const src = m.sourcePath
+    ? `${repo}/tree/${config.branch}/${m.sourcePath}`
+    : safeHttps(m.source_repo) || `${repo}/tree/${config.branch}/examples/mods`;
   detail.append(external(src, "View source on GitHub ↗"));
+  if (/^examples\/mods\/[a-z\d_]+$/.test(m.relatedSourcePath || "")) {
+    detail.append(
+      external(
+        `${repo}/tree/${config.branch}/${m.relatedSourcePath}`,
+        `${m.relatedName} source ↗`,
+        "text-link related-source",
+      ),
+    );
+  }
   document.body.classList.add("dialog-open");
   dialog.showModal();
 }
 function renderMods() {
   const list = $("#mod-list");
+  list
+    .querySelectorAll(".gameplay-loop")
+    .forEach((img) => loopObserver.unobserve(img));
   list.replaceChildren();
-  const filtered = filterMods(mods, category, $("#mod-search").value);
+  const filtered = filterMods(mods, category, $("#mod-search").value).sort(
+    (a, b) => (a.order ?? 99) - (b.order ?? 99),
+  );
   if (!filtered.length) {
     list.append(
       node(
         "p",
         "empty-state",
         category === "verified"
-          ? "No publishable verified mod entries yet. Reference demos are available under All mods."
+          ? "No publishable verified entries yet. Built packs are available under All mods."
           : "No mods match this search. Try another name or category.",
       ),
     );
     return;
   }
   for (const m of filtered) {
-    const card = node("article", "mod-card"),
-      visual = node("div", "mod-visual"),
-      img = node("img");
-    img.src = /^assets\/[a-z\d-]+\.webp$/.test(m.image || "")
-      ? m.image
-      : "assets/junk-flea.webp";
-    img.alt = "";
-    img.loading = "lazy";
-    img.width = 1280;
-    img.height = 720;
-    visual.append(
-      img,
-      node(
-        "span",
-        m.status === "verified" ? "tag" : "tag amber",
-        m.status === "verified" ? "✓ VERIFIED" : "REFERENCE DEMO",
-      ),
-    );
-    if (["blue_crosshair", "drawn_crosshair"].includes(m.id)) {
-      const cross = node("span", "crosshair");
-      cross.setAttribute("aria-hidden", "true");
-      visual.append(cross);
+    const hasImage = /^assets\/[a-z\d-]+\.webp$/.test(m.image || "");
+    const card = node("article", "mod-card");
+    if (hasImage) {
+      const visual = node("div", "mod-visual"),
+        img = node("img");
+      img.src = m.image;
+      img.alt = m.imageAlt || m.name;
+      img.loading = "lazy";
+      img.width = 1280;
+      img.height = 720;
+      if (/^assets\/[a-z\d-]+\.(?:webp|gif)$/.test(m.loop || "")) {
+        img.className = "gameplay-loop";
+        img.dataset.still = m.image;
+        img.dataset.loop = m.loop;
+        visual.append(img);
+        loopObserver.observe(img);
+      } else {
+        const link = node("a", "capture-link");
+        link.href = m.image;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.setAttribute("aria-label", `View full ${m.name} screenshot`);
+        link.append(img);
+        visual.append(link);
+      }
+      visual.append(
+        node("span", "mod-number", m.captureLabel || "CAPTURED IN DECOMBAT"),
+      );
+      card.append(visual);
     }
-    if (["xray_walls", "hacking_mod"].includes(m.id)) {
-      const outlines = node("span", "xray-outlines");
-      outlines.setAttribute("aria-hidden", "true");
-      outlines.append(node("i"), node("i"));
-      visual.append(outlines);
-    }
-    visual.append(
-      node(
-        "span",
-        "mod-number",
-        "ILLUSTRATED PREVIEW / " + m.category.toUpperCase(),
-      ),
-    );
     const info = node("div", "mod-info"),
       top = node("div", "mod-info-top");
     top.append(node("h3", "", m.name), node("span", "mono", `v${m.version}`));
-    info.append(top, node("p", "", m.description));
+    info.append(
+      node(
+        "span",
+        m.status === "verified" ? "tag" : "tag amber",
+        m.status === "verified" ? "✓ VERIFIED" : "BUILT PACK",
+      ),
+      top,
+      node("p", "", m.shortDescription || m.description),
+    );
     const bottom = node("div", "mod-info-footer"),
-      button = node("button", "mod-details", "Inspect mod ↗");
+      button = node("button", "mod-details", "Mod details ↗");
     button.type = "button";
     button.setAttribute("aria-label", `Inspect ${m.name}`);
     button.addEventListener("click", () => showMod(m));
@@ -186,9 +200,10 @@ function renderMods() {
       button,
     );
     info.append(bottom);
-    card.append(visual, info);
+    card.append(info);
     list.append(card);
   }
+  updateLoops();
 }
 $$("[data-filter]").forEach((b) =>
   b.addEventListener("click", () => {
@@ -202,6 +217,54 @@ $$("[data-filter]").forEach((b) =>
   }),
 );
 $("#mod-search").addEventListener("input", renderMods);
+$("[data-watch-trailer]").addEventListener("click", (event) => {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  const player = $("#trailer-player");
+  const rect = player.getBoundingClientRect();
+  const headerBottom = $(".header").getBoundingClientRect().bottom;
+  const inset = Math.max(16, (innerHeight - headerBottom - rect.height) / 2);
+  if (location.hash !== "#trailer-player")
+    history.pushState(null, "", "#trailer-player");
+  player.focus({ preventScroll: true });
+  window.scrollTo({
+    top: Math.max(0, scrollY + rect.top - headerBottom - inset),
+    behavior: motionPreference.matches ? "instant" : "smooth",
+  });
+});
+// Bind playback immediately; a slow config request must not navigate away.
+function setupTrailer() {
+  const videoId = $("#trailer-player").dataset.videoId;
+  if (/^[A-Za-z0-9_-]{11}$/.test(videoId || "")) {
+    const watch = `https://www.youtube.com/watch?v=${videoId}`;
+    $("#trailer-link").href = watch;
+    const playTrailer = (start = 0) => {
+      const frame = node("iframe");
+      frame.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&start=${start}`;
+      frame.title = "DeCombat official launch trailer";
+      frame.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+      frame.allowFullscreen = true;
+      frame.referrerPolicy = "strict-origin-when-cross-origin";
+      $("#trailer-player").replaceChildren(frame);
+      frame.focus();
+    };
+    $("#trailer-play").disabled = false;
+    $("#trailer-play").addEventListener("click", (e) => {
+      e.preventDefault();
+      playTrailer();
+    });
+    $$("[data-trailer-start]").forEach((a) => {
+      const start = Number(a.dataset.trailerStart);
+      a.disabled = false;
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        playTrailer(start);
+      });
+    });
+  }
+}
+setupTrailer();
+
 async function init() {
   try {
     const c = await getJSON("site.config.json");
@@ -219,16 +282,6 @@ async function init() {
     $("#discord-link").rel = "noopener noreferrer";
     $("#discord-link").firstChild.textContent = "Join the Discord ";
     $("#discord-status").textContent = "The community is open. You’re invited.";
-  }
-  const trailer = safeHttps(config.trailerUrl);
-  if (trailer) {
-    $("#trailer-link").href = trailer;
-    $("#trailer-link").textContent = "Watch the launch trailer ↗";
-    $(".trailer-panel .tag").textContent = "TRANSMISSION RECEIVED";
-    $(".trailer-panel h3").textContent = "THE NEXT CHAPTER IS HERE.";
-    $(".trailer-panel>p").textContent =
-      "Watch the official DeCombat launch trailer.";
-    $(".trailer-footer").textContent = "OFFICIAL LAUNCH TRAILER";
   }
   const [catalog, raw] = await Promise.allSettled([
     getJSON("data/catalog.json"),
@@ -249,24 +302,27 @@ async function init() {
 init();
 
 const motionPreference = matchMedia("(prefers-reduced-motion: reduce)");
-const loops = $$(".gameplay-loop");
-const motionToggle = $("#motion-toggle");
+const motionToggles = $$("[data-motion-toggle]");
 let motionEnabled = !motionPreference.matches;
 function updateLoops() {
-  motionToggle.textContent = motionEnabled ? "Pause loops Ⅱ" : "Play loops ▶";
-  motionToggle.setAttribute("aria-pressed", String(motionEnabled));
-  for (const img of loops) {
+  for (const toggle of motionToggles) {
+    toggle.textContent = motionEnabled ? "Pause loops Ⅱ" : "Play loops ▶";
+    toggle.setAttribute("aria-pressed", String(motionEnabled));
+  }
+  for (const img of $$(".gameplay-loop")) {
     const play =
       motionEnabled && img.dataset.inView === "true" && !document.hidden;
     const src = play ? img.dataset.loop : img.dataset.still;
     if (img.getAttribute("src") !== src) img.src = src;
-    img.closest("figure").classList.toggle("is-playing", play);
+    img.closest("figure, .mod-card").classList.toggle("is-playing", play);
   }
 }
-motionToggle.addEventListener("click", () => {
-  motionEnabled = !motionEnabled;
-  updateLoops();
-});
+motionToggles.forEach((toggle) =>
+  toggle.addEventListener("click", () => {
+    motionEnabled = !motionEnabled;
+    updateLoops();
+  }),
+);
 motionPreference.addEventListener("change", (e) => {
   motionEnabled = !e.matches;
   updateLoops();
@@ -280,5 +336,5 @@ const loopObserver = new IntersectionObserver(
   },
   { rootMargin: "100px", threshold: 0 },
 );
-loops.forEach((img) => loopObserver.observe(img));
+$$(".gameplay-loop").forEach((img) => loopObserver.observe(img));
 updateLoops();

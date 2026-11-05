@@ -1525,7 +1525,7 @@ fn game_key_named(k: &str) -> Option<GameKey> {
         "q" => Hold(Action::StrafeMod),
         "z" | "zoom" => Hold(Action::Zoom),
         // the number keys are class keys (cshell+0x22e530); the `slot` verb still names a slot
-        "1" | "2" | "3" | "4" | "5" => Press(vec![DeviceInput::Shell(ShellKey::ClassKey(
+        "1" | "2" | "3" | "4" | "5" | "6" => Press(vec![DeviceInput::Shell(ShellKey::ClassKey(
             k.as_bytes()[0] - b'1',
         ))]),
         "r" | "reload" => Press(vec![DeviceInput::Reload]),

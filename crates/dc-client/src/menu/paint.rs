@@ -29,6 +29,9 @@ pub struct MenuPainter {
     drawn: Option<(Vec<DrawItem>, (u32, u32))>,
     /// Quad rebuilds so far (tests, logs).
     pub builds: u64,
+    /// gpu-lost-menu: the window device's generation the GPU objects were made on ([`crate::gpulost::device_generation`]).
+    gen: u64,
+    format: wgpu::TextureFormat,
 }
 
 impl MenuPainter {
@@ -37,7 +40,29 @@ impl MenuPainter {
             layer: OverlayRenderer::new(ctx, format),
             drawn: None,
             builds: 0,
+            gen: crate::gpulost::device_generation(),
+            format,
         }
+    }
+
+    /// gpu-lost-menu: the painter for the window handed back by a match (`ctx`, `format`: the window's device and
+    /// surface format now). When the match's recovery replaced the device since this painter was made (or the format
+    /// changed), its objects belong to the old device: they are put away without a drop ([`crate::gpulost::retire`],
+    /// the lost device's objects must not run wgpu-core's drop paths) and a new painter is made on `ctx`; it builds
+    /// its quads and atlas at the menu's next frame. Otherwise the painter is kept as it is. Once per match return.
+    // ORIGINAL: our own device-recovery bookkeeping (gpu-lost-menu); no 2009 behaviour
+    pub fn for_device(self, ctx: &GpuContext, format: wgpu::TextureFormat) -> MenuPainter {
+        if self.gen == crate::gpulost::device_generation() && self.format == format {
+            return self;
+        }
+        crate::gpulost::retire(self);
+        println!("dc-client menu: the GPU device was replaced in the match: the menu's painter is made again");
+        MenuPainter::new(ctx, format)
+    }
+
+    /// The window device's generation this painter was made on.
+    pub fn device_gen(&self) -> u64 {
+        self.gen
     }
 
     /// Brings the quads up to date with the menu (nothing when it needs no redraw or its display list is

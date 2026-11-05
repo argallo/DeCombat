@@ -77,6 +77,10 @@ pub struct LoadedWorld {
     pub world_models: crate::objects::WorldModels,
     /// The last sky table applied to the scene (client-hudgaps).
     pub sky_applied: Option<crate::objects::SkyTable>,
+    /// The world's far plane from its world settings, when it gives one (`dc_render::world_far_z`): the camera's far
+    /// plane in this world ([`crate::ViewSettings::with_world_far`]).
+    // DC-DEFAULT: CLI-1851 (proposed), see DC_DEFAULTS.md
+    pub far_z: Option<f32>,
 }
 
 impl LoadedWorld {
@@ -1237,6 +1241,7 @@ fn build(
         model_lights,
         surface_types,
         sky_applied: None,
+        far_z: dc_render::world_far_z(&world),
     })
 }
 

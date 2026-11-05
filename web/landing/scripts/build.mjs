@@ -1,7 +1,12 @@
 import { readFile, writeFile, mkdir, cp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { sanitizeDirectory, validDiscord, safeHttps } from "../site-core.js";
+import { versionAssets } from "./version-assets.mjs";
+import {
+  sanitizeDirectory,
+  validDiscord,
+  youtubeVideoId,
+} from "../site-core.js";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const dest = path.join(root, "dist");
 const config = JSON.parse(
@@ -11,8 +16,8 @@ if (!/^[\w.-]+\/[\w.-]+$/.test(config.repository))
   throw Error("Invalid repository");
 if (config.discordInvite && !validDiscord(config.discordInvite))
   throw Error("Invalid Discord invite");
-if (config.trailerUrl && !safeHttps(config.trailerUrl))
-  throw Error("Trailer must use HTTPS");
+if (config.trailerUrl && !youtubeVideoId(config.trailerUrl))
+  throw Error("Trailer must be a valid HTTPS YouTube video URL");
 await rm(dest, { recursive: true, force: true });
 await mkdir(dest, { recursive: true });
 for (const name of [
@@ -27,6 +32,14 @@ for (const name of [
 ])
   await cp(path.join(root, name), path.join(dest, name), { recursive: true });
 // Keep the beta signup implementation shared with web/beta.
+const homePath = path.join(dest, "index.html");
+await writeFile(
+  homePath,
+  (await readFile(homePath, "utf8")).replace(
+    /data-video-id="[^"]*"/,
+    `data-video-id="${youtubeVideoId(config.trailerUrl) || ""}"`,
+  ),
+);
 for (const name of ["beta.css", "beta.js"])
   await cp(path.join(root, "../beta", name), path.join(dest, name));
 let community;
@@ -50,6 +63,14 @@ await writeFile(
   JSON.stringify(publicDirectory, null, 2) + "\n",
 );
 await mkdir(path.join(dest, "github"), { recursive: true });
+if (config.trailerUrl) {
+  const watch = `https://www.youtube.com/watch?v=${youtubeVideoId(config.trailerUrl)}`;
+  await mkdir(path.join(dest, "trailer"), { recursive: true });
+  await writeFile(
+    path.join(dest, "trailer/index.html"),
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0;url=${watch}"><title>DeCombat launch trailer</title><a href="${watch}">Watch the DeCombat launch trailer on YouTube</a></html>`,
+  );
+}
 await writeFile(
   path.join(dest, "github/index.html"),
   `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0;url=https://github.com/${config.repository}"><title>DeCombat on GitHub</title><a href="https://github.com/${config.repository}">Continue to DeCombat on GitHub</a>`,
@@ -65,6 +86,11 @@ await writeFile(
 await writeFile(
   path.join(dest, "404.html"),
   `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/style.css"><title>Off the map — DeCombat</title><main class="section wrap"><p class="eyebrow">404 / OFF THE MAP</p><h1>LET’S GET YOU BACK.</h1><p>This location doesn’t exist.</p><a class="button" href="/">Return to base ↗</a></main></html>`,
+);
+await versionAssets(
+  dest,
+  ["style.css", "app.js", "site-core.js", "beta.css", "beta.js"],
+  ["index.html", "privacy.html", "404.html"],
 );
 console.log(
   `Built ${dest}\n${publicDirectory.known_mods.length} publishable verified mods · ${publicDirectory.servers.length} public server listings`,

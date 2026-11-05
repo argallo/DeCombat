@@ -224,6 +224,7 @@ fn start(
         no_vsync: false,
         font_rom: rom.clone(),
         adapter: dc_render::AdapterChoice::Auto,
+        adapter_first: false,
         hud: match &rom {
             Some(r) => crate::hud::HudChoice::Rom(r.clone()),
             None => crate::hud::HudChoice::Fallback,

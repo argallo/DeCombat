@@ -345,6 +345,13 @@ impl ModelScene {
         self.stats.failures = self.shared.failures.load(Ordering::Relaxed);
     }
 
+    /// gpu-prewarm: makes every pipeline the ROM's render styles need with `renderer` on this (the frame) thread, and
+    /// the renderer's other on-demand passes ([`WorldRenderer::prewarm`]).
+    pub fn prewarm(&self, ctx: &GpuContext, renderer: &WorldRenderer) -> dc_render::PrewarmCount {
+        let styles = self.shared.rom_styles();
+        renderer.prewarm(ctx, styles.iter().map(|s| &**s))
+    }
+
     /// Takes the finished loads (never blocks).
     fn drain(&mut self) {
         if let Some(l) = self.loader.as_mut() {
@@ -380,6 +387,11 @@ impl ModelScene {
         }
         if self.async_loads {
             if let Some(l) = self.loader.as_mut() {
+                // gpu-prewarm: the pipelines of the key's styles are made here, on the frame thread, when the request
+                // is made (a style the match did not pre-warm: logged as made in play); the loader only uploads
+                renderer
+                    .models()
+                    .ensure_styles(ctx, &self.shared.style_list(&key.styles));
                 if l.upload(key.clone()) {
                     self.templates.insert(key, Slot::Pending);
                     return Fetch::Pending;

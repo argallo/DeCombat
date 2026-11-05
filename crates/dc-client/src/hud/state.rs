@@ -303,6 +303,9 @@ pub struct HudState {
     /// A dropped weapon the use key would take lies in reach this frame ([`super::prompt`], CLI-1352).
     pub item_target: bool,
     pub health: Option<f32>,
+    /// The last health above 0 a 0x66 carried: what a living player's block shows when a health of 0 arrives
+    /// without the death (CLI-1853).
+    pub live_health: Option<f32>,
     pub max_health: Option<f32>,
     pub armour: Option<f32>,
     pub max_armour: Option<f32>,
@@ -371,6 +374,8 @@ pub struct HudState {
     pub texts: HudTexts,
 
     pub damage: [f32; DAMAGE_SECTORS],
+    /// The fall's screen-edge band strength (1 at the hit, decays like a sector; [`super::fallborder`]).
+    pub fall_border: f32,
     /// When the sectors last decayed (ms).
     pub damage_at: u32,
     /// Death time (0x67 state 2) and the wait the client armed for it.
@@ -485,6 +490,7 @@ impl HudState {
         for v in &mut self.damage {
             *v = (*v - dt * DAMAGE_DECAY_PER_S).max(0.0);
         }
+        self.fall_border = (self.fall_border - dt * DAMAGE_DECAY_PER_S).max(0.0);
         self.now_ms = now;
         // CLI-1051: the bomb timer's beeps, the gauge's end
         self.tick_bomb(now);
@@ -523,11 +529,41 @@ impl HudState {
     // SPEC: GAME_MESSAGES_2009_S2C.md §4.3 (cshell+0x5cb80)
     pub fn on_status(&mut self, kind: u8, value: f32) {
         match kind {
-            2 => self.health = Some(value),
+            2 => {
+                self.health = Some(value);
+                if value > 0.0 && value.is_finite() {
+                    self.live_health = Some(value);
+                }
+            }
             3 => self.armour = Some(value),
             0x0f => self.max_health = Some(value),
             0x10 => self.max_armour = Some(value),
             _ => {}
+        }
+    }
+
+    /// The health the block shows: the 2009 whole number (the fraction dropped), but a living player never shows 0.
+    /// Above 0 and below 1 shows 1; a health of 0 (or none, or not a number) while the own state is alive (1) shows
+    /// the last live value, since the death states follow the lethal 0x66 in the same block (cshell+0x5cb80 drops
+    /// the fraction with cshell+0x3a5f00, so the 2009 block showed 0 for any health below 1).
+    // EVIDENCE: cshell+0x5cb80 (kind 2: the f32 through cshell+0x3a5f00, a truncating float-to-int, into the stats),
+    // cshell+0x967a0 (the refresh reads the whole number, clamps it at 0)
+    // DC-DEFAULT: CLI-1853 (proposed; user report 2026-11-04 "my HP says 0 but I'm still alive": a blast left 0.348)
+    pub fn shown_health(&self) -> f32 {
+        let h = self
+            .health
+            .filter(|h| h.is_finite())
+            .unwrap_or(0.0)
+            .max(0.0);
+        let h = if h <= 0.0 && self.life_state == 1 {
+            self.live_health.unwrap_or(0.0)
+        } else {
+            h
+        };
+        if h > 0.0 && h < 1.0 {
+            1.0
+        } else {
+            h
         }
     }
 
@@ -551,6 +587,7 @@ impl HudState {
                     .mode_class
                     .and_then(|c| dc_botclient::lifecycle::self_arm_wait(c, 0));
                 self.damage = [0.0; DAMAGE_SECTORS];
+                self.fall_border = 0.0;
             }
             _ => {}
         }
@@ -569,7 +606,13 @@ impl HudState {
         if m.is_nan() || m <= 0.0 {
             return;
         }
-        if let Some(k) = damage_sector(from_dir, view_yaw) {
+        // DC-DEFAULT: CLI-1847 (proposed; USER DECISION 2026-11-04, amends CLI-1846 and CLI-1125) a vertical hit (a
+        // fall) has no bearing and its length is only the health loss / 100 (0.028 for 3 HP: invisible), and the
+        // ring of arcs about the crosshair is too small for it: it starts the red band along the screen edges at
+        // full strength whatever the damage ([`super::fallborder`]), decaying like a sector; no sector lights
+        if crate::camfx::is_vertical(from_dir) {
+            self.fall_border = 1.0;
+        } else if let Some(k) = damage_sector(from_dir, view_yaw) {
             self.damage[k] = (self.damage[k] + m).min(1.0);
         }
     }
@@ -719,10 +762,13 @@ impl HudState {
             if killer_known && k.killer != k.victim {
                 if teams.0 != teams.1 {
                     // CLI-1639: in Gun Game the kill column is the server's rung (0x6b), no own count
-                    if self.gun_game.is_none() {
-                        if let Some(r) = self.roster.get_mut(&k.killer) {
-                            r.kills += 1;
+                    // CLI-1850: the own kills still count for the kill banner's number (the rung is not a count)
+                    if let Some(g) = self.gun_game.as_mut() {
+                        if Some(k.killer) == self.own_pid {
+                            g.kills += 1;
                         }
+                    } else if let Some(r) = self.roster.get_mut(&k.killer) {
+                        r.kills += 1;
                     }
                     if let Some(r) = self.roster.get_mut(&k.victim) {
                         r.deaths += 1;
@@ -1636,7 +1682,32 @@ mod tests {
             ..HudState::default()
         };
         h.on_hit(fall, 0.7);
-        assert!(h.damage[DAMAGE_SECTORS / 2] > 0.0, "{:?}", h.damage);
+        // CLI-1847: a fall lights no sector: it starts the screen-edge band at full strength whatever its damage (the
+        // logged 3 HP fall has from_dir length 0.028), decaying like a sector (gone after 1 s)
+        assert!(h.damage.iter().all(|v| *v == 0.0), "{:?}", h.damage);
+        assert_eq!(h.fall_border, 1.0);
+        let mut g = HudState {
+            life_state: 1,
+            reality: true,
+            ..HudState::default()
+        };
+        g.on_hit([0.0, 0.028, 0.0], 0.0);
+        assert_eq!(g.fall_border, 1.0);
+        g.tick(0, 1000);
+        g.tick(500, 1000);
+        assert!((g.fall_border - 0.5).abs() < 1e-5, "{}", g.fall_border);
+        assert!(g.damage.iter().all(|v| *v == 0.0));
+        g.tick(1000, 1000);
+        assert_eq!(g.fall_border, 0.0, "gone after one second");
+        // a shot lights one sector with its own magnitude (the 2009 rule)
+        let mut sh = HudState {
+            life_state: 1,
+            reality: true,
+            ..HudState::default()
+        };
+        sh.on_hit([-0.27, -0.10, 0.25], 0.0);
+        assert_eq!(sh.damage.iter().filter(|v| **v > 0.0).count(), 1);
+        assert_eq!(sh.fall_border, 0.0, "a shot draws no border");
         // and the aim cross's hit flash (0x74 damage > 0, zone 5)
         h.on_hit_flash(2, 5, 100);
         assert_eq!(h.hit_flash_at, Some(100));
@@ -2079,6 +2150,8 @@ pub const GUN_LINE_MS: u32 = 2_500;
 pub struct GunGameHud {
     pub names: Vec<String>,
     pub rung: usize,
+    /// CLI-1850: the own foe kills of the match (0x6d), the number of the "N Kills" banner; the rung is no count.
+    pub kills: u32,
     /// The centre line: text, demotion, since when.
     pub line: Option<(String, bool, u32)>,
 }
@@ -2088,6 +2161,7 @@ impl GunGameHud {
         GunGameHud {
             names,
             rung: 0,
+            kills: 0,
             line: None,
         }
     }

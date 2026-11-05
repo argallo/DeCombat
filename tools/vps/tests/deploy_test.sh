@@ -384,5 +384,33 @@ request 1700000028-00000028 "{\"sha\":\"$B\",\"targets\":[\"hosts\"]}"
 run
 expect "the logs are pruned to the newest 50" test "$(ls "$D"/logs/*.log | wc -l)" -le 51
 
+# ---- LG-402: the dashboard's "Check now" (a fetch request: one fetch, never a deploy, rate limited)
+D0=$(commit "fifth: new since the dashboard looked")
+: > "$STUB_LOG"
+rm -f "$D/status.json"
+printf '{"by":"the admin web $(touch %s/pwned2)","at":1}' "$T" > "$D/requests/fetch-1700000100.json"
+DC_DEPLOY_RATE_FETCH=0 bash "$DEPLOY" run > "$T/out" 2>&1 < /dev/null
+expect "a fetch request is answered with a fetch" test "$(json "$AV" 'd["master"]')" = "$D0"
+expect "the request is removed" test -z "$(ls "$D/requests")"
+expect "it never builds or installs" lacks "$STUB_LOG" "cargo"
+expect "and starts no deploy" test ! -f "$D/status.json"
+expect "its content never reaches a shell" test ! -e "$T/pwned2"
+D1=$(commit "sixth: too soon")
+printf '{}' > "$D/requests/fetch-1700000101.json"
+DC_DEPLOY_RATE_FETCH=300 bash "$DEPLOY" run > "$T/out" 2>&1 < /dev/null
+expect "a second check within the limit is ignored" test "$(json "$AV" 'd["master"]')" = "$D0"
+expect "and says so" has "$T/out" "check request ignored"
+expect "and is removed too" test -z "$(ls "$D/requests")"
+printf '{}' > "$D/requests/fetch-abc.json"
+printf '{}' > "$D/requests/fetch-1700000102.json.bak"
+DC_DEPLOY_RATE_FETCH=0 bash "$DEPLOY" run > "$T/out" 2>&1 < /dev/null
+expect "a badly named fetch file is no check" test "$(json "$AV" 'd["master"]')" = "$D0"
+expect "and is cleared" test -z "$(ls "$D/requests")"
+request 1700000103-00000103 "{\"sha\":\"$D1\",\"targets\":[\"hosts\"]}"
+printf '{}' > "$D/requests/fetch-1700000103.json"
+run
+expect "a deploy request beside a check request deploys" phase_is done
+expect "and leaves no request behind" test -z "$(ls "$D/requests")"
+
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

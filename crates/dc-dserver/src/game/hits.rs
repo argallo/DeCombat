@@ -52,11 +52,13 @@ pub enum HitVerdict {
     /// The fired weapon is one the room's weapon limit keeps out of the match and the server never granted
     /// (DSV-476).
     WeaponLimit,
+    /// The Search and Destroy warm-up holds player damage (DSV-566).
+    Warmup,
 }
 
 impl HitVerdict {
     /// Every verdict, in log order.
-    pub const ALL: [HitVerdict; 19] = [
+    pub const ALL: [HitVerdict; 20] = [
         HitVerdict::Accepted,
         HitVerdict::AcceptedRewound,
         HitVerdict::NotRunning,
@@ -76,6 +78,7 @@ impl HitVerdict {
         HitVerdict::SpawnShield,
         HitVerdict::OutOfRange,
         HitVerdict::WeaponLimit,
+        HitVerdict::Warmup,
     ];
 
     /// Short name for the log.
@@ -100,6 +103,7 @@ impl HitVerdict {
             HitVerdict::SpawnShield => "spawn_shield",
             HitVerdict::OutOfRange => "out_of_range",
             HitVerdict::WeaponLimit => "weapon_limit",
+            HitVerdict::Warmup => "warmup",
         }
     }
 

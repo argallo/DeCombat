@@ -4,6 +4,7 @@
 #
 #   deploy_from_git.sh fetch     what decombat-src-fetch.timer runs: fetch master into the mirror, write available.json
 #   deploy_from_git.sh run       what decombat-deploy.path starts: take the newest request of deploy/requests and deploy it
+#                                (a `fetch-<unix>.json` there is the dashboard's "Check now": one fetch, never a deploy)
 #   deploy_from_git.sh status    print deploy/status.json
 #
 # A request is a small JSON file the lobby (user decombat) drops into $DC_ROOT/deploy/requests. Nothing in it is trusted
@@ -35,6 +36,9 @@ PGREP=${DC_DEPLOY_PGREP:-pgrep}
 SETTLE=${DC_DEPLOY_SETTLE:-1}
 MATCH_POLL=${DC_DEPLOY_MATCH_POLL:-30}
 NAME_RE='^[0-9]{1,12}-[0-9a-f]{8}\.json$'
+# LG-402: the dashboard's "Check now"; its content is never read (the lobby's ops event says who asked)
+FETCH_RE='^fetch-[0-9]{1,12}\.json$'
+RATE_FETCH=${DC_DEPLOY_RATE_FETCH:-30}
 SIGN_NS=decombat-host-update
 SIGN_ID=decombat-deploy
 SSHKEYGEN=${DC_DEPLOY_SSHKEYGEN:-ssh-keygen}
@@ -63,7 +67,7 @@ git_m() { "$GIT" --git-dir="$MIRROR" "$@"; }
 fetch_mirror() {
     local key=$D/key/id_ed25519 kh=$D/key/known_hosts
     if [ -f "$key" ]; then
-        GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$kh -o StrictHostKeyChecking=yes -o BatchMode=yes" \
+        GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$kh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=3" \
             git_m fetch --quiet --prune origin "+refs/heads/$BRANCH:refs/heads/$BRANCH"
     elif [ "$DC_TEST" = 1 ] && [ "${DC_DEPLOY_TEST_NO_KEY:-0}" = 1 ]; then
         # the shell tests fetch from a local origin
@@ -235,9 +239,15 @@ json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
     fi
     # the newest well-named request wins; older ones and anything else in the folder go (a symlink is removed, never
     # read), so the path unit does not start this again for a stray file
-    local f newest="" n
+    local f newest="" n want_fetch=0
     while IFS= read -r -d '' f; do
         n=${f##*/}
+        if [ ! -L "$f" ] && [ -f "$f" ] && [[ $n =~ $FETCH_RE ]]; then
+            # a check request: removed unread, answered below (never a deploy)
+            rm -f -- "$f"
+            want_fetch=1
+            continue
+        fi
         if [ -L "$f" ] || [ ! -f "$f" ] || ! [[ $n =~ $NAME_RE ]]; then
             rm -rf -- "$f"
             continue
@@ -254,7 +264,12 @@ json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
         fi
         newest=$f
     done < <(find "$D/requests" -mindepth 1 -maxdepth 1 -print0)
-    [ -n "$newest" ] || { say "no request"; exit 0; }
+    if [ -z "$newest" ]; then
+        # LG-402: the lock is held for one fetch only (ssh timeouts above); a deploy request skips it, a deploy fetches itself
+        [ "$want_fetch" = 1 ] && fetch_for_dashboard
+        [ "$want_fetch" = 1 ] || say "no request"
+        exit 0
+    fi
     ID=$(basename "$newest" .json)
     STARTED=$(date +%s)
     LOG="$D/logs/$ID.log"
@@ -285,6 +300,24 @@ json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
     fi
     prune_logs
     deploy
+}
+
+# fetch_for_dashboard: one fetch for a "Check now", unless the last check is younger than RATE_FETCH seconds
+fetch_for_dashboard() {
+    local age
+    age=$("$DC_PYTHON" -c '
+import json, sys, time
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        print(int(time.time()) - int(json.load(f).get("checked") or 0))
+except (OSError, ValueError, AttributeError):
+    print(999999)
+' "$D/available.json" 2>/dev/null || echo 999999)
+    if [ "${age:-999999}" -lt "$RATE_FETCH" ]; then
+        say "check request ignored: checked ${age}s ago (limit $RATE_FETCH s)"
+        return 0
+    fi
+    cmd_fetch || true
 }
 
 # recent SHA: seconds since the last finished deploy (of that commit, when given) if within the limit, else nothing
@@ -425,7 +458,7 @@ main() {
         fetch) need_root; cmd_fetch ;;
         run) cmd_run ;;
         status) cat "$D/status.json" 2>/dev/null || say "no deploy yet" ;;
-        -h|--help) sed -n '2,19p' "$0" ;;
+        -h|--help) sed -n '2,20p' "$0" ;;
         *) die "fetch, run or status (--help)" ;;
     esac
 }

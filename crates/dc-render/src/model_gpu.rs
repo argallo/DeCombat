@@ -18,7 +18,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MODEL_WGSL: &str = include_str!("shaders/model.wgsl");
 
@@ -169,14 +170,31 @@ fn argb(v: u32) -> [f32; 4] {
     [c(16), c(8), c(0), c(24)]
 }
 
-/// Pipelines (one per pass state, created on first use), samplers (one per address / filter pair) and the
-/// layouts of the model pass for one colour format.
+/// A model pipeline shared by the uploads that use its raster state: filled on the frame thread (gpu-prewarm: a
+/// loader thread leaves it empty and queues its key, [`ModelPipelines::make_pending`] fills it before the frame).
+type PipeSlot = Arc<OnceLock<wgpu::RenderPipeline>>;
+
+/// What [`ModelPipelines::prewarm`] made.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrewarmCount {
+    /// Render styles walked (the two built-in ones included).
+    pub styles: usize,
+    /// Pipelines and samplers made now (the ones already made are not counted).
+    pub pipelines: usize,
+    pub samplers: usize,
+}
+
+/// Pipelines (one per pass state, made by [`ModelPipelines::prewarm`] at match load or on first use on the frame
+/// thread), samplers (one per address / filter pair) and the layouts of the model pass for one colour format.
 pub struct ModelPipelines {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     colour_format: wgpu::TextureFormat,
     zbuf_format: wgpu::TextureFormat,
-    pipelines: Mutex<HashMap<PipeKey, wgpu::RenderPipeline>>,
+    pipelines: Mutex<HashMap<PipeKey, PipeSlot>>,
+    /// gpu-prewarm: keys a loader thread needed and could not make (the frame thread makes them).
+    pending: Mutex<Vec<PipeKey>>,
+    has_pending: AtomicBool,
     samplers: Mutex<HashMap<SampKey, wgpu::Sampler>>,
     instance_layout: wgpu::BindGroupLayout,
     pass_layout: wgpu::BindGroupLayout,
@@ -324,6 +342,8 @@ impl ModelPipelines {
             colour_format,
             zbuf_format,
             pipelines: Mutex::new(HashMap::new()),
+            pending: Mutex::new(Vec::new()),
+            has_pending: AtomicBool::new(false),
             samplers: Mutex::new(HashMap::new()),
             instance_layout,
             pass_layout,
@@ -347,11 +367,104 @@ impl ModelPipelines {
         self.zbuf_format
     }
 
-    fn pipeline(&self, ctx: &GpuContext, key: PipeKey) -> wgpu::RenderPipeline {
+    /// The pipeline slot of `key`, made now on a thread that may make pipelines (the frame thread); on a loader
+    /// thread ([`crate::warm::forbid_on_this_thread`]) an empty slot whose key [`ModelPipelines::make_pending`] makes.
+    /// Returns the slot and whether a pipeline was made.
+    fn pipeline(&self, ctx: &GpuContext, key: PipeKey) -> (PipeSlot, bool) {
         let mut map = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = map.get(&key) {
-            return p.clone();
+        let slot = map.entry(key).or_default().clone();
+        if slot.get().is_some() {
+            return (slot, false);
         }
+        if !crate::warm::allowed_here() {
+            let mut q = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            if !q.contains(&key) {
+                q.push(key);
+            }
+            self.has_pending.store(true, Ordering::Release);
+            return (slot, false);
+        }
+        let made = slot.set(self.make_pipeline(ctx, key)).is_ok();
+        (slot, made)
+    }
+
+    /// Makes the pipelines loader threads asked for since the last call (frame thread, before the frame records the
+    /// models: [`crate::WorldRenderer::encode_frame_with_view`] calls it). One atomic load when there are none.
+    /// Returns how many were made.
+    pub fn make_pending(&self, ctx: &GpuContext) -> usize {
+        if !self.has_pending.load(Ordering::Acquire) {
+            return 0;
+        }
+        let keys = {
+            let mut q = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            self.has_pending.store(false, Ordering::Release);
+            std::mem::take(&mut *q)
+        };
+        keys.into_iter()
+            .filter(|k| self.pipeline(ctx, *k).1)
+            .count()
+    }
+
+    /// Model pipelines made so far.
+    pub fn pipeline_count(&self) -> usize {
+        let map = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+        map.values().filter(|s| s.get().is_some()).count()
+    }
+
+    /// gpu-prewarm: makes the pipelines and samplers every pass of `styles` needs, and those of the engine default
+    /// and the plain style, on the calling thread (the frame thread, at match load). Already made ones are kept.
+    pub fn prewarm<'a>(
+        &self,
+        ctx: &GpuContext,
+        styles: impl IntoIterator<Item = &'a RenderStyle>,
+    ) -> PrewarmCount {
+        let mut n = PrewarmCount::default();
+        let mut add = |style: &RenderStyle| {
+            let (p, s) = self.warm_style(ctx, style);
+            n.styles += 1;
+            n.pipelines += p;
+            n.samplers += s;
+        };
+        add(&RenderStyle::engine_default());
+        add(&RenderStyle::plain());
+        styles.into_iter().for_each(add);
+        n
+    }
+
+    /// gpu-prewarm: makes what the passes of a style list need now (the frame thread, when a model with these styles
+    /// is requested: a style announced mid-match is made here, not on a loader thread). Returns the pipelines made.
+    pub fn ensure_styles(&self, ctx: &GpuContext, styles: &[Option<Arc<RenderStyle>>]) -> usize {
+        styles
+            .iter()
+            .flatten()
+            .map(|s| self.warm_style(ctx, s).0)
+            .sum()
+    }
+
+    fn warm_style(&self, ctx: &GpuContext, style: &RenderStyle) -> (usize, usize) {
+        let (mut pipes, mut samps) = (0, 0);
+        for p in &style.passes {
+            pipes += self.pipeline(ctx, PipeKey::of(p)).1 as usize;
+            for st in &p.stages {
+                let key = SampKey {
+                    address: st.address,
+                    filter: st.filter,
+                };
+                let had = self
+                    .samplers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&key);
+                if !had {
+                    self.sampler(ctx, key);
+                    samps += 1;
+                }
+            }
+        }
+        (pipes, samps)
+    }
+
+    fn make_pipeline(&self, ctx: &GpuContext, key: PipeKey) -> wgpu::RenderPipeline {
         let blend = key.blend.map(|(s, d)| {
             let c = wgpu::BlendComponent {
                 src_factor: blend_factor(s),
@@ -360,7 +473,8 @@ impl ModelPipelines {
             };
             wgpu::BlendState { color: c, alpha: c }
         });
-        let p = crate::determinism::render_pipeline(
+        let detail = format!("{key:?}");
+        crate::determinism::render_pipeline_for(
             &ctx.device,
             &wgpu::RenderPipelineDescriptor {
                 label: Some("model"),
@@ -414,9 +528,8 @@ impl ModelPipelines {
                 multiview: None,
                 cache: None,
             },
-        );
-        map.insert(key, p.clone());
-        p
+            Some(&detail),
+        )
     }
 
     fn sampler(&self, ctx: &GpuContext, key: SampKey) -> wgpu::Sampler {
@@ -765,7 +878,7 @@ impl ModelPipelines {
         let plain = Arc::new(RenderStyle::plain());
         let default = Arc::new(RenderStyle::engine_default());
         let mut draws = Vec::with_capacity(mesh.draws.len());
-        let mut pipelines: Vec<wgpu::RenderPipeline> = Vec::new();
+        let mut pipelines: Vec<PipeSlot> = Vec::new();
         let mut pipe_keys: Vec<PipeKey> = Vec::new();
         let mut groups: Vec<wgpu::BindGroup> = Vec::new();
         let mut buffers: Vec<wgpu::Buffer> = Vec::new();
@@ -794,7 +907,7 @@ impl ModelPipelines {
                     Some(i) => i,
                     None => {
                         pipe_keys.push(key);
-                        pipelines.push(self.pipeline(ctx, key));
+                        pipelines.push(self.pipeline(ctx, key).0);
                         pipelines.len() - 1
                     }
                 };
@@ -950,7 +1063,8 @@ pub struct ModelInstance {
     draws: Vec<ModelDraw>,
     /// Switch distances per piece.
     lod_dists: Vec<Vec<f32>>,
-    pipelines: Vec<wgpu::RenderPipeline>,
+    /// gpu-prewarm: filled on the frame thread before the instance can be drawn.
+    pipelines: Vec<PipeSlot>,
     groups: Vec<wgpu::BindGroup>,
     _buffers: Vec<wgpu::Buffer>,
     _textures: Vec<wgpu::Texture>,
@@ -1015,6 +1129,82 @@ struct UniformCache {
     instance: Option<InstanceUniform>,
     bones: Vec<[f32; 16]>,
     scratch: Vec<[f32; 16]>,
+}
+
+/// The changed model uniforms of one frame, gathered so the frame uploads them with ONE `queue.write_buffer` into
+/// a staging region and copies each into its model's buffer at the start of the frame's model passes
+/// ([`Self::flush`]), instead of one `queue.write_buffer` per buffer. Every `write_buffer` makes a staging buffer
+/// of its own; on DX12 that is a placed resource each (about 3.5 us per write measured here, 4x Vulkan's), so a
+/// frame with 70 animated characters spent ~0.5 ms creating staging buffers. The bytes that reach each buffer are
+/// the same, and the copies run before the first pass that reads the model buffers, so every pass sees the same
+/// values.
+///
+/// The staging region comes from a ring buffer that is only ever filled forward: a queue write lands before the
+/// command buffers of the next submit, so two frames encoded into one submit must not share bytes; when the ring
+/// is full a new one replaces it (wgpu keeps the old one alive while copies still read it). The vectors and the
+/// ring keep their capacity from frame to frame (the renderer holds one batch).
+// ORIGINAL: dx12-perf upload batching (wgpu 25 docs: Queue::write_buffer, CommandEncoder::copy_buffer_to_buffer);
+// no 2009 behaviour
+#[derive(Default)]
+pub(crate) struct UniformUploads {
+    bytes: Vec<u8>,
+    /// (destination, offset of its bytes in `bytes`, length)
+    copies: Vec<(wgpu::Buffer, u64, u64)>,
+    /// (ring, bytes of it already handed out)
+    ring: Option<(wgpu::Buffer, u64)>,
+}
+
+/// The smallest staging ring (about a dozen frames of 70 animated characters).
+const UPLOAD_RING_BYTES: u64 = 8 << 20;
+
+impl UniformUploads {
+    /// Queues `data` (a multiple of 4 bytes, `wgpu::COPY_BUFFER_ALIGNMENT`) for offset 0 of `buffer`.
+    fn push(&mut self, buffer: &wgpu::Buffer, data: &[u8]) {
+        debug_assert_eq!(data.len() as u64 % wgpu::COPY_BUFFER_ALIGNMENT, 0);
+        let at = self.bytes.len() as u64;
+        self.bytes.extend_from_slice(data);
+        self.copies.push((buffer.clone(), at, data.len() as u64));
+    }
+
+    /// Records the queued uploads into `encoder` and empties the batch. A single upload stays a plain queue write.
+    pub(crate) fn flush(&mut self, ctx: &GpuContext, encoder: &mut wgpu::CommandEncoder) {
+        match self.copies.len() {
+            0 => {}
+            1 => {
+                let (buffer, _, _) = &self.copies[0];
+                crate::perf::write_buffer(&ctx.queue, buffer, 0, &self.bytes);
+            }
+            _ => {
+                let len = self.bytes.len() as u64;
+                let fits = self
+                    .ring
+                    .as_ref()
+                    .is_some_and(|(r, used)| used + len <= r.size());
+                if !fits {
+                    let size = UPLOAD_RING_BYTES.max(len.next_power_of_two());
+                    let ring = crate::perf::buffer(
+                        &ctx.device,
+                        &wgpu::BufferDescriptor {
+                            label: Some("model uniform uploads"),
+                            size,
+                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                            mapped_at_creation: false,
+                        },
+                    );
+                    self.ring = Some((ring, 0));
+                }
+                let (ring, used) = self.ring.as_mut().expect("ring made above");
+                let base = *used;
+                *used += len;
+                crate::perf::write_buffer(&ctx.queue, ring, base, &self.bytes);
+                for (buffer, at, n) in &self.copies {
+                    encoder.copy_buffer_to_buffer(ring, base + at, buffer, 0, *n);
+                }
+            }
+        }
+        self.bytes.clear();
+        self.copies.clear();
+    }
 }
 
 impl fmt::Debug for ModelInstance {
@@ -1219,10 +1409,15 @@ impl ModelInstance {
     /// Writes the instance and bone uniforms for `camera` (call before recording the frame).
     /// The world pass's linear fog applies (RENDER_2009.md §3.3: the fog state is device state, so the model passes
     /// of the world pass are fogged like the world). Returns the bytes written.
-    pub(crate) fn write_fogged(&self, ctx: &GpuContext, camera: &Camera, fog: Option<&Fog>) -> u64 {
+    pub(crate) fn write_fogged(
+        &self,
+        uploads: &mut UniformUploads,
+        camera: &Camera,
+        fog: Option<&Fog>,
+    ) -> u64 {
         let world = self.world();
         self.write_matrices(
-            ctx,
+            uploads,
             camera,
             model_view_projection(camera) * world,
             world,
@@ -1237,10 +1432,15 @@ impl ModelInstance {
     // SPEC: RENDER_2009.md §4.2 (VIEW = identity, eye-space placement); §7.2 (WORLD = model transform per model,
     // LIGHTING on for the model pass); DC-DEFAULT: REN-13 (proposed), see DC_DEFAULTS.md (lights evaluated in world
     // space with the eye-space object carried into the world by the camera)
-    pub(crate) fn write_view(&self, ctx: &GpuContext, camera: &Camera, projection: Mat4) -> u64 {
+    pub(crate) fn write_view(
+        &self,
+        uploads: &mut UniformUploads,
+        camera: &Camera,
+        projection: Mat4,
+    ) -> u64 {
         let own = self.world();
         self.write_matrices(
-            ctx,
+            uploads,
             camera,
             projection * own,
             camera.world_from_eye() * own,
@@ -1250,7 +1450,7 @@ impl ModelInstance {
 
     fn write_matrices(
         &self,
-        ctx: &GpuContext,
+        uploads: &mut UniformUploads,
         camera: &Camera,
         clip: Mat4,
         world: Mat4,
@@ -1289,7 +1489,7 @@ impl ModelInstance {
         if c.instance
             .is_none_or(|old| bytemuck::bytes_of(&old) != bytemuck::bytes_of(&u))
         {
-            crate::perf::write_buffer(&ctx.queue, &self.instance_buffer, 0, bytemuck::bytes_of(&u));
+            uploads.push(&self.instance_buffer, bytemuck::bytes_of(&u));
             c.instance = Some(u);
             written += std::mem::size_of_val(&u) as u64;
         }
@@ -1303,12 +1503,7 @@ impl ModelInstance {
             bytemuck::cast_slice::<_, u8>(&c.scratch) == bytemuck::cast_slice::<_, u8>(&c.bones);
         if !same && m > 0 {
             crate::perf::add(crate::perf::Counter::BonesUploaded, m as u64);
-            crate::perf::write_buffer(
-                &ctx.queue,
-                &self.bones_buffer,
-                0,
-                bytemuck::cast_slice(&c.scratch),
-            );
+            uploads.push(&self.bones_buffer, bytemuck::cast_slice(&c.scratch));
             written += std::mem::size_of_val(&c.scratch[..]) as u64;
             std::mem::swap(&mut c.bones, &mut c.scratch);
         }
@@ -1347,7 +1542,12 @@ impl ModelInstance {
             }
             for &(pi, g) in &d.passes {
                 if current != Some(pi) {
-                    pass.set_pipeline(&self.pipelines[pi]);
+                    // gpu-prewarm: the frame made every pending pipeline first; an empty slot is a bug, not a stall
+                    let Some(p) = self.pipelines[pi].get() else {
+                        crate::warm::unready_draw();
+                        continue;
+                    };
+                    pass.set_pipeline(p);
                     current = Some(pi);
                     report.pipeline_sets += 1;
                 }
@@ -1569,7 +1769,9 @@ impl ModelPipelines {
 ///
 /// wgpu resource creation and queue writes are thread-safe; a model uploaded here may be drawn by the renderer's
 /// thread once it has been handed over (its buffer and texture writes are queued before any submit that can use it).
-/// Pipelines a new render style needs are created (and cached for every later upload) on the calling thread.
+/// gpu-prewarm: on a loader thread ([`crate::warm::forbid_on_this_thread`]) no pipeline is made: one a new render
+/// style needs is queued and made on the frame thread before the next frame records models
+/// ([`ModelPipelines::make_pending`]); elsewhere it is made (and cached for every later upload) on the calling thread.
 #[derive(Clone)]
 pub struct ModelUploader {
     ctx: GpuContext,

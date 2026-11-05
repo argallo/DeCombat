@@ -423,6 +423,8 @@ fn main() -> ExitCode {
         settings.far_z = f;
     }
     let mut req = ViewRequest::new(&map);
+    // --far replaces the world's far plane (CLI-1851)
+    req.world_far = a.far.is_none();
     req.camera = match a.eye {
         Some(eye) => {
             let (yaw, pitch) = a.look.unwrap_or((0.0, 0.0));

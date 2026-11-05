@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use dc_sim::{Collider, CollisionWorld, ConvexVolume, Cylinder, V3};
+use dc_sim::{Collider, CollisionWorld, ConvexVolume, Cylinder, MovementParams, V3};
 
 /// Lattice step, units.
 // DC-DEFAULT: BOT-93 (proposed) 48 units (a body is 32 wide)
@@ -18,6 +18,12 @@ pub const STEP_UP: f32 = 30.0;
 /// How far a link may drop (a walk down stairs or a ledge the mover takes without harm).
 // DC-DEFAULT: BOT-93 (proposed) 96 units
 pub const STEP_DOWN: f32 = 96.0;
+/// The highest walk off an edge a link takes (falls up to 300 do no damage, DSV-76).
+// DC-DEFAULT: BOT-119 (proposed) 200 units
+pub const FALL_DROP: f32 = 200.0;
+/// The extra path cost of a fall of more than [`STEP_DOWN`].
+// DC-DEFAULT: BOT-119 (proposed) 300 units
+pub const FALL_COST: f32 = 300.0;
 /// Sub-step of the stairway check: shorter than a stair's tread, so each sub-step rises at most one riser.
 // DC-DEFAULT: BOT-112 (proposed) 8 units
 pub const CLIMB_SUB: f32 = 8.0;
@@ -103,6 +109,13 @@ pub struct NavGrid {
     nodes: HashMap<Key, Node>,
     frontier: VecDeque<Key>,
     pub probes: u64,
+    /// BOT-118: the cosine of the steepest floor the mover stands on (`MovementParams::standable_cos`).
+    standable: f32,
+    /// BOT-119: the first place seeded (the bot's spawn), a count of the grid's changes, and the nodes from which
+    /// a way leads back to that place as of a change count (the others are pits: a drop leads in, nothing out).
+    home: Option<Key>,
+    changes: u64,
+    escape: Option<(u64, HashSet<Key>)>,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -135,6 +148,10 @@ impl NavGrid {
             nodes: HashMap::new(),
             frontier: VecDeque::new(),
             probes: 0,
+            standable: MovementParams::default().standable_cos,
+            home: None,
+            changes: 0,
+            escape: None,
         }
     }
 
@@ -171,6 +188,10 @@ impl NavGrid {
             .map(|up| V3::new(p.x, p.y + up, p.z))
             .find(|t| !self.world.overlaps(&self.shape, *t))?;
         let hit = self.world.sweep(&self.shape, top, bottom)?;
+        // BOT-118: no place on a slope the mover slides down (it is no ground to it: no walking, no jump)
+        if hit.face_normal.y < self.standable {
+            return None;
+        }
         let y = top.y + (bottom.y - top.y) * hit.t;
         let at = V3::new(p.x, y, p.z);
         if self.kill.iter().any(|v| v.touches(&self.shape, at)) {
@@ -238,7 +259,59 @@ impl NavGrid {
         if let Some(at) = self.climb(from, q) {
             return Some(at);
         }
-        below.filter(|at| from.y - at.y > STEP_UP && self.climb(*at, from).is_some())
+        if let Some(at) =
+            below.filter(|at| from.y - at.y > STEP_UP && self.climb(*at, from).is_some())
+        {
+            return Some(at);
+        }
+        self.walk_off(from, q).filter(|at| key_of(*at) != k)
+    }
+
+    /// BOT-119: the place the body lands on when it walks off an edge from the standing place `from` toward the flat
+    /// place of `q`: the raised body moves level to above `q`, then falls freely to a standing place more than
+    /// [`STEP_UP`] and at most [`FALL_DROP`] lower (out of kill volumes, on standable floor). The straight sweep of
+    /// [`Self::walkable`] meets the edge of a box or a ledge, so before no link led off one: a bot on a crate top had
+    /// no way down on the grid.
+    // DC-DEFAULT: BOT-119 (proposed)
+    fn walk_off(&mut self, from: V3, q: V3) -> Option<V3> {
+        let over = V3::new(q.x, from.y, q.z);
+        if !self.lifted_clear(from, over, STEP_UP * 0.5) || self.world.overlaps(&self.shape, over) {
+            return None;
+        }
+        self.probes += 1;
+        let low = V3::new(q.x, from.y - FALL_DROP, q.z);
+        let hit = self.world.sweep(&self.shape, over, low)?;
+        if hit.face_normal.y < self.standable {
+            return None;
+        }
+        let at = over + (low - over) * hit.t;
+        if from.y - at.y <= STEP_UP
+            || self.world.overlaps(&self.shape, at)
+            || self.kill.iter().any(|v| v.touches(&self.shape, at))
+        {
+            return None;
+        }
+        Some(at)
+    }
+
+    /// BOT-118: whether the body walks from the standing place `a` to the known node at `b`: a flat step or a drop
+    /// (a step up of at most [`STEP_UP`]) over floor, or a stairway that ends at `b`.
+    // DC-DEFAULT: BOT-118 (proposed)
+    fn reaches(&mut self, a: V3, b: V3) -> bool {
+        if b.y - a.y <= STEP_UP + 1.0 && self.walkable(a, b) && self.supported(a, b) {
+            return true;
+        }
+        if self
+            .climb(a, b)
+            .is_some_and(|c| flat(c, b) < 1.0 && (c.y - b.y).abs() <= 2.0)
+        {
+            return true;
+        }
+        // BOT-119: or a walk off an edge that lands on it
+        a.y - b.y > STEP_UP
+            && self
+                .walk_off(a, b)
+                .is_some_and(|c| flat(c, b) < 1.0 && (c.y - b.y).abs() <= 2.0)
     }
 
     /// Whether the body finds a floor all along the straight line from `a` to `b` (both standing positions): a
@@ -278,6 +351,8 @@ impl NavGrid {
             },
         );
         self.frontier.push_back(k);
+        self.home.get_or_insert(k);
+        self.changes += 1;
         true
     }
 
@@ -344,6 +419,19 @@ impl NavGrid {
                 if qk == k {
                     continue;
                 }
+                // BOT-118: the link leads to the node already known at that key, which may stand up to a lattice
+                // step away from the place just probed (a half-step side probe, a stairway end): the body must reach
+                // that node itself, or the link is not made (a link checked only to the probed place led bots into
+                // railings and stair sides on Gray Hammer and kept them pushing there)
+                let at = match self.nodes.get(&qk).map(|n| n.pos) {
+                    Some(np) if dist(np, at) > 1.0 => {
+                        if !self.reaches(node.pos, np) {
+                            continue;
+                        }
+                        np
+                    }
+                    _ => at,
+                };
                 if !links.contains(&qk) {
                     links.push(qk);
                 }
@@ -374,8 +462,61 @@ impl NavGrid {
                 n.links = links;
                 n.expanded = true;
             }
+            self.changes += 1;
         }
         added
+    }
+
+    /// BOT-119: brings the set of nodes with a way back to the first seeded place up to date.
+    fn refresh_escape(&mut self) {
+        let Some(home) = self.home else {
+            return;
+        };
+        if self.escape.as_ref().is_some_and(|e| e.0 == self.changes) {
+            return;
+        }
+        let mut rev: HashMap<Key, Vec<Key>> = HashMap::new();
+        for (k, n) in &self.nodes {
+            for l in &n.links {
+                rev.entry(*l).or_default().push(*k);
+            }
+        }
+        let mut seen = HashSet::from([home]);
+        let mut q = VecDeque::from([home]);
+        while let Some(k) = q.pop_front() {
+            for f in rev.get(&k).into_iter().flatten() {
+                if seen.insert(*f) {
+                    q.push_back(*f);
+                }
+            }
+        }
+        self.escape = Some((self.changes, seen));
+    }
+
+    /// BOT-119: whether the node at `k` lies in a pit (no way back to the first seeded place, as last computed).
+    fn in_pit(&self, k: &Key) -> bool {
+        self.escape.as_ref().is_some_and(|e| !e.1.contains(k))
+    }
+
+    /// The nodes within `r` units (flat) of `p` and the places their links lead to (diagnostics and tests).
+    pub fn links_near(&self, p: [f32; 3], r: f32) -> Vec<([f32; 3], Vec<[f32; 3]>)> {
+        let c = V3::new(p[0], p[1], p[2]);
+        let mut out: Vec<([f32; 3], Vec<[f32; 3]>)> = self
+            .nodes
+            .values()
+            .filter(|n| flat(n.pos, c) <= r)
+            .map(|n| {
+                let to = n
+                    .links
+                    .iter()
+                    .filter_map(|l| self.nodes.get(l))
+                    .map(|m| [m.pos.x, m.pos.y, m.pos.z])
+                    .collect();
+                ([n.pos.x, n.pos.y, n.pos.z], to)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+        out
     }
 
     /// Whether the frontier still has places to look at.
@@ -385,8 +526,14 @@ impl NavGrid {
 
     /// The known node nearest to `p` within `within` units (3D), by key.
     fn nearest(&self, p: V3, within: f32) -> Option<Key> {
+        self.nearest_where(p, within, |_| true)
+    }
+
+    /// The known node nearest to `p` within `within` units (3D) among those `allow` lets through.
+    fn nearest_where(&self, p: V3, within: f32, allow: impl Fn(&Key) -> bool) -> Option<Key> {
         self.nodes
             .iter()
+            .filter(|(k, _)| allow(k))
             .map(|(k, n)| (dist(n.pos, p), *k))
             .filter(|(d, _)| *d <= within)
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -401,7 +548,7 @@ impl NavGrid {
         let mut far: Vec<(Key, V3)> = self
             .nodes
             .iter()
-            .filter(|(_, n)| flat(n.pos, f) >= min)
+            .filter(|(k, n)| flat(n.pos, f) >= min && !self.in_pit(k))
             .map(|(k, n)| (*k, n.pos))
             .collect();
         if far.is_empty() {
@@ -419,10 +566,16 @@ impl NavGrid {
 
     /// The known node nearest to `p` within `within` units (3D) whose centre sees `p` (a ray through the world).
     // DC-DEFAULT: BOT-112 (proposed)
-    fn nearest_in_sight(&self, p: V3, within: f32) -> Option<Key> {
+    fn nearest_in_sight(
+        &self,
+        p: V3,
+        within: f32,
+        allow: impl Fn(&Key) -> bool,
+    ) -> Option<Key> {
         let mut near: Vec<(f32, Key, V3)> = self
             .nodes
             .iter()
+            .filter(|(k, _)| allow(k))
             .map(|(k, n)| (dist(n.pos, p), *k, n.pos))
             .filter(|(d, _, _)| *d <= within)
             .collect();
@@ -457,6 +610,7 @@ impl NavGrid {
         match best {
             Some((i, _)) => {
                 self.nodes.get_mut(&k).unwrap().links.remove(i);
+                self.changes += 1;
                 true
             }
             None => false,
@@ -471,13 +625,17 @@ impl NavGrid {
             V3::new(from[0], from[1], from[2]),
             V3::new(to[0], to[1], to[2]),
         );
+        self.refresh_escape();
         let start = self.nearest(f, STEP * 1.5)?;
+        // BOT-119: a bot out of the pits plans no way into one (a drop in, nothing out), nor ends its way there
+        let avoid = !self.in_pit(&start);
+        let allow = |k: &Key| !avoid || !self.in_pit(k);
         // the goal node: the known node nearest to the goal (a far goal in unknown ground gets the closest edge);
         // BOT-112: of the nodes near the goal one it can see, not the one behind the wall it stands at (that way two
         // bots each walk to their side of a wall and stand there)
         let goal = self
-            .nearest_in_sight(t, STEP * 3.0)
-            .or_else(|| self.nearest(t, f32::MAX))?;
+            .nearest_in_sight(t, STEP * 3.0, allow)
+            .or_else(|| self.nearest_where(t, f32::MAX, allow))?;
         if dist(self.nodes[&goal].pos, t) > STEP * 1.5
             && dist(self.nodes[&goal].pos, t) >= dist(f, t)
         {
@@ -511,13 +669,19 @@ impl NavGrid {
             };
             let gk = g[&key];
             for l in links {
-                if closed.contains(&l) {
+                if closed.contains(&l) || !allow(&l) {
                     continue;
                 }
                 let Some(ln) = self.nodes.get(&l) else {
                     continue;
                 };
-                let ng = gk + dist(pos, ln.pos);
+                // BOT-119: a fall of more than STEP_DOWN costs extra (a way down a stair or a short drop wins)
+                let fall = if pos.y - ln.pos.y > STEP_DOWN {
+                    FALL_COST
+                } else {
+                    0.0
+                };
+                let ng = gk + dist(pos, ln.pos) + fall;
                 if g.get(&l).is_none_or(|old| ng < *old) {
                     g.insert(l, ng);
                     came.insert(l, key);
@@ -750,12 +914,99 @@ impl Route {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hunt::tests::{cupped, walled};
+    use crate::hunt::tests::{cupped, solid_box, walled};
 
     fn grow(nav: &mut NavGrid, max_probes: u64, toward: Option<[f32; 3]>) {
         while nav.growing() && nav.probes < max_probes {
             nav.expand(BUDGET, toward);
         }
+    }
+
+    /// A floor at y = 0 and a slope rising toward -z over z 200..0 at `deg` degrees (x -200..200).
+    fn sloped(deg: f32) -> Arc<CollisionWorld> {
+        let h = 200.0 * deg.to_radians().tan();
+        let v = V3::new;
+        let slope = dc_sim::CollModel::from_polys(&[dc_sim::ConvexPoly::from_corners(
+            vec![
+                v(-200.0, h, 0.0),
+                v(-200.0, 0.0, 200.0),
+                v(200.0, 0.0, 200.0),
+                v(200.0, h, 0.0),
+            ],
+            dc_sim::SURF_SOLID,
+        )]);
+        let models = vec![
+            solid_box([-5000.0, -64.0, -5000.0], [5000.0, 0.0, 5000.0]),
+            slope,
+        ];
+        Arc::new(CollisionWorld::from_parts(models, &[]))
+    }
+
+    /// BOT-118: no node stands on a slope the mover slides down (steeper than 45 degrees); a walkable ramp keeps its
+    /// nodes. Before, a node stood wherever the body fit, so routes led over steep slopes into crevices where the
+    /// body was never on the ground (no walking, no stuck jump).
+    #[test]
+    fn no_node_stands_on_a_slope_the_mover_slides_down() {
+        for (deg, standable) in [(60.0f32, false), (30.0, true)] {
+            let h = 200.0 * deg.to_radians().tan();
+            let mut nav = NavGrid::new(sloped(deg), [16.0, 40.0, 16.0]);
+            // over the middle of the slope (z 100: the surface at h / 2)
+            assert_eq!(
+                nav.seed([0.0, h / 2.0 + 41.0, 100.0]),
+                standable,
+                "{deg} degrees"
+            );
+            assert!(nav.seed([0.0, 40.0, 800.0]), "the floor");
+        }
+    }
+
+    /// A floor at y = 0 with a crate (x -100..100, z 1000..1200, 100 high) and a pit (x 500..700, z 500..700, its
+    /// floor 100 below, sheer sides: no way out).
+    fn crate_and_pit() -> Arc<CollisionWorld> {
+        let models = vec![
+            solid_box([-5000.0, -200.0, -5000.0], [5000.0, 0.0, 500.0]),
+            solid_box([-5000.0, -200.0, 700.0], [5000.0, 0.0, 5000.0]),
+            solid_box([-5000.0, -200.0, 500.0], [500.0, 0.0, 700.0]),
+            solid_box([700.0, -200.0, 500.0], [5000.0, 0.0, 700.0]),
+            solid_box([500.0, -264.0, 500.0], [700.0, -100.0, 700.0]),
+            solid_box([-100.0, 0.0, 1000.0], [100.0, 100.0, 1200.0]),
+        ];
+        Arc::new(CollisionWorld::from_parts(models, &[]))
+    }
+
+    /// BOT-119: a bot on a crate top (it got there by a jump, a fall or a spawn) has a way down on the grid: before,
+    /// the straight sweep of a drop met the crate's edge and a drop of more than 96 was no link, so the top was an
+    /// island and the plan kept the bot there.
+    #[test]
+    fn a_crate_top_has_a_way_down() {
+        let mut nav = NavGrid::new(crate_and_pit(), [16.0, 40.0, 16.0]);
+        assert!(nav.seed([0.0, 40.0, 0.0]), "home");
+        assert!(nav.seed([0.0, 140.0, 1100.0]), "the crate top");
+        grow(&mut nav, 60_000, None);
+        let p = nav
+            .path([0.0, 140.0, 1100.0], [0.0, 40.0, 0.0])
+            .expect("a way off the crate");
+        let last = p[p.len() - 1];
+        assert!(last[1] < 60.0 && flat(V3::new(last[0], 0.0, last[2]), V3::ZERO) <= STEP * 1.5, "{p:?}");
+    }
+
+    /// BOT-119: no plan leads into a pit the body cannot leave (a walk off its edge leads in, nothing out), not even
+    /// for a goal inside it: the plan ends at its rim.
+    #[test]
+    fn no_plan_leads_into_a_pit() {
+        let mut nav = NavGrid::new(crate_and_pit(), [16.0, 40.0, 16.0]);
+        assert!(nav.seed([0.0, 40.0, 0.0]));
+        grow(&mut nav, 60_000, None);
+        assert!(
+            nav.nodes.values().any(|n| n.pos.y < -50.0),
+            "the grid knows the pit floor"
+        );
+        if let Some(p) = nav.path([0.0, 40.0, 0.0], [600.0, -60.0, 600.0]) {
+            assert!(p.iter().all(|w| w[1] > -50.0), "{p:?}");
+        }
+        // a bot that fell in still gets a plan inside it
+        let inside = nav.path([600.0, -60.0, 600.0], [560.0, -60.0, 650.0]);
+        assert!(inside.is_some());
     }
 
     #[test]

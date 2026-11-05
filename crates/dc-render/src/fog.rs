@@ -10,7 +10,7 @@
 //! here, or DeCombat's own `dc.world_settings` property names, MAP-2).
 
 use dc_world::names::{
-    PROP_FOG_COLOR, PROP_FOG_ENABLE, PROP_FOG_FAR, PROP_FOG_NEAR, PROP_SKY_FOG_FAR,
+    PROP_FAR_Z, PROP_FOG_COLOR, PROP_FOG_ENABLE, PROP_FOG_FAR, PROP_FOG_NEAR, PROP_SKY_FOG_FAR,
     PROP_SKY_FOG_NEAR,
 };
 use dc_world::{FieldValue, Key, World};
@@ -143,6 +143,39 @@ pub fn world_fog(world: &World<'_>) -> (Option<Fog>, Option<Fog>) {
         make(enabled, real(&PROP_SKY_FOG_NEAR), real(&PROP_SKY_FOG_FAR)),
     )
 }
+
+/// The world's far plane from its world-settings object (the object of the world-settings role; a world without one:
+/// the first object that carries the far-plane property): `Some` only for a finite value above 50, which is when the
+/// 2009 client applies the server's far-plane variable to its `far_z` console value; otherwise the camera keeps its
+/// own far plane ([`crate::DEFAULT_FAR_Z`]). The camera clamps the value to [3, 500000] ([`crate::Camera::far`]).
+// SPEC: CAPTURE_rust3_RUSTSTACK_VALIDATION.md §3.3 (the far-plane variable = the world-settings property; client
+// reader cshell+0x1a6900 via cshell+0x1a6840, applied only when > 50); RENDER_2009.md §4.1 (far_z default 12000,
+// clamp engine+0xfb8c0)
+// DC-DEFAULT: CLI-1851 (proposed) the client takes it from the world file, like the fog (REN-22): the same value the
+// DeCombat server sends as a world-settings variable (DSV-47)
+pub fn world_far_z(world: &World<'_>) -> Option<f32> {
+    let has_far = |o: &&dc_world::Object<'_>| o.props.iter().any(|p| named(p.name, &PROP_FAR_Z));
+    let o = world
+        .objects
+        .iter()
+        .filter(has_far)
+        .find(|o| o.role == Some(dc_world::ObjectRole::WorldSettings))
+        .or_else(|| world.objects.iter().find(has_far))?;
+    let v = o
+        .props
+        .iter()
+        .find(|p| named(p.name, &PROP_FAR_Z))
+        .and_then(|p| match p.value {
+            FieldValue::Real(v) => Some(v),
+            FieldValue::Int(v) | FieldValue::Bits(v) => Some(v as f32),
+            _ => None,
+        })?;
+    (v.is_finite() && v > WORLD_FAR_Z_MIN).then_some(v)
+}
+
+/// The far-plane variable is applied only above this value.
+// SPEC: CAPTURE_rust3_RUSTSTACK_VALIDATION.md §3.3 (cshell+0x1a6840: applied only when > 50)
+pub const WORLD_FAR_Z_MIN: f32 = 50.0;
 
 #[cfg(test)]
 mod tests {

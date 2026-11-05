@@ -28,6 +28,7 @@ pub mod bombrun;
 pub mod capdecode;
 pub mod clock;
 pub mod control;
+pub mod doors;
 pub mod evade;
 pub mod flagrun;
 // DC-DEFAULT: BOT-75 (proposed) Spy Hunt: the nearest intel case, then the uplink

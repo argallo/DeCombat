@@ -207,13 +207,42 @@ pub fn repair_defaults(st: &Core, account: u32) -> db::DbResult<()> {
             .filter(|&s| s != SLOT_BACKPACK || st.rules.default_repair_backpack)
         {
             let s = slot as usize;
-            if owner[s].is_none() && it.slot < 0 {
+            // DC-DEFAULT: LG-403 (proposed, USER DECISION 2026-11-04) an empty weapon slot takes its default weapon
+            // from a backpack slot too, not only from storage
+            let in_pack = in_backpack_slot(it) && owner[it.slot as usize] == Some(it.uid);
+            if owner[s].is_none() && (it.slot < 0 || in_pack) {
+                if in_pack {
+                    owner[it.slot as usize] = None;
+                }
                 db::set_slot(&st.db, it.uid, slot)?;
                 owner[s] = Some(it.uid);
             }
         }
     }
     Ok(())
+}
+
+/// LG-403: a default weapon (kinds 1..4) sitting in a backpack weapon slot 10..13.
+fn in_backpack_slot(it: &Item) -> bool {
+    is_default_weapon(it) && crate::loadout::BACKPACK_SLOTS.contains(&it.slot)
+}
+
+/// A default weapon item: default kind 1 primary .. 4 throwable (its own slot is kind - 1).
+pub fn is_default_weapon(it: &Item) -> bool {
+    (1..=4).contains(&it.default_type)
+}
+
+/// LG-403: the slot item `uid` sits in as this session's entry shows it ([`visible_items`]); None when it is not shown.
+pub fn seen_slot(st: &Core, account: u32, uid: i64) -> db::DbResult<Option<i64>> {
+    Ok(visible_items(st, account, db::items(&st.db, account)?)
+        .into_iter()
+        .find(|i| i.uid == uid)
+        .map(|i| i.slot))
+}
+
+/// LG-403: the own weapon slot of a default weapon (kind - 1).
+pub fn default_weapon_slot(it: &Item) -> Option<i64> {
+    is_default_weapon(it).then(|| it.default_type - 1)
 }
 
 /// Removes expired items (local FILETIME end <= now) of one account or of everyone, repairs the defaults and,
@@ -299,11 +328,17 @@ pub fn visible_items(st: &Core, account: u32, items: Vec<Item>) -> Vec<Item> {
         .partition(|i| dc_bute::modpatch::is_pack_item(i.item_no));
     out.retain(|i| !pack.iter().any(|p| p.uid == i.parent_uid));
     for p in pack.iter().filter(|p| p.slot >= 0) {
-        if let Some(d) = out
-            .iter_mut()
-            .find(|i| i.slot < 0 && default_slot(i.default_type) == Some(p.slot))
-        {
-            d.slot = p.slot;
+        // DC-DEFAULT: LG-403 (proposed, USER DECISION 2026-11-04) the default of the slot comes from storage, else
+        // (a default weapon) from a backpack slot, which then shows empty: the primary is never empty in the view
+        let from_storage = out
+            .iter()
+            .position(|i| i.slot < 0 && default_slot(i.default_type) == Some(p.slot));
+        let from_pack = || {
+            out.iter()
+                .position(|i| in_backpack_slot(i) && default_slot(i.default_type) == Some(p.slot))
+        };
+        if let Some(k) = from_storage.or_else(from_pack) {
+            out[k].slot = p.slot;
         }
     }
     out

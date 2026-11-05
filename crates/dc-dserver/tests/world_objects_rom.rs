@@ -412,6 +412,51 @@ fn rom_search_and_destroy_gms_rows_name_the_bomb_item() {
     assert_eq!(found, 2);
 }
 
+/// MAP-114 with the user's ROM: the ground flag the tables find is the model a ROM world's capture flag names.
+#[test]
+fn rom_the_ground_flag_is_the_model_of_a_rom_worlds_flag() {
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let vfs = dc_rez::RezVfs::new(&rom);
+    let looks = dc_dserver::rom_tables::FlagLooks::from_vfs(&vfs).expect("attachment table");
+    let ground = looks.ground.expect("the ground flag model");
+    let w = dc_dserver::world::load_from_rom(
+        &rom,
+        "SnowValley.dat",
+        dc_dserver::world::NameForm::Listed,
+        None,
+    )
+    .expect("world");
+    assert!(!w.flags.is_empty());
+    for f in &w.flags {
+        assert!(f.model.as_deref().unwrap().eq_ignore_ascii_case(&ground));
+    }
+}
+
+/// MAP-113 with the user's ROM: a community map has no GMS row of its own, and the mode's first row names the same bomb
+/// item as every ROM Search and Destroy world.
+#[test]
+fn rom_a_community_map_takes_the_modes_bomb_item() {
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let vfs = dc_rez::RezVfs::new(&rom);
+    let gr = dc_bute::GameRoomData::from_vfs(&vfs).expect("room table");
+    let key = gr
+        .modes(false)
+        .iter()
+        .find(|m| m.get("GameType").map(|v| v.trim()) == Some("2"))
+        .and_then(|m| m.get("Key").cloned())
+        .expect("a class-2 row");
+    let t = dc_dserver::rom_tables::WeaponTable::from_vfs(&vfs).expect("weapons");
+    assert!(dc_dserver::coop_rom::find_gms(&vfs, &key, "@mod:x/assets/maps/x.dat").is_none());
+    let doc = dc_dserver::coop_rom::first_mode_gms(&vfs, &key).expect("the mode's first GMS");
+    let item = dc_dserver::game::bomb::bomb_item_of(&doc, &t).expect("bomb item row");
+    let rom_doc =
+        dc_dserver::coop_rom::find_gms(&vfs, &key, r"Worlds\SnowValley.dat").expect("GMS");
+    assert_eq!(
+        Some(item),
+        dc_dserver::game::bomb::bomb_item_of(&rom_doc, &t)
+    );
+}
+
 /// DSV-241: a Search and Destroy room spawns every team on its own S&D spawn set (the points whose mode filter is the
 /// pinned S&D set), never on the TDM or CTF points of the same team spread over the map.
 #[test]

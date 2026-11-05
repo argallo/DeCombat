@@ -4,7 +4,7 @@
 //! object here is synthetic and carries our own names only.
 
 use dc_render::{
-    global_light, model_visibility, static_light, world_fog, world_lights, LightShape,
+    global_light, model_visibility, static_light, world_far_z, world_fog, world_lights, LightShape,
     ModelVisibility, RenderVertex, SceneMesh, SceneOptions, TextureTraits,
 };
 use dc_world::synth::{
@@ -95,6 +95,26 @@ fn mesh_of(data: &[u8]) -> SceneMesh {
         mode: 0,
         hi: false,
     })
+}
+
+#[test]
+fn dc_world_settings_yields_the_far_plane_above_fifty() {
+    let settings = |far: f32| {
+        world_with(vec![SynthObject::dc(
+            "dc.world_settings",
+            "settings",
+            [0.0; 3],
+            [0.0; 3],
+            &[("far_z", SynthValue::Real(far))],
+        )])
+    };
+    let far = |data: Vec<u8>| world_far_z(&World::parse(&data).unwrap());
+    assert_eq!(far(settings(30000.0)), Some(30000.0));
+    // the 2009 client applies the variable only above 50: the camera keeps its own far plane
+    assert_eq!(far(settings(50.0)), None);
+    assert_eq!(far(settings(f32::NAN)), None);
+    // no world settings: none
+    assert_eq!(far(world_with(vec![])), None);
 }
 
 #[test]

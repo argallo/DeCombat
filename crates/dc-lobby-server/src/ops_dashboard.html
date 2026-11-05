@@ -793,7 +793,7 @@ VIEWS.bots = async () => {
   return [off, $("section", {}, $("h2", {}, "Bot groups"), facts, box), form.el].filter(Boolean);
 };
 // ---- the Updates tab: deploys from the dashboard (deploy.rs, tools/vps/deploy_from_git.sh, LG-392..LG-394)
-let updWatching = false, updTimer = null;
+let updWatching = false, updTimer = null, updAsk = null; // updAsk: {from: the `checked` time when "Check now" was pressed, until}
 const PHASE = { queued: "Waiting to start", fetching: "Fetching master", building: "Building", packaging: "Packing",
   waiting: "Waiting for the matches to end", installing: "Installing and restarting the lobbies",
   publishing: "Offering the build to the game hosts", done: "Deployed", failed: "Failed" };
@@ -821,7 +821,10 @@ function deployStatus(u) {
 VIEWS.updates = async () => {
   const u = await get("/ops/updates");
   const a = u.available || {};
-  updWatching = !!(u.deploying || u.pending);
+  // "Check now": wait (page polls every 3 s) until available.json's `checked` moves, at most 90 s
+  if (updAsk && ((a.checked || 0) !== updAsk.from || Date.now() > updAsk.until)) updAsk = null;
+  const checking = !!(updAsk || u.fetching);
+  updWatching = !!(u.deploying || u.pending || checking);
   clearTimeout(updTimer);
   if (updWatching) updTimer = setTimeout(() => { if ((location.hash.slice(1) || "live").startsWith("updates")) render(true); }, 3000);
   const offered = u.host_build;
@@ -871,8 +874,17 @@ VIEWS.updates = async () => {
   const head = a.running_found === false ? `The running build ${a.running || "?"} is not on ${a.branch || "master"}; its latest commits:`
     : news.length ? `${plural(a.new_count ?? news.length, "commit")} on ${a.branch || "master"} since the running build (${checked}).`
     : `The VPS runs the latest commit of ${a.branch || "master"} (${checked}).`;
+  const checkErr = $("span", { class: "err", role: "alert" });
+  const checkBtn = $("button", { type: "button", class: "plain", style: "margin:0;padding:4px 11px;font-size:13px", ...(checking || busy ? { disabled: "" } : {}), on: async () => {
+    checkBtn.disabled = true; checkErr.textContent = "";
+    try {
+      await post("/ops/updates/fetch", {});
+      updAsk = { from: a.checked || 0, until: Date.now() + 90000 };
+      render();
+    } catch (e) { checkErr.textContent = e.message; checkBtn.disabled = false; }
+  } }, checking ? "Checking..." : "Check now");
   const commits = $("section", {}, $("h2", {}, "New on master"),
-    $("p", { class: a.ok === false ? "err" : "facts" }, a.ok === false ? `${a.error} The list is from the last good check.` : head),
+    $("p", { class: a.ok === false ? "err" : "facts" }, a.ok === false ? `${a.error} The list is from the last good check.` : head, " ", checkBtn, " ", checkErr),
     $("div", { class: "sheet" }, form,
       $("table", {}, $("thead", {}, $("tr", {}, ["Commit", "Subject", "Date", ""].map(h => $("th", {}, h)))),
         $("tbody", {}, news.length ? news.map(c => $("tr", {}, row(c).map((x, i) => $("td", { class: i === 1 ? "wrap" : "" }, x && x.wrap ? x.wrap : x))))

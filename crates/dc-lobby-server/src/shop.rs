@@ -662,7 +662,9 @@ fn on_buy(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     // DC-DEFAULT: LG-302 (proposed) a purchase below the cell's rank requirement is refused (reason 0x60), except a
     // prepaid credit purchase that goes to the inbox (it waits there until the rank, 0x1824) and an extension of an
     // owned instance; the 2009 client's own gates are the credit form (cshell+0x1da4a0) and the locked cell
+    // DC-DEFAULT: LG-401 (proposed) a GM account's purchases skip the rank requirement
     if ch.exp < unlock_exp(cat, &prod)
+        && !crate::gm::is_gm(st, account)
         && !(credit && req.option != 0 && st.rules.shop.credit_to_inbox)
         && !extends_owned(st, account, &items, &req)?
     {

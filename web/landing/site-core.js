@@ -26,6 +26,20 @@ export function validDiscord(value) {
     ? url
     : null;
 }
+// Accept only canonical YouTube video URLs; never embed arbitrary config URLs.
+export function youtubeVideoId(value) {
+  const safe = safeHttps(value);
+  if (!safe) return null;
+  const u = new URL(safe);
+  let id = null;
+  if (u.hostname === "youtu.be") id = u.pathname.slice(1);
+  if (
+    ["youtube.com", "www.youtube.com"].includes(u.hostname) &&
+    u.pathname === "/watch"
+  )
+    id = u.searchParams.get("v");
+  return /^[A-Za-z0-9_-]{11}$/.test(id || "") ? id : null;
+}
 export function badgeFor(mod, known) {
   const info = known.find(
     (k) =>

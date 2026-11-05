@@ -132,6 +132,9 @@ pub struct WindowOptions {
     /// Which graphics backends the window may use (`--adapter`): `Backends` restricts the instance, `Auto` and
     /// `Fallback` keep the default set (the surface adapter request falls back to the software adapter itself).
     pub adapter: AdapterChoice,
+    /// CLI-1852: `adapter` is only the first attempt (the saved Renderer choice): when no adapter of those backends
+    /// can present to the window, the default backends are tried. `--adapter` leaves it false (exclusive).
+    pub adapter_first: bool,
     /// The in-match HUD (Tab holds the scoreboard).
     pub hud: crate::hud::HudChoice,
     /// Draw the debug text panel.
@@ -1001,13 +1004,8 @@ pub fn open_host(el: &ActiveEventLoop, opts: &WindowOptions) -> Result<WindowHos
     if wants_mac_fullscreen(look, opts) && !mac_simple_fullscreen(&window, true) {
         println!("dc-client: macOS simple fullscreen refused (the window is on no screen?)");
     }
-    let mut desc = wgpu::InstanceDescriptor::default();
-    if let AdapterChoice::Backends(b) = opts.adapter {
-        desc.backends = b;
-    }
-    let instance = wgpu::Instance::new(&desc);
-    let surface = instance.create_surface(window.clone()).map_err(gpu_err)?;
-    let ctx = GpuContext::for_surface(instance, &surface)?;
+    let (surface, ctx) =
+        open_gpu(opts.adapter, opts.adapter_first, &window).map_err(ClientError::Gpu)?;
     // CLI-1840: the adapter a diagnostic report names
     crate::diag::note_gpu(&ctx.info);
     // fix-hang: a driver-side device loss unwinds out of wgpu instead of deadlocking the frame (CLI-460)
@@ -1046,8 +1044,8 @@ pub fn open_host(el: &ActiveEventLoop, opts: &WindowOptions) -> Result<WindowHos
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode,
-        // iPadOS: two drawables in flight (one held the present to every other 120 Hz blank, CLI-1604)
-        desired_maximum_frame_latency: if cfg!(target_os = "ios") { 2 } else { 1 },
+        // iPadOS / DX12: two frames in flight (dc_render::frame_latency_for, dx12-perf), else one
+        desired_maximum_frame_latency: dc_render::frame_latency_for(ctx.info.backend),
         alpha_mode: caps
             .alpha_modes
             .first()
@@ -1249,6 +1247,8 @@ struct App {
     recapture: bool,
     /// When the cursor grab is asserted again while captured (CLI-1721).
     grab_keep: crate::grabkeep::GrabKeeper,
+    /// CLI-1848: frames drawn by the loop when the window system stops delivering redraw events.
+    redraw_keep: crate::redrawkeep::RedrawKeeper,
     /// Close the window one second after the server ended the session (the menu's game runs).
     close_on_over: bool,
     /// A sound director handed in by the caller (the menu's, with its music): used instead of opening one, and
@@ -1303,12 +1303,66 @@ fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
 }
 
 /// Milliseconds since `t0` (the grab keeper's clock).
+/// The match surface at the window's client `size`, configured again; the depth buffer, the multisampled targets
+/// and the HUD follow a changed size. `false` for a zero size (minimised): nothing changes.
+fn fit_surface(l: &mut Live, size: PhysicalSize<u32>) -> bool {
+    if size.width == 0 || size.height == 0 {
+        return false;
+    }
+    let changed = (size.width, size.height) != (l.config.width, l.config.height);
+    l.config.width = size.width;
+    l.config.height = size.height;
+    l.surface.configure(&l.ctx.device, &l.config);
+    if changed {
+        l.depth = depth_view(&l.ctx.device, size.width, size.height);
+        // CLI-1593: the frame makes the multisampled targets again at the new size
+        l.msaa = None;
+        if let Some(h) = l.hud.as_mut() {
+            h.hud.set_size(size.width, size.height);
+        }
+    }
+    true
+}
+
+/// Whether `window` can show a frame: not minimised and with a non-zero client area (CLI-1848).
+// PUBLIC: winit 0.30 docs (Window::is_minimized, Window::inner_size)
+pub(crate) fn window_visible(window: &Window) -> bool {
+    let s = window.inner_size();
+    s.width > 0 && s.height > 0 && window.is_minimized() != Some(true)
+}
+
 fn ms_since(t0: Instant) -> u64 {
     t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn gpu_err<E: std::fmt::Display>(e: E) -> ClientError {
-    ClientError::Gpu(e.to_string())
+/// A surface of `window` and a device on an adapter that presents to it. `Backends` restricts the instance to those
+/// backends; with `first` (CLI-1852, the saved Renderer choice) a failure there tries the default backends next,
+/// so the chosen backend is the first attempt rather than the only one.
+fn open_gpu(
+    choice: AdapterChoice,
+    first: bool,
+    window: &Arc<Window>,
+) -> Result<(wgpu::Surface<'static>, GpuContext), String> {
+    let attempt = |choice: AdapterChoice| -> Result<(wgpu::Surface<'static>, GpuContext), String> {
+        let mut desc = wgpu::InstanceDescriptor::default();
+        if let AdapterChoice::Backends(b) = choice {
+            desc.backends = b;
+        }
+        let instance = wgpu::Instance::new(&desc);
+        let surface = instance
+            .create_surface(window.clone())
+            .map_err(|e| e.to_string())?;
+        let ctx = GpuContext::for_surface(instance, &surface).map_err(|e| e.to_string())?;
+        Ok((surface, ctx))
+    };
+    match attempt(choice) {
+        Err(e) if first && matches!(choice, AdapterChoice::Backends(_)) => {
+            println!("dc-client window: the chosen renderer has no adapter ({e}); trying the default backends");
+            attempt(AdapterChoice::Auto)
+                .map_err(|e2| format!("{e}; then the default backends: {e2}"))
+        }
+        r => r,
+    }
 }
 
 impl App {
@@ -1459,6 +1513,7 @@ impl App {
     // DC-DEFAULT: CLI-460, see crate::gpulost
     fn on_gpu_reset(&mut self, el: &ActiveEventLoop) {
         crate::gpulost::left_match();
+        crate::prewarm::load_begins();
         self.recovering = None;
         self.release("gpu device lost");
         if let Some(mut live) = self.live.take() {
@@ -1744,6 +1799,7 @@ impl App {
                 crate::watchdog::phase(crate::watchdog::Phase::Play);
                 el.set_control_flow(ControlFlow::Poll);
                 if let Some(l) = &self.live {
+                    self.redraw_keep.arm(ms_since(l.started));
                     l.window.request_redraw();
                 }
             }
@@ -1775,6 +1831,7 @@ impl App {
     fn reload_renderer(&mut self, settings: RenderSettings) -> Result<(), String> {
         let live = self.live.as_mut().ok_or("no match window")?;
         let t0 = Instant::now();
+        crate::prewarm::load_begins();
         let format = live.config.format;
         let renderer = WorldRenderer::new(&live.ctx, format, settings);
         let fresh = self
@@ -1793,6 +1850,14 @@ impl App {
         if let Some(m) = live.models.as_mut() {
             m.gpu_reset();
         }
+        // gpu-prewarm: the new renderer's on-demand pipelines before the next frame
+        crate::prewarm::match_gpu(
+            &live.ctx,
+            &live.renderer,
+            live.models.as_ref(),
+            &mut live.fx,
+            live.fx_format,
+        );
         println!(
             "dc-client: renderer rebuilt for anti-aliasing {}x in {} ms",
             live.renderer.msaa(),
@@ -1859,18 +1924,10 @@ impl App {
     fn rebuild_gpu(&mut self) -> Result<(), String> {
         let live = self.live.as_mut().ok_or("no match window")?;
         let t0 = Instant::now();
-        let mut desc = wgpu::InstanceDescriptor::default();
-        if let AdapterChoice::Backends(b) = self.opts.adapter {
-            desc.backends = b;
-        }
-        let instance = wgpu::Instance::new(&desc);
-        let surface = instance
-            .create_surface(live.window.clone())
-            .map_err(|e| e.to_string())?;
+        crate::prewarm::load_begins();
+        let (surface, ctx) = open_gpu(self.opts.adapter, self.opts.adapter_first, &live.window)?;
         // the new device is never dropped either (a queue of a lost device panics in its drop)
-        let ctx = std::mem::ManuallyDrop::new(
-            GpuContext::for_surface(instance, &surface).map_err(|e| e.to_string())?,
-        );
+        let ctx = std::mem::ManuallyDrop::new(ctx);
         crate::gpulost::watch_keep_lost(&ctx.device);
         crate::diag::note_gpu(&ctx.info);
         let t_device = t0.elapsed().as_millis();
@@ -1925,6 +1982,8 @@ impl App {
             &mut live.ctx,
             std::mem::ManuallyDrop::into_inner(ctx),
         ));
+        // gpu-lost-menu: what the menu made on the old device (its painter) is made again when the window goes back
+        crate::gpulost::device_replaced();
         retire(std::mem::replace(&mut live.depth, depth));
         retire(live.msaa.take());
         live.msaa_want = crate::settings::antialias().max(1);
@@ -1939,6 +1998,14 @@ impl App {
         live.fx.gpu_reset();
         live.fx.set_msaa(live.renderer.msaa());
         live.fx_format = format;
+        // gpu-prewarm: the new device's on-demand pipelines before the first frame on it
+        crate::prewarm::match_gpu(
+            &live.ctx,
+            &live.renderer,
+            live.models.as_ref(),
+            &mut live.fx,
+            format,
+        );
         live.config = config;
         live.hud_force = true;
         if let Some(h) = live.hud.as_mut() {
@@ -1979,6 +2046,60 @@ impl App {
         }
     }
 
+    /// One frame: for a delivered redraw event (`from_loop` false) or drawn by the loop when the events stopped
+    /// (CLI-1848); the next redraw is asked for either way.
+    fn frame_turn(&mut self, el: &ActiveEventLoop, from_loop: bool) {
+        if self.recovering.is_some() {
+            // nothing is drawn while the device is rebuilt (about_to_wait runs the attempts)
+            return;
+        }
+        // CLI-890: presentation cap in a match
+        self.pacer.wait(crate::pacer::match_cap());
+        let drawn = crate::gpulost::guard(|| self.redraw());
+        // a loss met on a loader thread marks it without unwinding the frame
+        if drawn.is_err() || crate::gpulost::is_lost() {
+            self.on_gpu_lost(el);
+            return;
+        }
+        if let Some(l) = &self.live {
+            let now = ms_since(l.started);
+            if from_loop {
+                self.redraw_keep.on_loop_frame(now);
+            } else if let Some(n) = self.redraw_keep.on_redraw_event(now) {
+                println!("{}", crate::redrawkeep::note_line("dc-client", n));
+            }
+        }
+        if self.deadline_passed() {
+            self.close(el, "deadline");
+        } else if let Some(l) = &self.live {
+            l.window.request_redraw();
+        }
+    }
+
+    /// CLI-1848: the loop draws the frame itself when no redraw event came for a while and the window is visible
+    /// (no window query while the events come).
+    fn keep_frames(&mut self, el: &ActiveEventLoop) {
+        // the iPad's driver raises every frame from its tick (CLI-1604)
+        if IOS || self.closing || self.recovering.is_some() {
+            return;
+        }
+        let Some(l) = self.live.as_ref() else {
+            return;
+        };
+        let now = ms_since(l.started);
+        if !self.redraw_keep.due(now) {
+            return;
+        }
+        let visible = window_visible(&l.window);
+        let (wake, note) = self.redraw_keep.poll(now, visible);
+        if let Some(n) = note {
+            println!("{}", crate::redrawkeep::note_line("dc-client", n));
+        }
+        if wake == crate::redrawkeep::Wake::Draw {
+            self.frame_turn(el, true);
+        }
+    }
+
     fn toggle_look(&mut self) {
         let Some(plan) = self
             .live
@@ -1998,6 +2119,7 @@ impl App {
     }
 
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Live, ClientError> {
+        crate::prewarm::load_begins();
         // perf-g1: the profiler's load phase starts before the device exists (pipelines, world, tables)
         let mut prof_rec = crate::prof::on().then(crate::prof::Recorder::new);
         if let Some(p) = prof_rec.as_mut() {
@@ -2161,6 +2283,10 @@ impl App {
         );
         self.report.adapter = ctx.describe();
         self.report.present_mode = format!("{present_mode:?}");
+        // gpu-prewarm: every on-demand pipeline of the match on this (the frame) thread before the first frame
+        let mut fx = crate::fx::FxStage::open(self.source.rom().as_deref());
+        fx.set_msaa(renderer.msaa());
+        crate::prewarm::match_gpu(&ctx, &renderer, models.as_ref(), &mut fx, format);
         if let Some(p) = prof_rec.as_mut() {
             p.adapter = format!("{} {present_mode:?}", ctx.describe());
             p.load_end(Some(&ctx.device));
@@ -2211,7 +2337,7 @@ impl App {
             board_held: false,
             boxes,
             models,
-            fx: crate::fx::FxStage::open(self.source.rom().as_deref()),
+            fx,
             fx_format: format,
             font,
             view: ViewAngles {
@@ -2293,6 +2419,11 @@ impl App {
         let Some(live) = self.live.as_mut() else {
             return;
         };
+        // CLI-1848: shown / focused again or a stalled redraw chain: the surface again at the window's real size
+        if self.redraw_keep.take_reconfigure() {
+            let size = live.window.inner_size();
+            fit_surface(live, size);
+        }
         use crate::prof::Stage as PS;
         crate::watchdog::frame();
         crate::watchdog::phase(crate::watchdog::Phase::Play);
@@ -2576,8 +2707,11 @@ impl App {
         }
         live.laps.lap(PS::Sound);
         let (w, h) = (live.config.width, live.config.height);
-        let mut camera =
-            crate::camshot::view_settings(self.opts.view, shot_fov).camera(eye, &cam_view, w, h);
+        let mut camera = crate::camshot::view_settings(
+            self.opts.view.with_world_far(live.world.far_z),
+            shot_fov,
+        )
+        .camera(eye, &cam_view, w, h);
         if own_view && shot_fov.is_none() {
             crate::camfx::roll_camera(&mut camera, kick.camera.roll);
             // the scope's field of view (cshell+0x1f9100)
@@ -2744,8 +2878,19 @@ impl App {
             "frame: acquire the surface texture",
             live.surface.get_current_texture()
         ) {
-            Ok(f) => f,
-            Err(_) => {
+            Ok(f) => {
+                self.redraw_keep.on_acquire(true);
+                f
+            }
+            // CLI-1848: Timeout / Outdated / Lost / OutOfMemory / Other: the surface is configured again and the
+            // frame skipped (the next one acquires from the new swapchain)
+            // PUBLIC: wgpu 25 docs (SurfaceError)
+            Err(e) => {
+                if self.redraw_keep.on_acquire(false) {
+                    println!(
+                        "dc-client: surface texture not acquired ({e:?}): surface configured again"
+                    );
+                }
                 live.surface.configure(&live.ctx.device, &live.config);
                 live.laps.lap(PS::Acquire);
                 return;
@@ -3069,6 +3214,7 @@ impl ApplicationHandler for App {
         );
         match self.start(el) {
             Ok(l) => {
+                self.redraw_keep.arm(ms_since(l.started));
                 self.live = Some(l);
                 // CLI-1288: the menu's window comes back on screen on macOS (hidden by the menu turn's exit)
                 if !self.created_window {
@@ -3138,6 +3284,11 @@ impl ApplicationHandler for App {
                 // CLI-1721: a window shown again takes its grab again soon
                 if let Some(l) = self.live.as_ref() {
                     self.grab_keep.on_change(ms_since(l.started));
+                    // CLI-1848: shown again: the surface again and a frame asked for
+                    if !hidden {
+                        self.redraw_keep.on_shown();
+                        l.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::Moved(_) => {
@@ -3148,6 +3299,11 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(f) => {
                 if let Some(l) = self.live.as_mut() {
                     l.focused = f;
+                    // CLI-1848: focused again (alt-tab back): the surface again and a frame asked for
+                    if f {
+                        self.redraw_keep.on_shown();
+                        l.window.request_redraw();
+                    }
                 }
                 if !f {
                     self.alt_held = false;
@@ -3294,16 +3450,9 @@ impl ApplicationHandler for App {
                 }
                 let resized = crate::gpulost::guard(|| {
                     if let Some(l) = self.live.as_mut() {
-                        if size.width > 0 && size.height > 0 {
-                            l.config.width = size.width;
-                            l.config.height = size.height;
-                            l.surface.configure(&l.ctx.device, &l.config);
-                            l.depth = depth_view(&l.ctx.device, size.width, size.height);
-                            // CLI-1593: the frame makes the multisampled targets again at the new size
-                            l.msaa = None;
-                            if let Some(h) = l.hud.as_mut() {
-                                h.hud.set_size(size.width, size.height);
-                            }
+                        if fit_surface(l, size) {
+                            // CLI-1848: a restored window asks for its frame (the redraw chain may have ended)
+                            l.window.request_redraw();
                         }
                     }
                 });
@@ -3320,25 +3469,7 @@ impl ApplicationHandler for App {
                     self.grab_keep.on_change(ms_since(l.started));
                 }
             }
-            WindowEvent::RedrawRequested => {
-                if self.recovering.is_some() {
-                    // nothing is drawn while the device is rebuilt (about_to_wait runs the attempts)
-                    return;
-                }
-                // CLI-890: presentation cap in a match
-                self.pacer.wait(crate::pacer::match_cap());
-                let drawn = crate::gpulost::guard(|| self.redraw());
-                // a loss met on a loader thread marks it without unwinding the frame
-                if drawn.is_err() || crate::gpulost::is_lost() {
-                    self.on_gpu_lost(el);
-                    return;
-                }
-                if self.deadline_passed() {
-                    self.close(el, "deadline");
-                } else if let Some(l) = &self.live {
-                    l.window.request_redraw();
-                }
-            }
+            WindowEvent::RedrawRequested => self.frame_turn(el, false),
             _ => {}
         }
     }
@@ -3369,6 +3500,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         crate::watchdog::pump();
         self.keep_grab();
+        self.keep_frames(el);
         if let Some(at) = self.recovering.as_ref().map(|r| r.next_at) {
             if Instant::now() >= at {
                 self.try_recover(el);
@@ -3398,6 +3530,7 @@ impl ApplicationHandler for App {
         // gate T1: the teardown is watched with its own budget (the menu or the end of main takes over)
         crate::watchdog::phase(crate::watchdog::Phase::Teardown);
         self.release("exit");
+        crate::prewarm::load_begins();
         crate::events::screen("match_end");
         if let Some(mut live) = self.live.take() {
             let r = &mut self.report;
@@ -3479,6 +3612,7 @@ pub fn run_window(
         pacer: Default::default(),
         recapture: false,
         grab_keep: crate::grabkeep::GrabKeeper::default(),
+        redraw_keep: crate::redrawkeep::RedrawKeeper::default(),
         close_on_over: false,
         carried_sound: None,
         carries_sound: false,
@@ -3596,7 +3730,8 @@ impl App {
             super_held: false,
             pacer: Default::default(),
             recapture: false,
-        grab_keep: crate::grabkeep::GrabKeeper::default(),
+            grab_keep: crate::grabkeep::GrabKeeper::default(),
+            redraw_keep: crate::redrawkeep::RedrawKeeper::default(),
             carries_sound: sound.is_some(),
             carried_sound: sound,
             watch: crate::events::GameWatch::default(),

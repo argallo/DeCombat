@@ -138,6 +138,8 @@ fn client_takes_damage_dies_respawns_and_leaves_the_result_screen() {
     o.log = Some(log.clone());
     o.capture = Some(dir.join("client_capture.jsonl"));
     o.result_hold = Duration::from_millis(1500);
+    // the HUD checks below run without the Reality jar and arcs (always on in play since CLI-1847)
+    o.reality = false;
     let mut net = NetWorld::start(o);
     let handle = net.handle();
     let rom = dc_rom::resolve_rom().ok();
@@ -202,6 +204,13 @@ fn client_takes_damage_dies_respawns_and_leaves_the_result_screen() {
 
     assert!(st.fatal.is_empty(), "{:?}", st.fatal);
     assert_eq!(st.bad_check, 0);
+    // DSV-568 / CLI-1855: the spawn and the respawn both hold up the slot-0 weapon 3 of `-loadout 3,4`
+    let held: Vec<Option<u16>> = r.view_weapon_marks.iter().map(|m| m.2).collect();
+    let drawn: Vec<u16> = held.iter().flatten().copied().collect();
+    assert!(
+        drawn.len() >= 2 && drawn.iter().all(|w| *w == 3),
+        "first-person weapons at the spawn and the respawn: {held:?}"
+    );
     let me = st.client_id.expect("own client id") as u8;
     let killer = bot
         .obs

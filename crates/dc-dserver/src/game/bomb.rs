@@ -205,6 +205,77 @@ impl SndState {
     }
 }
 
+/// A community map's site marker stands this far above the floor under the site's centre.
+// OBSERVED: ROM world site indicators stand 9 to 16 units above the floor
+// DC-DEFAULT: MAP-113 (proposed)
+pub const SITE_MARKER_LIFT: f32 = 16.0;
+/// The rotation that lays a site marker flat on the floor.
+// OBSERVED: ROM world site indicators
+pub const SITE_MARKER_ROT: [f32; 3] = [
+    -std::f32::consts::FRAC_PI_2,
+    -std::f32::consts::PI,
+    std::f32::consts::PI,
+];
+/// How far below a site's box the floor under it is looked for.
+// DC-DEFAULT: MAP-113 (proposed)
+const SITE_FLOOR_REACH: f32 = 64.0;
+
+/// A community map's bomb sites get the markers a ROM world places by hand, and the planted commands that switch them:
+/// one live marker per site, on from the start, and one planted marker, off until the plant. A plant turns every live
+/// marker off and its own site's planted marker on, as in a ROM world. Returns the plant effects of each site; a ROM
+/// world is left alone.
+// OBSERVED: the ROM worlds' site indicators and planted commands (see `Game::switch_plant_fx`)
+// DC-DEFAULT: MAP-113 (proposed; USER REPORT 2026-11-04 "There's no bombsites on either shipping container or freight
+// hall"): the vocabulary has no trigger objects, so the server makes what a ROM world's author placed
+pub fn add_site_markers(world: &mut WorldInfo, live: &[u8], planted: &[u8]) -> Vec<PlantFx> {
+    if !world.spawn_dc.iter().any(|d| *d) {
+        return Vec::new();
+    }
+    let sites: Vec<(i32, [f32; 3], f32)> = world
+        .zones
+        .iter()
+        .filter(|z| z.kind == ZoneKind::BombSite)
+        .map(|z| (z.number, z.pos, z.pos[1] - z.dims[1].abs()))
+        .collect();
+    let live_name = |n: i32| format!("dc_site_live_{n}").into_bytes();
+    let planted_name = |n: i32| format!("dc_site_planted_{n}").into_bytes();
+    let mut markers = Vec::new();
+    for &(number, pos, bottom) in &sites {
+        let from = [pos[0], pos[1] + 1.0, pos[2]];
+        let to = [pos[0], bottom - SITE_FLOOR_REACH, pos[2]];
+        let floor = world
+            .trace
+            .as_ref()
+            .and_then(|t| t.ray(dc_sim::V3::from_array(from), dc_sim::V3::from_array(to)))
+            .map_or(bottom, |h| {
+                from[1] + (to[1] - from[1]) * h.t.clamp(0.0, 1.0)
+            });
+        let at = [pos[0], floor + SITE_MARKER_LIFT, pos[2]];
+        let marker = |name: Vec<u8>, fx: &[u8], start_on: bool| crate::world::EffectInfo {
+            name,
+            pos: at,
+            rot: SITE_MARKER_ROT,
+            fx: fx.to_vec(),
+            looped: true,
+            start_on,
+        };
+        markers.push(marker(live_name(number), live, true));
+        markers.push(marker(planted_name(number), planted, false));
+    }
+    world.effects.extend(markers);
+    sites
+        .iter()
+        .map(|&(number, _, _)| {
+            let mut fx: Vec<(Vec<u8>, bool)> = sites
+                .iter()
+                .map(|&(n, _, _)| (live_name(n), false))
+                .collect();
+            fx.push((planted_name(number), true));
+            (number, fx)
+        })
+        .collect()
+}
+
 /// The bomb item of a GMS row: the weapon row named by `[Object0] <OffenceTeam>Weapon`.
 // DC-DEFAULT: DSV-240 (proposed)
 pub fn bomb_item_of(
@@ -327,6 +398,11 @@ impl Game {
             .collect()
     }
 
+    /// The plant effects of the sites whose markers the server made (MAP-113).
+    pub(crate) fn set_bomb_plant_fx(&mut self, fx: Vec<PlantFx>) {
+        self.bomb.plant_fx = fx;
+    }
+
     pub fn bomb(&self) -> &SndState {
         &self.bomb
     }
@@ -440,15 +516,22 @@ impl Game {
     }
 
     /// The bomb item of the room (once): the GMS row of the room's mode and world names the offence team and that
-    /// team's weapon; the weapon row of that name is the item. Without a GMS or a row of that name there is no item
-    /// (the plant still works with the use key alone).
-    // DC-DEFAULT: DSV-240 (proposed) the attackers' GMS weapon is the carried bomb
+    /// team's weapon; the weapon row of that name is the item. A community map has no row of its own and takes the
+    /// mode's first one. Without a GMS or a row of that name there is no item (the plant still works with the use key
+    /// alone).
+    // DC-DEFAULT: DSV-240 (proposed) the attackers' GMS weapon is the carried bomb; MAP-113 (proposed) on a community
+    // map too
     fn bomb_item_setup(&mut self) {
         self.bomb.item_setup = true;
-        let doc = self
-            .vfs
-            .as_ref()
-            .and_then(|v| crate::coop_rom::find_gms(v, self.room.mode_key(), &self.world_announce));
+        let community = self.spawn_dc.iter().any(|d| *d);
+        let doc = self.vfs.as_ref().and_then(|v| {
+            let key = self.room.mode_key();
+            if community {
+                crate::coop_rom::first_mode_gms(v, key)
+            } else {
+                crate::coop_rom::find_gms(v, key, &self.world_announce)
+            }
+        });
         self.bomb.item = doc
             .as_ref()
             .and_then(|d| bomb_item_of(d, &self.tables.weapons));
@@ -842,5 +925,97 @@ impl Game {
         if matches!(self.phase, RoundPhase::Running { .. }) {
             self.end_round(now, ATTACKERS);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::{synthetic_dc_world_bytes, synthetic_world_bytes, world_from_bytes};
+
+    /// MAP-113: every site of a community map gets a live marker that is on and a planted one that is off, flat on the
+    /// floor, and a plant switches every live one off and only its own planted one on.
+    #[test]
+    fn a_community_sites_markers_stand_on_the_floor_and_a_plant_switches_them() {
+        let d = synthetic_dc_world_bytes();
+        let mut w = world_from_bytes(&d, "@mod:test/assets/maps/synth.dat", "dc map").unwrap();
+        let before = w.effects.len();
+        let fx = add_site_markers(&mut w, b"LIVE", b"PLANTED");
+        let made = &w.effects[before..];
+        assert_eq!(made.len(), 4, "{made:?}");
+        for m in made {
+            assert!(m.looped, "{m:?}");
+            assert_eq!(m.rot, SITE_MARKER_ROT);
+            let above = m.pos[1] - SITE_MARKER_LIFT;
+            assert!(
+                above.abs() < 0.5,
+                "the floor of the synthetic world is y 0: {m:?}"
+            );
+            assert_eq!(m.start_on, m.fx == b"LIVE", "{m:?}");
+        }
+        assert_eq!(made[0].pos[0], -500.0);
+        assert_eq!(made[2].pos[0], 500.0);
+        let of = |n: i32| &fx.iter().find(|(s, _)| *s == n).unwrap().1;
+        let on: Vec<&[u8]> = of(1)
+            .iter()
+            .filter(|f| f.1)
+            .map(|f| f.0.as_slice())
+            .collect();
+        assert_eq!(on, vec![&b"dc_site_planted_1"[..]]);
+        let off: Vec<&[u8]> = of(1)
+            .iter()
+            .filter(|f| !f.1)
+            .map(|f| f.0.as_slice())
+            .collect();
+        assert_eq!(off, vec![&b"dc_site_live_0"[..], &b"dc_site_live_1"[..]]);
+        // the session switches an effect by name: each name the plant uses is one of the world's effects
+        for (name, _) in of(0).iter().chain(of(1)) {
+            assert!(w.effects.iter().any(|e| e.name == *name), "{name:?}");
+        }
+    }
+
+    /// MAP-115: each flag of a community map gets its team's ring on the floor under it, always on.
+    #[test]
+    fn a_community_flag_gets_its_teams_ring_on_the_floor() {
+        use crate::game::ctf::{add_flag_rings, FLAG_RING_LIFT};
+        let d = synthetic_dc_world_bytes();
+        let mut w = world_from_bytes(&d, "@mod:test/assets/maps/synth.dat", "dc map").unwrap();
+        let before = w.effects.len();
+        let team = |t: Option<&[u8]>| t.and_then(|t| std::str::from_utf8(t).ok()?.parse().ok());
+        assert_eq!(add_flag_rings(&mut w, team, b"ONE", b"TWO"), w.flags.len());
+        let flags = w.flags.clone();
+        let made = &w.effects[before..];
+        assert_eq!(made.len(), flags.len());
+        for (m, f) in made.iter().zip(&flags) {
+            assert!(m.looped && m.start_on, "{m:?}");
+            assert_eq!((m.pos[0], m.pos[2]), (f.pos[0], f.pos[2]));
+            assert!((m.pos[1] - FLAG_RING_LIFT).abs() < 0.5, "{m:?}");
+            let want: &[u8] = if f.team_text.as_deref() == Some(b"1") {
+                b"ONE"
+            } else {
+                b"TWO"
+            };
+            assert_eq!(m.fx, want);
+        }
+    }
+
+    /// MAP-115: a ROM world's flags keep what its author placed.
+    #[test]
+    fn a_rom_flag_gets_no_ring() {
+        let d = synthetic_world_bytes();
+        let mut w = world_from_bytes(&d, "w.dat", "w").unwrap();
+        let before = w.effects.clone();
+        crate::game::ctf::add_flag_rings(&mut w, |_| Some(1), b"ONE", b"TWO");
+        assert_eq!(w.effects, before);
+    }
+
+    /// MAP-113: a ROM world keeps what its author placed.
+    #[test]
+    fn a_rom_world_gets_no_site_markers() {
+        let d = synthetic_world_bytes();
+        let mut w = world_from_bytes(&d, "w.dat", "w").unwrap();
+        let before = w.effects.clone();
+        assert!(add_site_markers(&mut w, b"LIVE", b"PLANTED").is_empty());
+        assert_eq!(w.effects, before);
     }
 }

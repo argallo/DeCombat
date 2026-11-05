@@ -554,8 +554,9 @@ impl<A: Ord + Clone + Display> Server<A> {
             return;
         }
         let room_class = self.game.rules().mode_class;
-        // DC-DEFAULT: DSV-220 (proposed) a bomb room finds the bomb's model and effect names once, with its world
-        if matches!(room_class, 2 | 3) && self.bomb_look.is_none() {
+        // DC-DEFAULT: DSV-220 (proposed) a bomb room finds the bomb's model and effect names once, with its world;
+        // MAP-115 (proposed) a flag room finds its flag rings the same way
+        if matches!(room_class, 2 | 3 | 7 | 8) && self.bomb_look.is_none() {
             let look = self
                 .game
                 .tables()
@@ -570,6 +571,34 @@ impl<A: Ord + Clone + Display> Server<A> {
                 look.light_fx.is_some(),
                 look.blast_fx.is_some()
             ));
+            // DC-DEFAULT: MAP-113 (proposed) a community map's bomb sites get their markers before the plan is made
+            if let (true, Some(live), Some(planted)) = (
+                matches!(room_class, 2 | 3),
+                &look.site_live_fx,
+                &look.site_planted_fx,
+            ) {
+                let fx = crate::game::bomb::add_site_markers(&mut self.world, live, planted);
+                if !fx.is_empty() {
+                    self.log(format!("bomb: markers on {} community site(s)", fx.len()));
+                    self.game.set_bomb_plant_fx(fx);
+                }
+            }
+            if let (true, Some(one), Some(two)) = (
+                matches!(room_class, 7 | 8),
+                &look.flag_ring_team1_fx,
+                &look.flag_ring_team2_fx,
+            ) {
+                let teams = self.game.tables().teams.clone();
+                let n = crate::game::ctf::add_flag_rings(
+                    &mut self.world,
+                    |t| teams.team_of(t),
+                    one,
+                    two,
+                );
+                if n > 0 {
+                    self.log(format!("ctf: rings under {n} community flag(s)"));
+                }
+            }
             self.bomb_look = Some(look);
         }
         let used = &mut self.objects_used;

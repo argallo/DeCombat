@@ -274,6 +274,10 @@ pub struct ViewRequest {
     pub view_model: Option<ViewModelRequest>,
     /// Player-view camera settings.
     pub player_view: PlayerViewSettings,
+    /// Take the far plane from the world's settings ([`crate::world_far_z`]) when it has one, as the game does;
+    /// `false` keeps `scene.settings.far_z` (worldview `--far`).
+    // DC-DEFAULT: CLI-1851 (proposed)
+    pub world_far: bool,
 }
 
 impl ViewRequest {
@@ -292,6 +296,7 @@ impl ViewRequest {
             model: None,
             view_model: None,
             player_view: PlayerViewSettings::default(),
+            world_far: true,
         }
     }
 }
@@ -513,6 +518,12 @@ impl RomViewer {
         let t = Instant::now();
         let world = World::parse(&data).map_err(|e| ViewError::World(e.to_string()))?;
         let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
+        // DC-DEFAULT: CLI-1851 (proposed) the world's far plane, else the settings' one
+        let far_z = req
+            .world_far
+            .then(|| crate::fog::world_far_z(&world))
+            .flatten()
+            .unwrap_or(req.scene.settings.far_z);
 
         let fov_x = req.fov_x_deg.clamp(1.0, 170.0).to_radians();
         let fov_y = fov_y_for(fov_x, req.width, req.height);
@@ -553,7 +564,7 @@ impl RomViewer {
             );
         }
         camera.pos.y += req.eye_lift;
-        camera.far_z = req.scene.settings.far_z;
+        camera.far_z = far_z;
 
         let mut rom_tex = RomTextures::new(&self.textures);
         let t = Instant::now();
@@ -644,7 +655,7 @@ impl RomViewer {
                 let yaw = d.x.atan2(d.z);
                 let pitch = (-d.y).atan2((d.x * d.x + d.z * d.z).sqrt());
                 camera = Camera::looking(eye, yaw, pitch, fov_x, fov_y);
-                camera.far_z = req.scene.settings.far_z;
+                camera.far_z = far_z;
             }
             // the held weapon: at the body socket, posed with its main tracker at clip 0, time 0
             // SPEC: UDP_SESSION_2009_B.md §3.5.1 (weapon child: one tracker anim 0, time 0; attached at socket 2,

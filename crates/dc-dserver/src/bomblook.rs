@@ -29,6 +29,17 @@ pub const BOMB_LIGHT_FX: NameKey = ([0x75, 0x3d, 0xa7, 0x9d, 0xeb, 0xa9, 0xc5, 0
 // OBSERVED: ROM effect group (14 keys, length 3000 ms, one sound key)
 // DC-DEFAULT: DSV-221 (proposed)
 pub const BOMB_BLAST_FX: NameKey = ([0x4f, 0x4c, 0x96, 0x78, 0x4b, 0x11, 0xfa, 0x89], 9);
+/// The site indicator groups a community map's bomb sites use (MAP-113): the flat floor marker of a live site and of
+/// the planted one, the groups the ROM worlds' site indicators name.
+// OBSERVED: ROM world placed effects named by the bomb-site planted commands (all 6 S&D worlds, looped)
+// DC-DEFAULT: MAP-113 (proposed)
+pub const SITE_LIVE_FX: NameKey = ([190, 238, 163, 116, 71, 38, 83, 36], 11);
+pub const SITE_PLANTED_FX: NameKey = ([43, 231, 45, 197, 238, 34, 156, 232], 11);
+/// The ground rings of a capture flag (MAP-115): the groups the ROM worlds place under their flags, one per team.
+// OBSERVED: ROM world placed effects at each capture flag (looped; team 1's and team 2's)
+// DC-DEFAULT: MAP-115 (proposed)
+pub const FLAG_RING_TEAM1_FX: NameKey = ([182, 102, 207, 252, 65, 200, 118, 29], 11);
+pub const FLAG_RING_TEAM2_FX: NameKey = ([190, 147, 68, 253, 226, 239, 216, 127], 11);
 /// The top folder of the effect files (the client's effect directory, FMT_SPR_LTC_FX.md §5.1).
 // SPEC: FMT_SPR_LTC_FX.md §5.1 (the directory named by the 8-byte literal, upper-cased)
 pub const EFFECT_DIR: NameKey = ([0xae, 0xfd, 0x38, 0xaa, 0xe9, 0x40, 0xb6, 0x3b], 8);
@@ -42,6 +53,10 @@ pub struct BombLook {
     /// Effect group names.
     pub light_fx: Option<Vec<u8>>,
     pub blast_fx: Option<Vec<u8>>,
+    pub site_live_fx: Option<Vec<u8>>,
+    pub site_planted_fx: Option<Vec<u8>>,
+    pub flag_ring_team1_fx: Option<Vec<u8>>,
+    pub flag_ring_team2_fx: Option<Vec<u8>>,
 }
 
 impl BombLook {
@@ -99,6 +114,14 @@ impl BombLook {
                 self.light_fx = Some(n.clone());
             } else if k == BOMB_BLAST_FX && self.blast_fx.is_none() {
                 self.blast_fx = Some(n.clone());
+            } else if k == SITE_LIVE_FX && self.site_live_fx.is_none() {
+                self.site_live_fx = Some(n.clone());
+            } else if k == SITE_PLANTED_FX && self.site_planted_fx.is_none() {
+                self.site_planted_fx = Some(n.clone());
+            } else if k == FLAG_RING_TEAM1_FX && self.flag_ring_team1_fx.is_none() {
+                self.flag_ring_team1_fx = Some(n.clone());
+            } else if k == FLAG_RING_TEAM2_FX && self.flag_ring_team2_fx.is_none() {
+                self.flag_ring_team2_fx = Some(n.clone());
             }
         }
     }
@@ -138,6 +161,14 @@ mod tests {
         let l = BombLook::from_rom(std::path::Path::new(&rom));
         assert!(l.model.is_some() && l.skin.is_some(), "{l:?}");
         assert!(l.light_fx.is_some() && l.blast_fx.is_some(), "{l:?}");
+        assert!(
+            l.site_live_fx.is_some() && l.site_planted_fx.is_some(),
+            "{l:?}"
+        );
+        assert!(
+            l.flag_ring_team1_fx.is_some() && l.flag_ring_team2_fx.is_some(),
+            "{l:?}"
+        );
         assert_eq!(name_key(l.model.as_deref().unwrap().as_bytes()), BOMB_MODEL);
     }
 }

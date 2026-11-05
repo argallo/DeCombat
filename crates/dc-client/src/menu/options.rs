@@ -26,7 +26,8 @@ use super::{build_sheet, Ctx, Go, MenuData, MenuKey, Screen};
 use crate::hud::compose::part_of;
 use crate::hud::items::DrawItem;
 use crate::settings::{
-    scan_name, Settings, WinStyle, ANTIALIAS_CHOICES, BGM_CHOICES, BGM_CLASSIC, FPS_CAP_CHOICES,
+    scan_name, Renderer, Settings, WinStyle, ANTIALIAS_CHOICES, BGM_CHOICES, BGM_CLASSIC, FPS_CAP_CHOICES,
+    RENDERER_CHOICES,
     GAMMA_MAX, SENSITIVITY_MAX,
 };
 use dc_ui_data::pages::Widget;
@@ -176,6 +177,8 @@ pub const ROW_BGM: i32 = 102;
 const KEY_ROW_GAP: i32 = 8;
 /// CLI-1845: our weapon inspect key on the Control tab.
 pub const ROW_INSPECT: i32 = 103;
+/// CLI-1852: our "Renderer" row of the Graphic tab (Windows only), after "Show FPS".
+pub const ROW_RENDERER: i32 = 104;
 pub const OWN_LABEL_X: i32 = 24;
 pub const OWN_WORD_DX: i32 = STEP_SIZE[0] + 8;
 pub const OWN_ROW_BLANK: i32 = 13;
@@ -184,6 +187,7 @@ pub const LIST_RESOLUTION: &str = "opt_resolution";
 pub const LIST_ANTIALIAS: &str = "opt_antialias";
 pub const LIST_FRAME_RATE: &str = "opt_frame_rate";
 pub const LIST_BGM: &str = "opt_bgm";
+pub const LIST_RENDERER: &str = "opt_renderer";
 
 /// The anti-aliasing row's word for a sample count (CLI-1594: the 2009 list named the device's multisample types).
 pub fn antialias_text(samples: u32) -> String {
@@ -201,6 +205,23 @@ pub fn bgm_text(style: u32) -> String {
     } else {
         "2009".into()
     }
+}
+
+/// CLI-1852: the Renderer row's word for a choice.
+pub fn renderer_text(r: Renderer) -> &'static str {
+    r.label()
+}
+
+/// CLI-1852: our rows appended to the Graphic tab, in order; the Renderer row only where `choosable` (Windows).
+fn graphic_own_rows(choosable: bool) -> Vec<(i32, i32, i32, Knob)> {
+    let mut rows = vec![
+        (ROW_FRAME_RATE, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::FrameRate),
+        (ROW_SHOW_FPS, 2, STEP_SIZE[1] + 1, Knob::ShowFps),
+    ];
+    if choosable {
+        rows.push((ROW_RENDERER, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::Renderer));
+    }
+    rows
 }
 
 pub fn frame_rate_text(cap: u32) -> String {
@@ -239,6 +260,9 @@ pub enum Knob {
     FrameRate,
     /// CLI-1596: our "Show FPS" row (appended to the Graphic tab): an on / off pair.
     ShowFps,
+    /// CLI-1852: our "Renderer" row (appended to the Graphic tab, Windows only): Vulkan / DirectX 12, a real list;
+    /// the choice applies at the next start of the client.
+    Renderer,
     /// CLI-1599: our "BGM Music" row (after the Sound tab's music switch): Classic / 2009, a real list.
     Bgm,
     /// Key boxes: the bindable command table rows of the boxes.
@@ -607,10 +631,7 @@ impl Options {
         // DC-DEFAULT: CLI-1599 (proposed, user request 2026-10-31 "a setting under BGM being on or off to be BGM
         // music with a drop down for Classic or 2009") our BGM row right after the Sound tab's music switch
         let own: Vec<(i32, i32, i32, Knob)> = match self.tab {
-            0 => vec![
-                (ROW_FRAME_RATE, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::FrameRate),
-                (ROW_SHOW_FPS, 2, STEP_SIZE[1] + 1, Knob::ShowFps),
-            ],
+            0 => graphic_own_rows(crate::settings::renderer_choosable()),
             1 => vec![(ROW_BGM, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::Bgm)],
             // DC-DEFAULT: CLI-1845 our key row after the last key row of the Control tab
             2 => vec![(
@@ -691,6 +712,7 @@ impl Options {
         match knob {
             Knob::FrameRate => Some(("Frame Rate", &[])),
             Knob::ShowFps => Some(("Show FPS", &["On", "Off"])),
+            Knob::Renderer => Some(("Renderer", &[])),
             Knob::Bgm => Some(("BGM Music", &[])),
             Knob::OwnKey(_) => Some(("Inspect Weapon", &[])),
             _ => None,
@@ -1054,6 +1076,13 @@ impl Options {
                     .map(|&n| (frame_rate_text(n), n as i32))
                     .collect(),
             ),
+            Some(Knob::Renderer) => (
+                LIST_RENDERER,
+                RENDERER_CHOICES
+                    .iter()
+                    .map(|&r| (renderer_text(r).to_string(), r as i32))
+                    .collect(),
+            ),
             Some(Knob::Bgm) => (
                 LIST_BGM,
                 BGM_CHOICES
@@ -1107,6 +1136,7 @@ impl Options {
                 self.edit.antialias = d.antialias;
                 self.edit.fps_cap = d.fps_cap;
                 self.edit.show_fps = d.show_fps;
+                self.edit.renderer = d.renderer;
             }
             1 => {
                 self.edit.effects_volume = d.effects_volume;
@@ -1204,6 +1234,7 @@ impl Options {
                     Some(Knob::Resolution) => Options::resolution_text(cat, &self.edit),
                     Some(Knob::Antialias) => antialias_text(self.edit.antialias),
                     Some(Knob::FrameRate) => frame_rate_text(self.edit.fps_cap),
+                    Some(Knob::Renderer) => renderer_text(self.edit.renderer).to_string(),
                     Some(Knob::Bgm) => bgm_text(self.edit.bgm),
                     _ => self
                         .edit
@@ -1421,7 +1452,11 @@ impl Screen for Options {
                 } else if row.kind == TYPE_DROPDOWN {
                     match row.knob {
                         Some(
-                            Knob::Resolution | Knob::Antialias | Knob::FrameRate | Knob::Bgm,
+                            Knob::Resolution
+                            | Knob::Antialias
+                            | Knob::FrameRate
+                            | Knob::Renderer
+                            | Knob::Bgm,
                         ) => {
                             self.open_list(ctx.cat, r);
                             return;
@@ -1511,6 +1546,12 @@ impl Screen for Options {
                     self.edit.fps_cap = *n;
                 }
             }
+            // CLI-1852: saved with OK, applied at the next start (the device is made once per run)
+            LIST_RENDERER => {
+                if let Some(r) = RENDERER_CHOICES.iter().find(|&&r| r as i32 == value) {
+                    self.edit.renderer = *r;
+                }
+            }
             // CLI-1599: a sound row: heard at once like the switches (CLI-1030); Cancel restores the style
             LIST_BGM => {
                 if let Some(n) = BGM_CHOICES.iter().find(|&&n| n as i32 == value) {
@@ -1567,5 +1608,31 @@ mod tests {
             Some(("BGM Music", 0))
         );
         assert_eq!(knob_of(1, 2, 1, -1), Some(Knob::MusicOn), "the row our BGM row follows");
+    }
+
+    /// CLI-1852: the Renderer row (Vulkan / DirectX 12 list, label "Renderer") is on the Graphic tab after "Show
+    /// FPS" where the build offers the choice, and absent otherwise.
+    #[test]
+    fn the_renderer_row_is_listed_only_where_the_choice_exists() {
+        assert_eq!(renderer_text(Renderer::Vulkan), "Vulkan");
+        assert_eq!(renderer_text(Renderer::Dx12), "DirectX 12");
+        assert_eq!(RENDERER_CHOICES[0], Renderer::Vulkan, "Vulkan first (the default)");
+        assert_eq!(
+            Options::own_row_label(&Knob::Renderer).map(|(l, w)| (l, w.len())),
+            Some(("Renderer", 0))
+        );
+        let knobs = |on: bool| -> Vec<Knob> {
+            graphic_own_rows(on).into_iter().map(|r| r.3).collect()
+        };
+        assert_eq!(knobs(false), vec![Knob::FrameRate, Knob::ShowFps], "hidden off Windows");
+        assert_eq!(knobs(true), vec![Knob::FrameRate, Knob::ShowFps, Knob::Renderer]);
+        let rows = graphic_own_rows(true);
+        let last = rows.last().unwrap();
+        assert_eq!((last.0, last.1), (ROW_RENDERER, TYPE_DROPDOWN));
+        // the build's own list follows the platform flag
+        assert_eq!(
+            graphic_own_rows(crate::settings::renderer_choosable()).len(),
+            if cfg!(windows) { 3 } else { 2 }
+        );
     }
 }

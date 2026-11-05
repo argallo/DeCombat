@@ -1,8 +1,10 @@
 //! Model loads away from the frame thread: a small pool of loader threads reads a model file
 //! and its child models from the user's ROM, decodes its textures, reads its render styles and uploads the result
-//! (mesh, every LOD, textures, pipelines) through a [`ModelUploader`]; the frame thread only sends requests, takes
+//! (mesh, every LOD, textures) through a [`ModelUploader`]; the frame thread only sends requests, takes
 //! finished models and makes per-object instances of them ([`dc_render::ModelPipelines::instantiate`], a few
-//! small uniform buffers).
+//! small uniform buffers). gpu-prewarm: a loader thread makes no pipeline or shader module
+//! ([`dc_render::warm::forbid_on_this_thread`]); the frame thread makes them at match load
+//! ([`Shared::rom_styles`]) or when it requests a model with a style not seen yet.
 //!
 //! Our own engineering (no 2009 behaviour is involved: the 2009 engine's own resource threading is not modelled).
 //! The rules are DC-DEFAULT CLI-260 .. CLI-262 (see the staged DC_DEFAULTS rows): a model is requested once per
@@ -14,7 +16,7 @@
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -179,6 +181,33 @@ impl Shared {
         .clone()
     }
 
+    /// The render styles of a style-name list, read once per name (as [`Shared::build`] reads them).
+    pub fn style_list(&self, names: &[String]) -> Vec<Option<Arc<RenderStyle>>> {
+        dc_hangdump::crumb_wait!("loader: lock the render styles", self.styles.lock())
+            .unwrap_or_else(|e| e.into_inner())
+            .list(&self.vfs, names)
+    }
+
+    /// gpu-prewarm: every render style of the ROM's style archive (`RS.rez`), read into the shared library (so the
+    /// loads find them read). The styles a match can name are these (a mod's own style is read when it is named).
+    pub fn rom_styles(&self) -> Vec<Arc<RenderStyle>> {
+        let names = match self.vfs.list_entries("RS.rez") {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("dc-client: render styles not listed: {e}");
+                return Vec::new();
+            }
+        };
+        let mut lib =
+            dc_hangdump::crumb_wait!("loader: lock the render styles", self.styles.lock())
+                .unwrap_or_else(|e| e.into_inner());
+        names
+            .iter()
+            .filter(|(n, _, _)| n.to_ascii_uppercase().ends_with(".LTB"))
+            .filter_map(|(n, _, _)| lib.get(&self.vfs, n))
+            .collect()
+    }
+
     /// Reads, decodes and uploads one model with `upload` (a [`ModelUploader`] on a loader thread, the renderer on
     /// the frame thread): the files, the textures (an unresolved one: the key's fallback colour, else the checker),
     /// the render styles. `None` when the model file does not load.
@@ -228,13 +257,38 @@ pub enum Done {
     Files(String),
 }
 
-/// The loader threads of one device. Dropping it closes the job queue; the threads end after their current job.
+/// The loader threads of one device. Dropping it cancels the jobs still queued (gpu-lost-loader: a closed channel
+/// still hands out its buffered jobs, so without the flag the threads went on uploading onto the replaced device);
+/// the threads end after their current job.
 pub struct Loader {
     jobs: mpsc::Sender<Job>,
     done: mpsc::Receiver<Done>,
     /// Requests sent and not yet handed back.
     outstanding: usize,
     pub threads: usize,
+    /// gpu-lost-loader: set when the loader is dropped (the device it uploads onto was replaced or the scene ended).
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for Loader {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+/// gpu-lost-loader: jobs a loader thread did not run because its loader was dropped or the GPU device was lost.
+static SKIPPED: AtomicU64 = AtomicU64::new(0);
+/// gpu-lost-loader: loads that panicked on a loader thread (on a lost device: the upload's wgpu error).
+static PANICKED: AtomicU64 = AtomicU64::new(0);
+
+/// Jobs skipped so far (tests, logs): their loader was dropped or the device was lost.
+pub fn skipped_jobs() -> u64 {
+    SKIPPED.load(Ordering::Relaxed)
+}
+
+/// Loads that panicked on a loader thread so far (tests, logs).
+pub fn panicked_jobs() -> u64 {
+    PANICKED.load(Ordering::Relaxed)
 }
 
 /// How many loader threads: a quarter of the machine's hardware threads, 1 to 3 (a character is up to three model
@@ -260,43 +314,81 @@ impl Loader {
         let (jobs, rx) = mpsc::channel::<Job>();
         let (done_tx, done) = mpsc::channel::<Done>();
         let rx = Arc::new(Mutex::new(rx));
+        let cancel = Arc::new(AtomicBool::new(false));
         let mut started = 0;
         for i in 0..threads.max(1) {
-            let (rx, done_tx, shared, up) = (
+            let (rx, done_tx, shared, up, cancel) = (
                 rx.clone(),
                 done_tx.clone(),
                 shared.clone(),
                 uploader.clone(),
+                cancel.clone(),
             );
             let spawned = std::thread::Builder::new()
                 .name(format!("dc-model-loader-{i}"))
-                .spawn(move || loop {
-                    let job = match dc_hangdump::crumb_wait!(
-                        "loader: wait for a job",
-                        rx.lock().unwrap_or_else(|e| e.into_inner()).recv()
-                    ) {
-                        Ok(j) => j,
-                        Err(_) => return,
-                    };
-                    // a load that panics counts as a model that does not load, so the request is still handed back
-                    // (and `wait` cannot hang on it)
-                    let out = match job {
-                        Job::Upload(key) => {
-                            let r = catch_unwind(AssertUnwindSafe(|| {
-                                shared.build(&key, &|f, look| up.upload_look(f, look))
-                            }))
-                            .unwrap_or(None);
-                            Done::Upload(key, r)
+                .spawn(move || {
+                    // gpu-lost-loader: an upload that meets the lost device logs one line, not a panic message
+                    crate::gpulost::quiet_after_loss();
+                    // gpu-prewarm: no pipeline is made here (the frame thread makes the ones a load needs)
+                    dc_render::warm::forbid_on_this_thread();
+                    loop {
+                        let job = match dc_hangdump::crumb_wait!(
+                            "loader: wait for a job",
+                            rx.lock().unwrap_or_else(|e| e.into_inner()).recv()
+                        ) {
+                            Ok(j) => j,
+                            Err(_) => return,
+                        };
+                        // gpu-lost-loader: a dropped loader's queued jobs are not run (their device was replaced; the
+                        // scene asks the new loader again)
+                        if cancel.load(Ordering::SeqCst) {
+                            SKIPPED.fetch_add(1, Ordering::Relaxed);
+                            return;
                         }
-                        Job::Files(path) => {
-                            let _ = catch_unwind(AssertUnwindSafe(|| shared.files(&path)));
-                            Done::Files(path)
-                        }
-                    };
-                    if dc_hangdump::crumb_wait!("loader: hand the result back", done_tx.send(out))
+                        // a load that panics counts as a model that does not load, so the request is still handed back
+                        // (and `wait` cannot hang on it); while the device is lost nothing is uploaded onto it (the
+                        // recovery forgets the answers and asks again on the new device)
+                        let out = match job {
+                            Job::Upload(key) if crate::gpulost::is_lost() => {
+                                SKIPPED.fetch_add(1, Ordering::Relaxed);
+                                Done::Upload(key, None)
+                            }
+                            Job::Upload(key) => {
+                                let r = catch_unwind(AssertUnwindSafe(|| {
+                                    shared.build(&key, &|f, look| {
+                                        // the file read and decode before took a while: no upload onto a device
+                                        // lost (or replaced) meanwhile (a silent unwind, caught below)
+                                        if cancel.load(Ordering::SeqCst)
+                                            || crate::gpulost::is_lost()
+                                        {
+                                            std::panic::panic_any(crate::gpulost::DeviceLostUnwind);
+                                        }
+                                        up.upload_look(f, look)
+                                    })
+                                }))
+                                .unwrap_or_else(|p| {
+                                    if p.is::<crate::gpulost::DeviceLostUnwind>() {
+                                        SKIPPED.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        PANICKED.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    None
+                                });
+                                Done::Upload(key, r)
+                            }
+                            Job::Files(path) => {
+                                let _ = catch_unwind(AssertUnwindSafe(|| shared.files(&path)));
+                                Done::Files(path)
+                            }
+                        };
+                        if dc_hangdump::crumb_wait!(
+                            "loader: hand the result back",
+                            done_tx.send(out)
+                        )
                         .is_err()
-                    {
-                        return;
+                        {
+                            return;
+                        }
                     }
                 });
             if spawned.is_ok() {
@@ -308,6 +400,7 @@ impl Loader {
             done,
             outstanding: 0,
             threads: started,
+            cancel,
         })
     }
 

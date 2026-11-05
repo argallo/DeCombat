@@ -647,3 +647,141 @@ fn the_admin_port_deploys_only_with_its_token() {
     assert_eq!(st, 200, "{out}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A POST to `/ops/updates/fetch` from the loopback dashboard at unix time `now`.
+fn fetch_post(
+    sh: &Shared,
+    origin: &str,
+    csrf: Option<&str>,
+    ctype: &str,
+    now: i64,
+) -> (u16, Value) {
+    let tok = match csrf {
+        Some(t) => t.to_string(),
+        None => {
+            let mut g = sh.lock().unwrap();
+            let st = &mut *g;
+            st.beta.csrf(&mut st.keys)
+        }
+    };
+    let head = format!(
+        "POST /ops/updates/fetch HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nOrigin: {origin}\r\nContent-Type: {ctype}\r\nX-Admin-CSRF: {tok}\r\n\r\n"
+    );
+    let req = parse_request(&head).unwrap();
+    let (st, _, out) = serve_at(sh, &req, &head, b"{}", None, now);
+    (st, serde_json::from_str(&out).unwrap())
+}
+
+fn fetch_files(d: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(d.join("requests"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_check_now_request_needs_the_guard_is_rate_limited_and_is_not_a_deploy() {
+    // LG-402
+    let none = shared_with(None);
+    assert_eq!(
+        fetch_post(
+            &none,
+            "http://127.0.0.1:10090",
+            None,
+            "application/json",
+            NOW
+        )
+        .0,
+        503
+    );
+    let d = tmp("fetch");
+    root_files(&d); // checked = NOW - 60
+    let sh = shared_with(Some(&d));
+    let ok = "http://127.0.0.1:10090";
+    assert_eq!(fetch_post(&sh, ok, None, "text/plain", NOW).0, 415);
+    assert_eq!(
+        fetch_post(&sh, "http://evil.example", None, "application/json", NOW).0,
+        403
+    );
+    assert_eq!(
+        fetch_post(&sh, ok, Some("wrong"), "application/json", NOW).0,
+        403
+    );
+    assert!(
+        fetch_files(&d).is_empty(),
+        "nothing written for a refused guard"
+    );
+    let (st, out) = fetch_post(&sh, ok, None, "application/json", NOW);
+    assert_eq!(st, 200, "{out}");
+    assert_eq!(fetch_files(&d), vec![format!("fetch-{NOW}.json")]);
+    // not a deploy: the tab shows a check under way, no deploy waiting
+    let v = get(&sh);
+    assert_eq!(
+        (v["fetching"].clone(), v["pending"].clone()),
+        (json!(true), json!(false))
+    );
+    // a second press while one waits is the same request
+    let (st, _) = fetch_post(&sh, ok, None, "application/json", NOW + 1);
+    assert_eq!((st, fetch_files(&d).len()), (200, 1));
+    // a deploy is not held back by a waiting check
+    assert_eq!(ok_post(&sh, json!({"sha": &C[..8]})).0, 200);
+    assert_eq!(fetch_files(&d).len(), 2);
+    // while a deploy waits, no check (the deploy fetches itself)
+    std::fs::remove_file(d.join("requests").join(format!("fetch-{NOW}.json"))).unwrap();
+    assert_eq!(
+        fetch_post(&sh, ok, None, "application/json", NOW + 5).0,
+        409
+    );
+    let _ = std::fs::remove_dir_all(&d);
+
+    // the lobby's own rate limit: no check within 30 s of the last one
+    let d = tmp("fetch2");
+    root_files(&d);
+    let sh = shared_with(Some(&d));
+    let (st, out) = fetch_post(&sh, ok, None, "application/json", NOW - 40);
+    assert_eq!(st, 429, "{out}");
+    assert!(fetch_files(&d).is_empty());
+    assert_eq!(
+        fetch_post(&sh, ok, None, "application/json", NOW - 20).0,
+        200
+    );
+    // who asked is an ops event of kind deploy
+    let ev = deploy_events(&sh);
+    assert!(
+        ev.iter()
+            .any(|(p, t)| !p && t == "check for updates requested by the admin port"),
+        "{ev:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_check_now_request_on_the_admin_web_uses_the_session_guard() {
+    let d = tmp("fetchweb");
+    root_files(&d);
+    let sh = shared_with(Some(&d));
+    let w = crate::betaweb::WriteGuard {
+        origin: "https://admin.example.com".into(),
+        csrf: "session-token".into(),
+        by: "the admin web".into(),
+    };
+    let send = |origin: &str, tok: &str| {
+        let head = format!(
+            "POST /ops/updates/fetch HTTP/1.1\r\nHost: admin.example.com\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nX-Admin-CSRF: {tok}\r\n\r\n"
+        );
+        let req = parse_request(&head).unwrap();
+        serve_at(&sh, &req, &head, b"{}", Some(&w), NOW).0
+    };
+    assert_eq!(send("http://admin.example.com", "session-token"), 403);
+    assert_eq!(send("https://admin.example.com", "wrong"), 403);
+    assert!(fetch_files(&d).is_empty());
+    assert_eq!(send("https://admin.example.com", "session-token"), 200);
+    assert_eq!(fetch_files(&d).len(), 1);
+    assert!(deploy_events(&sh)
+        .iter()
+        .any(|(_, t)| t == "check for updates requested by the admin web"));
+    let _ = std::fs::remove_dir_all(&d);
+}

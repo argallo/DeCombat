@@ -1827,6 +1827,63 @@ fn a_two_pack_counts_down_one_per_throw_and_refuses_a_third() {
     );
 }
 
+/// The user's 2026-11-04 report: "sometimes grenades right after throwing instantly explode". A grenade held through a
+/// sprint is let go with no 0x4d for the whole sprint (CLI-573), so its release comes more than the 1000 ms hold window
+/// (DSV-29) after the last 0x4d. With the throwable's ammunition `Type` 2 (a thrown round, as the ROM grenade rows)
+/// the release is still the throw (DSV-29 amendment): a flight, the blast only at the fuse. A row without a `Type`
+/// keeps the window: the late release is a shot, whose effect record every client draws as the grenade's explosion
+/// at once (the bug the user saw).
+#[test]
+fn a_grenade_released_long_after_its_last_hold_still_flies() {
+    for kind in [Some(dc_dserver::rom_tables::AMMO_KIND_THROWN), None] {
+        let mut tables = throw_tables();
+        tables.weapons.ammo.get_mut(&41).unwrap().kind = kind;
+        let mut cfg = ServerTuning::default();
+        cfg.game.default_loadout = vec![40];
+        let mut net = Net::with(cfg, tables, "room key=TDM type=1 goal=20 ff=0");
+        assert!(net.server.handle_line(0, "user 9 5 10 0 0 Cid"));
+        net.add(1, "Dave", 0.0);
+        net.add(2, "Big Erin", 0.0);
+        net.add(3, "Cid", 0.0);
+        assert!(net.run_until(20_000, |n| (0..3).all(|i| n.c(i).life_state() == 1)));
+        net.run_for(500);
+        // the pin pulled, then a 1.5 s sprint without 0x4d, then the key goes up
+        net.cm(0).throw_hold();
+        net.run_for(1_500);
+        let before = net.c(1).seen.effects.len();
+        net.cm(0).throw_release((40, 41), [1.0, 0.0, 0.0]);
+        net.run_for(200);
+        let thrower = net.obj(0);
+        let records = |n: &Net, from: usize| -> Vec<u16> {
+            n.c(1).seen.effects[from..]
+                .iter()
+                .filter(|e| e.1 == 0x06)
+                .filter_map(|e| {
+                    let mut r = e.2.reader();
+                    let _first = r.read_u16();
+                    let shooter = r.read_u16();
+                    let weapon = r.read_u16();
+                    (shooter == thrower && weapon == 40).then_some(weapon)
+                })
+                .collect()
+        };
+        if kind.is_some() {
+            assert_eq!(net.server.game().flights_in_air(), 1, "a flight");
+            assert!(records(&net, before).is_empty(), "no record at the release");
+            net.run_for(2_400);
+            assert_eq!(net.server.game().flights_in_air(), 0, "blown at the fuse");
+            assert_eq!(records(&net, before).len(), 1, "one blast record");
+        } else {
+            assert_eq!(net.server.game().flights_in_air(), 0, "no flight");
+            assert_eq!(
+                records(&net, before).len(),
+                1,
+                "a shot record of the grenade at once"
+            );
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------------- co-op (class 5)
 
 const COOP_ROOM: &str = "room key=COOP type=5 goal=1 ff=0 time=0";

@@ -112,8 +112,8 @@ impl App {
             width: w,
             height: h,
             present_mode,
-            // iPadOS: two drawables in flight (one held the present to every other 120 Hz blank, CLI-1604)
-            desired_maximum_frame_latency: if cfg!(target_os = "ios") { 2 } else { 1 },
+            // iPadOS / DX12: two frames in flight (crate::frame_latency_for, dx12-perf), else one
+            desired_maximum_frame_latency: crate::frame_latency_for(ctx.info.backend),
             alpha_mode: caps
                 .alpha_modes
                 .first()

@@ -544,6 +544,208 @@ fn a_pack_item_is_hidden_and_falls_back_off_a_featured_entry_and_returns_on_it()
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// LG-403 fixture: [`featured`] with the test kit's weapons typed (101 primary, 102 secondary, 103 melee, 104
+/// throwable), pack gun 900 a primary, and the starter backpack 7001 holding two weapon slots.
+fn featured_with_backpack(dir: &Path, mods: Vec<dc_config::schema::ModRef>) -> Core {
+    let mut st = featured(dir, mods);
+    let rom = Arc::get_mut(&mut st.rom).unwrap();
+    rom.items = Some(dc_bute::ItemsTable::from_doc(dc_bute::ButeDoc::parse(
+        "[BackpackItem0]\nItemID=1\nMultyInvenSlot=2\n",
+    )));
+    for (no, kind) in [(101, 1), (102, 4), (103, 7), (104, 6), (900, 1)] {
+        rom.weapon_kinds.insert(no, kind);
+    }
+    st
+}
+
+/// The 0x323 view of a session: item number per equipment slot (-1 empty).
+fn seen_slots(st: &mut Core, l: &Client) -> Vec<i32> {
+    let got = l.send(st, EQUIPMENT, &[]);
+    let r = &got.iter().find(|(id, _)| *id == EQUIPMENT_REPLY).unwrap().1;
+    (0..15).map(|s| u32_at(r, 0x12 + 4 * s) as i32).collect()
+}
+
+/// 0x324 (equip) or 0x326 (unequip) as the client sends it: the reply's ok word.
+fn slot_request(st: &mut Core, l: &Client, id: u16, uid: i64, no: u32, slot: i32) -> bool {
+    let mut b = (uid as u32).to_le_bytes().to_vec();
+    b.extend(no.to_le_bytes());
+    b.extend(slot.to_le_bytes());
+    let reply = if id == crate::shopmsg::EQUIP {
+        crate::shopmsg::EQUIP_REPLY
+    } else {
+        crate::shopmsg::UNEQUIP_REPLY
+    };
+    let got = l.send(st, id, &b);
+    u32_at(&got.iter().find(|(i, _)| *i == reply).unwrap().1, 6) == 1
+}
+
+/// User report 2026-11-04: on Vanilla++ the default primary went into a backpack slot and a pack gun into the primary
+/// slot; on the vanilla entry the primary was empty and the default stuck in the backpack (Equip on it sends 0x326,
+/// refused for a default). LG-403: the default fills the primary there, and leaves the backpack in that view.
+#[test]
+fn a_default_primary_in_the_backpack_fills_the_primary_off_vanilla_plus_and_can_leave_the_backpack()
+{
+    let dir = temp("default_pack");
+    let pack_a = pack(&dir, "pack_a", "shared", &["content.weapons"], WEAPON_LUA);
+    let mut st = featured_with_backpack(&dir, vec![pack_a]);
+    let (l, account) = on_entry(&mut st, 1, "erin", 3);
+    let default = db::items(&st.db, account)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.slot == 0)
+        .unwrap();
+    assert_eq!((default.item_no, default.default_type), (101, 1));
+    // on Vanilla++: the default primary goes into backpack slot 10, then the pack gun into the primary slot
+    let gun = add(&st, account, 900, -1, 0);
+    assert!(
+        !slot_request(&mut st, &l, crate::shopmsg::EQUIP, default.uid, 101, 10),
+        "the default holding the primary slot alone does not go into the backpack"
+    );
+    assert!(slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::EQUIP,
+        gun,
+        900,
+        0
+    ));
+    assert_eq!(db::item(&st.db, default.uid).unwrap().unwrap().slot, -1);
+    assert!(slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::EQUIP,
+        default.uid,
+        101,
+        10
+    ));
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (900, 101), "Vanilla++ shows what is stored");
+    // the vanilla entry: the pack gun is hidden, the default fills the primary and the backpack slot is free
+    st.sessions.get_mut(&l.sid).unwrap().server = 1;
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (101, -1), "{s:?}");
+    let t = crate::game::loadout_tokens(&st, account, &st.character(account).unwrap());
+    assert!(t.contains("0:101") && !t.contains("10:"), "{t}");
+    // there it is the primary: Equip on it (0x326 from slot 0) is refused as for any default in its own slot
+    assert!(!slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::UNEQUIP,
+        default.uid,
+        101,
+        0
+    ));
+    assert!(
+        !slot_request(&mut st, &l, crate::shopmsg::EQUIP, default.uid, 101, 11),
+        "nor does it leave the primary it fills for the backpack"
+    );
+    // the stored loadout is untouched: Vanilla++ shows the pack gun and the default in the backpack again
+    st.sessions.get_mut(&l.sid).unwrap().server = 3;
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (900, 101));
+    // a default in a backpack slot can leave it (Equip on it, or the row's X, sends 0x326): to storage while the
+    // primary holds another gun, and from there it equips into the primary slot
+    assert!(slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::UNEQUIP,
+        default.uid,
+        101,
+        10
+    ));
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (900, -1));
+    assert!(slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::EQUIP,
+        default.uid,
+        101,
+        0
+    ));
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (101, -1));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// LG-403 the reverse way and the stored repair: a default moved into the backpack on the vanilla entry (pack gun hidden
+/// in the primary slot), and a primary slot stored empty beside a default in the backpack (a loadout made before the
+/// rule), which the next equipment read repairs on any entry.
+#[test]
+fn the_primary_is_never_empty_on_either_entry_and_an_old_empty_primary_is_repaired() {
+    let dir = temp("default_pack_back");
+    let pack_a = pack(&dir, "pack_a", "shared", &["content.weapons"], WEAPON_LUA);
+    let mut st = featured_with_backpack(&dir, vec![pack_a]);
+    let (l, account) = on_entry(&mut st, 1, "fern", 1);
+    let default = db::items(&st.db, account)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.slot == 0)
+        .unwrap();
+    // stored on Vanilla++ earlier: the pack gun is the primary, the default in storage
+    db::set_slot(&st.db, default.uid, -1).unwrap();
+    add(&st, account, 900, 0, 0);
+    // a stored loadout of the report: pack gun in the primary, default in backpack slot 10, seen from vanilla
+    db::set_slot(&st.db, default.uid, 10).unwrap();
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (101, -1), "{s:?}");
+    // vanilla: the default fills the primary; it cannot be moved into the backpack from there
+    db::set_slot(&st.db, default.uid, -1).unwrap();
+    assert_eq!(seen_slots(&mut st, &l)[0], 101);
+    assert!(!slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::EQUIP,
+        default.uid,
+        101,
+        10
+    ));
+    db::set_slot(&st.db, default.uid, 10).unwrap();
+    // and on Vanilla++ it is what is stored, with the default free to leave the backpack
+    st.sessions.get_mut(&l.sid).unwrap().server = 3;
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (900, 101));
+    // a primary slot stored empty with the default in the backpack (no pack gun at all): the read puts it back
+    st.db
+        .execute("DELETE FROM items WHERE item_no = 900", [])
+        .unwrap();
+    db::set_slot(&st.db, default.uid, 11).unwrap();
+    for entry in [3, 1] {
+        st.sessions.get_mut(&l.sid).unwrap().server = entry;
+        let s = seen_slots(&mut st, &l);
+        assert_eq!((s[0], s[10], s[11]), (101, -1, -1), "entry {entry}: {s:?}");
+        assert_eq!(db::item(&st.db, default.uid).unwrap().unwrap().slot, 0);
+        db::set_slot(&st.db, default.uid, 11).unwrap();
+    }
+    // another primary in the primary slot: the default may stay in the backpack, and leaves it to storage
+    let other = add(&st, account, 101, 0, 0);
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[11]), (101, 101));
+    assert_eq!(db::item(&st.db, other).unwrap().unwrap().slot, 0);
+    assert!(slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::UNEQUIP,
+        default.uid,
+        101,
+        11
+    ));
+    assert_eq!(db::item(&st.db, default.uid).unwrap().unwrap().slot, -1);
+    // with the primary emptied by moving that gun into the backpack, the default returns to the primary slot
+    assert!(slot_request(
+        &mut st,
+        &l,
+        crate::shopmsg::EQUIP,
+        other,
+        101,
+        10
+    ));
+    let s = seen_slots(&mut st, &l);
+    assert_eq!((s[0], s[10]), (101, 101));
+    assert_eq!(db::item(&st.db, default.uid).unwrap().unwrap().slot, 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_product_holding_a_pack_item_is_off_the_shop_and_off_a_plain_entrys_storage() {
     let mut st = state();

@@ -173,6 +173,35 @@ fn world_objects_of_a_community_map() {
         .record(&pbox, &|_| 7);
     assert_ne!(rec.as_bytes(), with_model.as_bytes());
     assert_eq!(NO_MODEL_FILE, 0xFFFF);
+    // MAP-114: with a ROM's ground flag the same flag takes that model and stands above the floor, as a ROM flag does
+    let mut rom_tables = tables.clone();
+    rom_tables.flag_looks.ground = Some("GROUND.LTB".into());
+    let mut next = 100u16;
+    let with_rom = worldobj::plan(
+        &w,
+        &rom_tables,
+        WorldObjects::World,
+        ZoneClass::Own,
+        7,
+        || {
+            next += 1;
+            next
+        },
+    );
+    let mut stood = 0;
+    for o in &with_rom {
+        if let WorldObject::Flag { flag, model, .. } = o {
+            if flag.model.is_none() {
+                assert_eq!(model, "GROUND.LTB");
+                assert!(
+                    (flag.pos[1] - dc_dserver::game::ctf::FLAG_LIFT).abs() < 0.5,
+                    "{flag:?}"
+                );
+                stood += 1;
+            }
+        }
+    }
+    assert!(stood > 0);
     // the sky table: slot 0 = the sky brush, the block from its position, dims and inner fraction
     let (block, ids) = worldobj::sky_table(&objs).expect("sky table");
     let sky_obj = objs

@@ -641,3 +641,46 @@ fn rebinding_fire_on_the_control_tab_moves_the_key_the_match_reads() {
     assert_eq!(back.binds.lookup(19), Some(Bound::Fire));
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
 }
+
+/// CLI-1852: the Graphic tab's Renderer row (Windows only) opens a Vulkan / DirectX 12 list; a pick is kept with OK
+/// in the profile's own section, and applies at the next start (nothing of the run changes).
+#[test]
+fn the_renderer_row_saves_the_pick_for_the_next_start() {
+    use dc_client::menu::options::LIST_RENDERER;
+    use dc_client::settings::{Renderer, OWN_RENDERER};
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
+    let (mut m, file) = menu();
+    press(&mut m, CMD_BAR_PREFS);
+    assert_eq!(m.screen_name(), "options");
+    let mut found = false;
+    for r in 0..16 {
+        let cmd = ROW_CMD_BASE + 16 * r;
+        m.input(MenuInput::Command(cmd));
+        let Some(d) = m.dropdown() else { continue };
+        if d.list != LIST_RENDERER {
+            m.input(MenuInput::Command(cmd)); // a second click closes the list
+            continue;
+        }
+        assert_eq!(d.items, vec!["Vulkan".to_string(), "DirectX 12".to_string()]);
+        let at = d.row_point(1).unwrap();
+        m.input(MenuInput::Move(at));
+        m.input(MenuInput::Press(at));
+        m.input(MenuInput::Release(at));
+        found = true;
+        break;
+    }
+    assert_eq!(found, cfg!(windows), "the row exists on Windows only");
+    if !found {
+        return;
+    }
+    assert_eq!(m.data.settings.renderer, Renderer::Vulkan, "not changed before OK");
+    press(&mut m, CMD_OK);
+    let after = m.take_settings_change().expect("OK reports a change");
+    assert_eq!(after.renderer, Renderer::Dx12);
+    let (doc, _) = m.data.profile_store.as_ref().unwrap().load().expect("readable");
+    assert_eq!(doc.own_get(OWN_RENDERER), Some("dx12"));
+    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+}

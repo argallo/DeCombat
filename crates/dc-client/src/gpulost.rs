@@ -40,11 +40,26 @@ static LOSSES: AtomicU64 = AtomicU64::new(0);
 static RECOVERIES: AtomicU64 = AtomicU64::new(0);
 static LEAVES: AtomicU64 = AtomicU64::new(0);
 static RETIRED: AtomicU64 = AtomicU64::new(0);
+/// gpu-lost-menu: how many times the match's recovery replaced the window's device ([`device_replaced`]).
+static DEVICE_GEN: AtomicU64 = AtomicU64::new(0);
 /// `DC_GPU_LOSS_TEST_AT=<seconds>`: the window provokes a real device loss once at that window time ([`provoke`]).
 static TEST_AT_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 /// `DC_FAULT=gpu_lost`: the window time (ms) of the simulated loss ([`simulate_loss`]).
 static FAULT_AT_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 static KNOBS: Once = Once::new();
+
+thread_local! {
+    /// gpu-lost-loader: this thread's panics after a device loss are its uploads meeting the lost device
+    /// ([`quiet_after_loss`]).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// gpu-lost-loader: marks the calling thread (a background GPU uploader whose panics are caught) so that a panic
+/// while the device is lost prints one line instead of wgpu's validation error. Other panics print as before.
+pub fn quiet_after_loss() {
+    install_hook();
+    QUIET.with(|q| q.set(true));
+}
 
 /// A device that does not come back within this long ends the recovery: the window leaves the match.
 // DC-DEFAULT: CLI-460 (amended by gpu-recover) 12 s, inside the watchdog's 15 s recovery budget
@@ -74,6 +89,15 @@ fn install_hook() {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             if info.payload().is::<DeviceLostUnwind>() {
+                return;
+            }
+            // gpu-lost-loader: a background upload that met the lost device: expected, caught by its thread, the
+            // load is asked again on the new device
+            if QUIET.with(|q| q.get()) && is_lost() {
+                let name = std::thread::current().name().unwrap_or("?").to_string();
+                eprintln!(
+                    "dc-client: {name}: a GPU upload met the lost device; dropped (loaded again after the recovery)"
+                );
                 return;
             }
             prev(info);
@@ -141,6 +165,18 @@ pub fn watch_keep_lost(device: &wgpu::Device) {
 pub fn recovered() {
     RECOVERIES.fetch_add(1, Ordering::Relaxed);
     LOST.store(false, Ordering::SeqCst);
+}
+
+/// gpu-lost-menu: the match's recovery adopted a new device for the window (`window::App::rebuild_gpu`). GPU objects
+/// made before (the menu's painter, lent to the match with the window) belong to the replaced device and must be
+/// made again before their next use: their ids do not exist in the new device's wgpu instance.
+pub fn device_replaced() {
+    DEVICE_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// The window device's generation: changes each time [`device_replaced`] runs. Read once per match return.
+pub fn device_generation() -> u64 {
+    DEVICE_GEN.load(Ordering::SeqCst)
 }
 
 /// Recoveries inside the match so far.

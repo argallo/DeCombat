@@ -1,7 +1,9 @@
 //! The warm-up of a Search and Destroy match (mode classes 2 / 3): the match opens with a timed warm-up while the
-//! players load and get into the world; it plays like a round (move, shoot, kill) but nothing counts: no bomb, no
+//! players load and get into the world; players move and shoot but nobody takes player damage (DSV-566: shots,
+//! melee, grenades and blasts are refused; falls and kill volumes still hurt) and nothing counts: no bomb, no
 //! round win, no team kills, no kills or deaths for the lobby, no case drop, no team-empty forfeit. At its end the
-//! scores and counters are cleared and round 1 starts with everyone spawned again (the next-round set of GMD-21).
+//! scores and counters are cleared and the warm-up ends like any round (DSV-567): the round result, the between-round
+//! set and pause, then round 1 with everyone spawned again (the next-round set of GMD-21).
 //!
 //! 2009 evidence: the room line's `train` (the ROM mode files' `TrainingTimeLimit`, 10 s for the bomb maps) and the
 //! 0x45 `waiting_banner` flag that draws the client's training picture (layout key `TrainingModInfoTex`) until a
@@ -31,6 +33,14 @@ impl Game {
 
     pub fn in_warmup(&self) -> bool {
         self.warmup_until.is_some()
+    }
+
+    /// The warm-up holds player damage: it is running and `-combat warmup_damage` is off (the default). Every mode
+    /// with a warm-up gets the rule; today only the bomb classes have one ([`Game::warmup_secs`]).
+    // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04 "nobody can kill or damage anyone" while waiting
+    // for players)
+    pub fn warmup_holds_damage(&self) -> bool {
+        self.in_warmup() && !self.cfg.warmup_damage
     }
 
     /// The warm-up length of this room: 0 outside the bomb modes or without the round loop; else `-warmup <s>`
@@ -74,8 +84,14 @@ impl Game {
         })
     }
 
-    /// The warm-up's end: scores, round wins, kills and deaths cleared (0x43 and every roster record again), then
-    /// round 1 with everyone spawned (the next-round set: 0x44, 0xb5, 0x45 with the banner flag clear).
+    /// The warm-up's end: scores, round wins, kills and deaths cleared (0x43), then the round end of every round
+    /// (DSV-567): `GS_ROUND_RESULT` as a draw with the round wins 0:0, 0xb5, the round-end freeze; after the first
+    /// pause the between-round set (0x47, every roster record again, 0x48), after the between-round pause round 1
+    /// with everyone spawned (the next-round set: 0x44, 0xb5, 0x45 with the banner flag clear).
+    // SPEC: GAME_MESSAGES_2009_S2C.md §2.1.2 (0x46 clears the banner element +0x6a; with the 0x45 waiting flag set
+    // the client skips its half-time picture check; win 0 shows no team)
+    // DC-DEFAULT: DSV-567 (proposed; USER DECISION 2026-11-04 "after waiting for players ends it should go to the
+    // between-round image, not jump you right into the next round")
     pub(super) fn tick_warmup(&mut self, now: Millis) {
         let Some(until) = self.warmup_until else {
             return;
@@ -86,8 +102,6 @@ impl Game {
         if now.wrapping_sub(until) >= u32::MAX / 2 {
             return;
         }
-        self.warmup_until = None;
-        self.warmup_done = true;
         self.scores = [0; 2];
         self.round_wins = [0; 2];
         self.first_kill_done = false;
@@ -97,20 +111,13 @@ impl Game {
             s.team_kills = 0;
             s.headshots = 0;
         }
-        // DC-DEFAULT: DSV-95 (proposed) the warm-up's dropped weapons go as at a round end
-        self.drops_clear();
         self.broadcast(&gs::scores_clear());
-        let infos: Vec<gs::PlayerInfo> = self
-            .players
-            .values()
-            .filter(|p| p.introduced)
-            .map(|p| self.info_of(p, gs::INFO_UPDATE))
-            .collect();
-        for i in &infos {
-            self.broadcast(&gs::player_info(i));
-        }
-        self.log("warm-up over: round 1".into());
+        self.log("warm-up over: the between-round pause, then round 1".into());
+        // the round-end path with the warm-up still on (no match end, no side switch); `next_round` then numbers
+        // the first counted round 1
         self.round_no = 0;
-        self.next_round(now);
+        self.end_round(now, 0);
+        self.warmup_until = None;
+        self.warmup_done = true;
     }
 }

@@ -1313,12 +1313,18 @@ pub fn plan_scene(
         let Some(team) = team_of(&f.team_text) else {
             continue;
         };
-        // a ROM flag without a model is not created (as before); a `dc.capture_flag` without one gets the default
-        // look: no model file (MAP-23), the ROM flag row's textures and styles when a ROM is at hand
-        let model = match (f.model.clone(), f.dc) {
-            (Some(m), _) => m,
-            (None, true) => String::new(),
-            (None, false) => continue,
+        // a ROM flag without a model is not created (as before); a `dc.capture_flag` without one takes the ROM's ground
+        // flag, standing as high above the floor as the ROM worlds' flags (MAP-114), and without a ROM no model file
+        // (MAP-23); the ROM flag row's textures and styles when a ROM is at hand
+        let mut flag = f.clone();
+        let model = match (f.model.clone(), f.dc, tables.flag_looks.ground.clone()) {
+            (Some(m), _, _) => m,
+            (None, true, Some(ground)) => {
+                flag.pos[1] = crate::game::ctf::standing_height(world, f.pos);
+                ground
+            }
+            (None, true, None) => String::new(),
+            (None, false, _) => continue,
         };
         // SPEC: reference flags (capture tdm2: team 1's flag carried the files of [Flag1], team 2's those of [Flag0],
         // compared by sha256 in tests/rom_world.rs; REFERENCE); SPEC: UNPROVEN why the rows are in this order
@@ -1330,7 +1336,7 @@ pub fn plan_scene(
             .unwrap_or_default();
         out.push(WorldObject::Flag {
             obj: next_id(),
-            flag: f.clone(),
+            flag,
             team: u32::from(team),
             shown: flags_shown(room_class),
             model,

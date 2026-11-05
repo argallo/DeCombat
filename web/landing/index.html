@@ -93,9 +93,9 @@
           <div class="hero-actions">
             <a class="button" href="#about"
               >Gear up <span aria-hidden="true">↗</span></a
-            ><a class="button ghost" href="#field-report"
-              ><span class="play-icon" aria-hidden="true">▶</span> Watch
-              gameplay</a
+            ><a class="button ghost" href="#trailer-player" data-watch-trailer
+              ><span class="play-icon" aria-hidden="true">▶</span> Watch the
+              trailer</a
             >
           </div>
           <p class="hero-fine">
@@ -215,45 +215,62 @@
             </div>
             <span class="tag">CAPTURED IN DECOMBAT</span>
           </div>
-          <div class="footage-layout">
+          <div class="launch-layout">
             <div class="gameplay-frame">
               <div class="frame-top">
                 <span
-                  ><i class="record-dot"></i> FIELD RECORDING / SNOW
-                  VALLEY</span
-                ><span>IN-ENGINE GAMEPLAY</span>
+                  ><i class="record-dot"></i> DECOMBAT / OFFICIAL LAUNCH
+                  TRAILER</span
+                ><span>01:53</span>
               </div>
-              <video
-                id="gameplay"
-                controls
-                playsinline
-                preload="none"
-                poster="assets/snow-valley.webp"
-                aria-label="DeCombat gameplay on Snow Valley, silent 24 second capture"
+              <div
+                id="trailer-player"
+                class="trailer-player"
+                tabindex="-1"
+                data-video-id="tocDTVUPeOM"
               >
-                <source src="assets/gameplay.mp4" type="video/mp4" />
-              </video>
+                <button
+                  id="trailer-play"
+                  class="trailer-poster"
+                  type="button"
+                  disabled
+                  aria-label="Play the DeCombat launch trailer"
+                >
+                  <img
+                    src="assets/launch-trailer.webp"
+                    width="1280"
+                    height="720"
+                    loading="lazy"
+                    alt="DeCombat official launch trailer"
+                  />
+                  <span class="trailer-play-icon" aria-hidden="true">▶</span>
+                  <span class="trailer-play-label"
+                    >WATCH THE LAUNCH TRAILER</span
+                  >
+                </button>
+              </div>
               <div class="frame-bottom">
-                <span>2009 EU ROM · DECOMBAT CLIENT</span
-                ><span>00:24 / SILENT CAPTURE</span>
+                <span>THE 2009 EXPERIENCE. A NEW CHAPTER.</span
+                ><a id="trailer-link" href="trailer/">Watch on YouTube ↗</a>
               </div>
             </div>
-            <div class="trailer-panel">
-              <span class="tag amber">INCOMING TRANSMISSION</span>
-              <div class="trailer-symbol" aria-hidden="true">▶</div>
-              <h3>LAUNCH TRAILER.<br />COMING SOON.</h3>
-              <p>Your first look lands here.</p>
-              <a id="trailer-link" href="#community" class="text-link"
-                >Follow the launch <span aria-hidden="true">↗</span></a
-              ><span class="mono trailer-footer"
-                >LAUNCH TRAILER / COMING SOON</span
-              >
-            </div>
+            <nav class="trailer-chapters" aria-label="Trailer chapters">
+              <button type="button" disabled data-trailer-start="32">
+                <span>00:32</span> New game modes <b aria-hidden="true">↗</b>
+              </button>
+              <button type="button" disabled data-trailer-start="51">
+                <span>00:51</span> Maps & MapKit <b aria-hidden="true">↗</b>
+              </button>
+              <button type="button" disabled data-trailer-start="64">
+                <span>01:04</span> Community mods <b aria-hidden="true">↗</b>
+              </button>
+            </nav>
           </div>
           <div class="loop-toolbar">
             <span class="mono">THREE MOMENTS. SAME ADRENALINE.</span
             ><button
               id="motion-toggle"
+              data-motion-toggle
               type="button"
               class="text-link"
               aria-pressed="false"
@@ -338,7 +355,7 @@
           <article class="mode-panel">
             <div class="capability-title">
               <span class="eyebrow">PICK YOUR FIGHT</span>
-              <h3><b>09</b> WAYS TO PLAY.</h3>
+              <h3><b>09</b> CLASSIC MODES.</h3>
             </div>
             <ul class="mode-grid">
               <li>
@@ -479,6 +496,54 @@
                     d="M13 2c1 7 9 8 7 15-2 9-18 6-16-3 1-4 4-5 5-9 3 4 1 7 3 8 3-3 3-5 1-11z"
                   /></svg
                 ><span>Fireteam</span>
+              </li>
+            </ul>
+            <p class="mode-additions-title">VANILLA++ EXTRAS</p>
+            <ul class="mode-grid mode-additions">
+              <li>
+                <svg
+                  class="ui-icon"
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  aria-hidden="true"
+                >
+                  <path d="M2 21h6v-6h6V9h6V3m-4 3 4-3 3 4" /></svg
+                ><span>Gun Game</span><small>Kill. Upgrade. Repeat.</small>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  aria-hidden="true"
+                >
+                  <circle cx="5" cy="12" r="3" />
+                  <circle cx="19" cy="12" r="3" />
+                  <path d="M9 12h6m-3-3 3 3-3 3" /></svg
+                ><span>Possession</span
+                ><small>Their position. Their guns.</small>
+              </li>
+              <li>
+                <svg
+                  class="ui-icon"
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  aria-hidden="true"
+                >
+                  <path d="M1 12h5l3-8 5 16 3-8h6" /></svg
+                ><span>Hardcore</span><small>5× damage room setting.</small>
               </li>
             </ul>
           </article>
@@ -758,8 +823,19 @@
                   >YOUR WAY TO PLAY.</span
                 >
               </h2>
-              <p>New rules. New sights. Built by the community.</p>
+              <p>Camos + inspect. Custom sights. New rules.</p>
             </div>
+          </div>
+          <div class="loop-toolbar workshop-motion">
+            <span class="mono">REAL MODS. CAPTURED IN DECOMBAT.</span
+            ><button
+              type="button"
+              class="text-link"
+              data-motion-toggle
+              aria-pressed="false"
+            >
+              Play loops
+            </button>
           </div>
           <div class="catalog-toolbar">
             <div class="filters" role="group" aria-label="Filter mods">
@@ -798,96 +874,81 @@
             <p class="empty-state">Loading the workshop…</p>
           </div>
           <p class="catalog-note" id="catalog-note">
-            Verified = reviewed ID + version + SHA-256. Reference demos are
-            labeled separately.
+            Verified entries match the community directory. Built packs are
+            labeled separately; availability depends on your server.
           </p>
-          <div class="mapkit-panel">
-            <div class="mapkit-art">
-              <div class="mapkit-art-top">
-                <span>DC-MAPKIT / WORK IN PROGRESS</span
-                ><span>+ X &nbsp; + Z</span>
-              </div>
-              <img
-                src="assets/map-plan.svg"
-                width="620"
-                height="420"
-                loading="lazy"
-                alt="Conceptual map layout showing two spawn zones, buildings, routes and an objective"
-              /><span class="mapkit-art-bottom"
-                >WORKFLOW CONCEPT · NOT AN EDITOR SCREENSHOT</span
-              >
+          <div class="new-maps-heading">
+            <div>
+              <p class="eyebrow">COMMUNITY MAPS / VANILLA++</p>
+              <h3>NEW GROUND. SAME INSTINCTS.</h3>
             </div>
-            <div class="mapkit-copy">
-              <div class="mapkit-identity">
-                <img
-                  src="assets/mapkit.webp"
-                  width="54"
-                  height="54"
-                  alt="MapKit logo"
-                /><span class="tag amber">IN DEVELOPMENT</span>
-              </div>
-              <h3>BUILD THE NEXT<br />FAVORITE MAP.</h3>
-              <p>
-                <strong>MapKit</strong> · Community map builder<br />Windows +
-                macOS · In development
-              </p>
-              <ol class="mapkit-workflow">
-                <li>
-                  <svg
-                    class="ui-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="m2 21 9-18 11 18zM7 11l4 3 4-4" /></svg
-                  ><span>Shape</span>
-                </li>
-                <li>
-                  <svg
-                    class="ui-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M19 9c0 5-7 13-7 13S5 14 5 9a7 7 0 1 1 14 0z" />
-                    <circle cx="12" cy="9" r="2" /></svg
-                  ><span>Place</span>
-                </li>
-                <li>
-                  <svg
-                    class="ui-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="m12 2 10 5v10l-10 5-10-5V7zM2 7l10 5 10-5M12 12v10M7 4l10 5"
-                    /></svg
-                  ><span>Export</span>
-                </li>
-              </ol>
-              <p class="mapkit-note">
-                Templates · Terrain · Spawns · Objectives · AI-assisted tools
-              </p>
+            <span class="tag amber">APPROVED FOR VANILLA++</span>
+          </div>
+          <div class="new-maps">
+            <figure class="map-card">
               <a
-                class="text-link"
-                href="github/"
-                data-repo="blob/master/docs/MAPKIT_PLAN.md"
-                >Follow MapKit development <span aria-hidden="true">↗</span></a
+                class="map-capture"
+                href="assets/shipping-container-editor.webp"
+                target="_blank"
+                rel="noopener"
+                aria-label="View full Shipping Container MapKit screenshot"
+                ><img
+                  src="assets/shipping-container-editor.webp"
+                  loading="lazy"
+                  width="1920"
+                  height="910"
+                  alt="Shipping Container in MapKit: stacked cargo containers and tight lanes on a cargo deck"
+                /><span>VIEW EDITOR CAPTURE ↗</span></a
               >
+              <figcaption>
+                <span class="mono">01 / CLOSE QUARTERS</span>
+                <h3>SHIPPING CONTAINER</h3>
+                <p>Close-quarters cargo deck.</p>
+              </figcaption>
+            </figure>
+            <figure class="map-card">
+              <a
+                class="map-capture"
+                href="assets/freight-hall-editor.webp"
+                target="_blank"
+                rel="noopener"
+                aria-label="View full Freight Hall MapKit screenshot"
+                ><img
+                  src="assets/freight-hall-editor.webp"
+                  loading="lazy"
+                  width="1920"
+                  height="907"
+                  alt="Freight Hall in MapKit: warehouse catwalks, red containers, crates and graffiti"
+                /><span>VIEW EDITOR CAPTURE ↗</span></a
+              >
+              <figcaption>
+                <span class="mono">02 / 3V3 WAREHOUSE</span>
+                <h3>FREIGHT HALL</h3>
+                <p>A 3v3 warehouse with catwalks and cover.</p>
+              </figcaption>
+            </figure>
+          </div>
+          <div class="mapkit-compact">
+            <img
+              src="assets/mapkit.webp"
+              width="54"
+              height="54"
+              loading="lazy"
+              alt="MapKit logo"
+            />
+            <div>
+              <span class="tag amber">MAPKIT / IN DEVELOPMENT</span>
+              <h3>MAKE THE NEXT MAP.</h3>
+              <p>
+                Shape terrain. Place props. Play your creation. Windows + macOS.
+              </p>
             </div>
+            <a
+              class="text-link"
+              href="github/"
+              data-repo="blob/master/docs/MAPKIT_PLAN.md"
+              >Explore MapKit ↗</a
+            >
           </div>
           <div class="workshop-footer">
             <p><b>Your next idea belongs here.</b></p>
@@ -986,7 +1047,10 @@
           <h2>SQUAD UP.<br /><span class="amber-text">COME HOME.</span></h2>
           <p>Find your squad. Share your builds.</p>
           <div class="community-actions">
-            <a id="discord-link" href="https://discord.gg/hNWcXpTST" class="button"
+            <a
+              id="discord-link"
+              href="https://discord.gg/hNWcXpTST"
+              class="button"
               rel="noopener noreferrer"
               >Join the Discord <span aria-hidden="true">↗</span></a
             ><a class="button ghost" href="github/" data-repo=""

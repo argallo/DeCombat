@@ -103,6 +103,9 @@ pub const KEY_IMPACT_FX: &str = "ImpactFXName";
 pub const KEY_AMMO_KIND: &str = "Type";
 /// The `Type` of a fired projectile's ammunition row.
 pub const AMMO_KIND_PROJECTILE: u8 = 1;
+/// The `Type` of a thrown round's ammunition row (the grenades).
+// OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] Type (the M67 row 2; values read at run time)
+pub const AMMO_KIND_THROWN: u8 = 2;
 /// `[Ammo<n>]` progressive damage of a round: the damage, its damage type, how long one touch burns (seconds), the
 /// radius round the round's burst point that it reaches, and a lifetime (seconds; read, not used: DSV-455). The
 /// flamethrower rows carry them with no area damage.
@@ -980,6 +983,14 @@ impl WeaponTable {
             .is_some_and(|a| a.kind == Some(AMMO_KIND_PROJECTILE) && a.projectile_fx.is_some())
     }
 
+    /// Whether `weapon_id` / `ammo_id` is a thrown round (ammunition `Type` 2): its `UP_FIRE` is always a throw's
+    /// release, whatever the time since the last `UP_THROW_HOLD` (DSV-29 amendment).
+    // DC-DEFAULT: DSV-29 (amendment, proposed)
+    pub fn throws_round(&self, weapon_id: u16, ammo_id: u16) -> bool {
+        self.ammo_row(weapon_id, ammo_id)
+            .is_some_and(|a| a.kind == Some(AMMO_KIND_THROWN))
+    }
+
     /// The projectile row name of `weapon_id` / `ammo_id`.
     // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] ProjectileFXName
     pub fn projectile_fx(&self, weapon_id: u16, ammo_id: u16) -> Option<&str> {
@@ -1265,11 +1276,17 @@ pub const KEY_RENDER_STYLE: &str = "RenderStyle";
 pub const KEY_ATTACH_MODEL: &str = "Model0";
 pub const KEY_ATTACH_SOCKET: &str = "Socket";
 
-/// `(textures, styles)` of the flag rows by `k`, and the carried form `(model, socket name)`.
+/// The ground flag model the capture flag of every ROM world names (the archive path, upper case).
+// OBSERVED: ROM world capture flag objects (the model property of each flag of the ROM flag worlds checked)
+// DC-DEFAULT: MAP-114 (proposed) a community map's flag without a model uses it
+pub const GROUND_FLAG_MODEL: crate::chars::NameKey = ([191, 100, 172, 176, 200, 27, 51, 163], 26);
+
+/// `(textures, styles)` of the flag rows by `k`, the carried form `(model, socket name)`, and the ground model.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FlagLooks {
     pub rows: BTreeMap<u32, (Vec<String>, Vec<String>)>,
     pub carried: BTreeMap<u32, (String, String)>,
+    pub ground: Option<String>,
 }
 
 impl FlagLooks {
@@ -1299,11 +1316,34 @@ impl FlagLooks {
 
     pub fn from_vfs(vfs: &RezVfs) -> Result<Self, String> {
         match ButeDoc::try_from_vfs(vfs, ATTRIBUTES_REZ, ATTACHMENTS_ENTRY) {
-            Ok(Some(d)) => Ok(Self::from_doc(&d)),
+            Ok(Some(d)) => {
+                let mut t = Self::from_doc(&d);
+                t.ground = find_ground_flag(vfs);
+                Ok(t)
+            }
             Ok(None) => Err("attachment table entry missing".into()),
             Err(e) => Err(format!("attachment table: {e}")),
         }
     }
+}
+
+/// The path of [`GROUND_FLAG_MODEL`] in the user's archives (`None` when the ROM lacks it).
+fn find_ground_flag(vfs: &RezVfs) -> Option<String> {
+    let mut rez: Vec<String> = std::fs::read_dir(vfs.rom_dir().join("Game"))
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().to_str().map(str::to_string))
+        .filter(|n| n.to_ascii_lowercase().ends_with(".rez"))
+        .collect();
+    rez.sort();
+    rez.iter().find_map(|name| {
+        vfs.list_entries(name)
+            .ok()?
+            .into_iter()
+            .find_map(|(entry, _, _)| {
+                let up = entry.to_ascii_uppercase();
+                (crate::chars::name_key(up.as_bytes()) == GROUND_FLAG_MODEL).then_some(up)
+            })
+    })
 }
 
 /// The HiSec case table: `[Hisec<n>]` rows with the case model (`Filename`), its skins (`Skin<k>`), render styles

@@ -260,10 +260,10 @@ fn chat_widgets(out: &mut Vec<DrawItem>, layout: &HudLayout, s: &HudState, measu
     }
 }
 
-/// Gun Game's lines: "12 / 20" and the next gun under the top block, the promotion or demotion line for a moment at
+/// Gun Game's lines: "12 / 20" and the next gun under the round clock, the promotion or demotion line for a moment at
 /// the system banner's height, in the system banner's font (no art of ours; no 2009 counterpart).
-// DC-DEFAULT: CLI-1639 (proposed)
-fn gun_game_lines(out: &mut Vec<DrawItem>, s: &HudState) {
+// DC-DEFAULT: CLI-1639 (proposed), placement CLI-1849 (proposed)
+fn gun_game_lines(out: &mut Vec<DrawItem>, layout: &HudLayout, s: &HudState) {
     let Some(g) = &s.gun_game else {
         return;
     };
@@ -283,16 +283,17 @@ fn gun_game_lines(out: &mut Vec<DrawItem>, s: &HudState) {
     const WHITE: [u8; 4] = [255, 255, 255, 255];
     const SOFT: [u8; 4] = [210, 210, 210, 255];
     let total = g.names.len();
+    let rung_y = gun_rung_y(layout);
     label(
         style(WHITE, 0x12),
-        GUN_RUNG_Y,
+        rung_y,
         format!("{} / {}", (g.rung + 1).min(total), total),
     );
     let next = match g.names.get(g.rung + 1) {
         Some(n) => format!("Next: {n}"),
         None => "Last gun".to_string(),
     };
-    label(style(SOFT, 0xe), GUN_RUNG_Y + 20.0, next);
+    label(style(SOFT, 0xe), rung_y + GUN_NEXT_STEP, next);
     if let Some((t, knifed, at)) = &g.line {
         if s.now_ms.saturating_sub(*at) < super::state::GUN_LINE_MS {
             let colour = if *knifed {
@@ -305,8 +306,34 @@ fn gun_game_lines(out: &mut Vec<DrawItem>, s: &HudState) {
     }
 }
 
-/// Virtual heights of the rung line (under the top block) and the centre line (above the system banner).
-const GUN_RUNG_Y: f32 = 74.0;
+/// Virtual height of the rung line: a gap under the lowest edge of the round clock (its digit images, or its text
+/// line in a layout without art), so the "12 / 20" and "Next:" lines never reach the timer at any target size (the
+/// vertical scale is monotone, so an order kept in virtual pixels holds on every target).
+// DC-DEFAULT: CLI-1849 (proposed) the rung line starts GUN_CLOCK_GAP virtual pixels under the clock
+pub fn gun_rung_y(layout: &HudLayout) -> f32 {
+    let c = &layout.clock;
+    let images = [
+        c.minutes[0],
+        c.minutes[1],
+        c.separator_pos,
+        c.seconds[0],
+        c.seconds[1],
+    ]
+    .iter()
+    .map(|p| p[1] + c.size[1])
+    .max()
+    .unwrap_or(0);
+    // a text clock (the fallback layout) is about one line tall
+    let text = c.text.map_or(0, |(at, _)| at[1] + GUN_CLOCK_TEXT_H);
+    (images.max(text) + GUN_CLOCK_GAP) as i32 as f32
+}
+
+/// Virtual pixels between the clock's bottom edge and the rung line; the rung line to the "Next:" line; a text clock's
+/// height.
+pub const GUN_CLOCK_GAP: i32 = 4;
+pub const GUN_NEXT_STEP: f32 = 22.0;
+const GUN_CLOCK_TEXT_H: i32 = 24;
+/// Virtual height of the promotion / demotion line (above the system banner).
 const GUN_LINE_Y: f32 = 204.0;
 
 fn text(style: TextStyle, pos: [i32; 2], s: String) -> DrawItem {
@@ -657,7 +684,8 @@ pub fn build_marked(
     }
     elems.push(("health", out.len()));
     // ---- health and armour
-    let hp = s.health.unwrap_or(0.0).max(0.0);
+    // DC-DEFAULT: CLI-1853 (proposed) a living player's block never shows 0
+    let hp = s.shown_health();
     let ap = s.armour.unwrap_or(0.0).max(0.0);
     let hidden = super::layout::HealthLayout::default();
     let h = if live { &layout.health } else { &hidden };
@@ -1168,7 +1196,7 @@ pub fn build_marked(
     chat_widgets(&mut out, layout, s, measure);
     elems.push(("gun_game", out.len()));
     if notes {
-        gun_game_lines(&mut out, s);
+        gun_game_lines(&mut out, layout, s);
     }
     elems.push(("mk_notes", out.len()));
     // ---- multi-kill notes (newest at the place, older lines below)
@@ -1772,6 +1800,65 @@ mod tests {
                     .any(|x| x.ends_with("single.dtx") || x == "auto.dtx"),
             "{g:?}"
         );
+    }
+
+    /// The Gun Game rung and next-gun lines never reach the round clock: at 1024 x 768, 1920 x 1080, 2560 x 1440 and
+    /// 2304 x 1296 the first line's screen top (the truncated scaled place) is under the clock images' screen bottom,
+    /// for the ROM-art clock and the text clock of the fallback layout.
+    #[test]
+    fn the_gun_game_lines_stay_under_the_round_clock() {
+        use crate::hud::compose::scaled_place;
+        use dc_ui_data::scale::VirtualScaler;
+        for art in [false, true] {
+            let mut l = HudLayout::fallback();
+            if art {
+                l.clock.digit_form = "d%d.dtx".into();
+                l.clock.separator = "colon.dtx".into();
+                l.clock.text = None;
+            }
+            let s = HudState {
+                life_state: 1,
+                gun_game: Some(crate::hud::state::GunGameHud::new(vec![
+                    "A".into(),
+                    "B".into(),
+                ])),
+                clock: crate::hud::state::RoundClock {
+                    shown: true,
+                    secs: 125,
+                    at: 0,
+                    running: true,
+                },
+                now_ms: 5000,
+                ..HudState::default()
+            };
+            let measure = |_f: i32, t: &str| t.len() as f32 * 8.0;
+            let items = build(&l, &s, &measure, &|_| None);
+            let ys: Vec<f32> = items
+                .iter()
+                .filter_map(|i| match i {
+                    DrawItem::Label { pos, text, .. }
+                        if text.contains('/') || text.starts_with("Next") =>
+                    {
+                        Some(pos[1])
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ys.len(), 2, "{ys:?}");
+            // the clock's lowest edge in virtual pixels: the digit images (and the text clock's line)
+            let clock_bottom = (l.clock.minutes[0][1] + l.clock.size[1]) as f32;
+            assert!(ys[0] >= clock_bottom + GUN_CLOCK_GAP as f32, "{ys:?}");
+            assert!(ys[1] > ys[0]);
+            for (w, h) in [(1024u32, 768u32), (1920, 1080), (2560, 1440), (2304, 1296)] {
+                let sc = VirtualScaler::new(w, h);
+                let clock_screen_bottom = (clock_bottom * sc.sy).round();
+                let text_top = scaled_place(ys[0], sc.sy);
+                assert!(
+                    text_top > clock_screen_bottom,
+                    "{w}x{h}: text top {text_top} clock bottom {clock_screen_bottom}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2533,5 +2620,73 @@ mod tests {
             last = f;
         }
         assert_eq!(at(&mut s, 7000), 1.0, "full at the end of the wait");
+    }
+
+    /// CLI-1853, the user's Possession match of 2026-11-04 (net log, 356.368 s): a blast after the move's closing
+    /// teleport took 55 of 55.63 health, the 0x66 said 0.348 and no death followed; the block showed 000 for 27 s.
+    /// A living player shows at least 1; a health of 0 without the death keeps the last live value; a real death
+    /// (0x66 0 then 0x67 3, 2 in one block) hides the block as before.
+    #[test]
+    fn a_living_player_never_shows_zero_health() {
+        let mut l = HudLayout::fallback();
+        l.health.health_digits = Some(Digits {
+            prefix: "h_".into(),
+            pos: [[100, 700], [110, 700], [120, 700]],
+            size: [8, 8],
+        });
+        let measure = |_f: i32, t: &str| t.len() as f32 * 8.0;
+        let shown = |s: &HudState| -> Vec<String> {
+            build(&l, s, &measure, &|_| None)
+                .into_iter()
+                .filter_map(|i| match i {
+                    DrawItem::Image { tex, .. } if tex.starts_with("h_") => Some(tex),
+                    _ => None,
+                })
+                .collect()
+        };
+        // the logged 0x66 heads after `0d 66`
+        let status = |hex: &str| -> (u8, f32) {
+            let b: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            match dc_botclient::shell::read_player_status(&mut dc_wire::udp::BitReader::new(&b)) {
+                dc_botclient::shell::PlayerStatus::Value { kind, value, .. } => (kind, value),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut s = HudState {
+            life_state: 1,
+            ..HudState::default()
+        };
+        let (k, v) = status("02000020855e42");
+        assert!(k == 2 && (v - 55.63).abs() < 1e-3, "{k} {v}");
+        s.on_status(k, v);
+        assert_eq!(shown(&s), ["h_0.dtx", "h_5.dtx", "h_5.dtx"]);
+        let (k, v) = status("020000006db23e");
+        assert!((v - 0.348).abs() < 1e-3, "{v}");
+        s.on_status(k, v);
+        assert_eq!(s.health, Some(v), "the server's value is kept as sent");
+        assert_eq!(
+            shown(&s),
+            ["h_0.dtx", "h_0.dtx", "h_1.dtx"],
+            "alive: 1, not 0"
+        );
+        // the 2009 whole number above 1 is unchanged
+        s.on_status(2, 25.795);
+        assert_eq!(shown(&s), ["h_0.dtx", "h_2.dtx", "h_5.dtx"]);
+        // a 0 that contradicts the alive state: the last live value
+        s.on_status(2, 0.0);
+        assert_eq!(shown(&s), ["h_0.dtx", "h_2.dtx", "h_5.dtx"]);
+        s.on_status(2, f32::NAN);
+        assert_eq!(shown(&s), ["h_0.dtx", "h_2.dtx", "h_5.dtx"]);
+        // a death: the block is gone, and the respawn's 100 is shown
+        s.on_status(2, 0.0);
+        s.on_life(3, 1000);
+        s.on_life(2, 1000);
+        assert!(shown(&s).is_empty(), "{:?}", shown(&s));
+        s.on_life(1, 5000);
+        s.on_status(2, 100.0);
+        assert_eq!(shown(&s), ["h_1.dtx", "h_0.dtx", "h_0.dtx"]);
     }
 }

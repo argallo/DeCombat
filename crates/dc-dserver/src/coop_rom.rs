@@ -226,6 +226,19 @@ pub fn find_gms(vfs: &RezVfs, mode_key: &str, world: &str) -> Option<ButeDoc> {
     None
 }
 
+/// The first GMS file of the room's mode, whatever world it names: a community map has no row of its own.
+// DC-DEFAULT: MAP-113 (proposed)
+pub fn first_mode_gms(vfs: &RezVfs, mode_key: &str) -> Option<ButeDoc> {
+    let gr = GameRoomData::from_vfs(vfs).ok()?;
+    let mode = gr
+        .modes(false)
+        .iter()
+        .position(|m| m.get("Key").is_some_and(|k| eq_fold(unquote(k), mode_key)))?;
+    let row = format!("{GMS_KEY_PREFIX}{mode_key}");
+    let map = gr.maps().iter().position(|m| m.contains_key(&row))?;
+    Some(dc_bute::gms_file_with_vfs(vfs, &gr, map, mode, false).1)
+}
+
 /// One `[AIModel<n>]` row.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AiBodyRow {

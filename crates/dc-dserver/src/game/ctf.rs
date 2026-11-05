@@ -51,6 +51,63 @@ pub const FOLLOW_MS: u32 = 100;
 // DC-DEFAULT: DSV-252 (proposed)
 pub const FLAG_LIFT: f32 = 28.0;
 
+/// A flag ring stands this far above the floor, flat, as the ROM worlds place theirs under their flags.
+// OBSERVED: ROM world flag indicators (12 units below a flag that stands 28 above the floor; this rotation)
+// DC-DEFAULT: MAP-115 (proposed)
+pub const FLAG_RING_LIFT: f32 = 16.0;
+pub const FLAG_RING_ROT: [f32; 3] = [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+
+/// A community map's capture flags get the looping ground ring a ROM world places by hand, in their team's group;
+/// it stays while the flag is away, as it marks the base. Returns how many; a ROM world is left alone.
+// OBSERVED: ROM world placed effects at every capture flag
+// DC-DEFAULT: MAP-115 (proposed; USER REQUEST 2026-11-04 "should have a circle around it on the ground too")
+pub fn add_flag_rings(
+    world: &mut WorldInfo,
+    team_of: impl Fn(Option<&[u8]>) -> Option<u8>,
+    team1: &[u8],
+    team2: &[u8],
+) -> usize {
+    let rings: Vec<crate::world::EffectInfo> = world
+        .flags
+        .iter()
+        .filter(|f| f.dc)
+        .filter_map(|f| {
+            let team = team_of(f.team_text.as_deref())?;
+            let fx = match team {
+                1 => team1,
+                2 => team2,
+                _ => return None,
+            };
+            let y = standing_height(world, f.pos) - FLAG_LIFT + FLAG_RING_LIFT;
+            Some(crate::world::EffectInfo {
+                name: format!("dc_flag_ring_{team}").into_bytes(),
+                pos: [f.pos[0], y, f.pos[2]],
+                rot: FLAG_RING_ROT,
+                fx: fx.to_vec(),
+                looped: true,
+                start_on: true,
+            })
+        })
+        .collect();
+    let n = rings.len();
+    world.effects.extend(rings);
+    n
+}
+
+/// Where a community map's default flag stands above the floor below `at` (MAP-114).
+// DC-DEFAULT: MAP-114 (proposed) a `dc.capture_flag` is placed on the floor, a ROM flag's model is drawn from FLAG_LIFT
+// above it
+pub fn standing_height(world: &WorldInfo, at: [f32; 3]) -> f32 {
+    let from = [at[0], at[1] + 1.0, at[2]];
+    let to = [at[0], at[1] - 512.0, at[2]];
+    let floor = world
+        .trace
+        .as_ref()
+        .and_then(|t| t.ray(dc_sim::V3::from_array(from), dc_sim::V3::from_array(to)))
+        .map_or(at[1], |h| from[1] + (to[1] - from[1]) * h.t.clamp(0.0, 1.0));
+    floor + FLAG_LIFT
+}
+
 /// One flag on the server.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlagSlot {

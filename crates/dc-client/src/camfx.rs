@@ -85,6 +85,23 @@ pub fn curve(kind: u8, x: f32) -> f32 {
     }
 }
 
+/// A hit with no horizontal bearing: a fall (`from_dir` is up x the health loss / 100), the only 0x74 whose direction
+/// points straight up or down.
+// DC-DEFAULT: CLI-1847 (proposed; USER DECISION 2026-11-04) the fall takes the effects of a shot
+pub fn is_vertical(from_dir: [f32; 3]) -> bool {
+    from_dir.iter().all(|v| v.is_finite())
+        && from_dir[0].abs() + from_dir[2].abs() < 1e-6
+        && from_dir[1].abs() > 0.0
+}
+
+/// The sector a vertical hit's jar uses: behind, a pitch-only wave (the view dips 2 degrees).
+// DC-DEFAULT: CLI-1847 (proposed; USER DECISION 2026-11-04)
+pub const FALL_SECTOR: u8 = 9;
+
+/// The peak pitch of a fall's jar (degrees): twice a shot's, so a landing is clearly felt.
+// DC-DEFAULT: CLI-1847 (proposed; USER DECISION 2026-11-04)
+pub const FALL_JAR_DEG: f32 = 4.0;
+
 /// The sector (0..=12) of a hit with direction `from_dir` for a player whose body faces `body_yaw` (pitch 0);
 /// `None` when the direction is empty.
 pub fn hit_sector(from_dir: [f32; 3], body_yaw: f32) -> Option<u8> {
@@ -329,17 +346,27 @@ impl CameraFx {
         if !self.reality {
             return None;
         }
-        let k = hit_sector(from_dir, body_yaw)?;
+        // DC-DEFAULT: CLI-1847 (proposed; USER DECISION 2026-11-04) a vertical hit (a fall) jars like a shot: the rear
+        // sector (pitch only) and no damage-type test (the fall's type 5 has no 2009 row evidence)
+        let vertical = is_vertical(from_dir);
+        let k = if vertical {
+            FALL_SECTOR
+        } else {
+            hit_sector(from_dir, body_yaw)?
+        };
         if damage == 0
             || k == console::NO_SECTOR
-            || !self.jar.jars(damage_type)
+            || !(vertical || self.jar.jars(damage_type))
             || console::CAM_DAMAGE <= 0.0
         {
             return Some(k);
         }
-        let Some(full) = wave_of(now_ms, k) else {
+        let Some(mut full) = wave_of(now_ms, k) else {
             return Some(k);
         };
+        if vertical && console::PITCH_ON > 0.0 {
+            full.pitch.amp = rad(FALL_JAR_DEG);
+        }
         // the pitch block first (channel 0 only), then the whole block with the roll channel
         if console::PITCH_ON > 0.0 {
             let w = CamWave {
@@ -493,6 +520,37 @@ mod tests {
         f.jar_hit(500.0, [0.1, 0.0, 1.0], 2, 10, 0.0);
         assert!((f.angles(600.0).pitch - rad(2.0)).abs() < 1e-6);
         assert_eq!(f.angles(600.0).roll, 0.0, "a new hit replaces the wave");
+    }
+
+    /// The logged fall (damage 33, type 5, from_dir straight up) jars with a pitch-only dip like a rear shot, although
+    /// its damage type does not jar; the logged shot (38, type 2) jars as before.
+    #[test]
+    fn a_fall_jars_like_a_shot() {
+        let mut f = fx();
+        assert_eq!(
+            f.jar_hit(0.0, [0.0, 0.33, 0.0], 5, 33, 0.0),
+            Some(FALL_SECTOR)
+        );
+        // a fall dips the view twice as far as a shot (FALL_JAR_DEG), pitch only, whatever its damage
+        assert!((f.angles(100.0).pitch - rad(FALL_JAR_DEG)).abs() < 1e-6);
+        assert_eq!(f.angles(100.0).roll, 0.0);
+        assert_eq!(f.jars, 1);
+        let mut weak = fx();
+        weak.jar_hit(0.0, [0.0, 0.028, 0.0], 5, 3, 0.0);
+        assert!((weak.angles(100.0).pitch - rad(FALL_JAR_DEG)).abs() < 1e-6);
+        let mut g = fx();
+        g.jar_hit(0.0, [-0.27, -0.10, 0.25], 2, 38, 0.0);
+        assert_eq!(g.jars, 1);
+        // no damage, no jar; the option off, nothing
+        assert_eq!(
+            f.jar_hit(500.0, [0.0, 0.33, 0.0], 5, 0, 0.0),
+            Some(FALL_SECTOR)
+        );
+        assert_eq!(f.jars, 1);
+        assert_eq!(
+            CameraFx::new(false, fx().jar).jar_hit(0.0, [0.0, 0.33, 0.0], 5, 33, 0.0),
+            None
+        );
     }
 
     #[test]

@@ -272,8 +272,8 @@ pub struct NetOptions {
     /// A lobby connection handed over by the menu screens ([`crate::menu::handoff`]): used instead of the lobby
     /// flow of `connect`, and given back when the session ends.
     pub handoff: Option<crate::menu::handoff::LobbyHandoff>,
-    /// The 2009 "Reality" option: hits jar the camera ([`crate::camfx`]) and light the HUD's damage arcs (off by
-    /// default).
+    /// The 2009 "Reality" option: hits jar the camera ([`crate::camfx`]) and light the HUD's damage arcs (always on,
+    /// CLI-1847; the hidden `--no-reality` turns it off for the headless tests that compare against 2009 captures).
     pub reality: bool,
     /// A drawn round plays a draw voice (`--draw-voice`; the 2009 client plays none).
     // DC-DEFAULT: HUD-SND-2 (staged) off
@@ -314,7 +314,7 @@ impl NetOptions {
             arms_seed: 0x00dc_a7a5_5eed,
             result_hold: Duration::from_millis(RESULT_HOLD_MS as u64),
             handoff: None,
-            reality: crate::camfx::console::REALITY,
+            reality: true,
             draw_voice: false,
             hit_rigs_async: crate::characters::async_loads_from_env(true),
             content: None,
@@ -1313,6 +1313,8 @@ struct Shared {
     hud_roster: BTreeMap<u8, RosterRecord>,
     /// Own id and mode class as last reported to the HUD.
     hud_own: (Option<u8>, Option<u8>),
+    /// A health of 0 while alive was logged (CLI-1853); cleared by a health above 0 or a death state.
+    zero_health_logged: bool,
     /// The server's step height (`S2C_EVAR`) and how many of the session's variables were already looked at.
     step_height: Option<f32>,
     evars_scanned: usize,
@@ -1476,6 +1478,8 @@ impl Shared {
                         );
                         // CLI-1762: a spawn set's grants refill the weapons, also for a round's survivor
                         self.drops.on_spawn_set(now);
+                        // CLI-1855: the reset empties the carried weapons; the set's grants fill them again
+                        self.arsenal.on_status_reset(now);
                     }
                     self.hud_events
                         .push((now, HudEvent::Status { kind, value }));
@@ -1702,6 +1706,18 @@ impl Shared {
                 }
             }
         }
+        // the lethal 0x66 comes with the death states in one block, so a health of 0 still alive after the whole
+        // poll contradicts the state: the HUD keeps the last live value (HudState::shown_health), logged once
+        // DC-DEFAULT: CLI-1853 (proposed)
+        let zero_alive =
+            self.hud.life_state == 1 && self.hud.health.is_some_and(|h| h.is_nan() || h <= 0.0);
+        if zero_alive && !self.zero_health_logged {
+            eprintln!(
+                "dc-client: the server sent health {:?} while the own player is alive; the HUD keeps the last live value",
+                self.hud.health
+            );
+        }
+        self.zero_health_logged = zero_alive;
         if let Some(c) = s.obs.client_id {
             self.arsenal.set_own_id(c.0 as u8);
         }
@@ -3011,6 +3027,7 @@ impl NetWorld {
             hud_notes: Vec::new(),
             hud_roster: BTreeMap::new(),
             hud_own: (None, None),
+            zero_health_logged: false,
             step_height: None,
             evars_scanned: 0,
             sound_cues: Vec::new(),
@@ -3671,6 +3688,21 @@ impl WorldSource for NetWorld {
         );
         if corpses > 0 {
             g.corpse_skips += u64::from(g.arsenal.stats.shots - shots_before);
+        }
+        // DC-DEFAULT: CLI-1856 (proposed) one line per spawn: the weapon drawn, whether the server named it, the kit
+        if let Some(d) = g.arsenal.take_spawn_draw() {
+            let kit: Vec<String> = d.carried.iter().map(|(s, w)| format!("{s}:{w}")).collect();
+            eprintln!(
+                "dc-client: spawn draw: slot {} weapon {} ({}), carried [{}]",
+                d.slot,
+                d.weapon,
+                if d.by_server {
+                    "the server's draw"
+                } else {
+                    "own pick, lowest slot"
+                },
+                kit.join(" ")
+            );
         }
         // the own weapon's sounds: one fire sound per shot, and the key sounds the client announced with 0x80
         // DC-DEFAULT: CLI-72 (amended by w2-scope) one own fire sound per shot of the arsenal (the 2009 fire state plays

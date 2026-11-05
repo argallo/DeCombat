@@ -142,6 +142,8 @@ pub fn shader_module(
             .shaders
             .insert((label_of(desc.label), digest));
     }
+    // gpu-prewarm: counted, and logged when made in play or on a loader thread
+    crate::warm::note("shader", desc.label, None);
     device.create_shader_module(desc)
 }
 
@@ -168,6 +170,17 @@ pub fn render_pipeline(
     device: &wgpu::Device,
     desc: &wgpu::RenderPipelineDescriptor<'_>,
 ) -> wgpu::RenderPipeline {
+    render_pipeline_for(device, desc, None)
+}
+
+/// [`render_pipeline`] with what the pipeline is for beside its label (`detail`, the model pass's raster state), for
+/// the gpu-prewarm log of a pipeline made in play ([`crate::warm`]).
+pub(crate) fn render_pipeline_for(
+    device: &wgpu::Device,
+    desc: &wgpu::RenderPipelineDescriptor<'_>,
+    detail: Option<&str>,
+) -> wgpu::RenderPipeline {
+    crate::warm::note("pipeline", desc.label, detail);
     if journal_on() {
         let digest = dc_rom::sha256(pipeline_settings(desc).as_bytes());
         JOURNAL

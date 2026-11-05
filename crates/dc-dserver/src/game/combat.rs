@@ -323,6 +323,10 @@ impl Game {
             // inside the spawn window: from the start note (0xa6 sub 0x1f) to the end note (sub 0x25)
             // EVIDENCE: cshell+0x238eb0 (no hit claimed on a character with +0x53a set); DC-DEFAULT: DSV-156
             Some(HitVerdict::SpawnShield)
+        } else if self.warmup_holds_damage() {
+            // the shot effect takes the miss form too (DSV-101): no hit is drawn on the character
+            // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04)
+            Some(HitVerdict::Warmup)
         } else {
             None
         }
@@ -340,8 +344,12 @@ impl Game {
         if self.players.get(&pid).map(|p| p.life) != Some(Life::Alive) {
             return Some(HitVerdict::ShooterDead);
         }
-        // DC-DEFAULT: DSV-29 (proposed) the fire within the window after the last hold is the throw's release
-        let throw = self.take_throw(pid, now);
+        // DC-DEFAULT: DSV-29 (proposed) the fire within the window after the last hold is the throw's release;
+        // (amendment, proposed) a thrown round (ammunition `Type` 2) is always one: a grenade held through a sprint
+        // is let go with no 0x4d for the whole sprint (CLI-573, the 2009 gap), and as a shot its record was drawn by
+        // every client as the grenade's explosion at once (the user's 2026-11-04 report)
+        let held = self.take_throw(pid, now);
+        let throw = held || self.tables.weapons.throws_round(f.weapon_id, f.ammo_id);
         let launched = !throw && self.tables.weapons.fires_projectile(f.weapon_id, f.ammo_id);
         let wall = if throw {
             self.throw_sound(pid, f);
@@ -593,6 +601,12 @@ impl Game {
         dmg_kind: u8,
         now: Millis,
     ) {
+        // the one damage point: a player-caused damage (another player's or the victim's own) does nothing while
+        // the warm-up holds damage; falls and kill volumes (no killer) still hurt
+        // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04)
+        if killer.is_some() && self.warmup_holds_damage() {
+            return;
+        }
         // DC-DEFAULT: DSV-483 (proposed) no damage during a Possession move
         if self.in_flight(vpid) {
             return;

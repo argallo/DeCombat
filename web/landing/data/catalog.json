@@ -7,7 +7,6 @@
       "author": "DeCombat",
       "category": "gameplay",
       "status": "reference",
-      "image": "assets/junk-flea.webp",
       "description": "See through walls. Server-wide rules, declared up front.",
       "details": "Everyone on this server hacks, in the open. See players through walls as boxes, chams or skeletons in the colours you pick. Enemy nametags are always on, with health bars, and team mates get their own colours. Rooms can also turn recoil off. The server lists this mod, so nobody is surprised.",
       "capabilities": [
@@ -16,7 +15,13 @@
         "world.full_visibility",
         "combat.no_recoil"
       ],
-      "sourcePath": "examples/mods/hacking_mod"
+      "sourcePath": "examples/mods/hacking_mod",
+      "order": 4,
+      "shortDescription": "See through walls on a server where everyone plays by the same rules.",
+      "image": "assets/hacking-server.webp",
+      "loop": "assets/hacking-server-loop.webp",
+      "imageAlt": "Real Hacking Mod gameplay: highlighted enemies visible through cover on Junk Flea",
+      "captureLabel": "HACKING SERVER / ACTUAL GAMEPLAY"
     },
     {
       "id": "drawn_crosshair",
@@ -25,13 +30,59 @@
       "author": "DeCombat",
       "category": "visual",
       "status": "reference",
-      "image": "assets/snow-valley.webp",
       "description": "Your shape, colour and recoil style. Your sightline.",
       "details": "A cosmetic crosshair drawn by the game at any resolution: length, thickness, gap (also negative), centre dot, T shape, black outline, any colour and opacity, and five styles. It can stay fixed, grow with the spread like the original, or kick only on a shot, with its own recoil scale. Share your setup as a code. Only you see it; it never loads on a vanilla server.",
       "capabilities": [
         "content.hud"
       ],
-      "sourcePath": "examples/mods/drawn_crosshair"
+      "sourcePath": "examples/mods/drawn_crosshair",
+      "image": "assets/custom-crosshair.webp",
+      "imageAlt": "Custom Crosshair settings in DeCombat, with a cyan crosshair preview and shape, colour and recoil controls",
+      "captureLabel": "IN-GAME SETTINGS",
+      "order": 3,
+      "shortDescription": "Shape. Colour. Recoil. Dial it in, then share your setup as a code."
+    },
+    {
+      "id": "variant_galaxy_g36e",
+      "name": "G36E Galaxy",
+      "version": "0.1.0",
+      "author": "DeCombat",
+      "category": "visual",
+      "description": "Animated camo + weapon inspect. Original G36E stats.",
+      "details": "An animated Galaxy camo for the G36E. The weapon keeps its original stats. This capture also shows the separate weapon inspect pack, on Freight Hall. Weapon Inspect 0.1.0 supports both rifles and their camos, changes no stats, and is owner-approved for Vanilla++. Firing, reloading or switching cancels it.",
+      "capabilities": [
+        "assets",
+        "content.weapons"
+      ],
+      "sourcePath": "examples/mods/variant_galaxy_g36e",
+      "order": 1,
+      "image": "assets/galaxy-g36e.webp",
+      "loop": "assets/galaxy-g36e.gif",
+      "imageAlt": "G36E Galaxy animated camo and weapon inspect in DeCombat on Freight Hall",
+      "captureLabel": "ANIMATED CAMO + WEAPON INSPECT",
+      "relatedSourcePath": "examples/mods/inspect_g36e_l96a1",
+      "relatedName": "Weapon Inspect"
+    },
+    {
+      "id": "variant_toxic_l96a1",
+      "name": "L96A1 Toxic",
+      "version": "0.1.0",
+      "author": "DeCombat",
+      "category": "visual",
+      "description": "Animated camo + weapon inspect. Original L96A1 stats.",
+      "details": "An animated Toxic camo for the L96A1. The weapon keeps its original stats. This capture also shows the separate weapon inspect pack, on Freight Hall. Weapon Inspect 0.1.0 supports both rifles and their camos, changes no stats, and is owner-approved for Vanilla++. Firing, reloading or switching cancels it.",
+      "capabilities": [
+        "assets",
+        "content.weapons"
+      ],
+      "sourcePath": "examples/mods/variant_toxic_l96a1",
+      "order": 2,
+      "image": "assets/toxic-l96a1.webp",
+      "loop": "assets/toxic-l96a1.gif",
+      "imageAlt": "L96A1 Toxic animated camo and weapon inspect in DeCombat on Freight Hall",
+      "captureLabel": "ANIMATED CAMO + WEAPON INSPECT",
+      "relatedSourcePath": "examples/mods/inspect_g36e_l96a1",
+      "relatedName": "Weapon Inspect"
     }
   ]
 }

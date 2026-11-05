@@ -23,6 +23,7 @@ pub mod compose;
 pub mod crosshair;
 pub mod death;
 pub mod exitbox;
+pub mod fallborder;
 pub mod feedmarks;
 pub mod items;
 pub mod layout;
@@ -418,6 +419,11 @@ impl Hud {
             state.letterbox.progress(state.now_ms),
             self.letterbox_percent,
         );
+        // CLI-1847: the fall's red screen-edge band, over the world and under every HUD element
+        marks.push(("fall_border", items.len()));
+        if state.result_screen.is_none() && death::live_widgets(state) {
+            fallborder::push_items(&mut items, state.fall_border, self.size.0, self.size.1);
+        }
         // CLI-1620: the x-ray boxes over the world, under every HUD element
         marks.push(("xray", items.len()));
         items.extend(state.xray.iter().cloned());
@@ -1327,6 +1333,263 @@ mod sound_tests {
         let f = vitals::load_board_sound(std::path::Path::new(&rom));
         println!("board open sound: {f:?}");
         assert!(f.is_some(), "the pinned key resolves to a file");
+    }
+
+    /// The user's own net log (dc-client.net.jsonl, 2026-11-04): a shot's 0x74 (damage 38, dmg_kind 3, zone 2) and a
+    /// partial fall's (damage 33, dmg_kind 0, zone 5, vertical from_dir) both light the aim cross's hit flash through
+    /// the driver's frame path, in the default mode (no Reality).
+    #[test]
+    fn a_shot_and_a_partial_fall_both_flash_the_aim_cross_in_default_mode() {
+        use crate::spread::AimMarkView;
+        use crate::world::FrameState;
+        let mark = AimMarkView {
+            distance: 10.0,
+            since_shot_s: None,
+            colour: [0, 255, 0, 255],
+            rest: 10.0,
+        };
+        let colour = |d: &mut HudDriver| -> [u8; 4] {
+            let items = d.items_due(true).expect("items");
+            items
+                .iter()
+                .find_map(|i| match i {
+                    DrawItem::AimMark(v) => Some(v.colour),
+                    _ => None,
+                })
+                .expect("the aim mark")
+        };
+        for (name, dir, kind, zone, damage) in [
+            ("shot", [-0.2686, -0.0981, 0.2541], 3u8, 2u8, 38u32),
+            ("fall", [0.0, 0.3315, 0.0], 0, 5, 33),
+        ] {
+            let mut d = driver();
+            let frame = |ms: u32, events: Vec<(u32, state::HudEvent)>| FrameState {
+                clock_ms: Some(ms),
+                aim_mark: Some(mark),
+                hud_events: events,
+                ..FrameState::default()
+            };
+            d.update(
+                &frame(1000, vec![(1000, state::HudEvent::Life(1))]),
+                1000,
+                0.0,
+                false,
+                false,
+            );
+            let rest = colour(&mut d);
+            d.update(
+                &frame(
+                    1010,
+                    vec![
+                        (1010, state::HudEvent::Damage(dir)),
+                        (1010, state::HudEvent::Hit { damage, zone }),
+                        (1010, state::HudEvent::Wound { damage, kind }),
+                    ],
+                ),
+                1010,
+                0.0,
+                false,
+                false,
+            );
+            let hit = colour(&mut d);
+            assert_ne!(hit, rest, "{name}: the flash lights the aim mark");
+            d.update(&frame(1500, vec![]), 1500, 0.0, false, false);
+            assert_eq!(colour(&mut d), rest, "{name}: and fades");
+        }
+    }
+
+    /// CLI-1847 (user decision 2026-11-04): the logged shot (38, kind 3, zone 2) and the logged partial fall (33,
+    /// kind 0, zone 5, vertical `from_dir`) give the same set of effects: the aim-cross flash always; with Reality the
+    /// damage arcs and the camera jar, none of them without it.
+    #[test]
+    fn the_logged_shot_and_fall_have_the_same_effects_with_reality_on_and_off() {
+        let mut flags = vec![false; crate::camfx::NAME_COUNT];
+        flags[2] = true;
+        let effects = |reality: bool, dir: [f32; 3], dtype: u8, zone: u8, damage: u32| {
+            let mut d = driver();
+            d.set_reality(reality);
+            d.state.damage_at = 1010;
+            let ev = |e| (1010, e);
+            let fs = crate::world::FrameState {
+                clock_ms: Some(1010),
+                hud_events: vec![
+                    ev(state::HudEvent::Life(1)),
+                    ev(state::HudEvent::Damage(dir)),
+                    ev(state::HudEvent::Hit { damage, zone }),
+                ],
+                ..crate::world::FrameState::default()
+            };
+            d.update(&fs, 1010, 0.0, false, false);
+            let mut cam = crate::camfx::CameraFx::new(
+                reality,
+                crate::camfx::DamageJar::from_flags(flags.clone()),
+            );
+            let jarred = cam.jar_hit(1010.0, dir, dtype, damage, 0.0).is_some() && cam.jars > 0;
+            (
+                d.state.hit_flash() > 0.0,
+                // the shot's arcs light a sector; the fall's border (CLI-1847) lights none
+                d.state.damage.iter().any(|v| *v > 0.0) || d.state.fall_border > 0.0,
+                jarred,
+            )
+        };
+        for reality in [false, true] {
+            let shot = effects(reality, [-0.2686, -0.0981, 0.2541], 2, 2, 38);
+            let fall = effects(reality, [0.0, 0.3315, 0.0], 5, 5, 33);
+            assert_eq!(shot, (true, reality, reality), "shot, reality {reality}");
+            assert_eq!(fall, shot, "fall, reality {reality}");
+        }
+    }
+
+    /// CLI-1847 (user decision 2026-11-04: "the damage circle when you take fall damage is too small, it's in the
+    /// middle of the screen rather than the border"), the user's own net log: the logged falls 0x74 (damage 3 and 33,
+    /// kind 0, zone 5, `from_dir` [0, 0.03 / 0.33, 0]) start the red screen-edge band at full strength that is gone
+    /// after one second and light no sector; the logged shot (38, kind 3, zone 2) lights its sector and no band.
+    #[test]
+    fn a_fall_draws_the_edge_border_and_no_sector_while_a_shot_draws_its_sector_and_no_border() {
+        use crate::world::FrameState;
+        // (border fills, sector arcs) in the frame's display list
+        let count = |d: &mut HudDriver| -> (usize, usize) {
+            let items = d.items_due(true).expect("items");
+            let c = fallborder::COLOUR;
+            let border = items
+                .iter()
+                .filter(|i| matches!(i, DrawItem::Fill { colour, .. } if colour[..3] == c && colour[3] > 0))
+                .count();
+            let arcs = items
+                .iter()
+                .filter(|i| matches!(i, DrawItem::Image { turn: Some(_), .. }))
+                .count();
+            (border, arcs)
+        };
+        for (name, dir, kind, zone, damage, fall) in [
+            ("fall 3 HP", [0.0, 0.03, 0.0], 0u8, 5u8, 3u32, true),
+            ("fall 33 HP", [0.0, 0.33, 0.0], 0, 5, 33, true),
+            ("shot", [-0.2686, -0.0981, 0.2541], 3, 2, 38, false),
+        ] {
+            let mut d = driver();
+            d.set_reality(true);
+            let frame = |ms: u32, events: Vec<(u32, state::HudEvent)>| FrameState {
+                clock_ms: Some(ms),
+                hud_events: events,
+                ..FrameState::default()
+            };
+            d.update(
+                &frame(1000, vec![(1000, state::HudEvent::Life(1))]),
+                1000,
+                0.0,
+                false,
+                false,
+            );
+            assert_eq!(count(&mut d), (0, 0), "{name}: nothing before the hit");
+            d.update(
+                &frame(
+                    1010,
+                    vec![
+                        (1010, state::HudEvent::Damage(dir)),
+                        (1010, state::HudEvent::Hit { damage, zone }),
+                        (1010, state::HudEvent::Wound { damage, kind }),
+                    ],
+                ),
+                1010,
+                0.0,
+                false,
+                false,
+            );
+            let (border, arcs) = count(&mut d);
+            if fall {
+                assert!(border > 0, "{name}: the band is drawn");
+                assert_eq!(arcs, 0, "{name}: no sector lights");
+                assert!(
+                    d.state.fall_border >= 0.98,
+                    "{name}: full strength at the hit: {}",
+                    d.state.fall_border
+                );
+                // it decays and is gone by one second after the hit
+                d.update(&frame(1510, vec![]), 1510, 0.0, false, false);
+                let half = d.state.fall_border;
+                assert!((0.45..0.55).contains(&half), "{name}: half way: {half}");
+                assert!(count(&mut d).0 > 0);
+                d.update(&frame(2020, vec![]), 2020, 0.0, false, false);
+                assert_eq!(d.state.fall_border, 0.0, "{name}: gone");
+                assert_eq!(count(&mut d), (0, 0), "{name}: and not drawn");
+            } else {
+                assert_eq!(border, 0, "{name}: no border");
+                assert_eq!(arcs, 1, "{name}: its one sector");
+                assert_eq!(d.state.fall_border, 0.0);
+            }
+        }
+    }
+
+    /// CLI-1847: one headless frame (the CPU compositor the GPU overlay mirrors) with the band: pixels at all four
+    /// edges are red-tinted, strongest at the very edge, the centre is untouched and the band stops short of the
+    /// inner 80 % of the height.
+    #[test]
+    fn the_fall_border_tints_the_edges_and_leaves_the_centre() {
+        use crate::world::FrameState;
+        let (w, h) = (640u32, 480u32);
+        let mut d = driver();
+        d.set_reality(true);
+        let frame = |ms: u32, events: Vec<(u32, state::HudEvent)>| FrameState {
+            clock_ms: Some(ms),
+            hud_events: events,
+            ..FrameState::default()
+        };
+        d.update(
+            &frame(1000, vec![(1000, state::HudEvent::Life(1))]),
+            1000,
+            0.0,
+            false,
+            false,
+        );
+        let plain = d.image(true).unwrap();
+        d.update(
+            &frame(
+                1010,
+                vec![
+                    (1010, state::HudEvent::Damage([0.0, 0.33, 0.0])),
+                    (
+                        1010,
+                        state::HudEvent::Hit {
+                            damage: 33,
+                            zone: 5,
+                        },
+                    ),
+                ],
+            ),
+            1010,
+            0.0,
+            false,
+            false,
+        );
+        let hit = d.image(true).unwrap();
+        for (name, x, y) in [
+            ("left", 1, h / 2),
+            ("right", w - 2, h / 2),
+            ("top", w / 2, 1),
+            ("bottom", w / 2, h - 2),
+        ] {
+            let p = hit.pixel(x, y);
+            assert!(
+                p[3] > 120 && p[0] > p[1] + 100 && p[0] > p[2] + 100,
+                "{name}: red-tinted at the edge: {p:?}"
+            );
+            assert_ne!(p, plain.pixel(x, y), "{name}");
+        }
+        // fading inward: deeper pixels are fainter, and the inner part of the frame is untouched
+        let (e, m) = (hit.pixel(1, h / 2), hit.pixel(20, h / 2));
+        assert!(m[3] > 0 && m[3] < e[3], "{m:?} vs {e:?}");
+        for (x, y) in [
+            (w / 2, h / 2),
+            (w / 4, h / 4),
+            (w / 2, h / 2 + 100),
+            (w / 5 + 20, h / 2),
+        ] {
+            assert_eq!(hit.pixel(x, y), plain.pixel(x, y), "({x}, {y}) untouched");
+        }
+        // gone a second later
+        d.update(&frame(2100, vec![]), 2100, 0.0, false, false);
+        let later = d.image(true).unwrap();
+        assert_eq!(later.pixel(1, h / 2), plain.pixel(1, h / 2));
     }
 
     #[test]

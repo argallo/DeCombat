@@ -3180,31 +3180,45 @@ impl FxPass {
             occlusion_query_set: None,
         });
         pass.set_vertex_buffer(0, self.vertices.slice(..));
+        // dx12-perf: the viewport, pipeline and groups are set only when they change between batches (the same
+        // state reaches every draw; wgpu forwards a repeated set to the backend, where DX12 pays for each)
+        let mut set_space: Option<bool> = None;
+        let mut set_pipe: Option<&wgpu::RenderPipeline> = None;
+        let mut set_tex: Option<&wgpu::BindGroup> = None;
         for (space, blend, test, tex, first, count) in &batches {
-            let range = if *space {
-                dc_render::PLAYER_VIEW_DEPTH_RANGE
-            } else {
-                dc_render::WORLD_DEPTH_RANGE
-            };
-            pass.set_viewport(0.0, 0.0, w as f32, h as f32, range.0, range.1);
             let Some(p) = self.pipelines.get(&(*blend, *test)) else {
                 continue;
             };
-            pass.set_pipeline(p);
-            pass.set_bind_group(
-                0,
-                if *space {
-                    &self.view_group
+            if set_space != Some(*space) {
+                let range = if *space {
+                    dc_render::PLAYER_VIEW_DEPTH_RANGE
                 } else {
-                    &self.world_group
-                },
-                &[],
-            );
+                    dc_render::WORLD_DEPTH_RANGE
+                };
+                pass.set_viewport(0.0, 0.0, w as f32, h as f32, range.0, range.1);
+                pass.set_bind_group(
+                    0,
+                    if *space {
+                        &self.view_group
+                    } else {
+                        &self.world_group
+                    },
+                    &[],
+                );
+                set_space = Some(*space);
+            }
+            if !set_pipe.is_some_and(|q| std::ptr::eq(q, p)) {
+                pass.set_pipeline(p);
+                set_pipe = Some(p);
+            }
             let g = tex
                 .as_deref()
                 .and_then(|t| self.textures.get(t).and_then(|g| g.as_ref()))
                 .unwrap_or(&self.white);
-            pass.set_bind_group(1, g, &[]);
+            if !set_tex.is_some_and(|q| std::ptr::eq(q, g)) {
+                pass.set_bind_group(1, g, &[]);
+                set_tex = Some(g);
+            }
             pass.draw(*first..*first + *count, 0..1);
             dc_render::perf::add(dc_render::perf::Counter::ClientDraws, 1);
         }
@@ -3347,6 +3361,16 @@ impl FxStage {
         }
         let m = self.view_models.get(&path)?.as_ref()?;
         view_muzzle_socket(inst, m)
+    }
+
+    /// gpu-prewarm: makes the effect pass for `format` at the stage's sample count now (match load, after a rebuild:
+    /// set [`FxStage::set_msaa`] first), so the first frame does not. True when it was made now.
+    pub fn prewarm(&mut self, ctx: &dc_render::GpuContext, format: wgpu::TextureFormat) -> bool {
+        if self.pass.is_some() {
+            return false;
+        }
+        self.pass = Some(FxPass::with_msaa(ctx, format, self.msaa));
+        true
     }
 
     /// Records the effect quads of `now_ms` after the world, first-person and box passes (the quads of
