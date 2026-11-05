@@ -4056,6 +4056,22 @@ impl<A: Ord + Clone + Display> Server<A> {
                 crate::doors::TRIGGER_STATEMENTS
             ));
         }
+        // DC-DEFAULT: DSV-569 (proposed) `lock` / `unlock` statements naming player spawn points
+        let locks = std::mem::take(&mut self.door_triggers.locks);
+        let (mut locked, mut unlocked) = (0usize, 0usize);
+        for (name, lock) in &locks {
+            let n = self.game.set_spawn_lock(name, *lock);
+            if *lock {
+                locked += n;
+            } else {
+                unlocked += n;
+            }
+        }
+        if locked + unlocked > 0 {
+            self.log(format!(
+                "world statements: {locked} spawn point(s) locked, {unlocked} unlocked"
+            ));
+        }
         if !models.is_empty() {
             self.on_model_switches(&models);
         }
@@ -4070,6 +4086,8 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.door_triggers.reset();
         self.door_triggers.seed(&self.door_start_fired);
         self.door_delays.clear();
+        // DC-DEFAULT: DSV-569 (proposed) the spawn points' locks as in the file
+        self.game.reset_spawn_locks();
         for d in &mut self.doors {
             d.locked = d.info.locked;
             d.fired.clear();

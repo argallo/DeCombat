@@ -444,7 +444,8 @@ impl Lobby {
             fake_dir,
             extra_pids: Default::default(),
         };
-        let up = wait_until(Duration::from_secs(30), || {
+        // 120 s: a shared CI runner starting several debug lobbies at once (one per test) took over 30 s to listen
+        let up = wait_until(Duration::from_secs(120), || {
             TcpStream::connect(("127.0.0.1", lport)).is_ok()
                 && TcpStream::connect(("127.0.0.1", port)).is_ok()
         });

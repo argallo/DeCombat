@@ -1,22 +1,31 @@
 # RELEASES.md: one build for every machine
 
-Three workflows, none of which has run on GitHub yet at the time of writing (they were validated with actionlint and the
-scripts with shell tests; see "Not yet proven" at the end).
+Where things happen: work is done and merged in the private working repository (the private working repository, `master` is
+the integration branch). A scrubbing export copies it into the public repository (`argallo/DeCombat`); the public repository
+only ever receives exports, nothing is committed in it by hand. **GitHub Actions is disabled on the private repository**:
+everything below runs on the public one, where it is free (a macOS runner minute counts ten times on a private repository).
+An export that changes master is what starts a run.
 
 | workflow | when | what |
 |---|---|---|
-| `ci.yml` | pull requests, pushes to master, by hand | builds and tests on every platform, fmt, clippy, `tools/assetcheck.py`, the deploy script tests |
-| `release.yml` | a tag `v*`; pushes to master that touch the code (artifacts only); by hand | every package; on a tag, one GitHub Release |
-| `deploy-servers.yml` | by hand only | moves the VPS and the game hosts to a commit |
+| `ci.yml` | pull requests, pushes to master, by hand | `test (windows-x86_64)`, `test (windows-i686)`, `test (ubuntu-x86_64)`, `test (macos-aarch64)`, `test (linux-x86_64 servers)`, `community directory` (`dc-config check-directory community/community.json`), and `lint (fmt, clippy, clean-room gate)`: `cargo fmt --check` and clippy `-D warnings` on the crates already clean, `tools/assetcheck.py` (the clean-room gate in public mode) and the deploy script tests |
+| `release.yml` | a tag `v*`; pushes to master that touch the code (artifacts only); by hand | `game download (Windows x86_64)`, `game download (macOS, universal)`, `MapKit package (Windows x86_64)`, `MapKit package (macOS, universal)`, `servers (linux x86_64)`, `iOS package (.ipa)` (tags and by hand only); on a tag, `publish the GitHub Release` |
+| `website.yml` | pushes to master that touch `web/landing/`, `web/beta/` or `community/community.json`; a release published, edited or deleted; by hand | `validate` (tests and build of the site), then `deploy` (decombat.com) when `DC_WEBSITE_DEPLOY_ENABLED` is `true` |
+| `netlab.yml` | nightly; by hand | the network lab without a ROM (docs/NETLAB.md) |
+| `deploy-servers.yml` | by hand only | moves the VPS and the game hosts to a commit; the by-hand route, see "Deploying the servers" |
 
-A release does not touch a server, and a deploy does not publish a release.
+A release does not touch a server, and a deploy does not publish a release. The normal server deploy is the dashboard's
+Updates tab (docs/DEPLOY_FROM_ADMIN.md), not a workflow.
 
 ## Cutting a release
 
-    git tag v0.2.0 && git push origin v0.2.0
+On the public repository, on the commit of master you want (the export must have landed and `ci` should be green):
 
-The run publishes one Release with these assets (`<tag>` in each name), SHA256SUMS and notes generated from the merged
-pull requests:
+    git tag v0.1.0-beta3 && git push origin v0.1.0-beta3
+
+The run builds every package, then the last job publishes one Release with these assets (`<tag>` in each name), SHA256SUMS
+and notes generated from the merged pull requests. A tag with a hyphen (`v0.1.0-beta3`, `v0.2.0-rc1`) is marked a
+pre-release; a plain `v0.2.0` is not.
 
 | asset | what |
 |---|---|
@@ -26,11 +35,14 @@ pull requests:
 | `DeCombat-iOS-<tag>.ipa` or `DeCombat-iOS-<tag>-unsigned.ipa` | the iPad app, see "iOS"; optional: a failed iOS build leaves it out |
 | `DeCombat-MapKit-win-<tag>.zip`, `DeCombat-MapKit-mac-<tag>.zip` | the community map builder |
 | `decombat-servers-linux-x86_64-<tag>.tar.gz` | the servers, for people hosting their own |
+| `SHA256SUMS` | the checksums of all of the above |
 
 **All or nothing.** The publishing job needs every build job. It refuses a tag that is not on master, checks each asset is
 there exactly once, attaches them to a draft, compares the draft's list with the build's, and publishes last. Any failure
 leaves no public release (at most a draft, replaced by the next run). A release that is already published is refused: delete
-it first to replace it. A tag with a hyphen (`v0.2.0-rc1`) is marked a pre-release. No release build restores a cache.
+it first to replace it. No release build restores a cache. When the release is out, the job asks for a website run
+(`website.yml`), because a release made with the workflow token starts no other workflow; the site's downloads section
+lists the releases.
 
 The Windows and macOS zips are preset to the public lobby from the variables below, so they go on the release; on a tag a
 missing `DC_FRIEND_SERVER` fails the run rather than leaving them out. The preset is in the launcher only, so someone else
@@ -64,11 +76,16 @@ nothing here can promise.
 
 ## Setup: Settings > Secrets and variables > Actions
 
-Variables (plain, shown in logs):
+Variables (plain, shown in logs; set on the public repository):
 - `DC_FRIEND_SERVER`: the public lobby's address (`host` or `host:port`). Required on a tag.
 - `DC_FRIEND_FINGERPRINT`: its certificate fingerprint (`dc-lobby-server tls --db ...` on the VPS). Without it the clients
   trust the server at the first login. Set it: the launcher then pins it, and it changes only if the lobby's certificate does.
+  The Windows and macOS packs use this one value.
+- `DC_WEBSITE_DEPLOY_ENABLED`: `true` lets `website.yml` deploy decombat.com after its validation; anything else only validates.
 - `DC_VPS_REQUIRED_INSTANCES` (optional): the lobby instances a deploy insists on, default `modded`; space separated.
+
+Secret for the website: in Settings > Environments > `website`, `FIREBASE_SERVICE_ACCOUNT_DECOMBAT` (the Firebase hosting
+service account). Only the `deploy` job of `website.yml` runs in that environment.
 
 Optional secrets for `release.yml`, as repository secrets:
 - `DC_IOS_CERT_P12` (`base64 -i cert.p12`), `DC_IOS_CERT_PASSWORD`, `DC_IOS_PROFILE` (`base64 -i x.mobileprovision`), `DC_IOS_TEAM`.
@@ -84,9 +101,14 @@ reviewers, and under deployment branches allow only `master`):
   rather than trusting the network: on the VPS `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` gives the fingerprint to
   compare with `ssh-keyscan -t ed25519 <address> | ssh-keygen -lf -`, and that `ssh-keyscan` line is the value.
 
-The repository must be public for the hosts' anonymous download. No secret is available to a fork's pull request.
+The repository must be public for the hosts' anonymous download. No secret is available to a fork's pull request. Values never go in a
+document or a commit: the names above are the whole list a reader needs.
 
 ## Deploying the servers
+
+The normal way is the dashboard's **Updates** tab: pick a commit of master and press Deploy, or press **Check now** to see a
+new commit at once (docs/DEPLOY_FROM_ADMIN.md). The workflow below is the other route, for when the dashboard is not
+available or a deploy should wait for an approval.
 
 Actions > deploy-servers > Run workflow, from master. Inputs: `ref` (a tag or commit) and `targets` (`all`, `vps`, `hosts`).
 
@@ -145,14 +167,15 @@ machines which commit they run. Add `--dry-run` to see the plan first. Test it w
 the updater goes on hold after this (docs/HOST.md "Updates").
 
 `tools/vps/push.sh --host <VPS> --build` (Mac) and `tools/vps/push.ps1` (Windows) still deploy from a working tree,
-`tools/friend_pack_mac.sh` and `tools/friend_pack_win.py` still make a friend package locally, and
-`tools/mapkit_pack_mac.sh [--bin-dir DIR] [--x86-dir DIR]` / `python tools/mapkit_pack_win.py --bin-dir DIR` make
+`bash tools/friend_pack_mac.sh` and `python tools/friend_pack_win.py` still make a friend package locally, and
+`bash tools/mapkit_pack_mac.sh [--bin-dir DIR] [--x86-dir DIR]` / `python tools/mapkit_pack_win.py --bin-dir DIR` make
 a MapKit package from a local build (`cargo build --release -p dc-mapkit --bins` plus the three game binaries;
 `--bin-dir target/debug` packs a debug build for a test; the zips land in `out_mapkit/`, ignored by git).
 
 ## Not yet proven
 
-Tested here: `bash tools/host/update_test.sh` (the updater and the VPS deploy helper on fake tarballs made with the real packer, with
-stand-ins for curl, systemctl and pgrep), actionlint on the workflows, `bash -n` on the scripts, and `DeCombat.bat` run under cmd on
-Windows. Unproven until they run for real: every workflow on GitHub, the iOS build and export, notarisation, and the systemd units and
-root behaviour of `update.sh` on a real host. The first tag should be a pre-release (`v0.0.1-rc1`) and the first deploy `targets: vps`.
+`ci.yml`, `release.yml` and `website.yml` run on the public repository, and the beta tags (`v0.1.0-beta*`) are cut this way.
+Tested without GitHub: `bash tools/host/update_test.sh` (the updater and the VPS deploy helper on fake tarballs made with the
+real packer, with stand-ins for curl, systemctl and pgrep), actionlint on the workflows, `bash -n` on the scripts, and
+`DeCombat.bat` run under cmd on Windows. Still unproven until they run for real: the iOS build and export, notarisation (the
+`DC_MAC_*` secrets are not set), `deploy-servers.yml`, and the systemd units and root behaviour of `update.sh` on a real host.

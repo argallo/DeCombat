@@ -1827,21 +1827,16 @@ impl Shared {
         }
         let mut live: Vec<u16> = Vec::new();
         let server_time = s.table.server_time;
-        for r in s.obs.roster.values() {
-            if Some(r.character) == own_obj
-                || r.character == 0xFFFF
-                || Some(r.pid as u16) == own_pid
-            {
-                continue;
-            }
-            let Some(o) = s.table.objects.get(&r.character) else {
+        let chars = drawn_characters(s, own_obj, own_pid);
+        for (character, pid, name, team) in chars {
+            let Some(o) = s.table.objects.get(&character) else {
                 continue;
             };
-            live.push(r.character);
-            let t = self.tracks.entry(r.character).or_default();
-            t.pid = r.pid;
-            t.name = r.name.clone();
-            t.team = r.team;
+            live.push(character);
+            let t = self.tracks.entry(character).or_default();
+            t.pid = pid;
+            t.name = name;
+            t.team = team;
             t.follow_object_at(o, now, server_time);
             // the drawn aim eases toward the last note on the session clock (cshell+0x256f0, CLI-569)
             if let Some(a) = t.aim.as_mut() {
@@ -1856,7 +1851,7 @@ impl Shared {
                     .iter()
                     .find(|a| a.tracker.is_none())
                     .map(|a| a.state1);
-                self.corpses.animated(r.character, now, main);
+                self.corpses.animated(character, now, main);
             }
         }
         for gone in self.tracks.keys().filter(|k| !live.contains(k)) {
@@ -2080,6 +2075,89 @@ fn thrown_ammo(s: &BotSession, obj: u16) -> Option<u16> {
     (b.bit_len() >= 24)
         .then(|| b.as_bytes().get(2).map(|&a| u16::from(a)))
         .flatten()
+}
+
+/// The player id an AI character's record carries (it has no roster id).
+// SPEC: FIRETEAM_2009.md §1.2 (the record's pid field; an AI is no roster player)
+pub const NPC_PID: u8 = 0xFF;
+/// The create blob type of a character record.
+// SPEC: FIRETEAM_2009.md §1.1 (players and AI characters: create blob type 0x18, one client class)
+pub const CHARACTER_BLOB: u8 = 0x18;
+/// Bits of a character record before the NPC tail (the type byte included).
+// SPEC: FIRETEAM_2009.md §1.2 (the 572-bit fixed record after the type byte; widths 1, 1, 8 x 6, 64, 32 x 6, 96, 96,
+// 32, 32, 1, 8, 1)
+pub const CHARACTER_FIXED_BITS: usize = 8 + 2 + 48 + 64 + 192 + 96 + 96 + 32 + 32 + 1 + 8 + 1;
+
+/// The NPC tail of an AI character's record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpcCharacter {
+    pub team: u8,
+    pub kind: u8,
+    pub caption: String,
+}
+
+/// An AI character: a character record whose first bit (roster binding) is clear and whose second (NPC tail) is set;
+/// its team and caption come from the tail. `None` for players and for blobs the table did not keep.
+// SPEC: FIRETEAM_2009.md §1.2 (path selection: roster_bound 0, has_tail 1; tail T1-T5: u8 rank, u8 team, u8 kind,
+// u32 health, zstr8 caption), §1.8 (the AI's model block is laid out as a player's: the client draws it as one)
+// DC-DEFAULT: CLI-1857 (proposed) an AI character is drawn as a remote body with its caption as the name
+pub fn npc_character(o: &dc_botclient::objects::ClientObject) -> Option<NpcCharacter> {
+    if o.blob_type != Some(CHARACTER_BLOB) {
+        return None;
+    }
+    let b = o.blob.as_ref()?;
+    if b.bit_len() < CHARACTER_FIXED_BITS + 8 * 7 + 8 {
+        return None;
+    }
+    let mut r = b.reader();
+    r.read_u8();
+    let (roster_bound, has_tail) = (r.read_bit(), r.read_bit());
+    if roster_bound || !has_tail {
+        return None;
+    }
+    r.skip_bits(CHARACTER_FIXED_BITS - 10);
+    let _rank = r.read_u8();
+    let team = r.read_u8();
+    let kind = r.read_u8();
+    let _health = r.read_u32();
+    let caption = String::from_utf8_lossy(&r.read_zstr8()).into_owned();
+    Some(NpcCharacter {
+        team,
+        kind,
+        caption,
+    })
+}
+
+/// The characters drawn as remote bodies: (object, pid, name, team) of every roster player's character but the own
+/// one, then every AI character of the object table (CLI-1857: no roster record; its caption is the name, the NPC
+/// tail's team its team).
+// DC-DEFAULT: CLI-1857 (proposed)
+pub fn drawn_characters(
+    s: &BotSession,
+    own_obj: Option<u16>,
+    own_pid: Option<u16>,
+) -> Vec<(u16, u8, String, u8)> {
+    let mut chars: Vec<(u16, u8, String, u8)> = s
+        .obs
+        .roster
+        .values()
+        .filter(|r| {
+            Some(r.character) != own_obj && r.character != 0xFFFF && Some(r.pid as u16) != own_pid
+        })
+        .map(|r| (r.character, r.pid, r.name.clone(), r.team))
+        .collect();
+    let npcs: Vec<(u16, u8, String, u8)> = s
+        .table
+        .objects
+        .iter()
+        .filter(|(obj, _)| Some(**obj) != own_obj && !chars.iter().any(|c| c.0 == **obj))
+        .filter_map(|(&obj, o)| {
+            let n = npc_character(o)?;
+            Some((obj, NPC_PID, n.caption, n.team))
+        })
+        .collect();
+    chars.extend(npcs);
+    chars
 }
 
 /// The thrown objects of the session: objects whose create blob is the thrown-object type, with their model block,
@@ -4312,6 +4390,74 @@ pub mod meter;
 
 #[cfg(test)]
 mod tests {
+
+    /// CLI-1857: an AI character (dc-dserver's NPC record: no roster binding, the NPC tail) is drawn with its caption
+    /// and team; a player's character is drawn from its roster record only; other blobs are no characters.
+    #[test]
+    fn an_ai_character_without_a_roster_record_is_drawn_with_its_caption_and_team() {
+        use dc_botclient::objects::ClientObject;
+        use dc_botclient::record::Recorder;
+        use dc_botclient::session::{BotSession, GameConfig};
+        use dc_botclient::shell::RosterRecord;
+        use dc_dserver::modelobj::{CharacterBlob, NpcBlock};
+        let ai = CharacterBlob::for_npc(
+            [16.0, 40.0, 16.0],
+            NpcBlock {
+                npc_rank: 0,
+                team: 2,
+                kind: 1,
+                health_bits: 1.0f32.to_bits(),
+                caption: b"Guard".to_vec(),
+            },
+        )
+        .write();
+        let player = CharacterBlob::for_player(3, [16.0, 40.0, 16.0], true).write();
+        let obj = |blob: dc_wire::udp::BitWriter| {
+            let mut o = ClientObject::default();
+            o.blob_type = blob.as_bytes().first().copied();
+            o.blob = Some(blob);
+            o
+        };
+        let n = super::npc_character(&obj(ai.clone())).expect("an AI character");
+        assert_eq!((n.team, n.kind, n.caption.as_str()), (2, 1, "Guard"));
+        assert!(super::npc_character(&obj(player.clone())).is_none());
+        let mut other = dc_wire::udp::BitWriter::new();
+        other.write_u8(0x13).write_u32(0);
+        assert!(super::npc_character(&obj(other)).is_none());
+
+        let mut s = BotSession::new(GameConfig::new("Me"), None, Recorder::null("t"));
+        s.table.objects.insert(200, obj(ai));
+        s.table.objects.insert(201, obj(player.clone()));
+        s.table.objects.insert(202, obj(player));
+        s.obs.roster.insert(
+            3,
+            RosterRecord {
+                name: "Dave".into(),
+                pid: 3,
+                character: 201,
+                team: 1,
+                ..Default::default()
+            },
+        );
+        s.obs.roster.insert(
+            4,
+            RosterRecord {
+                name: "Me".into(),
+                pid: 4,
+                character: 202,
+                team: 1,
+                ..Default::default()
+            },
+        );
+        let drawn = super::drawn_characters(&s, Some(202), Some(4));
+        assert_eq!(
+            drawn,
+            vec![
+                (201, 3, "Dave".to_string(), 1),
+                (200, super::NPC_PID, "Guard".to_string(), 2)
+            ]
+        );
+    }
 
     #[test]
     fn the_last_gasp_sends_two_plain_byes_to_the_registered_server_and_nothing_once_cleared() {

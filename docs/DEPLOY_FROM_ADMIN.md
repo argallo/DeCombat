@@ -84,9 +84,21 @@ The fetch timer looks for new commits every 5 minutes. **Check now** (next to th
 at once: `POST /ops/updates/fetch` writes `requests/fetch-<unix>.json`; root's `decombat-deploy.path` starts
 `deploy_from_git.sh run`, which removes the file unread and runs one fetch (never a deploy). The button waits until the
 "checked" time changes. Limits: none within 30 s of the last check (429 from the lobby; root ignores it too), 409 while
-a deploy runs or waits. This needs the `deploy_from_git.sh` with the fetch handling in `/opt/decombat/tools`: a normal
-dashboard deploy of this change installs it (install.sh copies `tools/vps/*.sh`); no unit changes. Until then the old
-script deletes the request file unread and the button just times out after 90 s.
+a deploy runs or waits. This needs the `deploy_from_git.sh` with the fetch handling in `/opt/decombat/tools`. There is no
+one-time step: any dashboard deploy of a commit that has it installs it (install.sh copies `tools/vps/*.sh` into
+`/opt/decombat/tools`), and no unit changes. Until that deploy the old script deletes the request file unread and the
+button just times out after 90 s.
+
+## Checking what is running
+
+On the VPS, without the dashboard:
+
+- `/opt/decombat/deploy/available.json`: written by every fetch. `running` is the commit the lobby was installed from,
+  `master` is the newest commit of master the mirror has; the commits between are listed beside them.
+- `/opt/decombat/bin/COMMIT.txt`: the commit, install time and tarball checksum of the installed binaries.
+- `systemctl is-active decombat-lobby decombat-lobby@modded`: `active` for each lobby (the default one and the Hacking Mod
+  instance). A deploy checks the same after its restart.
+- `sudo bash /opt/decombat/tools/deploy_from_git.sh status`: the last deploy's status.
 
 ## Deploying
 

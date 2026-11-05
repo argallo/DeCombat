@@ -9,6 +9,19 @@ decombat.com (Firebase) --fetch--> https://beta.decombat.com (Cloudflare, proxie
                            you: operator page (ssh tunnel) or `dc-lobby-server beta ...` ----------------+--> invite / feedback mail (Resend)
 ```
 
+## 0. What a tester sees
+
+A mailed invite code is used on the registration page, `https://beta.decombat.com/register` (the game's Sign up screen takes
+the same code). Notes for the people you invite:
+
+- The registration makes the **login**. The **in-game name** is chosen at the first sign-in, on the game's nickname screen.
+  It must differ from the login (ignoring case) and be 4 to 12 characters long; the lobby refuses a name that is taken.
+- Names beginning with "GM" are reserved: only an account the operator has flagged as a game master (`dc-lobby-server
+  account ... gm <NAME> --on`, docs/VPS.md section 7) can use one. A tester who types one is refused the name.
+- The Hacking Mod lobby (the modded instance) keeps its own progress. The login works there too (one identity), but the
+  character, rank, items and NX on that lobby are new and separate from the vanilla lobby's; its name is taken from the
+  in-game name, with a number added if that name is already used there.
+
 ## 1. The lobby: `[beta]` and `[mail]`
 
 `[mail]` must work first (docs/SERVER.md section 4b; the same Resend account that sends the recovery mails). Then in the

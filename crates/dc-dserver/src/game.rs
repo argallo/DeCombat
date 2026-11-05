@@ -1788,6 +1788,11 @@ pub struct Game {
     spawn_modes: Vec<Option<Vec<u8>>>,
     /// Whether each spawn point is a DeCombat-vocabulary object (index-aligned with `spawns`; MAP-21).
     spawn_dc: Vec<bool>,
+    /// The name of each spawn point and whether it is locked now (index-aligned with `spawns`; DSV-569), with the
+    /// file's locks for a round reset.
+    spawn_names: Vec<Vec<u8>>,
+    spawn_locked: Vec<bool>,
+    spawn_locked_file: Vec<bool>,
     room: RoomSettings,
     rules: RoomRules,
     players: BTreeMap<u8, Player>,
@@ -1918,6 +1923,9 @@ impl Game {
             spawns,
             spawn_modes: world.spawn_modes.clone(),
             spawn_dc: world.spawn_dc.clone(),
+            spawn_names: world.spawn_names.clone(),
+            spawn_locked: world.spawn_locked.clone(),
+            spawn_locked_file: world.spawn_locked.clone(),
             room: RoomSettings::default(),
             rules: RoomRules {
                 mode_class: GENERIC_MODE_CLASS,
@@ -2264,6 +2272,52 @@ impl Game {
         self.choose_spawn_for(team, key, None)
     }
 
+    /// Which spawn points are candidates (index-aligned with `spawns`): the unlocked ones; every point when the
+    /// statements locked them all (a world whose scripts we do not follow must still spawn its players).
+    // DC-DEFAULT: DSV-569 (proposed)
+    fn spawn_open(&self) -> Vec<bool> {
+        let open: Vec<bool> = (0..self.spawns.len())
+            .map(|i| !self.spawn_locked.get(i).copied().unwrap_or(false))
+            .collect();
+        if open.iter().any(|o| *o) {
+            open
+        } else {
+            vec![true; self.spawns.len()]
+        }
+    }
+
+    /// A world statement locks (`true`) or unlocks the spawn points named `name` (ASCII case ignored); the number of
+    /// points whose lock changed.
+    // OBSERVED: ROM world SANDHOG_CP1 (each checkpoint trigger locks the start group behind the players and unlocks
+    // the next with one `msg <point> lock|unlock` statement per point)
+    // DC-DEFAULT: DSV-569 (proposed)
+    pub fn set_spawn_lock(&mut self, name: &[u8], locked: bool) -> usize {
+        let mut changed = 0;
+        for (i, n) in self.spawn_names.iter().enumerate() {
+            if n.is_empty() || !n.eq_ignore_ascii_case(name) {
+                continue;
+            }
+            if let Some(l) = self.spawn_locked.get_mut(i) {
+                if *l != locked {
+                    *l = locked;
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Whether each spawn point is locked now (index-aligned with the world's spawn points; DSV-569).
+    pub fn spawn_locks(&self) -> &[bool] {
+        &self.spawn_locked
+    }
+
+    /// The spawn points' locks as the file has them (a new round, DSV-564).
+    // DC-DEFAULT: DSV-569 (proposed)
+    pub fn reset_spawn_locks(&mut self) {
+        self.spawn_locked = self.spawn_locked_file.clone();
+    }
+
     /// Whether a living player other than `who` stands on the spawn point `at`: horizontal distance below
     /// [`GameTuning::spawn_occupied_radius`] and the feet within one stand box height of the point.
     // DC-DEFAULT: DSV-159 (proposed) a point is occupied while a living player stands on it
@@ -2295,13 +2349,23 @@ impl Game {
                 .map(|s| (s.0, s.1))
                 .collect::<Vec<_>>()
         };
+        // DC-DEFAULT: DSV-569 (proposed) a locked point is no candidate; every point when all are locked
+        let open = self.spawn_open();
+        let all: Vec<([f32; 3], [f32; 3], Option<u8>)> = self
+            .spawns
+            .iter()
+            .zip(&open)
+            .filter(|(_, o)| **o)
+            .map(|(s, _)| *s)
+            .collect();
         // DC-DEFAULT: DSV-470 (project decision) classes 12 / 13 on the Search and Destroy set
         let in_mode: Vec<([f32; 3], [f32; 3], Option<u8>)> = self
             .spawns
             .iter()
             .zip(self.spawn_set())
-            .filter(|(_, m)| *m)
-            .map(|(s, _)| *s)
+            .zip(&open)
+            .filter(|((_, m), o)| *m && **o)
+            .map(|((s, _), _)| *s)
             .collect();
         // DC-DEFAULT: DSV-150 (proposed) FFA: any spawn point of the room's mode, else any point (no team filter)
         let ffa = self.is_ffa();
@@ -2311,13 +2375,13 @@ impl Game {
             pick(&|t| t == Some(team), &in_mode)
         };
         if cands.is_empty() && !ffa {
-            cands = pick(&|t| t == Some(team), &self.spawns);
+            cands = pick(&|t| t == Some(team), &all);
         }
         if cands.is_empty() {
-            cands = pick(&|t| t.is_none(), &self.spawns);
+            cands = pick(&|t| t.is_none(), &all);
         }
         if cands.is_empty() {
-            cands = pick(&|_| true, &self.spawns);
+            cands = pick(&|_| true, &all);
         }
         if cands.is_empty() {
             return (self.centre, [0.0; 3]);
@@ -4698,6 +4762,47 @@ mod tests {
             seen.insert(g.choose_spawn(1).0[0] as i32);
         }
         assert_eq!(seen.len(), 3, "{seen:?}");
+    }
+
+    /// DSV-569: a spawn point the file locks is no candidate until a statement unlocks it; the statements move the
+    /// open set (lock the first group, unlock the second); with every point locked any point is used; a new round
+    /// restores the file's locks.
+    #[test]
+    fn locked_spawn_points_are_skipped_until_a_statement_unlocks_them() {
+        let mut w = world();
+        w.spawns = (0..6)
+            .map(|i| SpawnPoint {
+                pos: [100.0 * i as f32, 0.0, 0.0],
+                rot: [0.0; 3],
+                team_filter: Some(b"Red".to_vec()),
+            })
+            .collect();
+        w.spawn_modes = vec![None; 6];
+        w.spawn_dc = vec![false; 6];
+        w.spawn_names = (0..6).map(|i| format!("Start{i}").into_bytes()).collect();
+        // points 0, 1 open; 2, 3 locked (the next checkpoint); 4, 5 locked
+        w.spawn_locked = vec![false, false, true, true, true, true];
+        let mut g = Game::new(GameTuning::default(), &w, tables());
+        let xs = |g: &mut Game| {
+            (0..60)
+                .map(|_| g.choose_spawn(1).0[0] as i32)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(xs(&mut g), [0, 100].into());
+        for i in 0..2 {
+            assert_eq!(g.set_spawn_lock(format!("start{i}").as_bytes(), true), 1);
+        }
+        assert_eq!(g.set_spawn_lock(b"START2", false), 1);
+        assert_eq!(g.set_spawn_lock(b"Start3", false), 1);
+        assert_eq!(g.set_spawn_lock(b"Start3", false), 0, "no change");
+        assert_eq!(g.set_spawn_lock(b"NoSuchPoint", false), 0);
+        assert_eq!(xs(&mut g), [200, 300].into());
+        for i in 2..4 {
+            g.set_spawn_lock(format!("Start{i}").as_bytes(), true);
+        }
+        assert_eq!(xs(&mut g).len(), 6, "every point locked: any point");
+        g.reset_spawn_locks();
+        assert_eq!(xs(&mut g), [0, 100].into());
     }
 
     fn spec_order() -> GameTuning {

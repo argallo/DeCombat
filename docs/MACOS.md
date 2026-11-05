@@ -184,9 +184,31 @@ this file is the port's working record.
   on other platforms), `dc-wire/src/filetime.rs`, the lobby and bot `clock.rs`, `dc-render/src/perf.rs` (process
   memory reads `None`). This branch only made the hang-dump unit tests Windows-only.
 
+## Working with two repos
+
+There are two repositories, and a Mac session touches only one of them.
+
+- **Private working repository**, the private working repository: the origin of the Mac clone. Clone it (or pull) and
+  start from `master`. Work on a branch of its own (`mac-session-N`), commit there and push the branch to that origin.
+  The coordinator merges it into master with `--no-ff`; do not merge to master or push to it yourself.
+- **Public repository**, `argallo/DeCombat`: export-only. A scrubbing tool copies private master into it and nothing else
+  ever lands there, so never add it as a remote to push to, and never open pull requests or commit in it. Releases and the
+  website come from it (docs/RELEASES.md).
+
+Two things that look like Mac jobs and are not as simple:
+
+- **The friend pack** is built with `bash tools/friend_pack_mac.sh --server play.decombat.com --fingerprint <fp>`. The
+  fingerprint is the pinned value of the repository variable `DC_FRIEND_FINGERPRINT`, the same one the Windows pack uses
+  (ask the coordinator for it; it is not in the tree). A pack without it trusts the server at the first login. The release
+  workflow builds the same zip for downloads; a local one is for testing.
+- **Map packs are not re-exported on the Mac.** `dc-mapkit export <dir> --zip` is not byte-identical across platforms: the
+  same project gives a different zip, so a different SHA-256, on Windows and on macOS. The Windows export is the published
+  one, and the `sha256` of a pack in `community/vanilla_plus.json` is whichever zip the operator uploaded to the server. A
+  pack that is already published is not exported again on the Mac: its hash would no longer match the file the server holds.
+
 ## (a) What to pull onto the Mac
 
-1. The git repository, branch `mac-check-r1` (or master once it is merged); the Rust workspace is the `rust/`
+1. The git repository, `master` of the private origin (above); the Rust workspace is the `rust/`
    folder of the repo. No Windows build output (`target/`, ``, the friend zip, `tools/msvc2022`,
    `tools/rust`) is needed. `cargo_env.py` is Windows-only: use plain `cargo` on the Mac.
 2. Your own 2009 EU client folder: the ROM. Copy the whole folder (on the dev machine

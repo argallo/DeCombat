@@ -102,6 +102,12 @@ pub struct WorldInfo {
     /// Whether each player spawn point is a DeCombat-vocabulary object (index-aligned with `spawns`; an empty mode
     /// filter on such a point serves every mode, MAP-21).
     pub spawn_dc: Vec<bool>,
+    /// The name of each player spawn point (index-aligned with `spawns`; empty without one): the target of the
+    /// world statements that lock and unlock it (DSV-569).
+    pub spawn_names: Vec<Vec<u8>>,
+    /// Whether the file marks each player spawn point locked (index-aligned with `spawns`; DSV-569): a locked point
+    /// is no spawn candidate until a statement unlocks it.
+    pub spawn_locked: Vec<bool>,
     /// The closed models of the kill volumes (the server's kill test, DSV-52, proposed).
     pub kill_shapes: Vec<crate::killvol::VolumeShape>,
     /// The sliding doors (DSV-46, proposed).
@@ -959,6 +965,20 @@ pub fn world_from_bytes(data: &[u8], announce: &str, display: &str) -> Result<Wo
             .objects_with_role(ObjectRole::PlayerSpawn)
             .filter(|o| o.position().is_some())
             .map(is_dc_object)
+            .collect(),
+        spawn_names: w
+            .objects_with_role(ObjectRole::PlayerSpawn)
+            .filter(|o| o.position().is_some())
+            .map(|o| o.name().map(<[u8]>::to_vec).unwrap_or_default())
+            .collect(),
+        // OBSERVED: ROM world spawn points (SANDHOG_CP1: 8 of its 32 co-op start points are open, the other 24 are
+        // locked in the file and unlocked group by group by the checkpoint triggers' statements; no other world
+        // locks one)
+        // DC-DEFAULT: DSV-569 (proposed) a start point the file locks is no spawn candidate while locked
+        spawn_locked: w
+            .objects_with_role(ObjectRole::PlayerSpawn)
+            .filter(|o| o.position().is_some())
+            .map(|o| prop_bool(o, crate::doors::PROP_LOCKED).unwrap_or(false))
             .collect(),
         kill_shapes: crate::killvol::kill_shapes(&w),
         doors: crate::doors::door_infos(&w),

@@ -10,13 +10,16 @@
 //!   co-op room (before: left out, an open doorway) with a disabled entry (no prompt); the use key does not open
 //!   them; the trigger box in front of the sliding one unlocks it when a player walks in, then the use key opens it;
 //!   a locked gate's locked command fires the trigger that unlocks the other side's gates.
+//! - SANDHOG_CP1's start points come in groups; the file locks all but the first, and checkpoint trigger boxes lock
+//!   the group behind and unlock the next (live report 2026-11-04 "players did not start at the mission's start
+//!   point"): a co-op room spawns on the open group only, and walking into a checkpoint box moves the open set.
 //!
 //! Counts and comparisons only; no ROM name appears in the source or the output.
 // OBSERVED: the ROM OVERDOSE world (rotating switches: player-activate, no activate type, on / off commands
 // `msg <room>.<trigger> trigger`, the triggers' `msg <model> (visible 0|1)` and a light-group switch; the lit models
 // start invisible, non-solid and without ray-hit); the ROM SANDHOG_CP1 world (locked player-activated rotating and
 // sliding doors with locked sounds and commands; player-triggerable boxes that fire once and unlock them)
-// DC-DEFAULT: DSV-560, DSV-561, DSV-562, DSV-563 (proposed)
+// DC-DEFAULT: DSV-560, DSV-561, DSV-562, DSV-563, DSV-569 (proposed)
 
 use dc_dserver::doors::{
     parse_statements, run_world, use_key, DelayedStatements, Door, OpenBy, Triggers, TurnDoor,
@@ -427,4 +430,86 @@ fn rom_sandhog_cp1_locked_doors_stay_shut_until_unlocked() {
     press_use(&mut server, &mut peers, &mut now, 3000);
     let d = server.doors().iter().find(|d| d.obj == sobj).unwrap();
     assert!(d.offset > 0.0, "opened by the use key");
+}
+
+#[test]
+fn rom_sandhog_cp1_spawns_on_the_open_start_group_and_checkpoints_move_it() {
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let Some(arg) = world_arg(&rom, "SANDHOG_CP1") else {
+        println!("skipped: no co-op Sand Hog world");
+        return;
+    };
+    let Some(key) = coop_key(&rom) else {
+        println!("skipped: no co-op mode in the room table");
+        return;
+    };
+    let (tables, _) = RomTables::load(&rom);
+    let w = load_from_rom(&rom, &arg, NameForm::Listed, None).expect("Sand Hog CP1");
+    let open: Vec<usize> = (0..w.spawns.len())
+        .filter(|i| !w.spawn_locked[*i])
+        .collect();
+    let locked = w.spawns.len() - open.len();
+    assert!(
+        !open.is_empty() && locked > 0,
+        "the file locks some start points"
+    );
+    println!(
+        "{} start points: {} open, {locked} locked",
+        w.spawns.len(),
+        open.len()
+    );
+    // the checkpoint: a box players walk into whose statements unlock start points
+    let named = |n: &[u8]| w.spawn_names.iter().position(|s| s.eq_ignore_ascii_case(n));
+    let checkpoint = w
+        .triggers
+        .iter()
+        .filter(|t| t.touch)
+        .find(|t| {
+            t.cmds.iter().any(|c| {
+                parse_statements(c)
+                    .iter()
+                    .any(|s| named(&s.target).is_some_and(|i| w.spawn_locked[i]))
+            })
+        })
+        .cloned()
+        .expect("a checkpoint box unlocks start points");
+    let (lo, hi) = (w.extent_min, w.extent_max);
+    let mut cfg = ServerTuning::default();
+    cfg.game.move_check = false;
+    let mut server = Server::with_tables(cfg, w.clone(), tables, 0);
+    assert!(server.handle_line(0, &format!("room key={key} type=5 goal=0 ff=0 time=600")));
+    assert!(server.handle_line(0, "user 7 3 99 0 120 Dave"));
+    let mut peers = peers(lo, hi, &[(1, "Dave")], 5);
+    let mut now = 0u32;
+    while now < 30_000 && peers[0].client.life_state() != 1 {
+        step(&mut server, &mut peers, now);
+        now += 5;
+    }
+    assert_eq!(peers[0].client.life_state(), 1, "alive");
+    // the spawn: on an open point (x / z; the height drops to the floor)
+    let p = server.game().players().values().next().unwrap().pos;
+    let at = |i: usize| (w.spawns[i].pos[0] - p[0]).hypot(w.spawns[i].pos[2] - p[2]) < 1.0;
+    assert!(
+        open.iter().any(|&i| at(i)),
+        "spawned on an open start point, not on a locked one"
+    );
+    // into the checkpoint box: its statements lock and unlock start points
+    let before = server.game().spawn_locks().to_vec();
+    stand_at(&mut server, &mut peers, &mut now, checkpoint.pos);
+    let after = server.game().spawn_locks().to_vec();
+    let unlocked: Vec<usize> = (0..after.len())
+        .filter(|i| before[*i] && !after[*i])
+        .collect();
+    let relocked: Vec<usize> = (0..after.len())
+        .filter(|i| !before[*i] && after[*i])
+        .collect();
+    assert!(
+        !unlocked.is_empty(),
+        "the checkpoint unlocked the next group"
+    );
+    println!(
+        "checkpoint: {} start points unlocked, {} locked",
+        unlocked.len(),
+        relocked.len()
+    );
 }

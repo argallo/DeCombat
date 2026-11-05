@@ -1197,6 +1197,9 @@ pub struct Triggers {
     pub inside: Vec<bool>,
     /// How many runs stopped at the statement budget ([`TRIGGER_STATEMENTS`]).
     pub over_budget: u32,
+    /// The `lock` / `unlock` statements of the runs (target, lock), for the objects outside doors and triggers: the
+    /// session hands them to the player spawn points (DSV-569) and empties the list.
+    pub locks: Vec<(Vec<u8>, bool)>,
 }
 
 /// How far around its box a player's position still touches a trigger (the body's half width).
@@ -1221,6 +1224,7 @@ impl Triggers {
             fires: vec![0; n],
             inside: vec![false; n],
             over_budget: 0,
+            locks: Vec::new(),
             list,
         }
     }
@@ -1331,6 +1335,10 @@ fn apply(
     }
     if w == WORD_LOCK || w == WORD_UNLOCK {
         triggers.set_lock(&st.target, w == WORD_LOCK);
+        // DC-DEFAULT: DSV-569 (proposed) the spawn points' locks; bounded like the statements of a run
+        if triggers.locks.len() < TRIGGER_STATEMENTS {
+            triggers.locks.push((st.target.clone(), w == WORD_LOCK));
+        }
     }
     for d in doors
         .iter_mut()
@@ -2047,6 +2055,31 @@ mod script_tests {
             link: Vec::new(),
             locked,
         }
+    }
+
+    /// DSV-569: a touched trigger's `lock` / `unlock` statements are handed on in order (the spawn points take
+    /// them), with a delayed one when it is due.
+    #[test]
+    fn lock_statements_are_handed_on_for_the_spawn_points() {
+        let cp = trigger(
+            "Checkpoint",
+            &[
+                "msg StartA lock;\r\nmsg StartB unlock;",
+                "delay 2 (msg StartC unlock);",
+            ],
+            1,
+            Some([0.0; 3]),
+        );
+        let mut trig = Triggers::new(vec![cp]);
+        let mut dl = DelayedStatements::new();
+        let fired = trig.touch(&[[0.0; 3]]);
+        run_world(&mut [], &mut [], &mut trig, &mut dl, fired, 0);
+        assert_eq!(
+            std::mem::take(&mut trig.locks),
+            vec![(b"StartA".to_vec(), true), (b"StartB".to_vec(), false)]
+        );
+        run_world(&mut [], &mut [], &mut trig, &mut dl, Vec::new(), 2000);
+        assert_eq!(trig.locks, vec![(b"StartC".to_vec(), false)]);
     }
 
     fn trigger(name: &str, cmds: &[&str], max: u32, touch: Option<[f32; 3]>) -> ScriptTrigger {
