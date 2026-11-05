@@ -174,6 +174,7 @@ fn shot_crate_and_drum_play_their_world_effects() {
         hit_points: 60.0,
         death: vec![DeathAction::Effect(b"crate1fx".to_vec())],
         skipped: 0,
+        script: Vec::new(),
     });
     info.destructibles.breakables.push(BreakableInfo {
         name: b"drum1".to_vec(),
@@ -183,6 +184,7 @@ fn shot_crate_and_drum_play_their_world_effects() {
             DeathAction::Explode(0),
         ],
         skipped: 0,
+        script: Vec::new(),
     });
 
     let args = dc_dserver::cli::parse(

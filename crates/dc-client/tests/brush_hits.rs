@@ -258,6 +258,7 @@ fn server_world(bytes: &[u8], tables: &RomTables, fx: (&str, &str)) -> WorldInfo
         hit_points: hp,
         death: vec![DeathAction::Effect(b"crate1fx".to_vec())],
         skipped: 0,
+        script: Vec::new(),
     });
     info.destructibles.breakables.push(BreakableInfo {
         name: b"drum1".to_vec(),
@@ -267,6 +268,7 @@ fn server_world(bytes: &[u8], tables: &RomTables, fx: (&str, &str)) -> WorldInfo
             DeathAction::Explode(0),
         ],
         skipped: 0,
+        script: Vec::new(),
     });
     let w = dc_world::World::parse(bytes).expect("world file");
     info.destructibles.add_shapes(&w);
