@@ -312,7 +312,11 @@ mod tests {
         let _ = c.recv_within(Duration::from_millis(100));
         let (_, from2) = srv.recv_from(&mut buf).unwrap();
         assert_ne!(from1.port(), from2.port());
-        assert_eq!(c.ports().len(), 2);
-        assert_eq!(c.summary().unwrap().3.rebinds, 1);
+        // at least one rebind: a slow runner (CI, macOS) can cross the next 300 ms rebind before the send
+        let ports = c.ports().len();
+        let rebinds = c.summary().unwrap().3.rebinds as usize;
+        assert!((2..=3).contains(&ports), "{ports} ports");
+        assert!((1..=2).contains(&rebinds), "{rebinds} rebinds");
+        assert_eq!(ports, rebinds + 1);
     }
 }
