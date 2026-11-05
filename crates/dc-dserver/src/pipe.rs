@@ -56,6 +56,16 @@ pub const TOKEN_RANK: &str = "rank";
 pub const TOKEN_CLAN: &str = "clan";
 pub const TOKEN_CLAN_NAME: &str = "clanlabel";
 pub const TOKEN_CLAN_MARK: &str = "mark";
+/// Trailing `user` line tokens of the name colours: `namecolour=<word>` (the player name's colour) and
+/// `clancolour=<word>` (the clan name's colour, read with the clan tokens), each the colour word `0xAARRGGBB` in
+/// decimal that the lobby looked up in the user's ROM colour table for the player's colour item numbers; absent or 0 =
+/// the default colour. The dedicated server puts them into `h1` and `g3` of `GS_PLAYER_INFO`.
+// SPEC: GAME_MESSAGES_2009_S2C.md §3.2.1 fields 16-17 (`g3` record +0x1dc, `h1` record +0x1d8: colour words)
+// EVIDENCE: cshell+0x3f2c0 (the 2009 client keeps the colour words of its 0x303 colour numbers, shell +0x434 /
+// +0x438), cshell+0x23ccb0 (it sends them in its player info, `word_d` / `clan_word_c`, the slots of `h1` / `g3`)
+// DC-DEFAULT: DSV-606 (proposed) the lobby, not the client's player info, tells the server the colours
+pub const TOKEN_NAME_COLOUR: &str = "namecolour";
+pub const TOKEN_CLAN_COLOUR: &str = "clancolour";
 
 /// The clan part of a player's badge (`clan=`, `clanlabel=`, `mark=` tokens).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -66,6 +76,8 @@ pub struct ClanBadge {
     /// Clan mark ids in the lobby's order: emblem, then background.
     pub emblem: u32,
     pub background: u32,
+    /// `clancolour=`: the clan name's colour word (0 = the default colour).
+    pub colour: u32,
 }
 
 /// Escapes a value for one `k=v` token: `%` and every whitespace character become `%XX` (UTF-8 bytes), so the value
@@ -219,6 +231,12 @@ impl RosterEntry {
         self.token_u32(TOKEN_RANK)
     }
 
+    /// `namecolour=<word>`: the player name's colour word (0 without the token or with a bad value).
+    // DC-DEFAULT: DSV-606 (proposed)
+    pub fn name_colour(&self) -> u32 {
+        self.token_u32(TOKEN_NAME_COLOUR).unwrap_or(0)
+    }
+
     /// The clan badge: `clan=<n>` with `n` > 0, its name and mark (missing parts empty / 0); `None` when the player
     /// has no clan.
     // DC-DEFAULT: DSV-141 (proposed)
@@ -239,6 +257,7 @@ impl RosterEntry {
                 .unwrap_or_default(),
             emblem,
             background,
+            colour: self.token_u32(TOKEN_CLAN_COLOUR).unwrap_or(0),
         })
     }
 
@@ -744,9 +763,21 @@ mod tests {
                         id: 77,
                         name: "Night Owls%".into(),
                         emblem: 5,
-                        background: 9
+                        background: 9,
+                        colour: 0
                     })
                 );
+                assert_eq!(u.name_colour(), 0, "no token, the default colour");
+            }
+            other => panic!("{other:?}"),
+        }
+        // DC-DEFAULT: DSV-606 (proposed) the name and clan colour words
+        match parse_control(
+            "user 9 5 1 0 0 Mo clan=3 mark=1/2 clancolour=4278255360 namecolour=4294901760",
+        ) {
+            Control::User(u) => {
+                assert_eq!(u.name_colour(), 0xffff_0000);
+                assert_eq!(u.clan().map(|c| c.colour), Some(0xff00_ff00));
             }
             other => panic!("{other:?}"),
         }

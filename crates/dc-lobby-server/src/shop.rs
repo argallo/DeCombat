@@ -43,6 +43,9 @@ pub struct ShopTables {
     pub all_products: Vec<i32>,
     /// `[NameColorTable] ColorMax` of the ROM colour table (0 = unknown).
     pub name_colours: u32,
+    /// `Color1`.. of `[NameColorTable]` as colour words `0xAARRGGBB` (LG-406: what the game server gets for a
+    /// player's name and clan colour numbers).
+    pub name_colour_words: Vec<u32>,
     /// `[CrosshairColorTable] ColorMax` (0 = unknown).
     pub reticle_colours: u32,
     /// Build day of the ROM (days since 1970-01-01, from the PE time stamp of `Game/CShell.dll`).
@@ -83,13 +86,25 @@ impl ShopTables {
                     .collect()
             })
             .unwrap_or_default();
-        let (name_colours, reticle_colours) =
+        let (name_colours, reticle_colours, name_colour_words) =
             match ButeDoc::from_vfs(vfs, "ATTRIBUTES.rez", "ATTRIBUTES\\COLORTABLE.TXT") {
-                Some(d) => (
-                    d.get_int("NameColorTable", "ColorMax", 0).max(0) as u32,
-                    d.get_int("CrosshairColorTable", "ColorMax", 0).max(0) as u32,
-                ),
-                None => (0, 0),
+                Some(d) => {
+                    let max = d.get_int("NameColorTable", "ColorMax", 0).max(0) as u32;
+                    let words = (1..=max)
+                        .map(|n| {
+                            colour_word(
+                                d.get_str("NameColorTable", &format!("Color{n}"))
+                                    .unwrap_or(""),
+                            )
+                        })
+                        .collect();
+                    (
+                        max,
+                        d.get_int("CrosshairColorTable", "ColorMax", 0).max(0) as u32,
+                        words,
+                    )
+                }
+                None => (0, 0, Vec::new()),
             };
         let head = dc_rom::server_rom::shell_image(dir);
         let rom_build_day = head
@@ -101,12 +116,40 @@ impl ShopTables {
                 catalog,
                 all_products,
                 name_colours,
+                name_colour_words,
                 reticle_colours,
                 rom_build_day,
             },
             notes,
         )
     }
+
+    /// The colour word of name colour number `n` (0 for 0 or past the table: the default colour).
+    // EVIDENCE: cshell+0x1dcda0 (0 < n <= count: entry n - 1, else 0)
+    pub fn name_colour_word(&self, n: u32) -> u32 {
+        match n {
+            0 => 0,
+            n => self
+                .name_colour_words
+                .get(n as usize - 1)
+                .copied()
+                .unwrap_or(0),
+        }
+    }
+}
+
+/// A colour table value `<r, g, b>` as the opaque colour word `0xffRRGGBB` (missing parts 0, each clamped to
+/// 0..255).
+// DISASM: cshell+0x1dd97e..0x1ddab3 (the table reader: 0xff000000 | r << 16 | g << 8 | b)
+pub fn colour_word(v: &str) -> u32 {
+    let c: Vec<f32> = v
+        .trim()
+        .trim_matches(|c| c == '<' || c == '>')
+        .split(',')
+        .filter_map(|x| x.trim().parse().ok())
+        .collect();
+    let g = |i: usize| c.get(i).copied().unwrap_or(0.0).clamp(0.0, 255.0) as u32;
+    0xff00_0000 | g(0) << 16 | g(1) << 8 | g(2)
 }
 
 /// One item of a product: catalogue number, type code, consume kind, period / count.
@@ -1168,6 +1211,10 @@ mod tests {
         let view = cat.view_list();
         assert!(view.len() > 100, "{}", view.len());
         assert!(r.shop.name_colours > 0 && r.shop.reticle_colours > 0);
+        // LG-406: every name colour number has its opaque colour word
+        assert_eq!(r.shop.name_colour_words.len(), r.shop.name_colours as usize);
+        assert!(r.shop.name_colour_words.iter().all(|w| w >> 24 == 0xff));
+        assert_eq!(r.shop.name_colour_word(0), 0);
         let y2005 = dc_bute::day_number(2005, 1, 1).unwrap();
         let y2030 = dc_bute::day_number(2030, 1, 1).unwrap();
         assert!(

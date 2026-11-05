@@ -95,6 +95,8 @@ pub struct UserRow {
     /// Nation index (+0x3e): the row of the country table whose flag the row draws (0 = none).
     // CLI-1024: the field was dropped, so the lobby user list drew no flag
     pub nation: u32,
+    /// Name colour number (+0x3a) of the ROM colour table (0 = none): CLI-1887, the row's name in that colour.
+    pub name_colour: u32,
 }
 
 /// The fields of a profile reply 0x379 the lobby's user menu shows.
@@ -1292,6 +1294,12 @@ pub enum LinkEvent {
         state: i32,
         sub: i32,
     },
+    /// CLI-1887: a room member record's name and clan-name colour numbers (+0xac / +0xb0, 0 = none).
+    MemberColour {
+        id: u32,
+        name: u32,
+        clan: u32,
+    },
     RoomSetting {
         kind: u32,
         value: u32,
@@ -1565,6 +1573,7 @@ fn event_label(e: &LinkEvent) -> &'static str {
         LinkEvent::MemberRemoved { .. } => "MemberRemoved",
         LinkEvent::MemberTeam { .. } => "MemberTeam",
         LinkEvent::MemberState { .. } => "MemberState",
+        LinkEvent::MemberColour { .. } => "MemberColour",
         LinkEvent::RoomSetting { .. } => "RoomSetting",
         LinkEvent::RoomHacks { .. } => "RoomHacks",
         LinkEvent::RoomHardcore(_) => "RoomHardcore",
@@ -1835,6 +1844,7 @@ pub fn user_row(d: &[u8], o: usize) -> UserRow {
         mark: u32_at(d, o + 0x32),
         ground: u32_at(d, o + 0x36),
         nation: u32_at(d, o + 0x3e),
+        name_colour: u32_at(d, o + 0x3a),
     }
 }
 
@@ -1858,6 +1868,17 @@ pub fn member_row(d: &[u8], o: usize) -> (u32, RoomMember) {
 fn member_sub(d: &[u8], o: usize, id: u32, state: i32) -> Option<LinkEvent> {
     let sub = i32_at(d, o + 0x3e);
     (sub != 0).then_some(LinkEvent::MemberState { id, state, sub })
+}
+
+/// CLI-1887: the [`LinkEvent::MemberColour`] of a member record (sent for every record, so a colour that went away
+/// clears).
+// SPEC: PROTOCOL_2009.md §3.7 table 3.7b (+0xac / +0xb0 name / clan-name colour ids)
+fn member_colour(d: &[u8], o: usize, id: u32) -> LinkEvent {
+    LinkEvent::MemberColour {
+        id,
+        name: u32_at(d, o + 0xac),
+        clan: u32_at(d, o + 0xb0),
+    }
 }
 
 /// A chat line 0x3051 (`None` without text).
@@ -3794,6 +3815,7 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
                 if o + ROOM_USER_RECORD_SIZE <= d.len() {
                     let (uid, m) = member_row(d, o);
                     subs.extend(member_sub(d, o, uid, m.state));
+                    subs.push(member_colour(d, o, uid));
                     members.insert(uid, m);
                 }
             }
@@ -3811,6 +3833,7 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
             let sub = member_sub(d, 6, uid, m.state);
             ev.push(LinkEvent::MemberAdded(uid, m));
             ev.extend(sub);
+            ev.push(member_colour(d, 6, uid));
         }
         ROOM_USER_REMOVE_PUSH => {
             let (uid, reason) = (u32_at(d, 6), u32_at(d, 0xa));
@@ -4689,14 +4712,45 @@ mod tests {
         let mut ev = Vec::new();
         dispatch(s, ROOM_USERS_REPLY, &d, &mut ev);
         assert!(matches!(ev[0], LinkEvent::Members(ref m) if m.len() == 2));
+        let states: Vec<_> = ev[1..]
+            .iter()
+            .filter(|e| matches!(e, LinkEvent::MemberState { .. }))
+            .collect();
         assert!(matches!(
-            ev[1..],
+            states[..],
             [LinkEvent::MemberState {
                 id: 12,
                 state: 0,
                 sub: 1
             }]
         ));
+    }
+
+    /// CLI-1887: every member record gives its name / clan-name colour numbers (+0xac / +0xb0), the room list and
+    /// the user list keep them.
+    #[test]
+    fn member_and_user_records_carry_their_colour_numbers() {
+        let (mut w, _rx, _peer) = held_worker(None);
+        let s = w.session.as_mut().unwrap();
+        let mut d = vec![0u8; 0x12 + 2 * ROOM_USER_RECORD_SIZE];
+        d[0xe..0x12].copy_from_slice(&2u32.to_le_bytes());
+        for (k, (id, name, clan)) in [(11u32, 0u32, 0u32), (12, 4, 7)].iter().enumerate() {
+            let o = 0x12 + k * ROOM_USER_RECORD_SIZE;
+            d[o + 4..o + 8].copy_from_slice(&id.to_le_bytes());
+            d[o + 0xac..o + 0xb0].copy_from_slice(&name.to_le_bytes());
+            d[o + 0xb0..o + 0xb4].copy_from_slice(&clan.to_le_bytes());
+        }
+        let mut ev = Vec::new();
+        dispatch(s, ROOM_USERS_REPLY, &d, &mut ev);
+        let mut data = super::super::MenuData::default();
+        for e in &ev {
+            super::super::shared_event(&mut data, e);
+        }
+        assert_eq!(data.member_colour.get(&12), Some(&(4, 7)));
+        assert_eq!(data.member_colour.get(&11), Some(&(0, 0)));
+        let mut u = vec![0u8; 0x42];
+        u[0x3a..0x3e].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(user_row(&u, 0).name_colour, 5);
     }
 
     #[test]

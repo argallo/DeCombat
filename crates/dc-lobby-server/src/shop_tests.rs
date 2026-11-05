@@ -1934,3 +1934,48 @@ Itemtype=21
     assert_eq!((u32_at(&p, 0xe), u32_at(&p, 0x12)), (1, uid as u32));
     assert_eq!(gains(&mut st), base, "a used-up pass pays nothing");
 }
+
+/// LG-406: the game server's `user` line carries the colour words (the ROM colour table's entries) of the player's
+/// name colour and of the clan's colour, which it puts into the 0x6b record every client's scoreboard reads.
+#[test]
+fn the_game_server_gets_the_name_and_clan_colour_words() {
+    let mut st = rom_state();
+    Arc::get_mut(&mut st.rom).unwrap().shop.name_colour_words =
+        vec![0xff11_2233, 0xff44_5566, 0xff77_8899];
+    let (_c, a) = player(&mut st, 1, "a", "Alice");
+    let c = st.character(a).unwrap();
+    assert!(!crate::game::badge_tokens(&st, a, &c).contains("colour="));
+    st.db
+        .execute(
+            "INSERT INTO clans (name, master) VALUES ('Owls', ?1)",
+            [a as i64],
+        )
+        .unwrap();
+    let clan = st.db.last_insert_rowid();
+    st.db.execute("UPDATE characters SET clan_uid = ?2, clan_type = 1, clan_name = 'Owls', nick_color = 2 WHERE user_no = ?1", params![a as i64, clan]).unwrap();
+    st.db
+        .execute(
+            "INSERT INTO clan_colours (clan_uid, colour) VALUES (?1, 3)",
+            [clan],
+        )
+        .unwrap();
+    let c = st.character(a).unwrap();
+    let t = crate::game::badge_tokens(&st, a, &c);
+    assert!(
+        t.contains(&format!(" namecolour={}", 0xff44_5566u32)),
+        "{t}"
+    );
+    assert!(
+        t.contains(&format!(" clancolour={}", 0xff77_8899u32)),
+        "{t}"
+    );
+    // a number past the table is the default colour: no token
+    st.db
+        .execute(
+            "UPDATE characters SET nick_color = 9 WHERE user_no = ?1",
+            [a as i64],
+        )
+        .unwrap();
+    let c = st.character(a).unwrap();
+    assert!(!crate::game::badge_tokens(&st, a, &c).contains("namecolour="));
+}

@@ -58,6 +58,11 @@ pub const ROTATE_MS: u32 = 25_000;
 pub const NO_WAIT_NEAR: f32 = 2.0 * crate::bombrun::PLANT_REACH;
 /// A bot whose last order is older than this starts the round again (it was dead, paused or between rounds).
 pub const GAP_MS: u32 = 3000;
+/// After the plant this many living defenders nearest the bomb (flat distance to its defuse point, ties the lower
+/// player id) run straight to it and hold the defuse, with no spacing wait; the rest cover them, standing within
+/// [`BOMB_GUARD`] of the bomb. A defuser that dies hands the job to the next nearest.
+// DC-DEFAULT: BOT-124 (proposed) 2 (one holds, one beside him takes over when he falls or the hold is refused)
+pub const DEFUSERS: usize = 2;
 
 /// The attackers' jobs for a team of `n` (job order, before the round's turn): one lead, one escort up to four
 /// players and two from five, the rest flankers; with three or more flankers and two sites the last one feints.
@@ -207,6 +212,26 @@ impl Team {
         }
     }
 
+    /// BOT-124: the player ids of the [`DEFUSERS`] living members nearest `bomb` (the bot itself counts as living;
+    /// a member without a streamed place does not count).
+    // DC-DEFAULT: BOT-124 (proposed)
+    fn defusers(&self, bomb: [f32; 3]) -> Vec<u8> {
+        let mut near: Vec<(f32, u8)> = self
+            .mates
+            .iter()
+            .filter_map(|m| {
+                let p = if m.pid == self.own_pid {
+                    Some(self.own_pos)
+                } else {
+                    m.pos.filter(|_| m.alive)
+                };
+                p.map(|p| (flat(p, bomb), m.pid))
+            })
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        near.into_iter().take(DEFUSERS).map(|n| n.1).collect()
+    }
+
     /// The order slot of a holder among the holders of its site (for the start delay).
     fn hold_slot(&self, index: usize, job: Job) -> u32 {
         (0..index).filter(|&i| self.job(i) == Some(job)).count() as u32
@@ -225,6 +250,9 @@ pub struct Order {
     pub wait: bool,
     /// Why it waits (logs): "start", "escort", "spacing".
     pub why: &'static str,
+    /// Defenders after the plant: the bot is one of the [`DEFUSERS`] (it walks to the defuse point and holds there);
+    /// `false` for a cover and before the plant.
+    pub defuse: bool,
 }
 
 /// The bot's job state over a round.
@@ -294,6 +322,7 @@ impl Squad {
             goal: None,
             wait: false,
             why: "",
+            defuse: false,
         };
         // the start delay holds the job at the spawn (not after a plant: then everybody runs)
         if !t.planted && elapsed < start_delay_ms(job, t.hold_slot(index, job)) {
@@ -311,7 +340,11 @@ impl Squad {
         let at = |goal: [f32; 3], stand_within: f32| Some(Objective { goal, stand_within });
         order.goal = match (t.attacking, t.planted) {
             (true, true) => at(t.bomb_pos.unwrap_or(site), BOMB_GUARD),
-            (false, true) => t.bomb_pos.and_then(|b| at(b, 0.0)),
+            // BOT-124: the nearest defenders defuse, the rest cover them at the bomb
+            (false, true) => t.bomb_pos.and_then(|b| {
+                order.defuse = t.defusers(b).contains(&t.own_pid);
+                at(b, if order.defuse { 0.0 } else { BOMB_GUARD })
+            }),
             (true, false) => match job {
                 Job::Escort(_) => match self.lead(t) {
                     Some(lead) if lead != t.own_pid => {
@@ -347,7 +380,8 @@ impl Squad {
                 _ => at(self.rotate_site(t, elapsed), SITE_HOLD),
             },
         };
-        if !order.wait {
+        // a defuser never waits for the teammate ahead (BOT-124): the spacing let every defender stand behind another
+        if !order.wait && !order.defuse {
             if let Some(shared) = order.goal.map(|g| match job {
                 // the escort and the flanker keep the spacing on the way to their site, not to their waypoint
                 Job::Escort(_) | Job::Flank(_) if !t.planted => site,
@@ -747,6 +781,56 @@ mod tests {
         let o = sq.order(0, &t, &mut none).unwrap();
         assert_eq!(o.goal.map(|g| g.goal), Some([3000.0, 0.0, 0.0]));
         assert!(!o.wait, "at the bomb it defuses");
+    }
+
+    /// BOT-124: after the plant every defender goes for the bomb whatever its job: the two living ones nearest to
+    /// it defuse (all the way to the defuse point, never waiting for the one ahead), the others cover it (standing
+    /// within the bomb guard radius); a fallen defender's body takes no defuser place.
+    #[test]
+    fn a_planted_bomb_sends_the_nearest_defenders_to_defuse_under_every_job() {
+        let bomb = [3000.0, 0.0, 0.0];
+        let planted = |own: usize, round: u32| {
+            let mut t = team(7, own, false);
+            t.round = round;
+            t.planted = true;
+            t.bomb_pos = Some(bomb);
+            // a line toward the bomb, 200 units apart: member 0 stands 100 from it
+            for (i, m) in t.mates.iter_mut().enumerate() {
+                m.pos = Some([2900.0 - 200.0 * i as f32, 0.0, 0.0]);
+            }
+            t.own_pos = t.mates[own].pos.unwrap();
+            t
+        };
+        let mut defuser_jobs = Vec::new();
+        for round in 0..7 {
+            for own in 0..7 {
+                let t = planted(own, round);
+                let mut sq = Squad::default();
+                let o = step(&mut sq, &t, 0, 2000);
+                let g = o.goal.expect("a goal after the plant");
+                assert_eq!(g.goal, bomb, "round {round} member {own} {:?}", o.job);
+                assert_eq!(o.defuse, own < DEFUSERS, "round {round} member {own}");
+                if o.defuse {
+                    // member 1 is 200 behind member 0, who stands at the bomb: the spacing held it there for good
+                    assert!(!o.wait, "a defuser never waits ({:?})", o.job);
+                    assert_eq!(g.stand_within, 0.0);
+                    defuser_jobs.push(o.job);
+                } else {
+                    assert_eq!(g.stand_within, BOMB_GUARD);
+                }
+            }
+        }
+        for job in [Job::Hold(0), Job::Hold(1), Job::Rotate] {
+            assert!(defuser_jobs.contains(&job), "{job:?} defuses too");
+        }
+        // member 0 fell at the bomb: members 1 and 2 defuse, member 3 covers
+        for (own, defuse) in [(1, true), (2, true), (3, false)] {
+            let mut t = planted(own, 0);
+            t.mates[0].alive = false;
+            let o = step(&mut Squad::default(), &t, 0, 2000);
+            assert_eq!(o.defuse, defuse, "member {own}");
+            assert!(!defuse || !o.wait, "member {own} waits behind a body");
+        }
     }
 
     /// BOT-122: the rotator goes to the site with fewer living holders.

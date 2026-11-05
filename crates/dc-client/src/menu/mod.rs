@@ -292,6 +292,8 @@ pub struct MenuData {
     pub last_report: Option<Instant>,
     /// w2-lobbychat: the members' sub-states (0x3042 +0xe: 1 shopping, 2 away) by in-channel id.
     pub member_sub: BTreeMap<u32, i32>,
+    /// CLI-1887: the members' name and clan-name colour numbers (room record +0xac / +0xb0) by in-channel id.
+    pub member_colour: BTreeMap<u32, (u32, u32)>,
     /// w2-lobbychat: the chat mute end (local FILETIME ticks; 0x303 +0xec, 0x3053).
     pub muted_until: u64,
     /// w2-lobbychat: the chat's repeat rule ([`textbox::ChatGuard`]).
@@ -616,6 +618,11 @@ pub trait Screen {
     // last shown row +0x108 being the previous last row, the bar goes to its end through cshell+0x3457e0)
     fn list_follow(&self) -> Vec<(i32, i32)> {
         Vec::new()
+    }
+    /// The row count from which list (window, control id) of [`Screen::list_rows`] shows its scroll bar; with fewer
+    /// rows the list has no bar (0: always, the default).
+    fn list_bar_from(&self, _layer: i32, _id: i32) -> usize {
+        0
     }
     /// A wheel turn the screen takes itself (lists it scrolls on its own); true = taken.
     fn wheel(&mut self, _p: [f32; 2], _notches: i32, _ctx: &mut Ctx) -> bool {
@@ -1754,9 +1761,17 @@ impl Menu {
         let art = self.lits.drop_art.scroll.clone();
         let rows = self.screen.list_rows(&self.data);
         let follow = self.screen.list_follow();
+        let from: Vec<usize> = rows
+            .iter()
+            .map(|(layer, id, _, _)| self.screen.list_bar_from(*layer, *id))
+            .collect();
         let sheet = self.screen.sheet_mut();
-        for (layer, id, n, row_h) in rows {
+        for ((layer, id, n, row_h), from) in rows.into_iter().zip(from) {
             if let Some(i) = sheet.find(layer, id, WidgetKind::List) {
+                if n < from {
+                    sheet.drop_list_bar(i);
+                    continue;
+                }
                 // a new bar starts at the end of a following list
                 let at_end = sheet.list_bar(i).is_none_or(|b| b.value >= b.top());
                 sheet.set_list_rows(i, n, row_h, &art);
@@ -2497,14 +2512,20 @@ fn shared_event(d: &mut MenuData, e: &LinkEvent) {
         LinkEvent::Members(m) => {
             d.members = m.clone();
             d.member_sub.clear();
+            d.member_colour.clear();
         }
         LinkEvent::MemberAdded(id, m) => {
             d.members.insert(*id, m.clone());
             d.member_sub.remove(id);
+            d.member_colour.remove(id);
         }
         LinkEvent::MemberRemoved { id, .. } => {
             d.members.remove(id);
             d.member_sub.remove(id);
+            d.member_colour.remove(id);
+        }
+        LinkEvent::MemberColour { id, name, clan } => {
+            d.member_colour.insert(*id, (*name, *clan));
         }
         LinkEvent::MemberTeam { id, team } => {
             if let Some(m) = d.members.get_mut(id) {

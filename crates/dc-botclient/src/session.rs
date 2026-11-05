@@ -1990,6 +1990,12 @@ impl BotSession {
                     ));
                 }
                 self.obs.kills.push((k.victim, k.killer));
+                // the victim's roster record is dead until the server's next record of it (the spawn refresh), as
+                // the 2009 client's 0x6d sets the record's dead flag; BOT-124: the team jobs count the living by it
+                // SPEC: GAME_MESSAGES_2009_S2C.md §3.2.1 field 13 (record +0x74, set to 1 by 0x6d)
+                if let Some(rec) = self.obs.roster.get_mut(&k.victim) {
+                    rec.dead = true;
+                }
                 self.rec.event(
                     "kill",
                     json!({"ms": self.ms(now), "victim": k.victim, "killer": k.killer, "kill_kind": k.kill_kind,
@@ -2816,8 +2822,11 @@ impl BotSession {
                 _ => None,
             };
             let steer = if door_yaw.is_some() { None } else { steer };
-            // BOT-92: a target in sight (no walk goal) is fought on the move: strafe, step back, jump, crouch
+            // BOT-92: a target in sight (no walk goal) is fought on the move: strafe, step back, jump, crouch;
+            // BOT-124: not while the own plant / defuse hold runs (a strafe or a step back carried the body past the
+            // server's 48-unit hold limit and broke every defuse under fire)
             let engaged = steer.is_none()
+                && !planting
                 && self.shooter.as_ref().is_some_and(|s| {
                     s.target().is_some() && s.target_dist().is_some() && s.look().is_some()
                 });
@@ -3287,7 +3296,8 @@ impl BotSession {
             return None;
         }
         let carrying = self.bomb.carrying(self.obs.view_object);
-        let defusing = self.bomb.planted && !self.bomb_attacker();
+        // BOT-124: with a team job only the defusers go for the defuse point; a cover's walk is its objective
+        let defusing = self.bomb.planted && !self.bomb_attacker() && order.is_none_or(|o| o.defuse);
         if !carrying && !defusing {
             return None;
         }
@@ -3390,10 +3400,11 @@ impl BotSession {
                     };
                 }
                 let pos = self.table.objects.get(&r.character).and_then(|o| o.pos);
+                // BOT-124: a killed teammate's body keeps its place: the roster's dead flag says it fell
                 crate::squad::Mate {
                     pid: r.pid,
                     pos,
-                    alive: pos.is_some_and(|p| floor.is_none_or(|f| p[1] > f + 2.0)),
+                    alive: !r.dead && pos.is_some_and(|p| floor.is_none_or(|f| p[1] > f + 2.0)),
                 }
             })
             .collect();
@@ -3436,13 +3447,13 @@ impl BotSession {
             None => None,
         };
         let last = self.squad_order;
-        if order.map(|o| (o.job, o.why)) != last.map(|o| (o.job, o.why)) {
+        if order.map(|o| (o.job, o.why, o.defuse)) != last.map(|o| (o.job, o.why, o.defuse)) {
             if let Some(o) = order {
                 self.rec.event(
                     "squad",
                     json!({"ms": self.ms(now), "job": format!("{:?}", o.job), "wait": o.wait.then_some(o.why),
                            "goal": o.goal.map(|g| g.goal), "plant_at": o.plant_at, "via": self.squad.via(),
-                           "round": self.bomb.round}),
+                           "round": self.bomb.round, "defuse": o.defuse}),
                 );
             }
         }
@@ -3473,7 +3484,7 @@ impl BotSession {
             .obs
             .roster
             .values()
-            .filter(|r| Some(r.pid) != own_pid && Some(r.team) == own_team)
+            .filter(|r| Some(r.pid) != own_pid && Some(r.team) == own_team && !r.dead)
             .filter(|r| {
                 self.table
                     .objects
@@ -3951,6 +3962,14 @@ mod tests {
     #[test]
     fn match_end_messages_become_events_and_milestones() {
         let mut s = external_session();
+        s.obs.roster.insert(
+            2,
+            RosterRecord {
+                pid: 2,
+                team: 2,
+                ..Default::default()
+            },
+        );
         s.process(
             1,
             &shell_message(shell_id::GS_KILL, |w| {
@@ -4024,6 +4043,8 @@ mod tests {
             assert!(s.obs.reached(m), "{m}");
         }
         assert_eq!(s.obs.kills, vec![(2, 1)]);
+        // BOT-124: the victim's roster record is dead (a teammate's body lying near the bomb is no defuser)
+        assert!(s.obs.roster[&2].dead);
         // the bot (no queue) keeps nothing
         let mut bot = BotSession::new(GameConfig::new("Bot"), None, Recorder::null("Bot"));
         bot.start = Some(0);

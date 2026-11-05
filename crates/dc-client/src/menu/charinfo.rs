@@ -367,6 +367,11 @@ pub struct Tables {
 
 impl Tables {
     pub fn cached(rom: &std::path::Path) -> Tables {
+        Tables::with_cached(rom, Tables::clone)
+    }
+
+    /// `f` over the tables of `rom`, read once per ROM folder and process.
+    fn with_cached<R>(rom: &std::path::Path, f: impl FnOnce(&Tables) -> R) -> R {
         use std::collections::HashMap;
         use std::path::PathBuf;
         use std::sync::{Mutex, OnceLock};
@@ -375,9 +380,8 @@ impl Tables {
             .get_or_init(Default::default)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        c.entry(rom.to_path_buf())
-            .or_insert_with(|| Tables::read(rom))
-            .clone()
+        f(c.entry(rom.to_path_buf())
+            .or_insert_with(|| Tables::read(rom)))
     }
 
     fn read(rom: &std::path::Path) -> Tables {
@@ -424,6 +428,16 @@ impl Tables {
             .then(|| self.colours.get(n as usize - 1).copied())
             .flatten()
     }
+}
+
+/// The colour of name colour number `n` of the user's ROM (none without a ROM, for 0 or past the table): the one
+/// lookup behind every lobby place that paints a name or a clan name in a colour item's colour (CLI-1887).
+// EVIDENCE: cshell+0x1dcda0 (0 < n <= count: entry n - 1, else 0 = the caller's default colour)
+pub fn table_colour(rom: Option<&std::path::Path>, n: u32) -> Option<u32> {
+    if n == 0 {
+        return None;
+    }
+    Tables::with_cached(rom?, |t| t.name_colour(n))
 }
 
 /// The ordinal form of a rank: 1st, 2nd, 3rd, 4th, 11th..13th.

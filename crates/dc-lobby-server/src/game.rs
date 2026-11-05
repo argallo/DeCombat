@@ -1384,13 +1384,26 @@ pub fn client_rank(bounds: &[i64], exp: i64) -> u32 {
 /// The badge tokens of one `user` line: `rank=<n>` (the rank of the account's experience by [`client_rank`] over
 /// the ROM level table, or the DeCombat fallback table without a ROM) and, for a member of an existing clan (the
 /// clan row, as the lobby's own clan lists show it), `clan=<clan number> clanlabel=<escaped name>
-/// mark=<emblem>/<background>`. The game server puts them into the
+/// mark=<emblem>/<background>` (and `clancolour=<word>` while the clan has a clan colour), and `namecolour=<word>`
+/// while the player has a name colour (LG-406: each the colour word of the ROM colour table's entry for the stored
+/// colour number). The game server puts them into the
 /// world mark and clan fields of `GS_PLAYER_INFO` 0x6b. Each token starts with a space.
-// SPEC: GAME_MESSAGES_2009_S2C.md §3.2.1 fields 15-17 (group block, `h2` = the world mark's rank)
+// SPEC: GAME_MESSAGES_2009_S2C.md §3.2.1 fields 15-17 (group block, `h2` = the world mark's rank, `g3` / `h1` the
+// clan / name colour words)
 // SPEC: PROTOCOL_2009.md table 3.6b / 3.7b (the lobby's own clan id, emblem, background, clan name per user)
 // DC-DEFAULT: DSV-141 (proposed) the lobby tells the game server each player's rank and clan
+// DC-DEFAULT: LG-406 (proposed) and their name / clan colour words (the 2009 client sent its own, cshell+0x23ccb0)
 pub fn badge_tokens(st: &Core, account: u32, c: &crate::db::Character) -> String {
     let mut out = format!(" rank={}", client_rank(&st.rom.ranks.need, c.exp));
+    let word = |n: i64| {
+        st.rom
+            .shop
+            .name_colour_word(n.clamp(0, u32::MAX as i64) as u32)
+    };
+    let name = word(c.nick_color);
+    if name != 0 {
+        out.push_str(&format!(" namecolour={name}"));
+    }
     if let Ok(Some(k)) = crate::clan::clan_of(st, account) {
         let name = if k.name.trim().is_empty() {
             "_".to_string()
@@ -1404,6 +1417,10 @@ pub fn badge_tokens(st: &Core, account: u32, c: &crate::db::Character) -> String
             k.emblem.clamp(0, u32::MAX as i64),
             k.background.clamp(0, u32::MAX as i64)
         ));
+        let clan = word(i64::from(st.clan_colour(k.uid)));
+        if clan != 0 {
+            out.push_str(&format!(" clancolour={clan}"));
+        }
     }
     out
 }

@@ -921,6 +921,7 @@ fn user_rows_draw_their_2009_rule() {
         &data,
         None,
         None,
+        &|_| None,
         &mut out,
         Some(&mut notes),
     );
@@ -1060,6 +1061,58 @@ fn rom_dynamic_rows_follow_their_2009_rules() {
             .collect();
         assert_eq!(firsts, ["001", "002"]);
     }
+}
+
+/// CLI-1887: a name colour item's colour (the ROM colour table's entry of the record's number) reaches the room
+/// list's user rows (0x371 +0x3a), the waiting room's member rows (0x38b +0xac) and the Character Info panel's own name
+/// (0x303 +0xe0); rows without a number keep their own colours.
+#[test]
+fn rom_a_coloured_name_reaches_the_room_list_and_the_member_rows() {
+    let Some(rom) = std::env::var_os("CA_ROM").map(std::path::PathBuf::from) else {
+        eprintln!("CA_ROM not set: skipped");
+        return;
+    };
+    let word = dc_client::menu::charinfo::table_colour(Some(&rom), 2)
+        .expect("the ROM colour table has a second entry");
+    let rgba = |c: u32| [(c >> 16) as u8, (c >> 8) as u8, c as u8, (c >> 24) as u8];
+    let colour_of = |rows: &[TraceRow], want: &str| {
+        rows.iter()
+            .find_map(|r| match &r.item {
+                DrawItem::Label { text, style, .. } if text == want => Some(style.colour),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{want} drawn"))
+    };
+    let mut menu = rom_menu(rom, 1024, 768);
+    menu.data.profile.nick = "tester".into();
+    menu.data.users[1].name_colour = 2;
+    menu.data.member_colour.insert(2, (2, 0));
+    menu.data.char_extras.name_colour = 2;
+    menu.open(Go::Lobby);
+    let rows = menu.draw_trace();
+    assert_eq!(colour_of(&rows, "user2"), rgba(word), "a coloured user row");
+    assert_eq!(
+        colour_of(&rows, "user1"),
+        rgba(dc_client::menu::lobby::OWN_COLOUR),
+        "the own row without a number"
+    );
+    assert_eq!(
+        colour_of(&rows, "tester"),
+        rgba(word),
+        "the own name on the panel"
+    );
+    menu.open(Go::Room);
+    let rows = menu.draw_trace();
+    assert_eq!(
+        colour_of(&rows, "member2"),
+        rgba(word),
+        "a coloured member row"
+    );
+    assert_eq!(
+        colour_of(&rows, "member1"),
+        rgba(dc_client::menu::room::OWN_NAME_COLOUR),
+        "the own member row without a number"
+    );
 }
 
 /// The baseline's run-time colour keys (CLI-537).

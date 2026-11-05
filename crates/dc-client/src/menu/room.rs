@@ -94,6 +94,21 @@ pub const TEAM_BRAVO_LABEL: i32 = 0x16;
 // EVIDENCE: cshell+0x1657e0 (the row's name equal to the own name and no colour level: 0xff61ffff)
 // OBSERVED: lobbyfx4/real/R20_room.png (2009: the own name cyan)
 pub const OWN_NAME_COLOUR: u32 = 0xff61_ffff;
+
+/// CLI-1887: the colour of a member row's name: the colour of the record's name colour number (a name colour item)
+/// when it has one, else [`OWN_NAME_COLOUR`] on the own row and the row colour `row` on the others.
+// EVIDENCE: cshell+0x15c110 (a number < 1 -> the row's own colour +0x134, else the colour table's entry, onto the
+// name control), cshell+0x166310 / 0x166660 / 0x166c90 / 0x1619c0 (the member refreshes set the name through that
+// rule from the record), cshell+0x1657e0 (the own row's +0x134 is 0xff61ffff only without a colour number); SPEC:
+// PROTOCOL_2009.md §3.7 table 3.7b (+0xac name colour id)
+// DC-DEFAULT: CLI-1887 (proposed) a number past the table keeps the row's plain colour (2009: colour word 0)
+pub fn member_name_colour(own: bool, row: u32, item: Option<u32>) -> u32 {
+    match item {
+        Some(c) => c,
+        None if own => OWN_NAME_COLOUR,
+        None => row,
+    }
+}
 pub const READY_BUTTON: i32 = 7;
 pub const TEAM_A_ROWS: i32 = 19;
 pub const TEAM_B_ROWS: i32 = 20;
@@ -1657,11 +1672,11 @@ impl Room {
                 } else {
                     super::lobby::ROW_COLOUR
                 };
-                let name_colour = if *id == data.profile.my_id {
-                    OWN_NAME_COLOUR
-                } else {
-                    c
-                };
+                let item = data
+                    .member_colour
+                    .get(id)
+                    .and_then(|&(n, _)| super::charinfo::table_colour(cat.rom.as_deref(), n));
+                let name_colour = member_name_colour(*id == data.profile.my_id, c, item);
                 out.push(place_text(
                     &m.name,
                     add(at, st.name_at),
@@ -1696,6 +1711,16 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CLI-1887: a member's colour number's colour beats the own cyan and the row colour.
+    #[test]
+    fn member_rows_take_the_name_colour_items_colour() {
+        let (row, c) = (0xffdd_dddd, 0xff12_3456);
+        assert_eq!(member_name_colour(true, row, Some(c)), c);
+        assert_eq!(member_name_colour(false, row, Some(c)), c);
+        assert_eq!(member_name_colour(true, row, None), OWN_NAME_COLOUR);
+        assert_eq!(member_name_colour(false, row, None), row);
+    }
 
     /// CLI-980: a "Sniper Only" room's Ready / Start opens the 2009 box when no sniper rifle is equipped.
     #[test]

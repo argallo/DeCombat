@@ -132,7 +132,8 @@ pub fn objective_goal(role: Role, s: &Situation) -> Option<Objective> {
             if let Some(o) = s.squad {
                 return match (attacking, s.planted) {
                     (true, false) if s.own_carries_bomb => None,
-                    (false, true) => s.bomb_pos.map(|p| Objective::at(p, 0.0)).or(o.goal),
+                    // BOT-124: a defuser walks all the way (bombrun holds), a cover stands near the bomb
+                    (false, true) => o.goal.or(s.bomb_pos.map(|p| Objective::at(p, 0.0))),
                     _ => o.goal,
                 };
             }

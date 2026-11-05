@@ -440,7 +440,8 @@ impl Servers {
     // name or string 0x41a without a clan id (+0x124), text 9 prepaid (+0x11c), text 11 credit (+0x108), text 13
     // grade name (+0x440), text 15 GP (+0x104); numbers with thousands separators, cshell+0x1b3ed0)
     // DC-DEFAULT: CLI-1600 (proposed) the lobby login's values stay empty until the lobby login (the 2009 shows its
-    // zero record, unseen there as it picks a server by itself); the record's run-time colours are not set
+    // zero record, unseen there as it picks a server by itself); the record's run-time colours are not set, apart from
+    // the name and clan line (CLI-1887, [`super::lobby::own_name_colours`], once the lobby login is in)
     fn fill_char(&mut self, cat: &Catalog, data: &MenuData) {
         let p = &data.profile;
         let x = &data.char_extras;
@@ -458,6 +459,8 @@ impl Servers {
         let lobby = p.char_no != 0;
         if lobby {
             s.set_text(w, 3, &p.nick);
+            // EVIDENCE: cshell+0x13c430 (text 3 in shell +0x434, the clan text 7 in shell +0x438)
+            super::lobby::set_own_name_colours(s, w, cat.rom.as_deref(), x);
             s.set_text(w, 9, &grouped(i64::from(data.balance.1)));
             s.set_text(w, 11, &grouped(i64::from(data.balance.0)));
             s.set_text(w, 15, &grouped(i64::from(p.gp)));

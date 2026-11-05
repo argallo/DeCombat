@@ -7,7 +7,6 @@
 
 use super::catalog::Catalog;
 use super::link::InvRecord;
-use super::scrollbar::ScrollBar;
 use super::sheet::{image_fit, list_row, place_text, Part, ALIGN_LEFT};
 use super::storage::{Store, Wares};
 use crate::hud::items::DrawItem;
@@ -577,8 +576,13 @@ pub const MARKET_LIST: i32 = 5;
 pub const MARKET_ROWS: usize = 0x10;
 pub const MARKET_EMPTY_TEXT: i32 = 0x17cc;
 pub const MARKET_ROW_DX: i32 = 12;
-/// The list shows its scroll bar from this many rows on.
-// EVIDENCE: cshell+0x1496e0 (count < 7 -> bar off)
+/// The list shows its scroll bar from this many rows on; with fewer the bar is gone (not drawn, takes no press or
+/// wheel turn). The bar's place is the list record's (x + 197, y + 4, 14 wide, as high as the record less 4).
+// EVIDENCE: cshell+0x1496e0 (count < 7 -> the bar control hidden through cshell+0x2f0330(0), else shown),
+// cshell+0x2f0330 (the bar's show / hide), cshell+0x2f00f0 (the bar at the record's offset, 0xe wide, height = the
+// list's height less the offset's y)
+// DC-DEFAULT: CLI-741 (amended, OWNER REPORT 2026-11-05 "the scroll bar is getting cutoff") the hidden bar is
+// dropped from the list record and built again from 7 rows on, at the top
 pub const MARKET_BAR_ROWS: usize = 7;
 
 /// The records the black market list shows, in its order (see [`MARKET_LIST`]).
@@ -594,8 +598,32 @@ pub fn market_records<'a>(wares: &Wares, store: &'a Store) -> Vec<&'a InvRecord>
     list
 }
 
+/// Row `i` of the black market list in list record `list` (None: scrolled out or below the list's height).
+fn market_row(list: &Part, i: usize) -> Option<[i32; 4]> {
+    list_row(list, ROW_SIZE[1], i, 0)
+        .map(|at| [at[0] + MARKET_ROW_DX, at[1], ROW_SIZE[0], ROW_SIZE[1]])
+}
+
+/// The black market list's row under `p`: the unique id of its record, 0 for the list's one row while it is empty
+/// (the 2009 row holds no record then). None when no shown row is under `p`.
+// EVIDENCE: cshell+0x2f07e0 (the list's item under the point, from its first to its last shown row),
+// cshell+0x1496e0 (each row keeps its record's unique id at +0x190; the empty list's row keeps 0)
+pub fn market_row_at(list: &Part, wares: &Wares, store: &Store, p: [f32; 2]) -> Option<u32> {
+    let uids: Vec<u32> = market_records(wares, store).iter().map(|r| r.uid).collect();
+    let n = uids.len().max(1);
+    (0..n).find_map(|i| {
+        let r = market_row(list, i)?;
+        let inside = p[0] >= r[0] as f32
+            && p[0] < (r[0] + r[2]) as f32
+            && p[1] >= r[1] as f32
+            && p[1] < (r[1] + r[3]) as f32;
+        inside.then(|| uids.get(i).copied().unwrap_or(0))
+    })
+}
+
 /// Draws the black market list into list record `list` (its bar scrolls the rows; rows outside the list's height
-/// are not drawn).
+/// are not drawn). The list record's bar (there while the list has [`MARKET_BAR_ROWS`] rows or more) is drawn last,
+/// over the rows.
 pub fn draw_market_rows(
     cat: &mut Catalog,
     list: &Part,
@@ -607,10 +635,7 @@ pub fn draw_market_rows(
         .iter()
         .map(|r| r.item_no as i32)
         .collect();
-    let row = |i: usize| {
-        list_row(list, ROW_SIZE[1], i, 0)
-            .map(|at| [at[0] + MARKET_ROW_DX, at[1], ROW_SIZE[0], ROW_SIZE[1]])
-    };
+    let row = |i: usize| market_row(list, i);
     if held.is_empty() {
         let r = [
             list.pos[0] + MARKET_ROW_DX,
@@ -642,16 +667,10 @@ pub fn draw_market_rows(
         }
         out.push(row_text(&wares.label_of(*n), r));
     }
-    if let Some(b) = market_bar(list, held.len()) {
+    // the bar last, over the rows' right ends
+    // EVIDENCE: cshell+0x2f0f00 (a list draws its shown rows, then its bar)
+    if let super::sheet::Look::List { bar: Some(b), .. } = &list.look {
         b.draw(cat, out);
-    }
-}
-
-/// The black market list's bar (None while it is hidden: fewer than [`MARKET_BAR_ROWS`] rows).
-pub fn market_bar(list: &Part, rows: usize) -> Option<&ScrollBar> {
-    match &list.look {
-        super::sheet::Look::List { bar: Some(b), .. } if rows >= MARKET_BAR_ROWS => Some(b),
-        _ => None,
     }
 }
 

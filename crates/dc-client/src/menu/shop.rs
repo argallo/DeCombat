@@ -1986,6 +1986,53 @@ impl ShopScreen {
         }
     }
 
+    /// The black market tab's function list row under `p` (its record's unique id, 0 for the empty list's row);
+    /// None off the list or while the list is not up (other tabs, the inbox page).
+    fn market_row_at(&self, data: &MenuData, p: [f32; 2]) -> Option<u32> {
+        if self.tab != TAB_MARKET || self.pane == Pane::Inbox {
+            return None;
+        }
+        let list = self
+            .sheet
+            .part(LEFT_WINDOW, pane::MARKET_LIST, WidgetKind::List)?;
+        pane::market_row_at(list, &self.wares, &data.store, p)
+    }
+
+    /// CLI-1886 a press on a row of the black market tab's function list (record `uid`, 0 = the empty list's row):
+    /// the storage page of the item's shelf (the function items: Black Market category 2) with the page holding the
+    /// record and its cell selected; a row without a held record opens the function items' storage page on its first
+    /// cell.
+    // EVIDENCE: cshell+0x14d5b0 (a press over list 5 of window 2: the row under the point (cshell+0x2f07e0), the
+    // storage page (cshell+0x14b8a0(1)) on page 0, then cshell+0x14c7e0 with the row's +0x190 unique id; when that
+    // finds no record: cshell+0x14a700(2, 2) and cell 0 through cshell+0x147470(0, 0)), cshell+0x14c7e0
+    // ("GotoInven_ItemUID": the record's type picks the tab and category; on the black market tab the record's
+    // place on the shelf gives the page (6 cells a page) and the selected cell)
+    fn goto_market_row(&mut self, uid: u32, data: &MenuData) {
+        let item = data
+            .store
+            .items
+            .iter()
+            .find(|r| uid != 0 && r.uid == uid)
+            .map(|r| r.item_no as i32);
+        match item {
+            Some(n) => self.goto_storage_of(n),
+            None => {
+                if let Some((tab, cat)) = storage::shelf_of(usebox::FUNCTION_TYPE) {
+                    self.set_tab(tab);
+                    self.open_storage(cat);
+                }
+            }
+        }
+        if self.pane == Pane::Storage && uid != 0 {
+            if let Some(k) = self.items_shown(data).iter().position(|r| r.uid == uid) {
+                self.page = k / CELLS;
+                self.selected = Some(k % CELLS);
+            }
+        }
+        self.sync_pages(data);
+        self.select_first(data);
+    }
+
     /// The storage page on category `cat` of the current tab.
     // DC-DEFAULT: CLI-546 the storage page also opens from the left pane's equipment rows (the 2009 commands 10000 ..
     // 10002 come from the backpack rows' drawers, CLI-972); CLI-972 the backpack row of a drawer is forgotten (+0x55a8 =
@@ -3089,6 +3136,27 @@ impl Screen for ShopScreen {
         vec![(LEFT_WINDOW, pane::MARKET_LIST, n, pane::ROW_SIZE[1])]
     }
 
+    // CLI-741: the black market list's bar is hidden below 7 rows
+    fn list_bar_from(&self, layer: i32, id: i32) -> usize {
+        if (layer, id) == (LEFT_WINDOW, pane::MARKET_LIST) {
+            pane::MARKET_BAR_ROWS
+        } else {
+            0
+        }
+    }
+
+    // CLI-741: the black market list's bar is drawn over its rows ([`pane::draw_market_rows`])
+    fn lists_synced(&mut self) {
+        if let Some(i) = self
+            .sheet
+            .find(LEFT_WINDOW, pane::MARKET_LIST, WidgetKind::List)
+        {
+            if let Some(b) = self.sheet.list_bar_mut(i) {
+                b.over_rows = true;
+            }
+        }
+    }
+
     fn enter(&mut self, ctx: &mut Ctx) {
         if !ctx.data.store.lists_asked {
             ctx.data.store.lists_asked = true;
@@ -3397,6 +3465,11 @@ impl Screen for ShopScreen {
         // CLI-972 an open drawer's buttons lie over the shop page's left edge: they take the press first
         if let Some((row, k)) = self.drawer_button_at(ctx.data, p) {
             self.open_drawer(k, row);
+            return true;
+        }
+        // CLI-1886 a row of the black market tab's function list: the storage page of that item
+        if let Some(uid) = self.market_row_at(ctx.data, p) {
+            self.goto_market_row(uid, ctx.data);
             return true;
         }
         let cells = match self.pane {

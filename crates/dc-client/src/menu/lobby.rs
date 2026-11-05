@@ -876,6 +876,7 @@ pub fn fill_char_panel(
         cat.text(0x41a)
     };
     sheet.set_text(CHAR_WINDOW, 7, &clan);
+    set_own_name_colours(sheet, CHAR_WINDOW, cat.rom.as_deref(), extras);
     // the empty mark frame shows unless a mark is set (the mark itself is not drawn yet: open item)
     let marked = extras.clan_id != 0 && extras.clan_mark != 0 && extras.clan_mark_ground != 0;
     sheet.show(CHAR_WINDOW, 1, WidgetKind::Image, !marked);
@@ -891,6 +892,42 @@ pub fn fill_char_panel(
     sheet.set_text(CHAR_WINDOW, 15, row.map_or("", |r| r.name.as_str()));
     sheet.set_colour(CHAR_WINDOW, 15, row.map_or(0xffff_ffff, |r| r.colour));
     set_char_image(sheet, 2, row.map_or("", |r| r.icon.as_str()));
+}
+
+/// CLI-1887: the colours of the own name and of the clan line on a Character Info panel (the room list's window 7,
+/// the channel screen's window 2): the colour of the own name colour number (0x303 +0xe0) and of the clan colour
+/// number (+0xe4, only with a clan); `None` without one.
+// EVIDENCE: cshell+0x3f2c0 (0x303 +0xe0 / +0xe4 through the colour table cshell+0x1dcda0 into shell +0x434 / +0x438),
+// cshell+0x126fa0 / cshell+0x13c430 (text 3 in shell +0x434 when not 0; the clan text 7 in shell +0x438 when not 0)
+pub fn own_name_colours(rom: Option<&Path>, extras: &CharExtras) -> (Option<u32>, Option<u32>) {
+    let of = |n: u32| super::charinfo::table_colour(rom, n);
+    let clan = if extras.clan_id != 0 {
+        of(extras.clan_colour)
+    } else {
+        None
+    };
+    (of(extras.name_colour), clan)
+}
+
+/// CLI-1887: [`own_name_colours`] onto texts 3 (name) and 7 (clan) of panel window `layer`; a text without a colour
+/// keeps the layout record's colour.
+// EVIDENCE: cshell+0x126fa0 / cshell+0x13c430 (without a colour word the name and the clan text get 0xffffffff;
+// DISASM: cshell+0x127263 / 0x12740f, the clan text's other colour is the 0xffffffff kept at the start)
+// DC-DEFAULT: CLI-1887 (proposed) without a colour (also a number past the table, 2009: colour word 0) the record's
+// own colour stays instead of the 2009 white (the UI gate compares that colour); a colour that goes away while the
+// screen is up stays until the screen is built again
+pub fn set_own_name_colours(
+    sheet: &mut Sheet,
+    layer: i32,
+    rom: Option<&Path>,
+    extras: &CharExtras,
+) {
+    let (name, clan) = own_name_colours(rom, extras);
+    for (id, c) in [(3, name), (7, clan)] {
+        if let Some(c) = c {
+            sheet.set_colour(layer, id, c);
+        }
+    }
 }
 
 /// The lobby pages of the room list screen.
@@ -1298,12 +1335,14 @@ impl LobbyScreen {
                 notes.as_deref_mut(),
             );
         }
+        let rom = cat.rom.clone();
         draw_users(
             &self.style,
             &self.sheet,
             data,
             self.art.as_ref().map(|a| &a.levels),
             self.user_hover,
+            &|n| super::charinfo::table_colour(rom.as_deref(), n),
             out,
             notes,
         );
@@ -1365,12 +1404,15 @@ impl LobbyScreen {
 // OBSERVED: lobbyfx4/real/R10_lobby.png (2009: the user row with its bar)
 // EVIDENCE: cshell+0x120d90 (user row rank texture), cshell+0x2683d0 / 0x268300 (the icon of the level of the
 // experience; the operator mark picks the last icon), SPEC: PROTOCOL_2009.md §3.6 table 3.6b (+0x2a exp)
+// CLI-1887: `colour_of` gives the colour of a name colour number (the ROM colour table, [`user_name_colour`]).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_users(
     st: &RowStyle,
     sheet: &Sheet,
     data: &MenuData,
     levels: Option<&LevelTable>,
     hover: Option<usize>,
+    colour_of: &dyn Fn(u32) -> Option<u32>,
     out: &mut Vec<DrawItem>,
     mut notes: Option<&mut DynNotes>,
 ) {
@@ -1388,11 +1430,11 @@ pub fn draw_users(
         if let Some(t) = rank.or(st.user_badge.as_deref()) {
             out.push(image(t, add(at, st.user_badge_at), st.user_badge_size));
         }
-        let c = if u.id == data.profile.my_id || hover == Some(i) {
-            OWN_COLOUR
-        } else {
-            ROW_COLOUR
-        };
+        let c = user_name_colour(
+            u.id == data.profile.my_id,
+            hover == Some(i),
+            colour_of(u.name_colour),
+        );
         out.push(place_text(
             &u.name,
             add(at, st.user_name_at),
@@ -1405,6 +1447,22 @@ pub fn draw_users(
         if let Some(n) = notes.as_deref_mut() {
             n.push((out.len() - 1, user_row_want(st, i, at)));
         }
+    }
+}
+
+/// The colour of a user row's name: the pointed row's name in the own colour; else the colour of the row's name
+/// colour number (a name colour item, CLI-1876) when it has one; else the own colour on the own row and the row colour
+/// on the others.
+// EVIDENCE: cshell+0x120d90 (the row's colour: the colour table's entry of the record's colour number when it is not
+// 0; the own row (shell +0x10 = the row's id) without one 0xfffead00), cshell+0x11fc10 (the pointer on the row: the
+// name 0xfffead00, else the row's colour); SPEC: PROTOCOL_2009.md §3.6 table 3.6b (+0x3a name colour index)
+// DC-DEFAULT: CLI-1887 (proposed) a number past the table keeps the row's plain colour (2009: colour word 0)
+pub fn user_name_colour(own: bool, pointed: bool, item: Option<u32>) -> u32 {
+    match (pointed, item) {
+        (true, _) => OWN_COLOUR,
+        (false, Some(c)) => c,
+        (false, None) if own => OWN_COLOUR,
+        _ => ROW_COLOUR,
     }
 }
 
@@ -1522,6 +1580,25 @@ mod tests {
                 colour: 0xffb4_b4b4,
             }],
         }
+    }
+
+    /// CLI-1887: the pointed row's name is the own colour; a colour number's colour beats the own / row colour.
+    #[test]
+    fn user_rows_take_the_name_colour_items_colour() {
+        let c = 0xff12_3456;
+        assert_eq!(user_name_colour(false, false, Some(c)), c);
+        assert_eq!(user_name_colour(true, false, Some(c)), c);
+        assert_eq!(user_name_colour(true, false, None), OWN_COLOUR);
+        assert_eq!(user_name_colour(false, false, None), ROW_COLOUR);
+        assert_eq!(user_name_colour(false, true, Some(c)), OWN_COLOUR);
+        // no ROM: no colour, the panel keeps its record colours
+        let x = CharExtras {
+            name_colour: 2,
+            clan_id: 1,
+            clan_colour: 3,
+            ..CharExtras::default()
+        };
+        assert_eq!(own_name_colours(None, &x), (None, None));
     }
 
     #[test]

@@ -48,6 +48,9 @@ pub struct ScrollBar {
     pub drag: bool,
     /// Textures: back, thumb, up, down.
     pub art: [Option<String>; 4],
+    /// A layout list's bar that its screen draws after the list's rows (the sheet's own pass leaves it out).
+    // EVIDENCE: cshell+0x2f0f00 (a list draws its shown rows, then its bar +0x228 last, over them)
+    pub over_rows: bool,
 }
 
 impl ScrollBar {
@@ -60,6 +63,7 @@ impl ScrollBar {
             step: 0,
             drag: false,
             art,
+            over_rows: false,
         }
     }
 

@@ -1004,22 +1004,22 @@ pub struct PlayerMark {
 }
 
 impl PlayerMark {
-    /// The mark of a player from the lobby's `user` line tokens (`rank=`, `clan=`, `clanlabel=`, `mark=`): no tokens
-    /// give rank 0 and no clan. Both colours stay 0 (the default colours): the lobby's colour ids are not the colour
-    /// values these fields hold (open item).
-    // DC-DEFAULT: DSV-141 (proposed)
+    /// The mark of a player from the lobby's `user` line tokens (`rank=`, `clan=`, `clanlabel=`, `mark=`,
+    /// `namecolour=`, `clancolour=`): no tokens give rank 0, no clan and the default colours (0). The colour tokens
+    /// carry the colour words the lobby looked up for the player's colour items.
+    // DC-DEFAULT: DSV-141 (proposed); DSV-606 (proposed) the colour words of the lobby's colour tokens
     pub fn of_roster(e: Option<&crate::pipe::RosterEntry>) -> PlayerMark {
         let Some(e) = e else {
             return PlayerMark::default();
         };
         PlayerMark {
             rank: e.rank().unwrap_or(0),
-            name_colour: 0,
+            name_colour: e.name_colour(),
             clan: e.clan().map(|c| ClanMark {
                 name: c.name.encode_utf16().collect(),
                 group_no: c.id as u64,
                 mark: [c.emblem, c.background],
-                name_colour: 0,
+                name_colour: c.colour,
             }),
         }
     }
@@ -2390,6 +2390,45 @@ mod tests {
         assert_eq!(String::from_utf16_lossy(&c.name), "Night Owls");
         assert_eq!((c.group_no, c.mark, c.name_colour), (77, [5, 9], 0));
         assert_eq!(PlayerMark::of_roster(None), PlayerMark::default());
+    }
+
+    /// DSV-606: the lobby's colour tokens reach `h1` / `g3` of the 0x6b record, as the client's roster reader (the
+    /// scoreboard's and the death panel's source) reads them.
+    #[test]
+    fn colour_tokens_reach_the_clients_roster_record() {
+        // DC-DEFAULT: DSV-606 (proposed)
+        let e = match crate::pipe::parse_control(
+            "user 9 5 1 0 0 Mo clan=77 clanlabel=Owls mark=5/9 namecolour=4278255360 clancolour=4294901760",
+        ) {
+            crate::pipe::Control::User(u) => u,
+            other => panic!("{other:?}"),
+        };
+        let p = PlayerInfo {
+            name: b"Mo".to_vec(),
+            pid: 1,
+            account_no: 9,
+            character: Some(4),
+            look: Look::default(),
+            kills: 0,
+            deaths: 0,
+            team: 1,
+            dead: false,
+            kind: INFO_UPDATE,
+            mode_m1: 0,
+            mission: [0; 3],
+            mode_m2: 0,
+            mark: PlayerMark::of_roster(Some(&e)),
+        };
+        let m = player_info(&p);
+        let (_, s, mut r) = body(&m);
+        assert_eq!(s, GS_PLAYER_INFO);
+        let rec = dc_botclient::shell::read_player_info(&mut r);
+        assert!(rec.complete);
+        assert_eq!(rec.name_colour, 0xff00_ff00);
+        assert_eq!(
+            rec.clan.map(|c| (c.name, c.colour)),
+            Some(("Owls".into(), 0xffff_0000))
+        );
     }
 
     #[test]

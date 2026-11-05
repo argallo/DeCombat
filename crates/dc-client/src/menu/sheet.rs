@@ -903,6 +903,13 @@ impl Sheet {
         })
     }
 
+    /// List `i` loses its scroll bar (a hidden bar: not drawn, no presses or wheel turns, its rows unscrolled).
+    pub fn drop_list_bar(&mut self, i: usize) {
+        if let Some(Look::List { bar, .. }) = self.parts.get_mut(i).map(|p| &mut p.look) {
+            *bar = None;
+        }
+    }
+
     /// The bar of list `i` (tests and scripted players).
     pub fn list_bar_mut(&mut self, i: usize) -> Option<&mut super::scrollbar::ScrollBar> {
         match &mut self.parts.get_mut(i)?.look {
@@ -1220,7 +1227,7 @@ fn draw_part(p: &Part, cat: &mut Catalog, secs: f32, out: &mut Vec<DrawItem>) {
                 out.push(image_fit(cat, tex, p.pos, p.size));
             }
         }
-        Look::List { bar: Some(b), .. } => b.draw(cat, out),
+        Look::List { bar: Some(b), .. } if !b.over_rows => b.draw(cat, out),
         Look::List { .. } => {}
     }
 }
