@@ -135,6 +135,7 @@
 mod anim;
 mod bucket;
 mod camera;
+pub mod camo;
 mod character;
 mod determinism;
 mod fog;

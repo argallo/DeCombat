@@ -158,6 +158,8 @@ mod.content.challenges:register({
 
 ### 4.5 `dc-gunkit`
 
+Built first as a camo studio with a window and live MCP tools: `docs/GUNKIT_AGENTS.md` (VAR-6 to VAR-8). A pack folder is its save file, so there is no separate project format. The list below is the original plan; `batch`, `play` and tier 3 pieces are not built.
+
 A project is a folder of text and images: `variant.json`, `challenge.json`, `assets/`.
 
 ```

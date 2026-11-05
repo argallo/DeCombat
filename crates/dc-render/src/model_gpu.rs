@@ -811,9 +811,20 @@ impl ModelPipelines {
         files: &ModelFiles,
         look: ModelLook<'_>,
     ) -> ModelInstance {
+        self.upload_mesh_look(ctx, files, ModelMesh::build(&files.body), look)
+    }
+
+    /// [`ModelPipelines::upload_look`] with a mesh built from `files` and then changed: a tool that draws only some of a model's
+    /// triangles. The vertices must be the ones `files` builds, because the skeleton comes from `files`.
+    pub fn upload_mesh_look(
+        &self,
+        ctx: &GpuContext,
+        files: &ModelFiles,
+        mesh: ModelMesh,
+        look: ModelLook<'_>,
+    ) -> ModelInstance {
         let _pack = crate::perf::span(crate::perf::Counter::PackNs);
         let device = &ctx.device;
-        let mesh = ModelMesh::build(&files.body);
         let anim = files.anim_set();
         let placeholder = [ModelVertex::zeroed()];
         let vertex_buffer = crate::perf::buffer_init(

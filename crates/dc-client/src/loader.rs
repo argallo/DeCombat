@@ -88,7 +88,7 @@ impl Shared {
     /// VAR-3: the texture a `@camo:` skin names, painted from the ROM texture of its base row and the pack's pattern.
     /// `None` when any part is missing: the gun then draws with the key's fallback, and the match goes on.
     fn camo_image(&self, c: &crate::camo::CamoPath<'_>) -> Option<TextureImage> {
-        if c.mode != "paint" {
+        if !dc_render::camo::is_known_mode(c.mode) {
             eprintln!("camo: unknown mode {:?}", c.mode);
             return None;
         }
@@ -103,7 +103,7 @@ impl Shared {
             .map(|(_, v)| v.trim().trim_matches('"').to_string())?;
         let pattern = self.pattern_image(c.pattern)?;
         let base = self.image(&path)?;
-        let mut painted = crate::camo::paint(&base, &pattern, &c.keep)?;
+        let mut painted = dc_render::camo::compose(c.mode, &base, &pattern, &c.keep)?;
         if let Some(fx) = c.fx {
             let moved = match c.fx_pattern {
                 Some(p) => self.pattern_image(p)?,

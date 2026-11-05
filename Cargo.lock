@@ -890,6 +890,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-gunkit"
+version = "0.1.0"
+dependencies = [
+ "dc-bute",
+ "dc-mod-lua",
+ "dc-model",
+ "dc-modkit",
+ "dc-render",
+ "dc-rez",
+ "dc-tex",
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "glam",
+ "image",
+ "rfd",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dc-hangdump"
 version = "0.1.0"
 dependencies = [

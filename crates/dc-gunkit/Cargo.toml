@@ -1,0 +1,48 @@
+[package]
+name = "dc-gunkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat camo studio: pick a gun, spin it with the mouse, and paint it live from the window or an agent over MCP (docs/GUNKIT_AGENTS.md)"
+
+[lib]
+name = "dc_gunkit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dc-gunkit"
+path = "src/main.rs"
+
+# The window (as dc-mapkit-gui, MAP-66): on Windows a GUI-subsystem binary, so the console `dc-gunkit` keeps stdout for
+# `--json` and `mcp`.
+[[bin]]
+name = "dc-gunkit-gui"
+path = "src/bin/dc-gunkit-gui.rs"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:egui", "dep:egui-wgpu", "dep:rfd"]
+
+[dependencies]
+# The game's own renderer and camo recipe, so what the studio shows is what the game draws. Workspace crates, MIT OR Apache-2.0.
+dc-render = { path = "../dc-render" }
+dc-model = { path = "../dc-model" }
+dc-rez = { path = "../dc-rez" }
+dc-bute = { path = "../dc-bute" }
+dc-tex = { path = "../dc-tex" }
+dc-modkit = { path = "../dc-modkit" }
+dc-mod-lua = { path = "../dc-mod-lua" }
+# CLEANROOM.md 4a: the command and tool documents; MIT OR Apache-2.0, already in the lock.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# CLEANROOM.md 4a: PNG read and write for the author's own patterns and for pictures; already in the lock; MIT OR Apache-2.0.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Camera maths shared with dc-render; MIT OR Apache-2.0, already in the lock.
+glam = "0.30"
+# CLEANROOM.md 4a: the window, the same versions and features as dc-mapkit (MAPKIT_PLAN.md D7); MIT OR Apache-2.0. `default_fonts`
+# stays off, the window uses the Roboto in assets/fonts. rfd: native file dialogs; MIT.
+eframe = { version = "0.32.3", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }
+egui = { version = "0.32.3", optional = true, default-features = false }
+egui-wgpu = { version = "0.32.3", optional = true, default-features = false }
+rfd = { version = "0.17", optional = true }

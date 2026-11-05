@@ -1,7 +1,7 @@
 name: release
 
 # Builds every package from one commit and, on a tag `v*`, publishes them all as one GitHub Release: the Windows zip,
-# the macOS universal app zip, the iOS .ipa, the two MapKit zips, the Linux server tarball, SHA256SUMS and generated
+# the macOS universal app zip, the iOS .ipa, the two MapKit zips, the two GunKit zips, the Linux server tarball, SHA256SUMS and generated
 # notes (docs/RELEASES.md). A release is all or nothing: job `publish` needs every build job, and the release stays a
 # draft until each asset is on it. Also runs on pushes to master that touch the code or the packaging (the packages stay
 # workflow artifacts there) and by hand. Moving the servers is another workflow, deploy-servers.yml; a release never
@@ -32,6 +32,8 @@ on:
       - "tools/friend_pack_win.py"
       - "tools/mapkit_pack_mac.sh"
       - "tools/mapkit_pack_win.py"
+      - "tools/gunkit_pack_mac.sh"
+      - "tools/gunkit_pack_win.py"
       - "assets/icon/**"
       - ".github/workflows/release.yml"
   workflow_dispatch:
@@ -257,6 +259,71 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  # The GunKit packages (DC_DEFAULTS.md VAR-8): the camo studio's window and console tool. Nothing is baked in.
+  mac-gunkit:
+    name: GunKit package (macOS, universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin && rustup default stable
+      - name: build settings
+        run: bash tools/ci_env.sh
+      - name: build the two binaries (arm64 and x86_64)
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release --bins -p dc-gunkit --target "$t"
+          done
+      - name: package DeCombat GunKit.app
+        run: bash tools/gunkit_pack_mac.sh --bin-dir target/aarch64-apple-darwin/release --x86-dir target/x86_64-apple-darwin/release --name "DeCombat-GunKit-mac-$LABEL"
+      - name: sign and notarise (needs the DC_MAC_* secrets; skipped with a warning without them)
+        if: github.ref_type == 'tag'
+        env:
+          DC_MAC_CERT_P12: ${{ secrets.DC_MAC_CERT_P12 }}
+          DC_MAC_CERT_PASSWORD: ${{ secrets.DC_MAC_CERT_PASSWORD }}
+          DC_MAC_SIGN_IDENTITY: ${{ secrets.DC_MAC_SIGN_IDENTITY }}
+          DC_MAC_NOTARY_APPLE_ID: ${{ secrets.DC_MAC_NOTARY_APPLE_ID }}
+          DC_MAC_NOTARY_PASSWORD: ${{ secrets.DC_MAC_NOTARY_PASSWORD }}
+          DC_MAC_NOTARY_TEAM: ${{ secrets.DC_MAC_NOTARY_TEAM }}
+        run: bash tools/mac_notarise.sh out_gunkit/*.zip
+      - name: upload GunKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-GunKit-mac-${{ github.sha }}
+          path: out_gunkit/*.zip
+          if-no-files-found: error
+          retention-days: 90
+
+  windows-gunkit:
+    name: GunKit package (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc && rustup default stable
+      - name: build settings
+        shell: bash
+        # self-contained exes without a runtime to install (the user's machine has no build tools)
+        run: bash tools/ci_env.sh --crt-static
+      - name: build the two binaries
+        shell: bash
+        run: cargo build --locked --release --bins -p dc-gunkit --target x86_64-pc-windows-msvc
+      - name: package the GunKit zip
+        shell: bash
+        run: python tools/gunkit_pack_win.py --bin-dir target/x86_64-pc-windows-msvc/release --name "DeCombat-GunKit-win-$LABEL" --commit "$SHORT_SHA"
+      - name: upload GunKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-GunKit-win-${{ github.sha }}
+          path: out_gunkit/*.zip
+          if-no-files-found: error
+          retention-days: 90
+
   linux-servers:
     name: servers (linux x86_64)
     # 22.04: binaries linked against its glibc 2.35 also run on a 24.04 VPS (not the reverse)
@@ -285,7 +352,7 @@ jobs:
   # builds the release as a draft and publishes it last. The token's write right is given to this job alone.
   publish:
     name: publish the GitHub Release
-    needs: [mac-client, windows-client, ios, mac-mapkit, windows-mapkit, linux-servers]
+    needs: [mac-client, windows-client, ios, mac-mapkit, windows-mapkit, mac-gunkit, windows-gunkit, linux-servers]
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     permissions:
@@ -321,6 +388,7 @@ jobs:
           ls -l
           for want in "DeCombat-win-$GITHUB_REF_NAME.zip" "DeCombat-win-$GITHUB_REF_NAME-bots.zip" "DeCombat-mac-$GITHUB_REF_NAME.zip" \
                       "DeCombat-MapKit-win-$GITHUB_REF_NAME.zip" "DeCombat-MapKit-mac-$GITHUB_REF_NAME.zip" \
+                      "DeCombat-GunKit-win-$GITHUB_REF_NAME.zip" "DeCombat-GunKit-mac-$GITHUB_REF_NAME.zip" \
                       "decombat-servers-linux-x86_64-$GITHUB_REF_NAME.tar.gz"; do
             [ -s "$want" ] || { echo "::error::missing asset $want; nothing is published"; exit 1; }
           done

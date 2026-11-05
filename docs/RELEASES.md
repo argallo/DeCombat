@@ -9,7 +9,7 @@ An export that changes master is what starts a run.
 | workflow | when | what |
 |---|---|---|
 | `ci.yml` | pull requests, pushes to master, by hand | `test (windows-x86_64)`, `test (windows-i686)`, `test (ubuntu-x86_64)`, `test (macos-aarch64)`, `test (linux-x86_64 servers)`, `community directory` (`dc-config check-directory community/community.json`), and `lint (fmt, clippy, clean-room gate)`: `cargo fmt --check` and clippy `-D warnings` on the crates already clean, `tools/assetcheck.py` (the clean-room gate in public mode) and the deploy script tests |
-| `release.yml` | a tag `v*`; pushes to master that touch the code (artifacts only); by hand | `game download (Windows x86_64)`, `game download (macOS, universal)`, `MapKit package (Windows x86_64)`, `MapKit package (macOS, universal)`, `servers (linux x86_64)`, `iOS package (.ipa)` (tags and by hand only); on a tag, `publish the GitHub Release` |
+| `release.yml` | a tag `v*`; pushes to master that touch the code (artifacts only); by hand | `game download (Windows x86_64)`, `game download (macOS, universal)`, `MapKit package (Windows x86_64)`, `MapKit package (macOS, universal)`, `GunKit package (Windows x86_64)`, `GunKit package (macOS, universal)`, `servers (linux x86_64)`, `iOS package (.ipa)` (tags and by hand only); on a tag, `publish the GitHub Release` |
 | `website.yml` | pushes to master that touch `web/landing/`, `web/beta/` or `community/community.json`; a release published, edited or deleted; by hand | `validate` (tests and build of the site), then `deploy` (decombat.com) when `DC_WEBSITE_DEPLOY_ENABLED` is `true` |
 | `netlab.yml` | nightly; by hand | the network lab without a ROM (docs/NETLAB.md) |
 | `deploy-servers.yml` | by hand only | moves the VPS and the game hosts to a commit; the by-hand route, see "Deploying the servers" |
@@ -34,6 +34,7 @@ pre-release; a plain `v0.2.0` is not.
 | `DeCombat-mac-<tag>.zip` | DeCombat.app, universal, README |
 | `DeCombat-iOS-<tag>.ipa` or `DeCombat-iOS-<tag>-unsigned.ipa` | the iPad app, see "iOS"; optional: a failed iOS build leaves it out |
 | `DeCombat-MapKit-win-<tag>.zip`, `DeCombat-MapKit-mac-<tag>.zip` | the community map builder |
+| `DeCombat-GunKit-win-<tag>.zip`, `DeCombat-GunKit-mac-<tag>.zip` | the camo studio |
 | `decombat-servers-linux-x86_64-<tag>.tar.gz` | the servers, for people hosting their own |
 | `SHA256SUMS` | the checksums of all of the above |
 
@@ -204,6 +205,8 @@ the updater goes on hold after this (docs/HOST.md "Updates").
 `bash tools/mapkit_pack_mac.sh [--bin-dir DIR] [--x86-dir DIR]` / `python tools/mapkit_pack_win.py --bin-dir DIR` make
 a MapKit package from a local build (`cargo build --release -p dc-mapkit --bins` plus the three game binaries;
 `--bin-dir target/debug` packs a debug build for a test; the zips land in `out_mapkit/`, ignored by git).
+`bash tools/gunkit_pack_mac.sh [--bin-dir DIR] [--x86-dir DIR]` / `python tools/gunkit_pack_win.py --bin-dir DIR` do the same for the
+camo studio from `cargo build --release -p dc-gunkit --bins`; the zips land in `out_gunkit/`, ignored by git.
 
 ## Not yet proven
 

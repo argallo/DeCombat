@@ -29,6 +29,7 @@ members = [
     "crates/dc-ios-hid",
     "crates/dc-ios-app",
     "crates/dc-mapkit",
+    "crates/dc-gunkit",
     "crates/dc-netlab",
 ]
 
@@ -41,6 +42,9 @@ license = "MIT OR Apache-2.0"
 # dc-mapkit bakes lightmaps and compresses textures on every `build` and `play`: unoptimized that is 40 seconds of
 # silence before the game opens (MAP-108)
 [profile.dev.package.dc-mapkit]
+opt-level = 2
+# dc-gunkit repaints a whole gun texture on every change: unoptimized that is too slow to feel live
+[profile.dev.package.dc-gunkit]
 opt-level = 2
 [profile.dev.package.dc-tex]
 opt-level = 3

@@ -30,3 +30,4 @@ build/ios/
 /.claude/worktrees/
 # dc-netlab reports (docs/NETLAB.md)
 netlab-out/
+out_gunkit/
