@@ -291,11 +291,14 @@ mod tests {
         ));
         let e = check(lobby_answering("200 OK", DOC), [0, 1, 0]).unwrap_err();
         assert!(is_refusal(&e), "{e}");
+        // the refusal posted its offer to the menu's slot: taken here, or another test's menu opens the box
+        assert!(selfupdate::take_offer().is_some());
         assert!(
             matches!(ask(lobby_answering("200 OK", DOC), [0, 3, 5]), Verdict::Newer(o) if o.text.contains("0.4.0"))
         );
         // a lobby with no version, or no web port at all, changes nothing
         check(lobby_answering("404 Not Found", ""), [0, 1, 0]).unwrap();
+        assert!(selfupdate::take_offer().is_none());
         let closed = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap()
