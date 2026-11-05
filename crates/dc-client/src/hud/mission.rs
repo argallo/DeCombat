@@ -83,6 +83,8 @@ pub enum MissionEvent {
     State { id: u32, state: u8 },
     /// Sub 3: a dialogue caption `picture|speaker|text`, held `secs` after its last letter.
     Caption { text: String, secs: f32 },
+    /// Sub 6: the own drop-item note (1 the health pack, 2 the ammunition, 3 the ammunition box).
+    Pickup { item: u8 },
 }
 
 /// The caption on screen.
@@ -635,6 +637,7 @@ impl HudState {
                 }
                 self.banner.voices.push(Voice::CoopMessage);
             }
+            MissionEvent::Pickup { item } => super::coopscore::on_pickup(self, *item, now),
         }
     }
 }

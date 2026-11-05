@@ -863,6 +863,7 @@ fn match_options(
     changed: &Option<crate::settings::Settings>,
     mods: Option<crate::mods::HostRecipe>,
     room: &super::link::RoomView,
+    reticle: Option<(u16, u32)>,
 ) -> WindowOptions {
     let mut mopts = wopts.clone();
     if let Some(s) = changed {
@@ -878,6 +879,8 @@ fn match_options(
     } else {
         Vec::new()
     };
+    // use-items-sweep: and the reticle item in use (CLI-1878)
+    mopts.reticle = reticle;
     mopts
 }
 
@@ -1014,7 +1017,17 @@ pub fn run_menu_window(
                         // the match takes the window over and hands it back (no window swap); the painter stays
                         let (host, painter) = lend_live(live.take());
                         // client-fps: the exit report of every match (it was dropped here before)
-                        let mopts = match_options(&wopts, &changed, menu.mod_recipe(), &menu.data.room);
+                        let reticle = super::colorbox::match_reticle(
+                            menu.cat.rom.as_deref(),
+                            &menu.data.store,
+                        );
+                        let mopts = match_options(
+                            &wopts,
+                            &changed,
+                            menu.mod_recipe(),
+                            &menu.data.room,
+                            reticle,
+                        );
                         let (r, back, host) =
                             run_window_in_host(&mut el, Box::new(net), mopts, sound.take(), host);
                         sound = back;

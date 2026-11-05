@@ -1225,7 +1225,7 @@ fn rom_storage_top_strip_is_general_alone_and_names_keep_the_cell_colour() {
 /// payment option 0 (the lobby sends no new 0x345 after a purchase).
 #[test]
 fn rom_a_credit_purchase_lowers_the_shown_balance() {
-    use dc_client::menu::buybox::{BUTTON_SIZE, CANCEL_AT, WINDOW_AT};
+    use dc_client::menu::buybox::{BUTTON_SIZE, OK_AT, WINDOW_AT};
     use dc_client::menu::link::{BuyReply, LinkEvent};
     use dc_client::menu::shop::{CATEGORY_COMMANDS, CMD_BUY};
     use dc_client::menu::storage::TAB_MARKET;
@@ -1259,6 +1259,8 @@ fn rom_a_credit_purchase_lowers_the_shown_balance() {
             (p.pos[1] + p.size[1] / 2) as f32,
         ]
     };
+    // a detached link: no "connection ended" box races the reply fed below
+    m.detach_link();
     m.data.balance = (1_200, 10_000);
     // the category's first cell is selected with the category (as the gift test relies on)
     tap(&mut m, at);
@@ -1274,14 +1276,24 @@ fn rom_a_credit_purchase_lowers_the_shown_balance() {
         ]
     };
     tap(&mut m, buy);
-    // the purchase window, cancelled (headless: the link ends at its first request); the reply comes in anyway
+    // the purchase window's OK sends the request (headless: the link ends there) and records the asked row's
+    // charge (CLI-1875); the reply comes in anyway
     tap(
         &mut m,
         [
-            (WINDOW_AT[0] + CANCEL_AT[0] + BUTTON_SIZE[0] / 2) as f32,
-            (WINDOW_AT[1] + CANCEL_AT[1] + BUTTON_SIZE[1] / 2) as f32,
+            (WINDOW_AT[0] + OK_AT[0] + BUTTON_SIZE[0] / 2) as f32,
+            (WINDOW_AT[1] + OK_AT[1] + BUTTON_SIZE[1] / 2) as f32,
         ],
     );
+    // the confirmation box ("You have chosen to buy ..."): Enter sends the request
+    assert!(m.popup().is_some(), "the purchase asks first");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    m.update();
+    // the non-refundable question (NX): Enter again
+    assert!(m.popup().is_some(), "the NX purchase asks twice");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    m.update();
+    assert!(m.link_latest_request().starts_with("BuyWith"), "{}", m.link_latest_request());
     m.feed_event(LinkEvent::Bought(BuyReply {
         ok: true,
         reason: 0,
@@ -1290,10 +1302,12 @@ fn rom_a_credit_purchase_lowers_the_shown_balance() {
         award: -1,
     }));
     m.update();
+    // CLI-1875: the balance the option word is charged to; the purchase window's payment mode sends option 1,
+    // which the lobby charges to the prepaid balance (CD-37), so that is the one the client lowers
     assert_eq!(
         m.data.balance,
-        (1_200 - price, 10_000),
-        "the credit balance paid (option 0)"
+        (1_200, 10_000 - price),
+        "the prepaid balance paid (option 1)"
     );
     // a refused reply changes nothing
     m.feed_event(LinkEvent::Bought(BuyReply {
@@ -1304,5 +1318,5 @@ fn rom_a_credit_purchase_lowers_the_shown_balance() {
         award: -1,
     }));
     m.update();
-    assert_eq!(m.data.balance, (1_200 - price, 10_000));
+    assert_eq!(m.data.balance, (1_200, 10_000 - price));
 }

@@ -287,6 +287,10 @@ impl HudAssets {
         }
         if !self.cache.contains_key(path) {
             let t = match part_name(path) {
+                // CLI-1847: the fall vignette's texture is made here, not read from the ROM
+                None if path == super::fallborder::TEXTURE => {
+                    Some(Arc::new(super::fallborder::texture()))
+                }
                 Some((base, r)) => self.texture(base).map(|b| Arc::new(crop(&b, r))),
                 None => self.textures.load(path).map(Arc::new),
             };
@@ -460,13 +464,9 @@ pub fn resolve<'a>(
                 // a pixel is covered when its index lies in [x, x + w) (the 2009 2D quads carry their own -0.5)
                 // EVIDENCE: cshell+0x845f0
                 let c = v.colour.map(|x| x as f32);
-                for r in crate::spread::aim_mark_rects(width, height, v) {
-                    let (x0, x1) = crate::spread::covered(r[0], r[2]);
-                    let (y0, y1) = crate::spread::covered(r[1], r[3]);
-                    out.push(Prim::Fill {
-                        rect: [x0, y0, x1, y1],
-                        colour: c,
-                    });
+                // use-items-sweep: the shape of a reticle item (CLI-1878)
+                for rect in crate::spread::aim_mark_fills(width, height, v) {
+                    out.push(Prim::Fill { rect, colour: c });
                 }
             }
             DrawItem::Crosshair(c) => c.resolve(width, height, sx, sy, &mut out),

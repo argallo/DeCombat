@@ -269,11 +269,18 @@ pub fn models_from_doc(doc: &ButeDoc) -> Vec<ModelChoice> {
 }
 
 pub fn models_from_rom(rom: &Path) -> Vec<ModelChoice> {
+    create_table(rom).map_or_else(Vec::new, |doc| models_from_doc(&doc))
+}
+
+/// use-items-emblem: the creation table of the ROM (the face window reads it too).
+pub fn create_table(rom: &Path) -> Option<ButeDoc> {
     let vfs = dc_rez::RezVfs::new(rom);
-    match ButeDoc::try_from_vfs(&vfs, REZ, CREATE_TABLE) {
-        Ok(Some(doc)) => models_from_doc(&doc),
-        _ => Vec::new(),
-    }
+    ButeDoc::try_from_vfs(&vfs, REZ, CREATE_TABLE).ok().flatten()
+}
+
+/// use-items-emblem: the row number of a creation table section name (`None` for another section).
+pub fn create_row(section: &str) -> Option<i32> {
+    section.strip_prefix(SECTION_PREFIX)?.parse().ok()
 }
 
 /// What a check press does with the box text (`account`: the login ID).

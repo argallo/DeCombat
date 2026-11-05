@@ -606,3 +606,96 @@ fn the_world_camera_shot_runs_at_every_round() {
         "live again at the round 2 result"
     );
 }
+
+/// DSV-567 with DSV-112 (owner playtest 2026-11-04, Rapid Stream S&D: the first round after the warm-up ended without
+/// the between-round camera shot; the player stood frozen in his own view): the warm-up ends like a round, with the
+/// end trigger's shot, and round 1 and round 2 each end with the shot again; every round start switches it off.
+/// The warm-up's result is numbered round 0, so the shot's latches must follow 1 -> 0 -> 1 like any round change.
+// OBSERVED: owner client log 2026-11-04 (camera object 0xa6: live at the warm-up result and the round 2 / 3
+// results, no live change at the round 1 result)
+#[test]
+fn the_world_camera_shot_runs_after_the_warmup_and_at_rounds_1_and_2() {
+    use dc_dserver::camshot::{
+        CameraInfo, CameraPoint, WorldCameras, OBJ_CAMERA_TYPE, UFLAG_CAMERA_LIVE,
+    };
+    let mut w = world_with_crate();
+    w.scripts.cameras = WorldCameras {
+        cameras: vec![CameraInfo {
+            name: b"Cam0".to_vec(),
+            pos: [0.0, 50.0, 0.0],
+            rot: [0.0, 0.0, 0.0],
+            allow_move: false,
+            listener: true,
+            fov: [90.0, 75.0],
+            end_shot: false,
+        }],
+        points: vec![CameraPoint {
+            name: b"Overview".to_vec(),
+            pos: [40.0, 120.0, -60.0],
+            rot: [0.3, 1.2, 0.0],
+        }],
+    };
+    w.scripts.triggers.push((
+        b"RoundEnd".to_vec(),
+        vec![
+            b"msg cam0 on;".to_vec(),
+            b"msg Cam0 (moveto overview);".to_vec(),
+        ],
+    ));
+    w.scripts
+        .triggers
+        .push((b"RoundStart".to_vec(), vec![b"msg Cam0 off;".to_vec()]));
+    let (mut cfg, _) = fast("");
+    cfg.game.warmup_secs = Some(3);
+    let room = "room key=SND type=2 goal=3 ff=0 trig=|RoundStart|RoundEnd|";
+    let mut net = Net::two_alive_in(cfg, w, room, 2);
+    let live = |n: &Net, i: usize| {
+        n.c(i)
+            .seen
+            .objects
+            .values()
+            .find(|o| o.blob_type == Some(OBJ_CAMERA_TYPE))
+            .and_then(|o| o.uflags)
+            == Some(UFLAG_CAMERA_LIVE)
+    };
+    let both = |n: &Net| live(n, 0) && live(n, 1);
+    let none = |n: &Net| !live(n, 0) && !live(n, 1);
+    assert!(net.server.game().in_warmup());
+    assert!(none(&net));
+    // the warm-up's end: a drawn result and the shot
+    assert!(net.run_until(net.now + 5_000, |n| !n.server.game().in_warmup()));
+    assert!(
+        net.run_until(net.now + 500, both),
+        "live at the warm-up's result"
+    );
+    // round 1 starts: the shot ends
+    assert!(
+        net.run_until(net.now + 4_000, |n| n.server.game().round_no() == 1
+            && matches!(n.server.game().phase(), RoundPhase::Running { .. }))
+    );
+    assert!(
+        net.run_until(net.now + 500, none),
+        "off at the round 1 start"
+    );
+    assert!(net.run_until(net.now + 2_000, |n| n.c(0).life_state() == 1
+        && n.c(1).life_state() == 1));
+    net.run_for(300);
+    // round 1: Dave takes Erin out, team 1 wins: the shot again
+    let t1 = net.kill(0, 1);
+    net.run_for(100);
+    assert_eq!(net.c(0).seen.round_result, Some((1, 1, 0)));
+    assert!(net.run_until(t1 + 500, both), "live at the round 1 result");
+    assert!(net.run_until(t1 + 4_000, |n| n.server.game().round_no() == 2));
+    assert!(
+        net.run_until(net.now + 500, none),
+        "off at the round 2 start"
+    );
+    assert!(net.run_until(net.now + 2_000, |n| n.c(0).life_state() == 1
+        && n.c(1).life_state() == 1));
+    net.run_for(300);
+    // round 2: the same win, the same shot
+    let t2 = net.kill(0, 1);
+    net.run_for(100);
+    assert_eq!(net.c(0).seen.round_result, Some((1, 2, 0)));
+    assert!(net.run_until(t2 + 500, both), "live at the round 2 result");
+}

@@ -89,6 +89,26 @@ pub const ROAM_MIN: f32 = 800.0;
 pub const ROAM_MS: u32 = 20_000;
 pub const ROAM_REACHED: f32 = 96.0;
 pub const EVADE_PROBE_SECS: f32 = 0.4;
+/// BOT-121: a bot farther than this (flat) from where it stood at its last navigation call was moved (a spawn, a
+/// teleport): its way starts afresh.
+// DC-DEFAULT: BOT-121 (proposed) 256 units
+pub const NAV_TELEPORT: f32 = 256.0;
+/// BOT-121: at the end of a way short of its goal (or on an island of the grid) the greedy way-finder walks from that
+/// place for this long (BOT-113's edge walk), and a plan that leads back within `NAV_END_NEAR` of the place is not
+/// taken meanwhile.
+// DC-DEFAULT: BOT-121 (proposed) 3000 ms, 96 units
+pub const NAV_END_GREEDY_MS: u32 = 3000;
+pub const NAV_END_NEAR: f32 = 96.0;
+
+/// BOT-121: the time a bot spends in its navigation (microseconds): in all, the most in one navigation step, the
+/// steps (`dc_nav::follow::STEP_MS` each) and the time of the step under way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NavCost {
+    pub busy_us: u64,
+    pub step_max_us: u64,
+    pub steps: u64,
+    step_us: u64,
+}
 
 /// A world load to run on a worker thread.
 type WorldJob = Box<dyn FnOnce() -> Result<LoadedWorld, String> + Send>;
@@ -527,13 +547,22 @@ pub struct BotSession {
     pub hunter: Hunter,
     /// BOT-92: the evasive movement while engaging.
     pub evader: crate::evade::Evader,
-    /// BOT-93: the navigation grid of the loaded world and the route the bot follows on it.
+    /// BOT-93: the navigation grid of the loaded world; BOT-121: the way the bot follows on it (the co-op AI's
+    /// follower), when its last navigation step began, where the bot stood at its last call, the time spent.
     pub nav: Option<crate::nav::NavGrid>,
-    pub route: crate::nav::Route,
+    pub follow: crate::nav::follow::Follower,
+    nav_step: Millis,
+    nav_last_pos: Option<[f32; 3]>,
+    pub nav_cost: NavCost,
+    /// BOT-121: where and since when the bot walks greedily from the end of a way short of its goal.
+    nav_end: Option<(Millis, [f32; 3])>,
+    /// BOT-121: the goal of the last navigation step and where it said to go (asked again at the next step).
+    nav_cache: Option<([f32; 3], crate::nav::follow::NavGoal)>,
+    /// BOT-121: the goal the bot stands at because the body got no closer to it at the end of a whole way.
+    nav_arrived: Option<[f32; 3]>,
     nav_said: Millis,
-    /// BOT-113: where the walking body was at the last progress check, and when; the checks in a row without way.
+    /// BOT-113: where the greedy way-finder's walking body was at the last progress check, and when.
     walk_check: Option<(Millis, [f32; 3])>,
-    walk_fails: u32,
     /// BOT-117: the place the bot roams to and when it was picked; the picks' counter.
     roam: Option<([f32; 3], Millis)>,
     roam_seed: u64,
@@ -560,6 +589,9 @@ pub struct BotSession {
     spy: crate::spyrun::SpyRun,
     /// Search and Destroy: the carrier mark, the plant and the bot's hold (BOT-70).
     bomb: crate::bombrun::BombRun,
+    /// BOT-122: the bot's team job in a bomb round and its last order.
+    squad: crate::squad::Squad,
+    squad_order: Option<crate::squad::Order>,
     /// The bot is within the stop distance of its timeline `approach` player (`approach_reached` was logged).
     approach_near: bool,
     /// The goto point whose `goto_reached` was logged.
@@ -587,10 +619,15 @@ impl BotSession {
             leave_at: None,
             hunter: Hunter::default(),
             nav: None,
-            route: crate::nav::Route::default(),
+            follow: crate::nav::follow::Follower::default(),
+            nav_step: 0,
+            nav_last_pos: None,
+            nav_cost: NavCost::default(),
+            nav_end: None,
+            nav_arrived: None,
+            nav_cache: None,
             nav_said: 0,
             walk_check: None,
-            walk_fails: 0,
             roam: None,
             roam_seed: 0x00f0_a3e5
                 ^ cfg
@@ -616,6 +653,8 @@ impl BotSession {
             carrying: None,
             spy: crate::spyrun::SpyRun::default(),
             bomb: crate::bombrun::BombRun::default(),
+            squad: crate::squad::Squad::default(),
+            squad_order: None,
             approach_near: false,
             goto_logged: None,
             stream_watch: BTreeMap::new(),
@@ -1178,7 +1217,7 @@ impl BotSession {
                 // BOT-93: the navigation grid grows from where the bot stands, on this world
                 let coll = self.nav_collision();
                 self.nav = coll.map(|c| crate::nav::NavGrid::new(c, BOT_STAND_DIMS));
-                self.route.clear();
+                self.nav_reset();
                 true
             }
             Ok(Err(e)) => {
@@ -1518,7 +1557,7 @@ impl BotSession {
         let nav_coll = self.nav_collision();
         self.nav =
             nav_coll.map(|c| crate::nav::NavGrid::new(c, self.nav_dims()).with_kill_volumes(kill));
-        self.route.clear();
+        self.nav_reset();
         self.rec.event(
             "world_set",
             json!({"ms": self.ms(now), "linked": linked, "solid": solid, "gone": gone.len(),
@@ -1555,7 +1594,7 @@ impl BotSession {
         let views = crate::doors::door_views(w, &self.table, &self.doors.boxes);
         let path: Vec<[f32; 3]> = match goal {
             None => Vec::new(),
-            Some(_) if !self.route.points.is_empty() => self.route.points.clone(),
+            Some(_) if !self.follow.points().is_empty() => self.follow.points().to_vec(),
             Some(g) => vec![g],
         };
         let mut notes = Vec::new();
@@ -1634,6 +1673,118 @@ impl BotSession {
         let d = self.body.as_ref().map_or(BOT_STAND_DIMS, |b| b.dims());
         let have = self.nav.as_ref().map_or(BOT_STAND_DIMS, |n| n.dims());
         [0, 1, 2].map(|i| d[i].max(BOT_STAND_DIMS[i]).max(have[i]))
+    }
+
+    /// BOT-121: the next point of the bot's way from `pos` to `goal` over the grid, `None` where the grid gives no
+    /// way (no grid, off it, or on an island of it: the greedy way-finder walks). Once per navigation step (50 ms)
+    /// the bot's place joins the grid, the grid grows between the bot and the goal while no whole way is known, and
+    /// a plan may be made; the rules are the co-op AI's (`dc_nav::follow`, FT-S11).
+    // DC-DEFAULT: BOT-121 (proposed)
+    fn nav_way(&mut self, now: Millis, pos: [f32; 3], goal: [f32; 3]) -> Option<[f32; 3]> {
+        use crate::nav::follow;
+        self.nav.as_ref()?;
+        let t0 = std::time::Instant::now();
+        // the grid follows the body's box (it arrives with the first teleport)
+        let dims = self.nav_dims();
+        if self.nav.as_ref().is_some_and(|n| n.dims() != dims) {
+            if let Some(c) = self.nav_collision() {
+                self.nav = Some(
+                    crate::nav::NavGrid::new(c, dims).with_kill_volumes(self.kill_now.clone()),
+                );
+                self.nav_reset();
+            }
+        }
+        // a teleport (a spawn, the server's correction) starts the way afresh
+        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        if self
+            .nav_last_pos
+            .is_some_and(|p| flat(p, pos) > NAV_TELEPORT)
+        {
+            self.nav_reset();
+        }
+        self.nav_last_pos = Some(pos);
+        let step = self.nav_cost.steps == 0 || since(now, self.nav_step) >= follow::STEP_MS;
+        let nav = self.nav.as_mut()?;
+        if step {
+            self.nav_step = now;
+            self.follow.grow(nav, pos, crate::nav::follow::GROW_PROBES);
+        }
+        // between two steps the bot walks toward the point the last step gave (the co-op AI asks once per step too)
+        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        let out = match self.nav_cache {
+            Some((g, out)) if !step && flat(g, goal) <= follow::TARGET_MOVED => out,
+            _ => self.follow.next(nav, now, pos, goal, step),
+        };
+        self.nav_cache = Some((goal, out));
+        let us = t0.elapsed().as_micros() as u64;
+        let c = &mut self.nav_cost;
+        if step {
+            c.step_max_us = c.step_max_us.max(c.step_us);
+            c.step_us = 0;
+            c.steps += 1;
+        }
+        c.step_us += us;
+        c.busy_us += us;
+        match out {
+            follow::NavGoal::Way(w) => Some(w),
+            follow::NavGoal::Hold | follow::NavGoal::Steer => None,
+        }
+    }
+
+    /// BOT-121: the greedy way-finder's walk from the end of a way short of the goal (or from an island of the grid):
+    /// `way` is the follower's next point; while the walk lasts ([`NAV_END_GREEDY_MS`] from the place it began) a way
+    /// that leads back within [`NAV_END_NEAR`] of that place is not taken (before, the bot went to and fro between the
+    /// place and the greedy way-finder's first steps). Returns the way to take.
+    // DC-DEFAULT: BOT-121 (proposed)
+    fn nav_edge(&mut self, now: Millis, pos: [f32; 3], way: Option<[f32; 3]>) -> Option<[f32; 3]> {
+        let walking = self
+            .nav_end
+            .is_some_and(|(t, _)| since(now, t) < NAV_END_GREEDY_MS);
+        if !walking {
+            self.nav_end = None;
+        }
+        if way.is_some() && !(walking && self.nav_same_end()) {
+            self.nav_end = None;
+            return way;
+        }
+        let short = self.follow.at_end() || self.follow.island() || walking;
+        if self.nav.is_some() && short && self.nav_end.is_none() {
+            self.nav_end = Some((now, pos));
+        }
+        None
+    }
+
+    /// BOT-121: whether the way planned is short of the goal and ends within [`NAV_END_NEAR`] of the end place the
+    /// bot already stood at (the grid has not found more since).
+    fn nav_same_end(&self) -> bool {
+        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        match (self.nav_end, self.follow.points().last()) {
+            (Some((_, p)), Some(e)) => !self.follow.whole() && flat(p, *e) <= NAV_END_NEAR,
+            _ => false,
+        }
+    }
+
+    /// BOT-121: the bot's way starts afresh (a new grid, a teleport, no goal).
+    fn nav_reset(&mut self) {
+        self.follow.clear();
+        self.nav_cache = None;
+    }
+
+    /// BOT-121: the `nav` event: the grid, the follower's counters and the time spent.
+    fn nav_event(&mut self, now: Millis) {
+        let Some(nav) = self.nav.as_ref() else {
+            return;
+        };
+        let (s, c) = (&self.follow.stats, &self.nav_cost);
+        self.rec.event(
+            "nav",
+            json!({"ms": self.ms(now), "nodes": nav.len(), "probes": nav.probes, "plans": s.plans,
+                   "whole": s.whole, "failed": s.failed, "islands": s.islands, "jumps": s.jumps,
+                   "stuck_replans": s.stuck_replans, "waypoints": self.follow.points().len(),
+                   "busy_us": c.busy_us, "steps": c.steps, "step_max_us": c.step_max_us,
+                   "plan_max_us": s.plan_max_us, "grow_max_us": s.grow_max_us,
+                   "role": format!("{:?}", self.role)}),
+        );
     }
 
     // SPEC: UDP_SESSION_2009_B.md §6.2, §7.1 (shell dispatch); GAME_MESSAGES_2009_S2C.md §3-§5
@@ -2453,6 +2604,7 @@ impl BotSession {
             });
             let mut stood = None;
             let mut may_roam = false;
+            let mut squad_wait = false;
             let goal = (self.life_state == 1 && playing && !paused && !planting)
                 .then(|| {
                     // BOT-46: a `goto x y z r` point holds the bot there: no hunting toward targets meanwhile
@@ -2460,10 +2612,25 @@ impl BotSession {
                         .timeline
                         .as_ref()
                         .is_some_and(|t| t.goto.is_some() && t.goto_radius.is_some());
-                    let bomb = if stay { None } else { self.bomb_goal(now, in_sight) };
+                    // BOT-122: the bot's team job in a bomb round: where it walks, and whether it stands for now
+                    let order = if stay { None } else { self.squad_tick(now) };
+                    let waiting = order.is_some_and(|o| o.wait) && !in_sight;
+                    let bomb = if stay {
+                        None
+                    } else {
+                        self.bomb_goal(now, in_sight, order.as_ref())
+                    };
+                    let bomb = bomb.filter(|_| !waiting);
                     // BOT-95: the role's objective comes after the mode runs of the carrier / runner / intel bot
                     // and before the hunt; the last one standing in an elimination round does not hunt
-                    let situation = if stay { None } else { Some(self.situation()) };
+                    let situation = if stay {
+                        None
+                    } else {
+                        Some(crate::roles::Situation {
+                            squad: order,
+                            ..self.situation()
+                        })
+                    };
                     let pos = self.body.as_ref().map(|b| b.pos());
                     // BOT-103: at its objective the bot stands (and fights what it sees) instead of circling it
                     let stood_at = self.stood_at;
@@ -2482,9 +2649,10 @@ impl BotSession {
                     };
                     let objective = situation
                         .as_ref()
-                        .filter(|_| !in_sight)
+                        .filter(|_| !in_sight && !waiting)
                         .and_then(|s| crate::roles::objective_goal(self.role, s));
-                    let objective_stood = objective.is_some_and(|o| reach(o).is_none());
+                    squad_wait = waiting;
+                    let objective_stood = waiting || objective.is_some_and(|o| reach(o).is_none());
                     let objective = objective.and_then(|o| reach(o));
                     let idle = situation.as_ref().and_then(crate::roles::idle_goal);
                     let cautious = situation.as_ref().is_some_and(crate::roles::cautious);
@@ -2510,6 +2678,10 @@ impl BotSession {
                         })
                 })
                 .flatten();
+            // BOT-122: a waiting bot stands where it is (and fights what it sees)
+            if squad_wait {
+                stood = self.body.as_ref().map(|b| b.pos());
+            }
             // BOT-117: nothing to walk to, no target and no objective to stand at: the bot roams the grid
             let seeing = self.shooter.as_ref().is_some_and(|s| s.target().is_some());
             let goal = match goal {
@@ -2532,10 +2704,14 @@ impl BotSession {
             if self.life_state == 1 && playing && since(now, self.track_said) >= TRACK_MS {
                 self.track_said = now;
                 if let Some((pos, _)) = at {
+                    let job = self.squad_order.map(|o| format!("{:?}", o.job));
+                    let wait = self.squad_order.filter(|o| o.wait).map(|o| o.why);
                     self.rec.event(
                         "track",
                         json!({"ms": self.ms(now), "pos": pos, "goal": goal, "kind": goal_kind,
-                               "hold": self.bomb.hold.is_some()}),
+                               "hold": self.bomb.hold.is_some(), "job": job, "wait": wait,
+                               "via": self.squad.via(), "team": self.own_team(),
+                               "edge": self.nav_end.is_some(), "arrived": self.nav_arrived.is_some()}),
                     );
                 }
             }
@@ -2567,43 +2743,32 @@ impl BotSession {
                 }
                 self.hunt_goal_last = Some(g);
             }
+            // BOT-121: on a ROM world the bot follows its way over the grid (the co-op AI's planner, FT-S11); the
+            // greedy way-finder takes over only where the grid gives no way (off it, on an island of it)
+            let mut way = match (goal, at) {
+                (Some(g), Some((pos, true))) => self.nav_way(now, pos, g),
+                _ => None,
+            };
+            if let (Some(_), Some((pos, true))) = (goal, at) {
+                way = self.nav_edge(now, pos, way);
+            }
+            // BOT-121: at a goal the body cannot get closer to, the bot stands until the goal moves
+            let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+            self.nav_arrived = self
+                .nav_arrived
+                .filter(|a| goal.is_some_and(|g| flat(*a, g) <= crate::nav::follow::TARGET_MOVED));
+            let arrived = self.nav_arrived.is_some();
             let steer = match (goal, at) {
-                // BOT-93: on a ROM world the grid grows toward the goal and its route steers; the greedy
-                // way-finder takes over where the grid has no way (yet)
-                (Some(g), Some((pos, true)))
-                    if self.nav.is_some() && {
-                        // the grid follows the body's box (it arrives with the first teleport)
-                        let dims = self.nav_dims();
-                        if self.nav.as_ref().is_some_and(|n| n.dims() != dims) {
-                            if let Some(c) = self.nav_collision() {
-                                self.nav = Some(
-                                    crate::nav::NavGrid::new(c, dims)
-                                        .with_kill_volumes(self.kill_now.clone()),
-                                );
-                                self.route.clear();
-                            }
-                        }
-                        let nav = self.nav.as_mut().unwrap();
-                        nav.seed(pos);
-                        // BOT-112: half the probes grow the grid where the bot is (a place it fell or walked
-                        // to off the grid joins it), half toward the goal
-                        let half = crate::nav::BUDGET / 2;
-                        nav.expand(half, Some(pos));
-                        nav.expand(crate::nav::BUDGET - half, Some(g));
-                        self.route.next(nav, now, pos, g).is_some()
-                    } =>
-                {
-                    let wp = self.route.points[0];
+                (Some(_), Some(_)) if arrived => {
+                    self.hunter.stop();
+                    None
+                }
+                (Some(_), Some((pos, true))) if way.is_some() => {
+                    let wp = way.unwrap_or(pos);
                     self.hunter.stop();
                     if since(now, self.nav_said) >= 5000 {
                         self.nav_said = now;
-                        let nav = self.nav.as_ref().unwrap();
-                        self.rec.event(
-                            "nav",
-                            json!({"ms": self.ms(now), "nodes": nav.len(), "probes": nav.probes,
-                                   "replans": self.route.replans, "waypoints": self.route.points.len(),
-                                   "given_up": self.route.stuck, "role": format!("{:?}", self.role)}),
-                        );
+                        self.nav_event(now);
                     }
                     Some(crate::hunt::yaw_to(pos, wp))
                 }
@@ -2638,7 +2803,7 @@ impl BotSession {
                 }
                 _ => {
                     self.hunter.stop();
-                    self.route.clear();
+                    self.nav_reset();
                     None
                 }
             };
@@ -2710,41 +2875,67 @@ impl BotSession {
                     None
                 }
             };
-            // BOT-113: a walking body that made no way for a while jumps (out of a pit, over a low edge the grid
-            // and the greedy way-finder do not know)
             let mut evade = evade;
             let climbing = self.body.as_ref().is_some_and(|b| b.on_ladder());
+            let jump_move = |evade: Option<crate::evade::Move>| {
+                let mut m = evade.unwrap_or(crate::evade::Move {
+                    yaw: 0.0,
+                    strafe: 0,
+                    back: false,
+                    jump: false,
+                    crouch: false,
+                    note: None,
+                });
+                m.jump = true;
+                Some(m)
+            };
             match (steer, self.body.as_ref().map(|b| b.pos())) {
-                // a climb on a ladder moves the body up, not across: no check there
-                (Some(_), Some(p)) if !climbing => match self.walk_check {
-                    Some((at, from)) if since(now, at) >= WALK_CHECK_MS => {
-                        let moved = ((p[0] - from[0]).powi(2) + (p[2] - from[2]).powi(2)).sqrt();
-                        if moved >= WALK_CHECK_MIN {
-                            self.walk_fails = 0;
-                        } else {
-                            // the second check in a row without way: the grid's step toward the first waypoint
-                            // is given up (a goal that keeps changing never lets the plan's own progress check
-                            // run out)
-                            self.walk_fails += 1;
-                            if self.walk_fails >= 2 && !self.route.points.is_empty() {
-                                self.walk_fails = 0;
-                                if let Some(nav) = self.nav.as_mut() {
-                                    self.route.give_up_step(nav, p);
-                                }
-                            }
-                            let mut m = evade.unwrap_or(crate::evade::Move {
-                                yaw: 0.0,
-                                strafe: 0,
-                                back: false,
-                                jump: false,
-                                crouch: false,
-                                note: None,
-                            });
-                            m.jump = true;
-                            evade = Some(m);
+                // BOT-121: walking its way: the stuck rule of the grid's follower (FT-S11): the way left gets no
+                // shorter for 1.5 s: a jump; for 3 s: the link it was on is given up and it plans again. Also on a
+                // ladder: the grid has no ladder links, so a way never climbs one (a body caught on one is stuck)
+                (Some(_), Some(p)) if way.is_some() && door_yaw.is_none() => {
+                    self.walk_check = None;
+                    // walking to the goal itself at the end of a whole way
+                    let to_goal = self.follow.points().is_empty() && self.follow.whole();
+                    let stuck = match self.nav.as_mut() {
+                        Some(nav) => self.follow.stuck(nav, now, p),
+                        None => crate::nav::follow::Stuck::No,
+                    };
+                    match stuck {
+                        crate::nav::follow::Stuck::Jump => {
+                            evade = jump_move(evade);
                             self.rec.event(
                                 "stuck_jump",
-                                json!({"ms": self.ms(now), "pos": p, "moved": moved, "goal": goal}),
+                                json!({"ms": self.ms(now), "pos": p, "goal": goal, "by": "way"}),
+                            );
+                        }
+                        crate::nav::follow::Stuck::Replan => {
+                            // the goal itself is out of the body's reach (on a stand, in a corner): the bot stands
+                            // where it got to until the goal moves
+                            if to_goal {
+                                self.nav_arrived = goal;
+                            }
+                            self.rec.event(
+                                "stuck_replan",
+                                json!({"ms": self.ms(now), "pos": p, "goal": goal, "at_goal": to_goal}),
+                            );
+                        }
+                        crate::nav::follow::Stuck::No => {}
+                    }
+                }
+                // a climb on a ladder moves the body up, not across: no check there
+                (Some(_), Some(_)) if climbing => self.walk_check = None,
+                // BOT-113: the greedy way-finder's body that made no way for a while jumps (out of a pit, over a
+                // low edge the grid and the greedy way-finder do not know)
+                (Some(_), Some(p)) => match self.walk_check {
+                    Some((at, from)) if since(now, at) >= WALK_CHECK_MS => {
+                        let moved = ((p[0] - from[0]).powi(2) + (p[2] - from[2]).powi(2)).sqrt();
+                        if moved < WALK_CHECK_MIN {
+                            evade = jump_move(evade);
+                            self.rec.event(
+                                "stuck_jump",
+                                json!({"ms": self.ms(now), "pos": p, "moved": moved, "goal": goal,
+                                       "by": "greedy"}),
                             );
                         }
                         self.walk_check = Some((now, p));
@@ -3081,7 +3272,14 @@ impl BotSession {
     /// team's site this round, not the nearest; an enemy in sight is fought before a new hold. BOT-104: after the
     /// plant a defender walks to the bomb's defuse point and holds there the same way until the 0x50.
     // DC-DEFAULT: BOT-70 (proposed); BOT-103 (proposed); BOT-104 (proposed)
-    fn bomb_goal(&mut self, now: Millis, in_sight: bool) -> Option<[f32; 3]> {
+    /// BOT-122: an attacker plants at the point of its job's site and walks its job's way there.
+    // DC-DEFAULT: BOT-122 (proposed)
+    fn bomb_goal(
+        &mut self,
+        now: Millis,
+        in_sight: bool,
+        order: Option<&crate::squad::Order>,
+    ) -> Option<[f32; 3]> {
         use crate::bombrun::{
             defuse_point, plant_points, team_point, usable, use_hold_body, PLANT_REACH,
         };
@@ -3104,17 +3302,21 @@ impl BotSession {
         let (target, p) = if defusing {
             defuse_point(&self.table)?
         } else {
-            team_point(
-                &usable(plant_points(&self.table), &self.bomb.blocked),
-                self.bomb.round,
-            )?
+            let points = usable(plant_points(&self.table), &self.bomb.blocked);
+            let job_point = order.and_then(|o| o.plant_at).and_then(|at| {
+                points
+                    .iter()
+                    .copied()
+                    .find(|q| (q.1[0] - at[0]).abs() < 1.0 && (q.1[2] - at[2]).abs() < 1.0)
+            });
+            job_point.or_else(|| team_point(&points, self.bomb.round))?
         };
         let d = ((p[0] - pos[0]).powi(2) + (p[2] - pos[2]).powi(2)).sqrt();
         if in_sight {
             return None;
         }
         if d > PLANT_REACH {
-            return Some(p);
+            return Some(order.and_then(|o| o.goal).map_or(p, |g| g.goal));
         }
         // BOT-80: the bomb item out first (0x76 select, 0x7f change, as a weapon switch)
         if let Some(c) = self.bomb.draw_item().filter(|_| carrying) {
@@ -3159,6 +3361,93 @@ impl BotSession {
             ..Default::default()
         };
         crate::roles::bomb_attacker(self.role, &s)
+    }
+
+    /// BOT-122: the bot's team as it sees it in a bomb round (`None` in other modes, before the roster names the
+    /// bot's team, or without plant points).
+    fn squad_team(&self) -> Option<crate::squad::Team> {
+        if !matches!(
+            self.obs.mode_class.or(self.cfg.mode_class_hint),
+            Some(2 | 3)
+        ) {
+            return None;
+        }
+        let own_pid = self.obs.client_id.map(|c| c.0 as u8)?;
+        let own_team = self.obs.roster.get(&own_pid).map(|r| r.team)?;
+        let own_pos = self.body.as_ref()?.pos();
+        let floor = self.table.extents.map(|e| e.min[1]);
+        let mates = self
+            .obs
+            .roster
+            .values()
+            .filter(|r| r.team == own_team)
+            .map(|r| {
+                if r.pid == own_pid {
+                    return crate::squad::Mate {
+                        pid: r.pid,
+                        pos: Some(own_pos),
+                        alive: true,
+                    };
+                }
+                let pos = self.table.objects.get(&r.character).and_then(|o| o.pos);
+                crate::squad::Mate {
+                    pid: r.pid,
+                    pos,
+                    alive: pos.is_some_and(|p| floor.is_none_or(|f| p[1] > f + 2.0)),
+                }
+            })
+            .collect();
+        Some(crate::squad::Team {
+            own_pid,
+            own_pos,
+            mates,
+            round: self.bomb.round,
+            attacking: self.bomb_attacker(),
+            sites: crate::bombrun::usable(
+                crate::bombrun::plant_points(&self.table),
+                &self.bomb.blocked,
+            )
+            .into_iter()
+            .map(|p| p.1)
+            .collect(),
+            planted: self.bomb.planted,
+            bomb_pos: crate::bombrun::defuse_point(&self.table).map(|p| p.1),
+        })
+    }
+
+    /// BOT-122: this tick's order of the bot's team job (a flank waypoint is moved onto the nearest known node of
+    /// the way grid within 512 units); a new job or a new wait reason is logged.
+    // DC-DEFAULT: BOT-122 (proposed)
+    fn squad_tick(&mut self, now: Millis) -> Option<crate::squad::Order> {
+        let order = match self.squad_team() {
+            Some(team) => {
+                let nav = self.nav.as_ref();
+                let mut snap = |p: [f32; 3]| {
+                    nav?.links_near(p, 512.0)
+                        .into_iter()
+                        .map(|n| n.0)
+                        .min_by(|a, b| {
+                            crate::roles::flat_dist(*a, p)
+                                .total_cmp(&crate::roles::flat_dist(*b, p))
+                        })
+                };
+                self.squad.order(now, &team, &mut snap)
+            }
+            None => None,
+        };
+        let last = self.squad_order;
+        if order.map(|o| (o.job, o.why)) != last.map(|o| (o.job, o.why)) {
+            if let Some(o) = order {
+                self.rec.event(
+                    "squad",
+                    json!({"ms": self.ms(now), "job": format!("{:?}", o.job), "wait": o.wait.then_some(o.why),
+                           "goal": o.goal.map(|g| g.goal), "plant_at": o.plant_at, "via": self.squad.via(),
+                           "round": self.bomb.round}),
+                );
+            }
+        }
+        self.squad_order = order;
+        order
     }
 
     /// BOT-95: what the round looks like for the role's goal.
@@ -3214,6 +3503,7 @@ impl BotSession {
             own_flag: own_team.and_then(|t| crate::flagrun::flag_pos(&self.table, u32::from(t))),
             own_carries_flag: self.carrying.is_some(),
             mates_alive,
+            squad: None,
         }
     }
 

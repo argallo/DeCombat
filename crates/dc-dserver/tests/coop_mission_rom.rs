@@ -136,6 +136,8 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
     cfg.game.move_check = false;
     // the test walks the mission: the AI do not hit the walker
     cfg.game.coop.hit_chance = [0.0; 3];
+    cfg.game.coop.melee_hit = 0.0;
+    let cap = cfg.game.coop.speed;
     // the walker is moved from box to box: no fall damage
     cfg.game.fall.enabled = false;
     let trig = trig_field(&rom, &key, &w.announce, 0);
@@ -184,6 +186,8 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
     let mut joined: Option<(u32, bool, usize)> = None;
     let mut broke = false;
     let mut kills = 0u32;
+    // DSV-588..DSV-590: the soldiers the statements spawn hold their guns and walk at `coop.speed`
+    let mut armed = 0u32;
     for pass in 0..16 {
         let mut progress = false;
         for &i in &order {
@@ -258,6 +262,20 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
                         .count();
                     joined = Some((goals, looping, plays));
                 }
+            }
+            for a in coop(&server)
+                .ais
+                .iter()
+                .filter(|a| a.state == dc_dserver::game::coop::AiState::Alive && !a.spec.unarmed)
+            {
+                assert!(a.spec.melee.is_none(), "{}: a soldier shoots", a.spec.key);
+                assert!(
+                    a.spec.look.weapon.is_some(),
+                    "{}: holds its gun",
+                    a.spec.key
+                );
+                assert_eq!(a.spec.speed, cap, "{}", a.spec.key);
+                armed += 1;
             }
             // the AI fall: their death commands run (respawns, counters)
             let alive: Vec<usize> = coop(&server)
@@ -354,6 +372,7 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
         server.world_statements().net.skipped,
         now / 1000
     );
+    assert!(armed > 0, "armed soldiers were spawned");
     let net = &server.world_statements().net;
     println!(
         "counters {:?}, activation boxes locked {:?} fired {:?}, vars {}",

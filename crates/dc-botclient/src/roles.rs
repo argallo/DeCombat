@@ -50,6 +50,8 @@ pub struct Situation {
     pub own_carries_flag: bool,
     /// Teammates still standing (streamed and not parked), the bot itself not counted.
     pub mates_alive: usize,
+    /// BOT-122: the bot's team job order in a bomb round (`None`: no team known, the BOT-103 rules).
+    pub squad: Option<crate::squad::Order>,
 }
 
 /// The team that attacks in the bomb modes (it holds the bomb; the other team defuses).
@@ -126,6 +128,14 @@ pub fn objective_goal(role: Role, s: &Situation) -> Option<Objective> {
                 return None;
             }
             let attacking = bomb_attacker(role, s);
+            // BOT-122: the team job decides the walk; the carrier's plant and the defuse stay bombrun's
+            if let Some(o) = s.squad {
+                return match (attacking, s.planted) {
+                    (true, false) if s.own_carries_bomb => None,
+                    (false, true) => s.bomb_pos.map(|p| Objective::at(p, 0.0)).or(o.goal),
+                    _ => o.goal,
+                };
+            }
             match (attacking, s.planted) {
                 (true, false) if s.own_carries_bomb => None,
                 (true, false) => team_site(s).map(|p| Objective::at(p, SITE_HOLD)),
@@ -156,9 +166,10 @@ pub fn objective_goal(role: Role, s: &Situation) -> Option<Objective> {
 /// BOT-103: where a bot goes when the hunt has no goal either: a bomb-round defender holds its site.
 pub fn idle_goal(s: &Situation) -> Option<Objective> {
     match s.class? {
-        2 | 3 if !s.planted && !bomb_attacker(Role::Defend, s) => {
-            held_site(s).map(|p| Objective::at(p, SITE_HOLD))
-        }
+        2 | 3 if !s.planted && !bomb_attacker(Role::Defend, s) => s
+            .squad
+            .and_then(|o| o.goal)
+            .or_else(|| held_site(s).map(|p| Objective::at(p, SITE_HOLD))),
         _ => None,
     }
 }

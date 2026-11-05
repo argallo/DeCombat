@@ -88,6 +88,12 @@ fn a_login_burst_does_not_stall_lobby_play() {
         },
     );
     let (mut c, _) = player(&l, "timer", "Timer");
+    // the burst comes from 200 loopback source addresses: macOS routes only 127.0.0.1 on lo0 by default, so
+    // the sources cannot connect there and the burst would be empty (the CI runners have no alias)
+    if connect_from(Ipv4Addr::new(127, 1, 0, 1), l.port).is_err() {
+        println!("skipped: this host does not route 127.1.0.0/16 on loopback");
+        return;
+    }
     let time_requests = |c: &mut Client, ms: u64| -> Vec<f64> {
         let end = Instant::now() + Duration::from_millis(ms);
         let mut v = Vec::new();

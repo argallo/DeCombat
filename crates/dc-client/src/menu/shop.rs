@@ -20,10 +20,15 @@ use std::sync::Arc;
 
 use super::buybox::{self, BoxPress, BuyArt, BuyBox};
 use super::catalog::Catalog;
+use super::colorbox::{self, ColourStep};
+use super::countrybox::{self, CountryStep};
 use super::dropdown::Dropdown;
+use super::facebox::{self, FaceStep};
 use super::inbox;
 use super::link::{CharExtras, LinkCmd, LinkEvent};
 use super::lobby::{PanelArt, OWN_COLOUR, ROW_COLOUR};
+use super::markbox::{self, MarkStep};
+use super::megabox::{self, MegaStep};
 use super::popup::{text_ids, BoxTag, Popup};
 use super::recordbox::{self, RecordStep};
 use super::result::grouped;
@@ -729,6 +734,73 @@ pub fn remaining_use_text(cat: &Catalog, rec: &super::link::InvRecord, now: u64)
     cat.text(if rec.slot_kind == 0 { 0x18ee } else { 0x18ef })
 }
 
+/// The uses left of a counted record (string 0x18e7, "%d" the count).
+// EVIDENCE: cshell+0xd6450 (string 0x18e7 with the record's count +0x14)
+pub fn uses_left_text(cat: &Catalog, count: u32) -> String {
+    cat.text(0x18e7).replacen("%d", &count.to_string(), 1)
+}
+
+/// The short form of [`uses_left_text`] for a storage cell ("100 uses").
+// DC-DEFAULT: CLI-1879 (proposed)
+pub fn uses_left_short(count: u32) -> String {
+    if count == 1 {
+        "1 use".to_string()
+    } else {
+        format!("{count} uses")
+    }
+}
+
+/// The period line of an owned item in the storage detail panel. A function item in use with uses left shows them
+/// (string 0x18e7); a function item not in use shows what it will give: "Duration : " (0x18f8) with its days
+/// (0 = One Time Use, 999 = Permanent) or, for a counted record, "Usage : " (0x18f9) with its items; everything
+/// else (and a function item in use without a count) shows [`remaining_use_text`].
+// EVIDENCE: cshell+0xd6450 (the line is cshell+0x2286b0's text, then for type 0x15: not in use (+0x18 = 0x321 +0xc)
+// -> the product's consume kind 2 / 3 / 6: 0x18f9 with "%d item(s)" of +0x24 (0x321 +0x30), else 0x18f8 with "One
+// Time Use" (0) / "Permanent" (999) / "%d day(s)"; in use with a count +0x14 (0x321 +0x24) -> 0x18e7 with it)
+// DC-DEFAULT: CLI-1879 (proposed; OWNER REPORT 2026-11-04 "the bonus EXP passes are not supposed to be permanent")
+// the consume kind is the record's use kind (3 = counted; the lobby writes 3 for consume 3, 1 for consume 1), the
+// amount its remaining period (+0x30) or, when that is 0, its count; an unused function item with an end date keeps
+// the days / hours left; the text is drawn in the line's colour (the 2009 0xFFFFC000 run is not applied)
+pub fn owned_use_text(
+    cat: &Catalog,
+    rec: &super::link::InvRecord,
+    function: bool,
+    now: u64,
+) -> String {
+    if !function {
+        return remaining_use_text(cat, rec, now);
+    }
+    if rec.in_use {
+        if rec.count > 0 {
+            return uses_left_text(cat, rec.count);
+        }
+        return remaining_use_text(cat, rec, now);
+    }
+    if inbox::has_end(rec.end, now) {
+        return remaining_use_text(cat, rec, now);
+    }
+    let n = if rec.period != 0 {
+        rec.period
+    } else {
+        rec.count
+    };
+    let value = if rec.use_kind == 3 {
+        match n {
+            1 => "1 item".to_string(),
+            _ => format!("{n} items"),
+        }
+    } else {
+        match n {
+            0 => "One Time Use".to_string(),
+            999 => "Permanent".to_string(),
+            1 => "1 day".to_string(),
+            _ => format!("{n} days"),
+        }
+    };
+    let label = cat.text(if rec.use_kind == 3 { 0x18f9 } else { 0x18f8 });
+    format!("{label}{value}")
+}
+
 /// The days / hours left of a temporary owned item as a storage cell shows them.
 pub fn cell_period_text(cat: &Catalog, rec: &super::link::InvRecord, now: u64) -> String {
     let t = remaining_use_text(cat, rec, now);
@@ -1360,9 +1432,10 @@ pub struct ShopScreen {
     entry: Go,
     /// The last product asked for in the buy box.
     buying: Option<Ware>,
-    /// The payment option of the purchase in flight (0x328 +0xa: 0 = the credit balance, else prepaid), for the
-    /// balance the client deducts itself on the reply (CLI-552 amended).
-    buying_option: u32,
+    /// The payment option (0x328 +0xa: 0 = the credit balance, else prepaid) and the price of the product the
+    /// purchase in flight asked for (the window's picked row, not the cell's product), for the balance the client
+    /// deducts itself on the reply (CLI-552 amended, CLI-1875).
+    buying_charge: (u32, u32),
     /// lobby-3: the 2009 purchase window over the shop, its textures, and a purchase request in flight (+0x5550).
     pub buy_box: Option<BuyBox>,
     buy_art: BuyArt,
@@ -1376,6 +1449,19 @@ pub struct ShopScreen {
     pub record_box: Option<recordbox::RecordBox>,
     confirming: Option<Using>,
     slot_words: [String; 4],
+    /// use-items: the open country window (CLI-1873) and megaphone composer (CLI-1874) and their textures.
+    pub country_box: Option<countrybox::CountryBox>,
+    country_art: countrybox::CountryArt,
+    pub mega_box: Option<megabox::MegaBox>,
+    mega_art: megabox::MegaArt,
+    /// use-items-sweep: the open colour window (CLI-1876), its textures and the ROM colour tables.
+    pub colour_box: Option<colorbox::ColourBox>,
+    colour_art: colorbox::ColourArt,
+    colour_tables: colorbox::ColourTables,
+    /// use-items-emblem: the open clan mark window (CLI-1884) and face window (CLI-1885), its textures.
+    pub mark_box: Option<markbox::MarkBox>,
+    pub face_box: Option<facebox::FaceBox>,
+    face_art: facebox::FaceArt,
     /// shop-model: the last press on a shop cell (page cell, time) and the item a double click previews on the
     /// pane's character (equipment slot, item number) until the page changes.
     cell_pressed: Option<(usize, std::time::Instant)>,
@@ -1434,7 +1520,7 @@ impl ShopScreen {
             store_cells: grid_cells(cat, pages::SHOP, STORAGE_WINDOW, STORAGE_GRID),
             entry,
             buying: None,
-            buying_option: 0,
+            buying_charge: (0, 0),
             buy_box: None,
             buy_art: BuyArt::from_rom(cat.rom.as_deref()),
             buy_busy: false,
@@ -1444,6 +1530,16 @@ impl ShopScreen {
             record_box: None,
             confirming: None,
             slot_words: usebox::slot_words(cat.rom.as_deref()),
+            country_box: None,
+            country_art: countrybox::CountryArt::from_rom(cat.rom.as_deref()),
+            mega_box: None,
+            mega_art: megabox::MegaArt::from_rom(cat.rom.as_deref()),
+            colour_box: None,
+            colour_art: colorbox::ColourArt::from_rom(cat.rom.as_deref()),
+            colour_tables: colorbox::ColourTables::from_rom(cat.rom.as_deref()),
+            mark_box: None,
+            face_box: None,
+            face_art: facebox::FaceArt::from_rom(cat.rom.as_deref()),
             cell_pressed: None,
             figure_yaw: super::modelview::PLACE.yaw,
             figure_drag: None,
@@ -2097,9 +2193,10 @@ impl ShopScreen {
         match buybox::purchase(offer, mode, &ctx.data.store, ctx.data, self.buy_busy) {
             Ok(cmd) => {
                 self.buy_busy = true;
-                self.buying_option = match &cmd {
-                    LinkCmd::BuyWith { option, .. } => *option,
-                    _ => 0,
+                // CLI-1875: the charge is the requested row's (a cell shows its item's cheapest product)
+                self.buying_charge = match &cmd {
+                    LinkCmd::BuyWith { option, .. } => (*option, offer.price),
+                    _ => (0, offer.price),
                 };
                 ctx.send(cmd);
             }
@@ -2205,11 +2302,7 @@ impl ShopScreen {
     // EVIDENCE: cshell+0x1db770 (the window by the item row's SubType), cshell+0x2450e0 (the generic window sends at
     // once), cshell+0x242330 (the name window shows the own name for kind 4, the clan name for kind 1)
     pub fn use_function(&mut self, uid: u32, item_no: i32, ctx: &mut Ctx) {
-        if self.using.is_some()
-            || self.name_box.is_some()
-            || self.record_box.is_some()
-            || self.confirming.is_some()
-        {
+        if self.using.is_some() || self.use_window_open() || self.confirming.is_some() {
             return;
         }
         let sub = self.wares.art_of(item_no).map_or(-1, |a| a.sub_type);
@@ -2250,6 +2343,44 @@ impl ShopScreen {
                 };
                 self.name_box = Some(usebox::NameBox::open(ctx.cat, uid, clan, &current));
             }
+            // use-items: the country window (CLI-1873) with the own nation and the ROM country table
+            UseAction::Country => {
+                let countries = ctx
+                    .cat
+                    .rom
+                    .clone()
+                    .map(|r| super::charinfo::Tables::cached(&r).countries)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(full, short, flag)| countrybox::Country { full, short, flag })
+                    .collect();
+                let current = ctx.data.char_extras.nation;
+                self.country_box = Some(countrybox::CountryBox::open(
+                    ctx.cat, uid, current, countries,
+                ));
+            }
+            // use-items: the megaphone (CLI-1874): in use -> the composer; else the use first, its ok answer opens it
+            // EVIDENCE: cshell+0x1db770 (kind 0x16 with the in-use flag -> the composer, else the generic window),
+            // cshell+0x2450e0 (the generic window sends at once)
+            UseAction::Megaphone => {
+                let rec = ctx.data.store.items.iter().find(|i| i.uid == uid).cloned();
+                match rec.filter(|r| r.in_use) {
+                    Some(r) => self.open_megaphone(uid, r.count, ctx),
+                    None => {
+                        self.using = Some(Using {
+                            uid,
+                            action: UseAction::Megaphone,
+                            change: 0,
+                        });
+                        ctx.send(LinkCmd::ItemUse {
+                            uid,
+                            name: String::new(),
+                            change_item: 0,
+                            nation: 0,
+                        });
+                    }
+                }
+            }
             UseAction::Direct => {
                 self.using = Some(Using {
                     uid,
@@ -2260,9 +2391,264 @@ impl ShopScreen {
                     uid,
                     name: String::new(),
                     change_item: 0,
+                    nation: 0,
                 });
             }
-            UseAction::NotBuilt(_) => {}
+            // use-items-sweep: the colour window (CLI-1876), the in-use question first (CLI-1877)
+            UseAction::Colour { kind } => self.open_colour(uid, item_no, kind, ctx),
+            // use-items-emblem: the clan mark window (CLI-1884) with the clan's mark now and the ROM mark table
+            // EVIDENCE: cshell+0x2ae340 (the own clan's mark: shell +0x428 / +0x42c)
+            UseAction::Mark => {
+                let x = &ctx.data.char_extras;
+                let own = (x.clan_mark, x.clan_mark_ground);
+                let rom = ctx.cat.rom.clone();
+                let marks = rom
+                    .as_deref()
+                    .map(|r| super::clan::ClanLits::cached(r).marks)
+                    .unwrap_or_default();
+                let frame = markbox::frame_art(rom.as_deref());
+                self.mark_box = Some(markbox::MarkBox::open(ctx.cat, uid, own, marks, frame));
+            }
+            // use-items-emblem: the face window (CLI-1885) for the own face row (the character record's face value
+            // less 6000)
+            UseAction::Face { kind } => {
+                let rows = facebox::rows_from_rom(ctx.cat.rom.as_deref());
+                let own = ctx.data.profile.face - facebox::FACE_BASE;
+                self.face_box = Some(facebox::FaceBox::open(ctx.cat, kind, uid, own, &rows));
+            }
+            UseAction::NoWindow(_) => {}
+        }
+    }
+
+    /// use-items: a use window is up (it takes the pointer and the keys).
+    fn use_window_open(&self) -> bool {
+        self.name_box.is_some()
+            || self.record_box.is_some()
+            || self.country_box.is_some()
+            || self.mega_box.is_some()
+            || self.colour_box.is_some()
+            || self.mark_box.is_some()
+            || self.face_box.is_some()
+    }
+
+    /// use-items-sweep: the colour window of kind `kind` for item `uid` (number `item_no`); another item of the kind in
+    /// use asks first (CLI-1877).
+    // EVIDENCE: cshell+0x244f30 (the in-use record of the kind: its unique id for the send, its colour chosen, the
+    // question box), cshell+0x1db770 (kinds 8, 9, 11 -> the colour window)
+    // DISASM: cshell+0x24a780 (kind 8: the own name; 9: the clan name; 11: the reticle in use in its colour, else the
+    // plain picture in green; this item's PreViewIcon)
+    // DC-DEFAULT: CLI-1877 (proposed) the item in use is any other in-use item of the same SubType (the 2009 client looks
+    // a reticle up by its item number, cshell+0x228810)
+    fn open_colour(&mut self, uid: u32, item_no: i32, kind: i32, ctx: &mut Ctx) {
+        let in_use = ctx
+            .data
+            .store
+            .items
+            .iter()
+            .find(|r| {
+                r.in_use
+                    && r.uid != uid
+                    && self
+                        .wares
+                        .art_of(r.item_no as i32)
+                        .is_some_and(|a| a.sub_type == kind)
+            })
+            .map(|r| colorbox::InUse {
+                uid: r.uid,
+                colour: r.function,
+                same_item: r.item_no as i32 == item_no,
+            });
+        let name = if kind == colorbox::SUB_CLAN_COLOUR {
+            ctx.data.char_extras.clan_label.clone()
+        } else {
+            ctx.data.profile.nick.clone()
+        };
+        let after = self
+            .wares
+            .art_of(item_no)
+            .map(|a| a.preview_icon.clone())
+            .unwrap_or_default();
+        let plain = (
+            self.colour_art.plain.clone().unwrap_or_default(),
+            colorbox::NO_RETICLE_COLOUR,
+        );
+        let before = in_use
+            .and_then(|u| {
+                let rec = ctx.data.store.items.iter().find(|r| r.uid == u.uid)?;
+                let tex = self.wares.art_of(rec.item_no as i32)?.preview_icon.clone();
+                let c = self
+                    .colour_tables
+                    .reticle_argb(u.colour)
+                    .unwrap_or(colorbox::NO_RETICLE_COLOUR);
+                Some((tex, c))
+            })
+            .unwrap_or(plain);
+        let swatches = self.colour_tables.of(kind).to_vec();
+        self.colour_box = Some(colorbox::ColourBox::open(
+            ctx.cat, kind, uid, swatches, &name, before, &after, in_use,
+        ));
+        if let Some(u) = in_use {
+            ctx.popups
+                .push(colorbox::in_use_box(ctx.cat, kind, &u, uid));
+        }
+    }
+
+    /// use-items-sweep: what the colour window asked for.
+    fn colour_step(&mut self, step: ColourStep, ctx: &mut Ctx) {
+        match step {
+            ColourStep::None => {}
+            // EVIDENCE: cshell+0x242b80 (0x330 with the unique id, the colour and the in-use item's unique id)
+            ColourStep::Use { colour, used } => {
+                let Some(b) = self.colour_box.as_ref() else {
+                    return;
+                };
+                self.using = Some(Using {
+                    uid: b.uid,
+                    action: UseAction::Colour { kind: b.kind },
+                    change: 0,
+                });
+                ctx.send(LinkCmd::ColourUse {
+                    uid: b.uid,
+                    colour,
+                    used,
+                });
+            }
+            ColourStep::Cancel => {
+                self.colour_box = None;
+                ctx.popups.push(usebox::cancelled_box(ctx.cat));
+            }
+        }
+    }
+
+    /// use-items-emblem: what the clan mark window asked for (CLI-1884).
+    fn mark_step(&mut self, step: MarkStep, ctx: &mut Ctx) {
+        let Some(b) = self.mark_box.as_ref() else {
+            return;
+        };
+        match step {
+            MarkStep::None => {}
+            // DISASM: cshell+0x2aada0 (0x34c with the window's emblem and background)
+            MarkStep::Check { emblem, background } => {
+                ctx.send(LinkCmd::MarkCheck { emblem, background })
+            }
+            // EVIDENCE: cshell+0x2ae470 (0x262: 0x330 with the unique id and the pair)
+            MarkStep::Use { emblem, background } => {
+                self.using = Some(Using {
+                    uid: b.uid,
+                    action: UseAction::Mark,
+                    change: 0,
+                });
+                ctx.send(LinkCmd::MarkUse {
+                    uid: b.uid,
+                    emblem,
+                    background,
+                });
+            }
+            MarkStep::Notice(text) => ctx.popups.push(markbox::notice_box(ctx.cat, text)),
+            MarkStep::Cancel => {
+                self.mark_box = None;
+                ctx.popups.push(usebox::cancelled_box(ctx.cat));
+            }
+        }
+    }
+
+    /// use-items-emblem: what the face window asked for (CLI-1885).
+    fn face_step(&mut self, step: FaceStep, ctx: &mut Ctx) {
+        let Some(b) = self.face_box.as_ref() else {
+            return;
+        };
+        match step {
+            FaceStep::None => {}
+            // DISASM: cshell+0x242ad0 (0x330 with the unique id and the face value)
+            FaceStep::Use { face } => {
+                self.using = Some(Using {
+                    uid: b.uid,
+                    action: UseAction::Face { kind: b.kind },
+                    change: 0,
+                });
+                ctx.send(LinkCmd::FaceUse { uid: b.uid, face });
+            }
+            // EVIDENCE: cshell+0x246a30 (other commands go to cshell+0x2433d0, whose 0x267 shows box 0x1807 titled
+            // 0x1811 and closes the window)
+            FaceStep::Cancel => {
+                self.face_box = None;
+                ctx.popups.push(usebox::cancelled_box(ctx.cat));
+            }
+        }
+    }
+
+    /// use-items: the megaphone composer for `uid` with `uses` left.
+    fn open_megaphone(&mut self, uid: u32, uses: u32, ctx: &mut Ctx) {
+        let name = ctx.data.profile.nick.clone();
+        self.mega_box = Some(megabox::MegaBox::open(ctx.cat, uid, uses, &name));
+    }
+
+    /// use-items: what the country window asked for.
+    fn country_step(&mut self, step: CountryStep, ctx: &mut Ctx) {
+        match step {
+            CountryStep::None => {}
+            // EVIDENCE: cshell+0x2a9440 (0x330 with the unique id and the picked nation)
+            CountryStep::Use(nation) => {
+                let Some(b) = self.country_box.as_ref() else {
+                    return;
+                };
+                self.using = Some(Using {
+                    uid: b.uid,
+                    action: UseAction::Country,
+                    change: 0,
+                });
+                ctx.send(LinkCmd::ItemUse {
+                    uid: b.uid,
+                    name: String::new(),
+                    change_item: 0,
+                    nation,
+                });
+            }
+            CountryStep::Cancel => {
+                self.country_box = None;
+                ctx.popups.push(usebox::cancelled_box(ctx.cat));
+            }
+        }
+    }
+
+    /// use-items: what the megaphone composer asked for.
+    fn mega_step(&mut self, step: MegaStep, ctx: &mut Ctx) {
+        match step {
+            MegaStep::None => {}
+            MegaStep::Queue => ctx.send(LinkCmd::MegaphoneQueue),
+            MegaStep::Send(text) => {
+                if let Some(b) = self.mega_box.as_ref() {
+                    ctx.send(LinkCmd::MegaphoneSend { uid: b.uid, text });
+                }
+            }
+            MegaStep::Cancel => {
+                self.mega_box = None;
+                ctx.popups.push(usebox::cancelled_box(ctx.cat));
+            }
+        }
+    }
+
+    /// use-items: the answer to a megaphone send: the uses left (0: the item is gone); the composer closes either way.
+    // EVIDENCE: cshell+0x2a5c90 (ok: the record's count := +0x12, 0 -> the record deleted, the page rebuilt; refused:
+    // the reason box; then the window closes, cshell+0x1db770(0))
+    fn megaphone_sent(&mut self, r: &super::link::SendReply, ctx: &mut Ctx) {
+        let Some(b) = self.mega_box.take() else {
+            return;
+        };
+        if !r.ok {
+            ctx.popups.push(usebox::reason_box(ctx.cat, r.reason));
+            return;
+        }
+        let uid = if r.uid != 0 { r.uid } else { b.uid };
+        if r.left == 0 {
+            ctx.data.store.remove(uid);
+            self.selected = None;
+            let n = self.entries(ctx.data);
+            if self.page >= page_count(n) {
+                self.page = 0;
+            }
+        } else if let Some(rec) = ctx.data.store.items.iter_mut().find(|i| i.uid == uid) {
+            rec.count = r.left;
         }
     }
 
@@ -2317,6 +2703,7 @@ impl ShopScreen {
             uid: u.uid,
             name: String::new(),
             change_item: u.change,
+            nation: 0,
         });
     }
 
@@ -2338,6 +2725,7 @@ impl ShopScreen {
                     uid: b.uid,
                     name,
                     change_item: 0,
+                    nation: 0,
                 });
             }
             NameStep::Cancel => {
@@ -2366,6 +2754,18 @@ impl ShopScreen {
             }
             if let Some(b) = self.record_box.as_mut() {
                 b.waiting = false;
+            }
+            if let Some(b) = self.country_box.as_mut() {
+                b.refused();
+            }
+            if let Some(b) = self.colour_box.as_mut() {
+                b.refused();
+            }
+            if let Some(b) = self.mark_box.as_mut() {
+                b.refused();
+            }
+            if let Some(b) = self.face_box.as_mut() {
+                b.refused();
             }
             ctx.popups.push(usebox::reason_box(ctx.cat, r.reason));
             return;
@@ -2427,6 +2827,83 @@ impl ShopScreen {
                     .push(usebox::weapon_changed_box(ctx.cat, &word, &name));
                 ctx.send(LinkCmd::Inventory);
             }
+            // use-items: the country change (CLI-1873): the own nation is the picked one, the item is gone
+            // EVIDENCE: cshell+0x2a94b0 (ok: shell +0x444 := the picked nation, the item deleted (cshell+0x22ccb0), the
+            // page rebuilt, the window closed; no box)
+            UseAction::Country => {
+                if let Some(b) = self.country_box.take() {
+                    ctx.data.char_extras.nation = b.picked;
+                    ctx.data.profile.nation = b.picked;
+                }
+                ctx.data.store.remove(u.uid);
+                self.selected = None;
+                let n = self.entries(ctx.data);
+                if self.page >= page_count(n) {
+                    self.page = 0;
+                }
+            }
+            // use-items: the megaphone's first use (CLI-1874): marked in use, the composer opens
+            // EVIDENCE: cshell+0x2452f0 (kind 22 ok: the item marked in use with the end and count (cshell+0x22c990),
+            // then cshell+0x1db770 with the in-use flag: the composer)
+            UseAction::Megaphone => {
+                let mut uses = r.count;
+                if let Some(rec) = ctx.data.store.items.iter_mut().find(|i| i.uid == u.uid) {
+                    rec.in_use = true;
+                    if r.count != 0 {
+                        rec.count = r.count;
+                    }
+                    uses = rec.count;
+                }
+                self.open_megaphone(u.uid, uses, ctx);
+            }
+            // use-items-sweep: the colour (CLI-1876): the item in use with the colour as its function word; a name or
+            // clan colour also becomes the own one
+            // DISASM: cshell+0x24a3a0 (ok: the colour's ARGB -> shell +0x434 (kind 8) / +0x438 (9) / +0x43c (11); the
+            // record marked in use with the end and the colour (cshell+0x22c990); a second unique id other than the
+            // item's deleted; the window closed)
+            UseAction::Colour { kind } => {
+                let colour = self.colour_box.take().map_or(0, |b| b.picked);
+                if let Some(rec) = ctx.data.store.items.iter_mut().find(|i| i.uid == u.uid) {
+                    rec.in_use = true;
+                    rec.function = colour;
+                    rec.end = r.end;
+                }
+                match kind {
+                    colorbox::SUB_NAME_COLOUR => ctx.data.char_extras.name_colour = colour,
+                    colorbox::SUB_CLAN_COLOUR => ctx.data.char_extras.clan_colour = colour,
+                    _ => {}
+                }
+            }
+            // use-items-emblem: the clan mark (CLI-1884): the box, the pair the own clan's mark, the item in use
+            // EVIDENCE: cshell+0x2ab220 (ok: box 0x1798 titled 0x17e8 whose OK closes the window; the emblem and
+            // background -> shell +0x428 / +0x42c (cshell+0x1b14e0 / 0x1b1550); the record marked in use with the reply's
+            // end (cshell+0x22c990); a +0x12 unique id other than the item's deleted)
+            UseAction::Mark => {
+                if let Some(b) = self.mark_box.take() {
+                    ctx.data.char_extras.clan_mark = b.emblem;
+                    ctx.data.char_extras.clan_mark_ground = b.background;
+                }
+                if let Some(rec) = ctx.data.store.items.iter_mut().find(|i| i.uid == u.uid) {
+                    rec.in_use = true;
+                    rec.end = r.end;
+                }
+                ctx.popups.push(markbox::done_box(ctx.cat));
+            }
+            // use-items-emblem: the face (CLI-1885): the own face is the picked one (the pane's figure wears it), the
+            // item is gone, no box
+            // DISASM: cshell+0x24a1d0 (ok: shell character +0x158 := the picked face, the look rebuilt
+            // (cshell+0x1d3350 / 0x1d33d0), the item deleted (cshell+0x22ccb0), the window closed (cshell+0x1db770))
+            UseAction::Face { .. } => {
+                if let Some(face) = self.face_box.take().and_then(|b| b.picked_face()) {
+                    ctx.data.profile.face = face + facebox::FACE_BASE;
+                }
+                ctx.data.store.remove(u.uid);
+                self.selected = None;
+                let n = self.entries(ctx.data);
+                if self.page >= page_count(n) {
+                    self.page = 0;
+                }
+            }
             _ => ctx.send(LinkCmd::Inventory),
         }
     }
@@ -2444,7 +2921,12 @@ impl ShopScreen {
         // name-change: Equip on a function item opens its use window (CLI-1365); an item in use opens nothing
         // DISASM: cshell+0x14f8a7..0x14f965 (265 on a type 0x15 cell: in use and kind != 0x16 -> no window)
         if self.wares.kind_of(r.item_no as i32) == Some(usebox::FUNCTION_TYPE) {
-            if !r.in_use {
+            // use-items: an in-use megaphone opens its composer (CLI-1874)
+            let sub = self
+                .wares
+                .art_of(r.item_no as i32)
+                .map_or(-1, |a| a.sub_type);
+            if !r.in_use || sub == usebox::SUB_MEGAPHONE {
                 self.use_function(r.uid, r.item_no as i32, ctx);
                 return;
             }
@@ -2543,10 +3025,7 @@ impl Screen for ShopScreen {
             self.figure_yaw = turned_yaw(self.figure_yaw, (p[0] - last) * sx);
             self.figure_drag = Some((p[0], sx));
         }
-        let modal = self.buy_box.is_some()
-            || self.slot_pick.is_some()
-            || self.name_box.is_some()
-            || self.record_box.is_some();
+        let modal = self.buy_box.is_some() || self.slot_pick.is_some() || self.use_window_open();
         let rows = self.equip_row_rects();
         self.look.row = rows
             .iter()
@@ -2604,6 +3083,12 @@ impl Screen for ShopScreen {
         &mut self.sheet
     }
 
+    // CLI-741: the black market list scrolls under its record's bar
+    fn list_rows(&self, data: &MenuData) -> Vec<(i32, i32, usize, i32)> {
+        let n = pane::market_records(&self.wares, &data.store).len();
+        vec![(LEFT_WINDOW, pane::MARKET_LIST, n, pane::ROW_SIZE[1])]
+    }
+
     fn enter(&mut self, ctx: &mut Ctx) {
         if !ctx.data.store.lists_asked {
             ctx.data.store.lists_asked = true;
@@ -2642,6 +3127,51 @@ impl Screen for ShopScreen {
                 _ => RecordStep::None,
             };
             self.record_step(step, ctx);
+            return;
+        }
+        if let Some(b) = self.country_box.as_mut() {
+            let step = match k {
+                MenuKey::Enter => b.ok(),
+                MenuKey::Escape => b.escape(),
+                _ => CountryStep::None,
+            };
+            self.country_step(step, ctx);
+            return;
+        }
+        if let Some(b) = self.mega_box.as_mut() {
+            let step = match k {
+                MenuKey::Enter => b.ok(),
+                MenuKey::Escape => b.escape(),
+                _ => MegaStep::None,
+            };
+            self.mega_step(step, ctx);
+            return;
+        }
+        if let Some(b) = self.colour_box.as_mut() {
+            let step = match k {
+                MenuKey::Enter => b.ok(),
+                MenuKey::Escape => b.escape(),
+                _ => ColourStep::None,
+            };
+            self.colour_step(step, ctx);
+            return;
+        }
+        if let Some(b) = self.mark_box.as_mut() {
+            let step = match k {
+                MenuKey::Enter => b.enter(),
+                MenuKey::Escape => b.escape(),
+                _ => MarkStep::None,
+            };
+            self.mark_step(step, ctx);
+            return;
+        }
+        if let Some(b) = self.face_box.as_mut() {
+            let step = match k {
+                MenuKey::Enter => b.ok(),
+                MenuKey::Escape => b.escape(),
+                _ => FaceStep::None,
+            };
+            self.face_step(step, ctx);
             return;
         }
         if k == MenuKey::Escape {
@@ -2759,8 +3289,26 @@ impl Screen for ShopScreen {
         self.figure_drag = None;
     }
 
+    // use-items-emblem: a use window takes the presses before the pane lists' scroll bars (CLI-1884)
+    fn over_lists(&self) -> bool {
+        self.use_window_open()
+    }
+
+    // use-items: the country window's open list scrolls by the wheel (CLI-1873); a use window takes every turn
+    fn wheel(&mut self, _p: [f32; 2], notches: i32, _ctx: &mut Ctx) -> bool {
+        if let Some(b) = self.country_box.as_mut() {
+            b.wheel(notches);
+            return true;
+        }
+        self.use_window_open()
+    }
+
     // name-change: the rename window's field takes the typed characters and Backspace
     fn type_char(&mut self, c: char, _ctx: &mut Ctx) -> bool {
+        if let Some(b) = self.mega_box.as_mut() {
+            b.type_char(c);
+            return true;
+        }
         match self.name_box.as_mut() {
             Some(b) => {
                 b.type_char(c);
@@ -2771,6 +3319,10 @@ impl Screen for ShopScreen {
     }
 
     fn backspace(&mut self, _ctx: &mut Ctx) -> bool {
+        if let Some(b) = self.mega_box.as_mut() {
+            b.backspace();
+            return true;
+        }
         match self.name_box.as_mut() {
             Some(b) => {
                 b.backspace();
@@ -2790,6 +3342,31 @@ impl Screen for ShopScreen {
         if let Some(b) = self.record_box.as_mut() {
             let step = b.press(p).unwrap_or(RecordStep::None);
             self.record_step(step, ctx);
+            return true;
+        }
+        if let Some(b) = self.country_box.as_mut() {
+            let step = b.press(p).unwrap_or(CountryStep::None);
+            self.country_step(step, ctx);
+            return true;
+        }
+        if let Some(b) = self.mega_box.as_mut() {
+            let step = b.press(p).unwrap_or(MegaStep::None);
+            self.mega_step(step, ctx);
+            return true;
+        }
+        if let Some(b) = self.colour_box.as_mut() {
+            let step = b.press(p).unwrap_or(ColourStep::None);
+            self.colour_step(step, ctx);
+            return true;
+        }
+        if let Some(b) = self.mark_box.as_mut() {
+            let step = b.press(p).unwrap_or(MarkStep::None);
+            self.mark_step(step, ctx);
+            return true;
+        }
+        if let Some(b) = self.face_box.as_mut() {
+            let step = b.press(p).unwrap_or(FaceStep::None);
+            self.face_step(step, ctx);
             return true;
         }
         if self.buy_box.is_some() {
@@ -2879,6 +3456,20 @@ impl Screen for ShopScreen {
         match p.tag {
             BoxTag::UseConfirm { uid } => {
                 self.use_confirmed(uid, yes, ctx);
+                return;
+            }
+            // use-items-sweep: the colour window's in-use question (CLI-1877)
+            BoxTag::ColourInUse { uid } => {
+                let Some(b) = self.colour_box.as_mut().filter(|b| b.uid == uid) else {
+                    return;
+                };
+                let same = b.in_use.is_some_and(|u| u.same_item);
+                let step = match colorbox::in_use_answer(same, p.chosen, yes) {
+                    Some(true) => b.send(),
+                    Some(false) => ColourStep::Cancel,
+                    None => ColourStep::None,
+                };
+                self.colour_step(step, ctx);
                 return;
             }
             // EVIDENCE: cshell+0x150333 (the confirmed open sends 0x32e: entry id, product id)
@@ -3037,14 +3628,12 @@ impl Screen for ShopScreen {
                 if r.ok && credit {
                     // CLI-552 amended (playtest report: the NX shown stayed at 10,000 after buying): the 2009
                     // client deducts a credit product's price from the balance it shows, credit for dialog mode 1
-                    // (option 0), prepaid otherwise; the lobby sends no new 0x345 after a purchase
+                    // (option 0), prepaid otherwise; LG-405's 0x345 after the answer then sets the lobby's own
                     // EVIDENCE: cshell+0x150c40 (credit product ok: SalePrice off +0x108 (credit) or +0x11c (prepaid))
-                    let price = self.buying.as_ref().map_or(0, |w| w.price.max(0) as u32);
-                    if self.buying_option == 0 {
-                        ctx.data.balance.0 = ctx.data.balance.0.saturating_sub(price);
-                    } else {
-                        ctx.data.balance.1 = ctx.data.balance.1.saturating_sub(price);
-                    }
+                    // CLI-1875 (owner report 2026-11-04: the NX in game was not the admin dashboard's): the price of
+                    // the product asked for, which the lobby charged; it was the cell's (its cheapest period)
+                    let (option, price) = self.buying_charge;
+                    buybox::deduct(ctx.data, option, price);
                     self.refresh(ctx.data);
                     // CLI-1261: a credit product waits in the inbox, so the held inbox rows are stale (playtest report:
                     // an NX supply crate did not show in the inbox)
@@ -3125,7 +3714,28 @@ impl Screen for ShopScreen {
                     b.checked_reply(*free);
                 }
             }
+            // use-items-emblem: the clan mark window's check (CLI-1884)
+            // EVIDENCE: cshell+0x2ab3a0 (ok: box 0x1804 titled 0x1812, OK on; refused: the reason box)
+            LinkEvent::MarkChecked { ok, reason } => {
+                if let Some(b) = self.mark_box.as_mut() {
+                    b.checked_reply(*ok);
+                    ctx.popups.push(if *ok {
+                        markbox::checked_box(ctx.cat)
+                    } else {
+                        usebox::reason_box(ctx.cat, *reason)
+                    });
+                }
+            }
             LinkEvent::ItemUsed(r) => self.item_used(r, ctx),
+            // use-items: the composer's queue question and send (CLI-1874)
+            LinkEvent::MegaphoneQueued(r) => {
+                if let Some(b) = self.mega_box.as_mut() {
+                    if !b.queued(r) {
+                        ctx.popups.push(usebox::reason_box(ctx.cat, r.reason));
+                    }
+                }
+            }
+            LinkEvent::MegaphoneSent(r) => self.megaphone_sent(r, ctx),
             // function-unequip: a refused slot answer shows its box; an ok one was applied by the store
             // EVIDENCE: cshell+0x14cea0 / 0x14d010 (see [`FUNCTION_PUT_REFUSED`])
             LinkEvent::FunctionSlotDone { put, ok: false, .. } => {
@@ -3292,7 +3902,7 @@ impl Screen for ShopScreen {
                 .sheet
                 .part(LEFT_WINDOW, pane::MARKET_LIST, WidgetKind::List)
             {
-                pane::draw_market_rows(cat, l.pos, &self.wares, &data.store, out);
+                pane::draw_market_rows(cat, l, &self.wares, &data.store, out);
             }
         }
         // the nickname on its button
@@ -3409,9 +4019,10 @@ impl Screen for ShopScreen {
                         }
                         // CLI-1000: the period of the owned item under the class tag (else under the name): the
                         // PERMANENT mark of a record without an end date; CLI-1264 the days / hours left of a
-                        // temporary one as a label in its place
-                        // EVIDENCE: cshell+0x14a700 (Permenant_Mark shown for a record without an end; no period text
-                        // in the cell); places: `storage_mark_places`
+                        // temporary one as a label in its place; CLI-1879 a counted record (no end, uses left) is not
+                        // permanent: its uses left as the label
+                        // EVIDENCE: cshell+0x14a700 (Permenant_Mark shown for a record without an end and without a
+                        // count (+0x14 = 0x321 +0x24); no period text in the cell); places: `storage_mark_places`
                         let now = inbox::now_filetime();
                         let at = places.period;
                         if inbox::has_end(it.end, now) {
@@ -3420,6 +4031,13 @@ impl Screen for ShopScreen {
                                 at,
                                 &cell_period_text(cat, it, now),
                                 &cell_period_short(it, now),
+                            ));
+                        } else if it.count > 0 {
+                            out.push(period_label(
+                                cat,
+                                at,
+                                &uses_left_text(cat, it.count),
+                                &uses_left_short(it.count),
                             ));
                         } else {
                             out.push(image_fit(cat, PERMANENT_MARK.0, at, PERMANENT_MARK.1));
@@ -3450,7 +4068,9 @@ impl Screen for ShopScreen {
                         },
                         out,
                     );
-                    let line = remaining_use_text(cat, it, inbox::now_filetime());
+                    let function =
+                        self.wares.kind_of(it.item_no as i32) == Some(usebox::FUNCTION_TYPE);
+                    let line = owned_use_text(cat, it, function, inbox::now_filetime());
                     draw_period_line(&line, out);
                 }
             }
@@ -3470,6 +4090,21 @@ impl Screen for ShopScreen {
         if let Some(b) = &self.record_box {
             b.draw(cat, &self.name_art, out);
         }
+        if let Some(b) = &self.country_box {
+            b.draw(cat, &self.country_art, &self.name_art, out);
+        }
+        if let Some(b) = &self.mega_box {
+            b.draw(cat, &self.mega_art, &self.name_art, out);
+        }
+        if let Some(b) = &self.colour_box {
+            b.draw(cat, &self.colour_art, &self.name_art, out);
+        }
+        if let Some(b) = &self.mark_box {
+            b.draw(cat, &self.name_art, out);
+        }
+        if let Some(b) = &self.face_box {
+            b.draw(cat, &self.face_art, &self.name_art, out);
+        }
         // storage-functions: the slot choice window over the pane rows and the cells
         if let Some(p) = &self.slot_pick {
             self.sheet.draw_layer(p.window, cat, secs, out);
@@ -3480,6 +4115,49 @@ impl Screen for ShopScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CLI-1879: a counted function item reads its uses (in use) or its usage (not yet used); a function item without
+    /// a count keeps the remaining-use line; days for a period item not yet used.
+    #[test]
+    fn owned_use_text_reads_uses_left_and_usage() {
+        let cat = Catalog::fallback(None, 1024, 768);
+        let rec = |in_use, use_kind, count, period| super::super::link::InvRecord {
+            uid: 1,
+            item_no: 9019,
+            in_use,
+            use_kind,
+            count,
+            period,
+            ..Default::default()
+        };
+        let now = inbox::now_filetime();
+        let t = |r| owned_use_text(&cat, &r, true, now);
+        assert_eq!(t(rec(true, 3, 100, 0)), cat.text(0x18e7));
+        assert_eq!(
+            t(rec(false, 3, 100, 0)),
+            format!("{}100 items", cat.text(0x18f9))
+        );
+        assert_eq!(
+            t(rec(false, 1, 0, 7)),
+            format!("{}7 days", cat.text(0x18f8))
+        );
+        assert_eq!(
+            t(rec(false, 1, 0, 0)),
+            format!("{}One Time Use", cat.text(0x18f8))
+        );
+        assert_eq!(
+            t(rec(true, 0, 0, 0)),
+            remaining_use_text(&cat, &rec(true, 0, 0, 0), now)
+        );
+        assert_eq!(
+            owned_use_text(&cat, &rec(true, 3, 100, 0), false, now),
+            remaining_use_text(&cat, &rec(true, 3, 100, 0), now)
+        );
+        assert_eq!(
+            (uses_left_short(1), uses_left_short(42)),
+            ("1 use".to_string(), "42 uses".to_string())
+        );
+    }
 
     #[test]
     fn purchase_answers_pick_the_2009_boxes() {
@@ -3558,5 +4236,519 @@ mod crate_title_tests {
         assert_eq!(award_title(false, Some(6)), 0x18f7);
         assert_eq!(award_title(false, Some(2)), CASE_AWARD_TITLE);
         assert_eq!(award_title(false, None), CASE_AWARD_TITLE);
+    }
+
+    /// use-items (CLI-1873 / CLI-1874): the ROM's country code item and megaphone open their windows and their
+    /// requests and answers go through (ROM only).
+    #[test]
+    fn rom_country_change_and_megaphone_flow() {
+        let Ok(rom) = dc_rom::resolve_rom() else {
+            return;
+        };
+        let cat = Catalog::from_rom(&rom, 1024, 768).unwrap();
+        let mut data = MenuData::default();
+        let mut s = ShopScreen::new(&cat, &data, Go::Market);
+        let of_kind = |k: i32| {
+            (9000..10000).find(|&n| {
+                s.wares.kind_of(n) == Some(usebox::FUNCTION_TYPE)
+                    && s.wares.art_of(n).is_some_and(|a| a.sub_type == k)
+            })
+        };
+        let (Some(country), Some(mega)) =
+            (of_kind(usebox::SUB_COUNTRY), of_kind(usebox::SUB_MEGAPHONE))
+        else {
+            panic!("the ROM has a country code item and a megaphone");
+        };
+        data.char_extras.nation = 2;
+        data.profile.nick = "Alice".into();
+        data.store.items = vec![
+            super::super::link::InvRecord {
+                uid: 50,
+                item_no: country as u32,
+                ..Default::default()
+            },
+            super::super::link::InvRecord {
+                uid: 60,
+                item_no: mega as u32,
+                count: 3,
+                use_kind: 3,
+                ..Default::default()
+            },
+        ];
+        let link = super::super::link::Link::detached();
+        let (mut popups, mut go, mut quit, mut sounds) = (Vec::new(), None, false, Vec::new());
+        let mut ctx = Ctx {
+            cat: &cat,
+            data: &mut data,
+            link: &link,
+            popups: &mut popups,
+            go: &mut go,
+            quit: &mut quit,
+            sounds: &mut sounds,
+        };
+        let sent = |link: &super::super::link::Link| {
+            link.take_sent()
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+        };
+        // the country window: pick nation 5, confirm, send; the ok answer sets the own nation
+        s.use_function(50, country, &mut ctx);
+        let b = s.country_box.as_mut().expect("the country window opens");
+        assert_eq!(b.current, 2);
+        assert!(b.list_len() > 5);
+        b.pick(4);
+        assert_eq!(b.ok(), CountryStep::None);
+        let step = b.ok();
+        s.country_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec!["ItemUse(50, \"\", 0, 5)".to_string()]);
+        s.item_used(
+            &super::super::link::UseReply {
+                ok: true,
+                uid: 50,
+                ..Default::default()
+            },
+            &mut ctx,
+        );
+        assert!(s.country_box.is_none());
+        assert_eq!(
+            (ctx.data.char_extras.nation, ctx.data.profile.nation),
+            (5, 5)
+        );
+        assert!(ctx.data.store.items.iter().all(|i| i.uid != 50));
+        // the megaphone: the first use, then the composer, the queue question, the confirmation and the send
+        s.use_function(60, mega, &mut ctx);
+        assert_eq!(sent(&link), vec!["ItemUse(60, \"\", 0, 0)".to_string()]);
+        assert!(s.mega_box.is_none());
+        s.item_used(
+            &super::super::link::UseReply {
+                ok: true,
+                uid: 60,
+                count: 3,
+                ..Default::default()
+            },
+            &mut ctx,
+        );
+        let b = s.mega_box.as_mut().expect("the composer opens");
+        assert_eq!((b.uses, b.name.as_str()), (3, "Alice"));
+        for c in "hi all".chars() {
+            b.type_char(c);
+        }
+        let step = b.ok();
+        s.mega_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec!["MegaphoneQueue".to_string()]);
+        let q = super::super::link::QueueReply {
+            ok: true,
+            secs: 30,
+            on_air: 1,
+            last: 2,
+            waiting: 1,
+            ..Default::default()
+        };
+        s.event(&LinkEvent::MegaphoneQueued(q), &mut ctx);
+        let b = s.mega_box.as_mut().unwrap();
+        assert!(b.confirm.is_some());
+        let step = b.ok();
+        s.mega_step(step, &mut ctx);
+        assert_eq!(
+            sent(&link),
+            vec!["MegaphoneSend(60, \"hi all\")".to_string()]
+        );
+        let r = super::super::link::SendReply {
+            ok: true,
+            reason: 0,
+            uid: 60,
+            left: 2,
+        };
+        s.event(&LinkEvent::MegaphoneSent(r), &mut ctx);
+        assert!(s.mega_box.is_none());
+        let rec = ctx.data.store.items.iter().find(|i| i.uid == 60).unwrap();
+        assert_eq!((rec.in_use, rec.count), (true, 2));
+        // in use now: the composer opens at once; a refused queue question shows the reason box
+        s.use_function(60, mega, &mut ctx);
+        assert!(sent(&link).is_empty());
+        let b = s
+            .mega_box
+            .as_mut()
+            .expect("the composer opens for an item in use");
+        b.text = "again".into();
+        let step = b.ok();
+        s.mega_step(step, &mut ctx);
+        let before = ctx.popups.len();
+        let refused = super::super::link::QueueReply {
+            ok: false,
+            reason: 0x8f,
+            ..Default::default()
+        };
+        s.event(&LinkEvent::MegaphoneQueued(refused), &mut ctx);
+        assert_eq!(ctx.popups.len(), before + 1);
+        assert!(s.mega_box.as_ref().is_some_and(|b| b.confirm.is_none()));
+    }
+
+    /// use-items-sweep (CLI-1876 .. CLI-1878): the ROM's name colour item and two custom reticles open the colour
+    /// window, their requests carry the colour and the replaced reticle, and the match gets the reticle in use (ROM
+    /// only).
+    #[test]
+    fn rom_colour_and_reticle_flow() {
+        let Ok(rom) = dc_rom::resolve_rom() else {
+            return;
+        };
+        let cat = Catalog::from_rom(&rom, 1024, 768).unwrap();
+        let mut data = MenuData::default();
+        let mut s = ShopScreen::new(&cat, &data, Go::Market);
+        let of_kind = |k: i32| -> Vec<i32> {
+            (9000..10000)
+                .filter(|&n| {
+                    s.wares.kind_of(n) == Some(usebox::FUNCTION_TYPE)
+                        && s.wares.art_of(n).is_some_and(|a| a.sub_type == k)
+                })
+                .collect()
+        };
+        let names = of_kind(colorbox::SUB_NAME_COLOUR);
+        let reticles = of_kind(colorbox::SUB_RETICLE);
+        assert!(
+            !names.is_empty() && reticles.len() >= 2,
+            "the ROM has colour and reticle items"
+        );
+        let (r1, r2) = (reticles[0], reticles[1]);
+        data.profile.nick = "Alice".into();
+        let rec = |uid: u32, item: i32| super::super::link::InvRecord {
+            uid,
+            item_no: item as u32,
+            ..Default::default()
+        };
+        data.store.items = vec![rec(70, names[0]), rec(80, r1), rec(90, r2)];
+        let link = super::super::link::Link::detached();
+        let (mut popups, mut go, mut quit, mut sounds) = (Vec::new(), None, false, Vec::new());
+        let mut ctx = Ctx {
+            cat: &cat,
+            data: &mut data,
+            link: &link,
+            popups: &mut popups,
+            go: &mut go,
+            quit: &mut quit,
+            sounds: &mut sounds,
+        };
+        let sent = |link: &super::super::link::Link| {
+            link.take_sent()
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+        };
+        let used = |s: &mut ShopScreen, uid: u32, ctx: &mut Ctx| {
+            s.item_used(
+                &super::super::link::UseReply {
+                    ok: true,
+                    uid,
+                    ..Default::default()
+                },
+                ctx,
+            )
+        };
+        // the name colour: sixteen swatches on one page, a pick, OK sends at once
+        s.use_function(70, names[0], &mut ctx);
+        let b = s.colour_box.as_mut().expect("the colour window opens");
+        assert_eq!(
+            (b.swatches.len(), b.pages(), b.name.as_str()),
+            (16, 1, "Alice")
+        );
+        b.pick(10);
+        let step = b.ok();
+        s.colour_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec!["ColourUse(70, 10, 0)".to_string()]);
+        used(&mut s, 70, &mut ctx);
+        assert!(s.colour_box.is_none());
+        assert_eq!(ctx.data.char_extras.name_colour, 10);
+        // the first reticle: eight swatches, the confirmation, the send
+        s.use_function(80, r1, &mut ctx);
+        let b = s.colour_box.as_mut().expect("the reticle window opens");
+        assert_eq!(b.swatches.len(), 8);
+        assert!(!b.after.is_empty() && !b.before.0.is_empty());
+        b.pick(3);
+        assert_eq!(b.ok(), ColourStep::None);
+        let step = b.ok();
+        s.colour_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec!["ColourUse(80, 3, 0)".to_string()]);
+        used(&mut s, 80, &mut ctx);
+        let r = ctx.data.store.items.iter().find(|i| i.uid == 80).unwrap();
+        assert_eq!((r.in_use, r.function), (true, 3));
+        // the match draws it: its shape and table colour
+        let (shape, argb) =
+            colorbox::match_reticle(Some(&rom), &ctx.data.store).expect("a reticle");
+        let shape_type = s.wares.art_of(r1).unwrap().shape;
+        assert_eq!(shape, crate::spread::mark::shape_of(shape_type));
+        assert_eq!(argb, s.colour_tables.reticle_argb(3).unwrap());
+        // the second reticle: the question names the one in use, its OK leaves the window for a pick that replaces it
+        let n = ctx.popups.len();
+        s.use_function(90, r2, &mut ctx);
+        assert_eq!(ctx.popups.len(), n + 1);
+        let q = ctx.popups.pop().unwrap();
+        assert_eq!(q.tag, BoxTag::ColourInUse { uid: 90 });
+        s.popup_done(&q, true, &mut ctx);
+        let b = s.colour_box.as_mut().expect("the window stays");
+        assert_eq!(b.before.1, s.colour_tables.reticle_argb(3).unwrap());
+        b.pick(6);
+        b.ok();
+        let step = b.ok();
+        s.colour_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec!["ColourUse(90, 6, 80)".to_string()]);
+        s.item_used(
+            &super::super::link::UseReply {
+                ok: true,
+                uid: 90,
+                removed: 80,
+                ..Default::default()
+            },
+            &mut ctx,
+        );
+        assert!(ctx.data.store.items.iter().all(|i| i.uid != 80));
+        let (_, argb) = colorbox::match_reticle(Some(&rom), &ctx.data.store).unwrap();
+        assert_eq!(argb, s.colour_tables.reticle_argb(6).unwrap());
+    }
+
+    /// use-items-emblem (CLI-1884 / CLI-1885): the ROM's clan emblem item opens the mark window on the ROM mark table,
+    /// its check and use carry the picked pair and the answer makes it the clan's mark; the base character and gender
+    /// items list the ROM creation table's rows of the own / the other gender and their use sets the own face (ROM
+    /// only).
+    #[test]
+    fn rom_mark_and_face_flow() {
+        let Ok(rom) = dc_rom::resolve_rom() else {
+            return;
+        };
+        let cat = Catalog::from_rom(&rom, 1024, 768).unwrap();
+        let mut data = MenuData::default();
+        let mut s = ShopScreen::new(&cat, &data, Go::Market);
+        let of_kind = |k: i32| -> Option<i32> {
+            (9000..10000).find(|&n| {
+                s.wares.kind_of(n) == Some(usebox::FUNCTION_TYPE)
+                    && s.wares.art_of(n).is_some_and(|a| a.sub_type == k)
+            })
+        };
+        let (mark, face, gender) = (
+            of_kind(markbox::SUB_CLAN_MARK).expect("the ROM has a clan emblem item"),
+            of_kind(facebox::SUB_FACE).expect("the ROM has a base character item"),
+            of_kind(facebox::SUB_GENDER).expect("the ROM has a gender item"),
+        );
+        let rec = |uid: u32, item: i32| super::super::link::InvRecord {
+            uid,
+            item_no: item as u32,
+            ..Default::default()
+        };
+        data.store.items = vec![rec(71, mark), rec(72, face), rec(73, gender)];
+        data.profile.face = 6002;
+        let link = super::super::link::Link::detached();
+        let (mut popups, mut go, mut quit, mut sounds) = (Vec::new(), None, false, Vec::new());
+        let mut ctx = Ctx {
+            cat: &cat,
+            data: &mut data,
+            link: &link,
+            popups: &mut popups,
+            go: &mut go,
+            quit: &mut quit,
+            sounds: &mut sounds,
+        };
+        let sent = |link: &super::super::link::Link| {
+            link.take_sent()
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+        };
+        let used = |s: &mut ShopScreen, uid: u32, ctx: &mut Ctx| {
+            s.item_used(
+                &super::super::link::UseReply {
+                    ok: true,
+                    uid,
+                    ..Default::default()
+                },
+                ctx,
+            )
+        };
+        // the clan mark: every tab of both steps lists entries of the ROM table
+        s.use_function(71, mark, &mut ctx);
+        let b = s.mark_box.as_mut().expect("the mark window opens");
+        assert_eq!(b.layout.window_at(), [229, 164]);
+        for step in 0..2 {
+            b.step = step;
+            for tab in 0..markbox::TABS {
+                b.choose_tab(tab);
+                assert!(!b.entries().is_empty(), "step {step} tab {tab}");
+            }
+        }
+        b.step = 0;
+        b.choose_tab(0);
+        let e = b.entries()[5];
+        b.pick(e);
+        assert_eq!(b.command(markbox::CMD_NEXT), MarkStep::None);
+        let g = b.entries()[2];
+        b.pick(g);
+        let step = b.command(markbox::CMD_CHECK);
+        s.mark_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec![format!("MarkCheck({e}, {g})")]);
+        let n = ctx.popups.len();
+        Screen::event(
+            &mut s,
+            &LinkEvent::MarkChecked {
+                ok: true,
+                reason: 0,
+            },
+            &mut ctx,
+        );
+        assert_eq!(ctx.popups.len(), n + 1);
+        let b = s.mark_box.as_mut().unwrap();
+        assert!(b.checked);
+        b.command(markbox::CMD_OK);
+        let step = b.command(markbox::CMD_SEND);
+        s.mark_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec![format!("MarkUse(71, {e}, {g})")]);
+        used(&mut s, 71, &mut ctx);
+        assert!(s.mark_box.is_none());
+        let x = &ctx.data.char_extras;
+        assert_eq!((x.clan_mark, x.clan_mark_ground), (e, g));
+        assert!(ctx.data.store.items.iter().any(|i| i.uid == 71 && i.in_use));
+        // the base character: the own gender's rows but the own one; the gender change: the other gender's
+        let rows = facebox::rows_from_rom(Some(&rom));
+        let own_man = rows.iter().find(|r| r.face == 2).expect("face row 2").man;
+        s.use_function(72, face, &mut ctx);
+        let b = s.face_box.as_mut().expect("the face window opens");
+        assert!(!b.own_portrait.is_empty());
+        assert_eq!(
+            b.choices.len(),
+            rows.iter().filter(|r| r.man == own_man).count() - 1
+        );
+        assert!(b.choices.iter().all(|r| r.man == own_man && r.face != 2));
+        b.pick(0);
+        let want = b.choices[0].face;
+        b.ok();
+        let step = b.ok();
+        s.face_step(step, &mut ctx);
+        assert_eq!(sent(&link), vec![format!("FaceUse(72, {})", 6000 + want)]);
+        used(&mut s, 72, &mut ctx);
+        assert!(s.face_box.is_none());
+        assert_eq!(ctx.data.profile.face, 6000 + want);
+        assert!(ctx.data.store.items.iter().all(|i| i.uid != 72));
+        s.use_function(73, gender, &mut ctx);
+        let b = s.face_box.as_mut().expect("the gender window opens");
+        let man = rows.iter().find(|r| r.face == want).unwrap().man;
+        assert!(!b.choices.is_empty() && b.choices.iter().all(|r| r.man != man));
+        // Cancel closes it with the cancelled box
+        let n = ctx.popups.len();
+        let step = b.escape();
+        s.face_step(step, &mut ctx);
+        assert!(s.face_box.is_none());
+        assert_eq!(ctx.popups.len(), n + 1);
+    }
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::super::link::{BuyReply, Link};
+    use super::*;
+
+    fn ware(product: u32, price: u32) -> Ware {
+        Ware {
+            product,
+            name: "Megaphone".into(),
+            item_no: 9042,
+            kind_of: Some(0x15),
+            tag_kind: Some(0x15),
+            sale_type: 1,
+            price,
+            icon: None,
+            display: 1,
+            unlock_exp: 0,
+            marks: [false; 3],
+            period: 10,
+            consume: 3,
+        }
+    }
+
+    fn drawn(s: &ShopScreen) -> (String, String) {
+        let t = |id| {
+            s.sheet
+                .part(MONEY_WINDOW, id, WidgetKind::Text)
+                .map(|p| p.text.clone())
+                .unwrap_or_default()
+        };
+        (t(MONEY_TEXTS[0]), t(MONEY_TEXTS[1]))
+    }
+
+    /// CLI-1875 / LG-405 (owner report 2026-11-04: the NX in game was not the admin dashboard's): an accepted credit
+    /// purchase takes off the price of the row the window asked for (the cell shows the item's cheapest product), and
+    /// every 0x345 sets the balance, the money panel drawing what it says (with the ROM: its texts).
+    #[test]
+    fn a_purchase_answer_deducts_the_asked_rows_price_and_each_balance_sets_the_panel() {
+        let rom = dc_rom::resolve_rom().ok();
+        let cat = match rom.as_deref() {
+            Some(r) => Catalog::from_rom(r, 1024, 768).unwrap(),
+            None => Catalog::fallback(None, 1024, 768),
+        };
+        let mut data = MenuData {
+            balance: (0, 20_000),
+            ..Default::default()
+        };
+        let mut s = ShopScreen::new(&cat, &data, Go::Shop);
+        let link = Link::detached();
+        let (mut popups, mut go, mut quit, mut sounds) = (Vec::new(), None, false, Vec::new());
+        let mut ctx = Ctx {
+            cat: &cat,
+            data: &mut data,
+            link: &link,
+            popups: &mut popups,
+            go: &mut go,
+            quit: &mut quit,
+            sounds: &mut sounds,
+        };
+        // the cell is the 10-pack at 2,900; the window's picked row is the 50-pack at 12,900
+        s.buying = Some(ware(1748, 2900));
+        let asked = buybox::Offer {
+            product: 1749,
+            price: 12_900,
+            sale_type: 1,
+            bonus: 0,
+            consume: 3,
+            period: 50,
+            items: vec![9042],
+        };
+        s.request(&asked, buybox::MODE_PREPAID, &mut ctx);
+        assert_eq!(
+            link.take_sent()
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+                .len(),
+            1
+        );
+        let ok = BuyReply {
+            ok: true,
+            award: -1,
+            ..Default::default()
+        };
+        s.event(&LinkEvent::Bought(ok), &mut ctx);
+        assert_eq!(ctx.data.balance, (0, 20_000 - 12_900));
+        // the lobby's 0x345 after the answer (LG-405), and later ones (an admin change, a reward): each one is the
+        // balance, whatever the client deducted
+        for (credit, prepaid) in [(0, 7000), (0, 17_000), (250, 3)] {
+            let e = LinkEvent::Balance { credit, prepaid };
+            super::super::shared_event(ctx.data, &e);
+            s.event(&e, &mut ctx);
+            assert_eq!(ctx.data.balance, (credit, prepaid));
+            if rom.is_some() {
+                assert_eq!(
+                    drawn(&s),
+                    (grouped(i64::from(prepaid)), grouped(i64::from(credit)))
+                );
+            }
+        }
+        // a refused purchase deducts nothing
+        s.request(&asked, buybox::MODE_PREPAID, &mut ctx);
+        s.event(
+            &LinkEvent::Bought(BuyReply {
+                ok: false,
+                reason: 0x3b,
+                ..ok
+            }),
+            &mut ctx,
+        );
+        assert_eq!(ctx.data.balance, (250, 3));
     }
 }

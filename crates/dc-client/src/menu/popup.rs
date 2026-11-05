@@ -149,6 +149,9 @@ pub enum BoxTag {
     /// use-windows: a use window's question (weapon change 0x1876, record reset); its first button sends the use of
     /// item `uid` (CLI-1370, CLI-1371).
     UseConfirm { uid: u32 },
+    /// use-items-sweep: the colour window's in-use question for item `uid` (CLI-1877; [`Popup::chosen`] tells the
+    /// three-button form's answer).
+    ColourInUse { uid: u32 },
     /// CLI-1841: a box of the diagnostic reports (`menu::diagbox`); the chosen button is [`Popup::chosen`].
     Diag(super::diagbox::Step),
     /// CLI-1863: a box of a newer client (`menu::updatebox`); the chosen button is [`Popup::chosen`].

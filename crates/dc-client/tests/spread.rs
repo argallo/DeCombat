@@ -335,6 +335,7 @@ fn aim_mark_state(distance: f32, since: Option<f32>) -> HudState {
     HudState {
         life_state: 1,
         aim_mark: Some(AimMarkView {
+            shape: dc_client::spread::mark::SHAPE_PLAIN,
             distance,
             since_shot_s: since,
             colour: dc_client::spread::mark::COLOUR,

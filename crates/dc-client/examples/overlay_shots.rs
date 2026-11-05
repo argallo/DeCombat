@@ -174,6 +174,7 @@ fn main() -> Result<(), String> {
             infinite: false,
         });
         hd.state.aim_mark = Some(dc_client::spread::AimMarkView {
+            shape: dc_client::spread::mark::SHAPE_PLAIN,
             distance: 6.0,
             since_shot_s: None,
             colour: [0, 255, 0, 255],

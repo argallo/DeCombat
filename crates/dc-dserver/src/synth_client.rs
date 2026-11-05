@@ -374,6 +374,8 @@ pub struct Observed {
     pub damage: Vec<(Millis, u32)>,
     pub kills: Vec<SeenKill>,
     pub multi_kills: Vec<u32>,
+    /// Every `GS_MULTI_KILL` as `(kills, head, combo)`.
+    pub multi_kill_banners: Vec<(u16, bool, u32)>,
     /// `GS_ROUND_RESULT`: win team, team values.
     pub round_result: Option<(i8, u8, u8)>,
     pub summaries: Vec<u8>,
@@ -1800,9 +1802,11 @@ impl SynthClient {
             }
             // SPEC: GAME_MESSAGES_2009_S2C.md §3.3 (0xc8)
             0xc8 => {
-                r.read_u16();
-                r.read_bit();
-                self.seen.multi_kills.push(r.read_u32());
+                let kills = r.read_u16();
+                let head = r.read_bit();
+                let combo = r.read_u32();
+                self.seen.multi_kills.push(combo);
+                self.seen.multi_kill_banners.push((kills, head, combo));
                 exact(r)?;
             }
             // SPEC: GAME_MESSAGES_2009_S2C.md §2.1 (0x41, 0x3f), §2.1.2 (0x46, not the co-op class)

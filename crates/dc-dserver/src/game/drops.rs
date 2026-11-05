@@ -57,6 +57,16 @@ pub struct DropTuning {
     /// (`drops.use_radius`).
     // DC-DEFAULT: DSV-170 (proposed) 48 units
     pub use_radius: f32,
+    /// A co-op AI's death drops what its brain row's drop rows roll (`drops.ai_drops`, DSV-591).
+    // DC-DEFAULT: DSV-591 (proposed) on
+    pub ai_drops: bool,
+    /// How the drop rows are rolled (`drops.ai_roll` = `each` | `one`).
+    // DC-DEFAULT: DSV-591 (proposed) each row on its own
+    pub ai_roll: super::packs::AiRoll,
+    /// What an AI's death drops whatever its rows say (`drops.ai_force` = `rom` | `none` | `health` | `ammo` |
+    /// `heavy_ammo` | `grenade`; tests and live checks).
+    // DC-DEFAULT: DSV-591 (proposed) `rom`
+    pub ai_force: super::packs::AiForce,
 }
 
 impl Default for DropTuning {
@@ -68,18 +78,24 @@ impl Default for DropTuning {
             pickup_radius: 32.0,
             max_active: 16,
             use_radius: 48.0,
+            ai_drops: true,
+            ai_roll: super::packs::AiRoll::Each,
+            ai_force: super::packs::AiForce::Rom,
         }
     }
 }
 
 /// The `drops.*` keys.
-pub const DROP_KEYS: [&str; 6] = [
+pub const DROP_KEYS: [&str; 9] = [
     "enabled",
     "lifetime_ms",
     "arm_ms",
     "pickup_radius",
     "max_active",
     "use_radius",
+    "ai_drops",
+    "ai_roll",
+    "ai_force",
 ];
 
 impl DropTuning {
@@ -90,13 +106,19 @@ impl DropTuning {
         let v = value.trim();
         let bad = || format!("drops.{k}: bad value {v:?}");
         let int = || v.parse::<u32>().map_err(|_| bad());
+        let flag = || match v.to_ascii_lowercase().as_str() {
+            "on" | "1" | "true" => Ok(true),
+            "off" | "0" | "false" => Ok(false),
+            _ => Err(bad()),
+        };
         match k {
-            "enabled" => {
-                self.enabled = match v.to_ascii_lowercase().as_str() {
-                    "on" | "1" | "true" => true,
-                    "off" | "0" | "false" => false,
-                    _ => return Err(bad()),
-                }
+            "enabled" => self.enabled = flag()?,
+            "ai_drops" => self.ai_drops = flag()?,
+            "ai_roll" => {
+                self.ai_roll = super::packs::AiRoll::from_key(v).ok_or_else(bad)?;
+            }
+            "ai_force" => {
+                self.ai_force = super::packs::AiForce::from_key(v).ok_or_else(bad)?;
             }
             "lifetime_ms" => self.lifetime_ms = int()?.min(3_600_000),
             "arm_ms" => self.arm_ms = int()?.min(60_000),
@@ -134,6 +156,9 @@ pub struct DropOut {
     pub rounds: u16,
     pub pos: [f32; 3],
     pub yaw: f32,
+    /// The type-0x17 pickup kind of the create (6: a weapon by its row, 0: an AI pack drawn by its model only,
+    /// DSV-591).
+    pub pickup_kind: u32,
 }
 
 /// One drop in the world.
@@ -161,7 +186,7 @@ pub enum Take {
 }
 
 /// Distance from a point to an axis-aligned box (centre, half extents); 0 inside.
-fn box_distance(p: [f32; 3], centre: [f32; 3], half: [f32; 3]) -> f32 {
+pub(super) fn box_distance(p: [f32; 3], centre: [f32; 3], half: [f32; 3]) -> f32 {
     let d: [f32; 3] = std::array::from_fn(|i| ((p[i] - centre[i]).abs() - half[i].abs()).max(0.0));
     len3(d)
 }
@@ -312,6 +337,7 @@ impl Game {
             rounds,
             pos,
             yaw,
+            pickup_kind: crate::modelobj::PICKUP_KIND_WEAPON,
         })));
         self.log(format!(
             "drops: drop {key}: weapon {} with {} rounds from client {from} at ({:.0}, {:.0}, {:.0})",
@@ -392,10 +418,40 @@ impl Game {
         }
     }
 
+    /// The `GS_WEAPON_GIVE` form of the weapon of `index` among `weapons` with `parts`: its class position is the
+    /// number of weapons of its class in lower slots.
+    // SPEC: GAME_MESSAGES_2009_S2C.md §4.4 (0xb2 `[weapon][ammo_kind][ammo:f32][class_pos][slot][parts]`)
+    // DC-DEFAULT: DSV-94 (proposed)
+    pub(super) fn grant_spec(
+        &self,
+        weapons: &[WeaponState],
+        index: usize,
+        parts: [i8; 4],
+    ) -> gs::WeaponSpec {
+        let w = &weapons[index];
+        let class = self.tables.weapons.class_of(w.weapon);
+        let class_pos = class.map_or(0, |c| {
+            weapons
+                .iter()
+                .filter(|x| x.slot < w.slot && self.tables.weapons.class_of(x.weapon) == Some(c))
+                .count()
+                .min(32) as u8
+        });
+        gs::WeaponSpec {
+            weapon: w.weapon,
+            ammo_kind: w.ammo,
+            ammo: w.told_amount(),
+            clip: w.clip,
+            class_pos,
+            slot: w.slot,
+            parts,
+        }
+    }
+
     /// The floor point below a victim at `at` with the box `dims` (half extents): the first solid below in the trace
     /// world, else the bottom of the box.
     // DC-DEFAULT: DSV-93 (proposed)
-    fn drop_rest(&self, at: [f32; 3], dims: [f32; 3]) -> [f32; 3] {
+    pub(super) fn drop_rest(&self, at: [f32; 3], dims: [f32; 3]) -> [f32; 3] {
         match self.wall_along(at, [0.0, -1.0, 0.0], DROP_FLOOR_SEARCH) {
             Some(d) => [at[0], at[1] - d, at[2]],
             None => [at[0], at[1] - dims[1].abs(), at[2]],
@@ -408,6 +464,7 @@ impl Game {
         for d in std::mem::take(&mut self.drops) {
             self.out.push(GameOut::DropGone { key: d.key });
         }
+        self.packs_clear();
     }
 
     /// Per tick: lifetimes, then pickups (while the round runs).
@@ -469,6 +526,8 @@ impl Game {
             return;
         }
         let Some(d) = self.drops.iter().find(|d| d.key == key).cloned() else {
+            // an AI pack (DSV-591) is taken by the use key like a weapon drop
+            self.pack_use(pid, key, now);
             return;
         };
         if since(now, d.created) < t.arm_ms {
@@ -552,29 +611,14 @@ impl Game {
         };
         let weapons = p.weapons.clone();
         let w = &weapons[index];
-        let class = self.tables.weapons.class_of(w.weapon);
-        let class_pos = class.map_or(0, |c| {
-            weapons
-                .iter()
-                .filter(|x| x.slot < w.slot && self.tables.weapons.class_of(x.weapon) == Some(c))
-                .count()
-                .min(32) as u8
-        });
-        let spec = gs::WeaponSpec {
-            weapon: w.weapon,
-            ammo_kind: w.ammo,
-            ammo: w.told_amount(),
-            clip: w.clip,
-            class_pos,
-            slot: w.slot,
-            parts: if !parts_on {
-                gs::NO_PARTS
-            } else if matches!(take, Take::Swap { .. }) && w.parts != gs::NO_PARTS {
-                w.parts
-            } else {
-                self.tables.weapons.default_parts(w.weapon)
-            },
+        let parts = if !parts_on {
+            gs::NO_PARTS
+        } else if matches!(take, Take::Swap { .. }) && w.parts != gs::NO_PARTS {
+            w.parts
+        } else {
+            self.tables.weapons.default_parts(w.weapon)
         };
+        let spec = self.grant_spec(&weapons, index, parts);
         // A same-weapon take only tops the count up: 0x66 kind 1 (status +0x38 with the pickup-notice flag 0) sets it
         // without the weapon change that the 0xb2 pickup notice runs (cshell+0x1f0700 -> ChangeWeapon, whose 0x7f
         // makes every client play the taker's select one-shot: the "pickup animation" over a gun he already holds).

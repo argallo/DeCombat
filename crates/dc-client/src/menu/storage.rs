@@ -361,6 +361,12 @@ pub struct ItemArt {
     /// (`IsCanUnEquip`; false without the key).
     // EVIDENCE: cshell+0x25dd60 (IsCanUnEquip -> record +0x241), cshell+0x1413c0 / 0x141480 (read before 0x368 / 0x36a)
     pub can_unequip: bool,
+    /// use-items-sweep: a reticle item's picture for the colour window (`PreViewIcon`) and its shape (`ShapeType`,
+    /// 0 without one).
+    // EVIDENCE: cshell+0x25dd60 (PreviewIcon -> record +0x3b4, ShapeType -> record +0x20), cshell+0x25ac20 / 0x25ac80
+    // (their readers)
+    pub preview_icon: String,
+    pub shape: i32,
 }
 
 /// The item-table columns of the eighteen modifier values a detail panel lists, in the order of their labels.
@@ -515,6 +521,8 @@ pub fn item_art(doc: &dc_bute::ButeDoc) -> BTreeMap<i32, ItemArt> {
                 sub_type: text("SubType").parse::<i32>().unwrap_or(-1),
                 change_item: table_float(&text("ChangeItemID")).map_or(0, |v| v as i32),
                 can_unequip: text("IsCanUnEquip").parse::<i32>().is_ok_and(|v| v != 0),
+                preview_icon: text("PreViewIcon"),
+                shape: table_float(&text("ShapeType")).map_or(0, |v| v as i32),
             });
         }
     }
@@ -724,6 +732,53 @@ impl Wares {
     // +0x241 is 0), cshell+0x14a700 (a type 0x15 cell shows Equiped_Mark when cshell+0x226800 finds its unique id)
     pub fn in_function_list(&self, store: &Store, r: &InvRecord) -> bool {
         store.in_function_slot(r) || (r.in_use && !self.can_unequip(r.item_no as i32))
+    }
+
+    /// After a match: the first record of the function list of each bonus pass kind (`SubType` 13 EXP, 14 GP, 15
+    /// both) loses one use (the lobby counts the same match and removes a pass at 0 with 0x33f).
+    // EVIDENCE: cshell+0x134b80 (the result rows' fill: for kinds 0xd..0xf the function list's record of the kind,
+    // cshell+0x227070, has its count +0x14 lowered by one, then the inventory view is refreshed)
+    // DC-DEFAULT: CLI-1880 (proposed) on every entry of the result screen, a record without uses left is not
+    // lowered (the 2009 condition on the shell's vfunc +0xa8 is not traced)
+    pub fn count_down_passes(&self, store: &mut Store) {
+        let uids: Vec<u32> = (13..=15)
+            .filter_map(|k| {
+                self.function_list(store)
+                    .into_iter()
+                    .find(|r| {
+                        self.art_of(r.item_no as i32)
+                            .is_some_and(|a| a.sub_type == k)
+                    })
+                    .map(|r| r.uid)
+            })
+            .collect();
+        for r in store.items.iter_mut().filter(|r| uids.contains(&r.uid)) {
+            r.count = r.count.saturating_sub(1);
+        }
+    }
+
+    /// The function list in its 2009 order: the record of each function slot (slot order), then every other function
+    /// item in use whose row has no `IsCanUnEquip` (record order).
+    // EVIDENCE: cshell+0x2292e0 (the seven slots first, then the records of type 0x15 in use whose row +0x241 is 0)
+    pub fn function_list<'a>(&self, store: &'a Store) -> Vec<&'a InvRecord> {
+        let mut list: Vec<&InvRecord> = (0..store.function_slots.len())
+            .filter_map(|s| {
+                store
+                    .items
+                    .iter()
+                    .find(|r| store.function_slot_of(r) == Some(s))
+            })
+            .collect();
+        for r in &store.items {
+            if r.in_use
+                && self.kind_of(r.item_no as i32) == Some(0x15)
+                && !self.can_unequip(r.item_no as i32)
+                && !list.iter().any(|o| o.uid == r.uid)
+            {
+                list.push(r);
+            }
+        }
+        list
     }
 
     /// The extra weapon slots of backpack item `n` (the item table's `MultyInvenSlot`; 0 when unknown).
@@ -1164,5 +1219,46 @@ mod tests {
         assert_eq!(s.next_inbox_page(), None);
         s.apply(&LinkEvent::InboxStale);
         assert!(s.inbox_stale);
+    }
+
+    /// CLI-741 (amended) / CLI-1880: the function list holds the slot records, then the in-use records without
+    /// IsCanUnEquip; the black market list sorts it by SubType; after a match each bonus pass kind's record loses a
+    /// use, never below 0.
+    #[test]
+    fn function_list_market_order_and_the_pass_count_down() {
+        let mut wares = Wares::default();
+        for (n, sub, unequip) in [
+            (9019, 13, true),
+            (9020, 14, true),
+            (9010, 10, false),
+            (9011, 10, false),
+        ] {
+            wares.art.insert(
+                n,
+                ItemArt {
+                    sub_type: sub,
+                    can_unequip: unequip,
+                    ..ItemArt::default()
+                },
+            );
+        }
+        let used = |uid, n, count| InvRecord {
+            in_use: true,
+            count,
+            ..rec(uid, n)
+        };
+        let mut store = Store {
+            items: vec![used(1, 9010, 0), used(2, 9020, 1), used(3, 9019, 3), rec(4, 9011)],
+            function_slots: vec![-1, 9019, 9020, -1, -1, -1, -1],
+            ..Store::default()
+        };
+        let uids = |l: Vec<&InvRecord>| l.iter().map(|r| r.uid).collect::<Vec<_>>();
+        assert_eq!(uids(wares.function_list(&store)), [3, 2, 1]);
+        assert_eq!(uids(super::super::pane::market_records(&wares, &store)), [1, 3, 2]);
+        wares.count_down_passes(&mut store);
+        let counts = |s: &Store| s.items.iter().map(|r| r.count).collect::<Vec<_>>();
+        assert_eq!(counts(&store), [0, 0, 2, 0]);
+        wares.count_down_passes(&mut store);
+        assert_eq!(counts(&store), [0, 0, 1, 0]);
     }
 }

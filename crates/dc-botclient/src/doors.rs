@@ -434,7 +434,8 @@ mod tests {
     use super::*;
     use crate::hunt::tests::solid_box;
     use crate::motion::{Body, MotionKind, BOT_STAND_DIMS};
-    use crate::nav::{NavGrid, Route, BUDGET};
+    use crate::nav::follow::{Follower, NavGoal, GROW_PROBES};
+    use crate::nav::{NavGrid, BUDGET};
     use crate::objects::{ClientObject, ExtentBox};
     use crate::romworld::LinkedModel;
 
@@ -512,7 +513,7 @@ mod tests {
         );
         let mut key = nav_key(&w, &mind.boxes, &mind.given_up(), true);
         let mut nav = NavGrid::new(nav_collision(&w, &key), BOT_STAND_DIMS);
-        let mut route = Route::default();
+        let mut route = Follower::default();
         let mut notes = Vec::new();
         let mut pressed_at = None;
         let mut presses = 0;
@@ -520,13 +521,15 @@ mod tests {
         for _ in 0..(40_000 / 50) {
             now += 50;
             let pos = body.pos();
-            nav.seed(pos);
-            nav.expand(BUDGET, Some(goal));
-            let wp = route.next(&mut nav, now, pos, goal);
-            let path: Vec<[f32; 3]> = if route.points.is_empty() {
+            route.grow(&mut nav, pos, GROW_PROBES);
+            let wp = match route.next(&mut nav, now, pos, goal, true) {
+                NavGoal::Way(w) => Some(w),
+                NavGoal::Hold | NavGoal::Steer => None,
+            };
+            let path: Vec<[f32; 3]> = if route.points().is_empty() {
                 vec![goal]
             } else {
-                route.points.clone()
+                route.points().to_vec()
             };
             let views = door_views(&w, &table, &mind.boxes);
             let n0 = notes.len();

@@ -228,6 +228,16 @@ pub const PROP_AI_BODY_ROW: PropHash = ([0xf4, 0x06, 0xea, 0x5c, 0xa1, 0x30, 0xf
 pub const PROP_AI_RIGHT_HAND: PropHash = ([0xc9, 0x69, 0xc8, 0xaa, 0x86, 0x33, 0x33, 0x73], 9);
 pub const PROP_AI_MAX_HEALTH: PropHash = ([0xb6, 0x97, 0x3b, 0x50, 0x18, 0x1c, 0x00, 0xcf], 12);
 pub const PROP_TEMPLATE: PropHash = ([0x05, 0x75, 0xf2, 0x9d, 0xf8, 0x88, 0xa2, 0x7e], 8);
+/// The AI character's brain row (an `AIBUTES.TXT` `[Brain<n>]` `Name`) and its run-speed override (a text property,
+/// empty on every ROM AI character: the attribute row's speed applies, DSV-588).
+// OBSERVED: property names of the ROM co-op worlds' AI characters (hashes only; every AI character of both worlds
+// names a brain row; the Cabin Fever templates name the four melee-only brains, the Desert Thunder ones ranged
+// brains; the run-speed text is empty on all 278; 2026-11-05 scratch run over dc-world)
+pub const PROP_AI_BRAIN: PropHash = ([0x7e, 0x4d, 0x5c, 0x46, 0x0c, 0x04, 0x45, 0x7e], 5);
+pub const PROP_AI_RUN_SPEED: PropHash = ([0xc7, 0x42, 0xc5, 0xef, 0x3b, 0xcd, 0x87, 0x34], 8);
+/// The word the ROM AI characters' attachment properties hold for "nothing in this slot".
+// OBSERVED: ROM co-op worlds (the right-hand property of the placed live AI characters, the other attachment slots)
+pub const AI_SLOT_EMPTY: &str = "<none>";
 
 /// One spawner object of a co-op world.
 #[derive(Debug, Clone, PartialEq)]
@@ -240,19 +250,23 @@ pub struct CoopSpawner {
 }
 
 /// One placed AI character of a co-op world (in the ROM worlds nearly all are templates for spawners).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AiTemplate {
     pub name: Vec<u8>,
     pub pos: [f32; 3],
     pub rot: [f32; 3],
     /// The `[AIModel<n>]` row named by its body-row property.
     pub body_row: Option<String>,
-    /// The `[Weapon<n>]` `Name` of its right-hand weapon.
+    /// The `[Weapon<n>]` `Name` of its right-hand weapon (`None`: the slot is empty, [`AI_SLOT_EMPTY`]).
     pub right_hand: Option<String>,
     pub max_health: Option<f32>,
     pub template: bool,
     /// The command its death runs (an AI spawned from it runs it too, DSV-571).
     pub death_cmd: Vec<u8>,
+    /// The `AIBUTES.TXT` `[Brain<n>]` row named by its brain property (DSV-589).
+    pub brain: Option<String>,
+    /// Its own run speed (units per second), when the property holds a number (DSV-588).
+    pub run_speed: Option<f32>,
 }
 
 /// The co-op objects of a world.
@@ -360,12 +374,19 @@ pub fn coop_objects(w: &World<'_>) -> CoopWorld {
                 pos,
                 rot,
                 body_row: text_string(prop_text(o, PROP_AI_BODY_ROW)),
-                right_hand: text_string(prop_text(o, PROP_AI_RIGHT_HAND)),
+                right_hand: text_string(prop_text(o, PROP_AI_RIGHT_HAND))
+                    .filter(|h| !h.eq_ignore_ascii_case(AI_SLOT_EMPTY)),
                 max_health,
                 template: prop_bool(o, PROP_TEMPLATE).unwrap_or(false),
                 death_cmd: prop_text(o, crate::destructibles::PROP_DEATH_COMMAND)
                     .unwrap_or_default()
                     .to_vec(),
+                brain: text_string(prop_text(o, PROP_AI_BRAIN))
+                    .filter(|b| !b.eq_ignore_ascii_case(AI_SLOT_EMPTY)),
+                run_speed: text_string(prop_text(o, PROP_AI_RUN_SPEED))
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .or_else(|| prop_real(o, PROP_AI_RUN_SPEED))
+                    .filter(|s| s.is_finite() && *s > 0.0),
             });
         } else if class == CLASS_AI_PATROL_NODE
             || class == CLASS_AI_GUARD_NODE

@@ -191,6 +191,10 @@ pub fn corpse_body(
         .collect();
     // the hidden form (bit 0x0002 set, 0x0001 clear) is not drawn, as for a character (CLI-42)
     let visible = !(o.flags & 0x0002 != 0 && o.flags & 0x0001 == 0);
+    // the block's body styles, as for the living character (CLI-1150); without them a body the client's player
+    // model table has no row for (an AI body) took the engine default style and was drawn black
+    // SPEC: UDP_SESSION_2009_B.md §3.4 (per entry the render-style file ids); DC-DEFAULT: CLI-1869 (proposed)
+    let styles = crate::net::block_body_styles(&o.models, &name);
     Some(RemoteBody {
         obj,
         pid: 0xFF,
@@ -200,7 +204,7 @@ pub fn corpse_body(
         half: o.dims.unwrap_or(half_default),
         yaw: Some(o.rot.map_or(0.0, dc_wire::udp::quat_yaw)),
         look: Some(RemoteLook {
-            styles: Vec::new(),
+            styles,
             models: model_refs(&o.models, &name),
             weapon: None,
             trackers,
@@ -470,6 +474,35 @@ mod tests {
         let look = corpse_body(9, &o, name, 0, [1.0; 3]).unwrap().look.unwrap();
         let models: Vec<&str> = look.models.iter().map(|m| m.model.as_str()).collect();
         assert_eq!(models, ["M/BODY.LTB", "M/HEAD.LTB"]);
+    }
+
+    /// CLI-1869 (the owner's "AI corpses turn into black models", 2026-11-04): a corpse is drawn with the render
+    /// styles its model block names for the body, as the living character is (CLI-1150). An AI body has no row in
+    /// the client's player model table, so without the block's styles it took the engine default and drew black.
+    #[test]
+    fn a_corpse_wears_the_body_styles_of_its_model_block() {
+        let mut o = corpse_object();
+        o.models[0].styles = vec![7, 8];
+        let name = |id: u16| match id {
+            3 => Some("M/AI_BODY.LTB".to_string()),
+            4 => Some("T/AI_SKIN.DTX".to_string()),
+            7 => Some("RS/SKIN.LTB".to_string()),
+            8 => Some("RS/GEAR.LTB".to_string()),
+            _ => None,
+        };
+        let look = corpse_body(9, &o, name, 0, [1.0; 3]).unwrap().look.unwrap();
+        assert_eq!(look.styles, ["RS/SKIN.LTB", "RS/GEAR.LTB"]);
+        assert_eq!(look.models[0].textures[0], "T/AI_SKIN.DTX");
+        // the same styles the living character of that block is drawn with
+        assert_eq!(
+            look.styles,
+            crate::net::block_body_styles(&o.models, name),
+            "corpse and character resolve the block alike"
+        );
+        // a style the file table lacks: the table row's styles stay (CLI-109), as for a character
+        o.models[0].styles = vec![7, 99];
+        let look = corpse_body(9, &o, name, 0, [1.0; 3]).unwrap().look.unwrap();
+        assert!(look.styles.is_empty());
     }
 
     #[test]

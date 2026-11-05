@@ -152,6 +152,8 @@ pub struct WindowOptions {
     pub room_hacks: Option<u32>,
     /// LG-305 / CLI-1639: a Gun Game room's ladder (empty: another mode).
     pub gun_ladder: Vec<u16>,
+    /// use-items-sweep: the reticle item in use (the mark's shape bits, `0xAARRGGBB`; CLI-1878).
+    pub reticle: Option<(u16, u32)>,
 }
 
 /// LG-274 / CLI-1627: whether a match of a room with Hacks setting `hacks` may run the x-ray render bridge: a room
@@ -2224,6 +2226,12 @@ impl App {
                             self.opts.font_rom.as_deref(),
                             &self.opts.gun_ladder,
                         ));
+                    }
+                    // DC-DEFAULT: CLI-1878 (proposed) the reticle item in use when the match starts
+                    // EVIDENCE: cshell+0x1630a0 (the match entry: the in-use function record of kind 11 -> the mark's
+                    // shape by the item's ShapeType and its colour by the record's colour index)
+                    if let Some((shape, argb)) = self.opts.reticle {
+                        d.set_reticle(shape, argb);
                     }
                     d.set_draw_voice(self.source.draw_voice());
                     // CLI-1570: the network overlay starts as the flag / env / last choice says

@@ -30,7 +30,7 @@ pub const SPAWN_TABLE_SECTION: &str = "AISpawnTable";
 pub const HEALTH_RATE_SECTION: &str = "AIHealthRateRoundTable";
 /// `[CooperativeModeScoreTable]` keys.
 // OBSERVED: ROM table key GMS [CooperativeModeScoreTable] DamageScoreType_A..D, DamagePlusByEtcDeath,
-// DamagePlusByBossDeath, DamagePlusByHeadShotDeath (FIRETEAM_2009.md §3.1; DC_DEFAULTS FT-13)
+// DamagePlusByBossDeath, DamagePlusByHeadShotDeath, DamagePlusByCombo (FIRETEAM_2009.md §3.1; DC_DEFAULTS FT-13, DSV-605)
 pub const SCORE_SECTION: &str = "CooperativeModeScoreTable";
 /// `[CooperativeModeNPCNameTable]` `NPCNameBoss`.
 // OBSERVED: ROM table key GMS [CooperativeModeNPCNameTable] NPCNameBoss (FIRETEAM_2009.md §3.1; FT-14)
@@ -38,6 +38,8 @@ pub const NPC_NAME_SECTION: &str = "CooperativeModeNPCNameTable";
 /// `[AIModel<n>]` and `[AIFace<n>]` rows of the model table.
 // OBSERVED: ROM table key MODELBUTES.TXT [AIModel<n>] Name, ModelFile, Skin<k>, RenderStyle<k>, Skeleton, AIName,
 // AttachFace, AIFace; [AIFace<n>] Name, ModelFile, Skin0, RenderStyle<k> (FIRETEAM_2009.md §3.2)
+// OBSERVED: ROM table key MODELBUTES.TXT [AIModel<n>] GearId (the four infected rows name one WEAPONS.TXT [Gear<n>]
+// row whose protection slots cover the infected death weapons' damage types in full; 2026-11-05 scratch run)
 pub const AI_BODY_SECTION: &str = "AIModel";
 /// `[CooperativeModeDialogMsg]`: the dialogue texts the caption and message triggers `play` (DSV-579).
 // OBSERVED: ROM table key GMS [CooperativeModeDialogMsg] Cap<nnn> (three fields: picture, speaker, text, split by `|`),
@@ -114,6 +116,8 @@ pub struct ScoreTable {
     pub kill: Option<f32>,
     pub boss_death: Option<f32>,
     pub head_kill: Option<f32>,
+    /// The bonus of a kill inside the kill chain (`DamagePlusByCombo`).
+    pub combo: Option<f32>,
 }
 
 /// One weapon row of the GMS: a weapon that lies at a named place from a round on (DSV-583).
@@ -213,6 +217,7 @@ impl CoopPlan {
             kill: num(st, "DamagePlusByEtcDeath"),
             boss_death: num(st, "DamagePlusByBossDeath"),
             head_kill: num(st, "DamagePlusByHeadShotDeath"),
+            combo: num(st, "DamagePlusByCombo"),
         };
         CoopPlan {
             difficulty,
@@ -338,6 +343,8 @@ pub struct AiBodyRow {
     pub ai_name: Option<String>,
     /// `AttachFace` non-zero and the `[AIFace<n>]` row named by `AIFace`.
     pub face: Option<String>,
+    /// `GearId`: the weapon table's `[Gear<n>]` row that protects this body (DSV-604).
+    pub gear: Option<u16>,
 }
 
 /// One `[AIFace<n>]` row.
@@ -349,11 +356,105 @@ pub struct AiFaceRow {
     pub styles: Vec<String>,
 }
 
-/// The AI rows of the model table.
+/// The AI table entry and its row sections: `[AttributeTemplate<n>]` (an AI kind's speeds; its `Name` equals the
+/// `[AIModel<n>]` `Name` the AI characters name, DSV-588) and `[Brain<n>]` (an AI kind's attack ranges, DSV-589).
+// OBSERVED: ROM table key AIBUTES.TXT [AttributeTemplate<n>] Name, RunSpeed, WalkSpeed; [Brain<n>] Name,
+// AttackRangedRange, AttackMeleeRange (ranges written `[min, max]`); 12 attribute rows whose names are the 12 AIModel
+// names; the four brains the Cabin Fever templates name have the ranged range [0, 0] and a melee range, every
+// Desert Thunder brain a ranged range (2026-11-05 scratch run)
+pub const AI_ATTRIBUTES_ENTRY: &str = "ATTRIBUTES\\AIBUTES.TXT";
+pub const AI_ATTRIBUTE_SECTION: &str = "AttributeTemplate";
+pub const AI_BRAIN_SECTION: &str = "Brain";
+
+/// One `[AttributeTemplate<n>]` row (the keys the server uses).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AiAttributeRow {
+    pub name: String,
+    pub run_speed: Option<f32>,
+    pub walk_speed: Option<f32>,
+    /// `SeeEnemyDistance`: a melee AI walks until a human comes this close, then runs (DSV-597).
+    // OBSERVED: ROM table key AIBUTES.TXT [AttributeTemplate<n>] SeeEnemyDistance (the four infected rows: the
+    // explode and light rows twice the normal row's, the heavy row between; 2026-11-05 scratch run)
+    pub see_enemy: Option<f32>,
+    /// `HitPoints`: the kind's health (DSV-603).
+    // OBSERVED: ROM table key AIBUTES.TXT [AttributeTemplate<n>] HitPoints (every row; the four infected rows differ
+    // from each other and from the soldiers' rows, the heavy row the highest; 2026-11-05 scratch run)
+    pub hit_points: Option<f32>,
+}
+
+/// One `[Brain<n>]` row: the upper ends of its ranged and melee attack ranges (`None` = key absent) and its drop
+/// rows (DSV-591).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AiBrainRow {
+    pub name: String,
+    pub ranged_max: Option<f32>,
+    pub melee_max: Option<f32>,
+    /// `(DropItemType<k>, DropItem<k>)`: the item word and its chance in percent, in row order.
+    pub drops: Vec<(String, f32)>,
+    /// `DeathExplosion`: the `[Weapon<n>]` `Name` whose ammunition goes off at the body when the AI dies (a blast
+    /// row: DSV-598; a progressive-damage row: a cloud, DSV-600).
+    pub death_blast: Option<String>,
+    /// `DeathThrowWeapon` and `DeathThrowWeaponNum`: the thrown weapon the AI drops at its death and how many
+    /// (DSV-599).
+    pub death_throw: Option<(String, u32)>,
+    /// `DeathImpactFX`: the impact effect row of the death (logged only: no message of ours plays it).
+    pub death_fx: Option<String>,
+}
+
+/// The death keys of a brain row.
+// OBSERVED: ROM table key AIBUTES.TXT [Brain<n>] DeathExplosion, DeathImpactFX (two infected brains, each naming a
+// thrown weapon row of the weapon table and an impact effect row of the effect table), DeathThrowWeapon,
+// DeathThrowWeaponNum (one infected brain: a thrown weapon row and a count); 2026-11-05 scratch run
+pub const KEY_DEATH_BLAST: &str = "DeathExplosion";
+pub const KEY_DEATH_THROW: &str = "DeathThrowWeapon";
+pub const KEY_DEATH_THROW_NUM: &str = "DeathThrowWeaponNum";
+pub const KEY_DEATH_FX: &str = "DeathImpactFX";
+/// The most items a brain's death throw drops.
+// DC-DEFAULT: DSV-599 (proposed) 8
+pub const DEATH_THROW_MAX: u32 = 8;
+
+/// Drop rows a brain row may have (`DropItem<k>` / `DropItemType<k>`, `k` from 0).
+// OBSERVED: ROM table key AIBUTES.TXT [Brain<n>] DropItem<k> (a number, the chance in percent read here),
+// DropItemType<k> (an item word); every Desert Thunder brain has four rows, the Cabin Fever brains three or two, the
+// sums below 100, four item words in all (2026-11-04 scratch run, values read at run time)
+pub const AI_BRAIN_DROP_ROWS: u32 = 8;
+
+fn brain_drops(sec: &SectionMap) -> Vec<(String, f32)> {
+    (0..AI_BRAIN_DROP_ROWS)
+        .filter_map(|k| {
+            let word = text(Some(sec), &format!("DropItemType{k}"))?;
+            let chance = num(Some(sec), &format!("DropItem{k}"))?;
+            (chance > 0.0).then_some((word, chance.min(100.0)))
+        })
+        .collect()
+}
+
+impl AiBrainRow {
+    /// The brain attacks in melee only: no ranged reach, a melee reach above zero.
+    pub fn melee_only(&self) -> bool {
+        self.ranged_max.is_some_and(|r| r <= 0.0) && self.melee_max.is_some_and(|m| m > 0.0)
+    }
+}
+
+/// The upper end of a `[min, max]` range value.
+fn range_max(sec: &SectionMap, key: &str) -> Option<f32> {
+    let t = text(Some(sec), key)?;
+    let t = t.trim_start_matches('[').trim_end_matches(']');
+    t.rsplit(',')
+        .next()?
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite())
+}
+
+/// The AI rows of the model table and of the AI table.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AiTables {
     pub bodies: BTreeMap<u32, AiBodyRow>,
     pub faces: Vec<AiFaceRow>,
+    pub attributes: Vec<AiAttributeRow>,
+    pub brains: Vec<AiBrainRow>,
 }
 
 fn numbered(sec: &SectionMap, key: &str, max: u32) -> Vec<String> {
@@ -384,6 +485,12 @@ impl AiTables {
                             .map(|v| v as u32),
                         ai_name: text(Some(sec), "AIName"),
                         face: text(Some(sec), "AIFace").filter(|_| attach),
+                        gear: sec
+                            .iter()
+                            .find(|(k, _)| eq_fold(k, chars::KEY_GEAR_ID))
+                            .and_then(|(k, _)| num(Some(sec), k))
+                            .filter(|g| *g >= 0.0 && *g <= f32::from(u16::MAX))
+                            .map(|g| g as u16),
                     },
                 );
             } else if index_of(name, AI_FACE_SECTION).is_some() {
@@ -401,16 +508,59 @@ impl AiTables {
         t
     }
 
+    /// Adds the attribute and brain rows of an AI table document.
+    pub fn add_ai_doc(&mut self, doc: &ButeDoc) {
+        for (name, sec) in doc.iter() {
+            if index_of(name, AI_ATTRIBUTE_SECTION).is_some() {
+                self.attributes.push(AiAttributeRow {
+                    name: text(Some(sec), "Name").unwrap_or_default(),
+                    run_speed: num(Some(sec), "RunSpeed").filter(|v| *v > 0.0),
+                    walk_speed: num(Some(sec), "WalkSpeed").filter(|v| *v > 0.0),
+                    see_enemy: num(Some(sec), "SeeEnemyDistance").filter(|v| *v > 0.0),
+                    hit_points: num(Some(sec), "HitPoints").filter(|v| *v > 0.0),
+                });
+            } else if index_of(name, AI_BRAIN_SECTION).is_some() {
+                self.brains.push(AiBrainRow {
+                    name: text(Some(sec), "Name").unwrap_or_default(),
+                    ranged_max: range_max(sec, "AttackRangedRange"),
+                    melee_max: range_max(sec, "AttackMeleeRange"),
+                    drops: brain_drops(sec),
+                    death_blast: text(Some(sec), KEY_DEATH_BLAST),
+                    death_throw: text(Some(sec), KEY_DEATH_THROW).map(|w| {
+                        let n = num(Some(sec), KEY_DEATH_THROW_NUM)
+                            .filter(|n| *n >= 1.0)
+                            .map_or(1, |n| (n as u32).min(DEATH_THROW_MAX));
+                        (w, n)
+                    }),
+                    death_fx: text(Some(sec), KEY_DEATH_FX),
+                });
+            }
+        }
+    }
+
     pub fn from_vfs(vfs: &RezVfs) -> AiTables {
-        ButeDoc::try_from_vfs(
-            vfs,
-            crate::rom_tables::ATTRIBUTES_REZ,
-            chars::MODELBUTES_ENTRY,
-        )
-        .ok()
-        .flatten()
-        .map(|d| Self::from_doc(&d))
-        .unwrap_or_default()
+        let read = |entry: &str| {
+            ButeDoc::try_from_vfs(vfs, crate::rom_tables::ATTRIBUTES_REZ, entry)
+                .ok()
+                .flatten()
+        };
+        let mut t = read(chars::MODELBUTES_ENTRY)
+            .map(|d| Self::from_doc(&d))
+            .unwrap_or_default();
+        if let Some(d) = read(AI_ATTRIBUTES_ENTRY) {
+            t.add_ai_doc(&d);
+        }
+        t
+    }
+
+    /// The attribute row whose `Name` is `name` (ASCII case-insensitive).
+    pub fn attributes_named(&self, name: &str) -> Option<&AiAttributeRow> {
+        self.attributes.iter().find(|a| eq_fold(&a.name, name))
+    }
+
+    /// The brain row whose `Name` is `name` (ASCII case-insensitive).
+    pub fn brain_named(&self, name: &str) -> Option<&AiBrainRow> {
+        self.brains.iter().find(|b| eq_fold(&b.name, name))
     }
 
     /// The body row whose `Name` is `name` (ASCII case-insensitive).
@@ -501,6 +651,7 @@ mod tests {
         "[CooperativeModeScoreTable]\n",
         "DamageScoreType_A = 10\n",
         "DamagePlusByEtcDeath = 40\n",
+        "DamagePlusByCombo = 30\n",
         "[CooperativeModeNPCNameTable]\n",
         "NPCNameBoss = \"big\"\n",
     );
@@ -525,6 +676,7 @@ mod tests {
         assert_eq!(p.health_rates, vec![1.0, 1.5]);
         assert_eq!(p.score.hit[0], Some(10.0));
         assert_eq!(p.score.kill, Some(40.0));
+        assert_eq!(p.score.combo, Some(30.0));
         assert_eq!(p.boss_name.as_deref(), Some("big"));
         // another difficulty: no row, no rates
         let q = CoopPlan::from_gms(&d, 0);
@@ -565,5 +717,106 @@ mod tests {
         assert_eq!(a.face.as_deref(), Some("f"));
         assert_eq!(t.body_named("b").unwrap().face, None, "AttachFace 0");
         assert_eq!(t.face_named("F").unwrap().skins.len(), 1);
+    }
+
+    /// DSV-588 / DSV-589: the AI table's attribute rows (speeds) and brain rows (the upper ends of their ranges).
+    #[test]
+    fn ai_attribute_and_brain_rows_from_a_synthetic_table() {
+        let d = ButeDoc::parse(concat!(
+            "[AttributeTemplate0]
+",
+            "Name = \"slow\"
+",
+            "RunSpeed = 120.0
+",
+            "WalkSpeed = 90.0
+",
+            "SeeEnemyDistance = 700.0
+",
+            "[AttributeTemplate1]
+",
+            "Name = \"none\"
+",
+            "[Brain0]
+",
+            "Name = \"Biter\"
+",
+            "AttackRangedRange = [0.0, 0.0]
+",
+            "AttackMeleeRange = [0.0, 80.0]
+",
+            "[Brain1]
+",
+            "Name = \"Gunner\"
+",
+            "AttackRangedRange = [0.0, 1500.0]
+",
+            "AttackMeleeRange = [0.0, 100.0]
+",
+            "[Brain2]
+",
+            "Name = \"Bare\"
+",
+            "[Brain3]
+",
+            "Name = \"Popper\"
+",
+            "DeathExplosion = \"Boom\"
+",
+            "DeathImpactFX = \"Fx\"
+",
+            "[Brain4]
+",
+            "Name = \"Layer\"
+",
+            "DeathThrowWeapon = \"Egg\"
+",
+            "DeathThrowWeaponNum = 3
+",
+            "[Brain5]
+",
+            "Name = \"Many\"
+",
+            "DeathThrowWeapon = \"Egg\"
+",
+            "DeathThrowWeaponNum = 99
+",
+        ));
+        let mut t = AiTables::default();
+        t.add_ai_doc(&d);
+        assert_eq!(t.attributes.len(), 2);
+        let a = t.attributes_named("SLOW").unwrap();
+        assert_eq!((a.run_speed, a.walk_speed), (Some(120.0), Some(90.0)));
+        assert_eq!(a.see_enemy, Some(700.0));
+        assert_eq!(t.attributes_named("none").unwrap().run_speed, None);
+        assert_eq!(t.attributes_named("none").unwrap().see_enemy, None);
+        let b = t.brain_named("biter").unwrap();
+        assert_eq!((b.ranged_max, b.melee_max), (Some(0.0), Some(80.0)));
+        assert!(b.melee_only());
+        assert!(!t.brain_named("Gunner").unwrap().melee_only());
+        assert!(
+            !t.brain_named("Bare").unwrap().melee_only(),
+            "no ranges: not melee-only"
+        );
+        assert!(t.brain_named("nobody").is_none());
+        // DSV-598 / DSV-599: the death keys
+        let p = t.brain_named("popper").unwrap();
+        assert_eq!(
+            (
+                p.death_blast.as_deref(),
+                p.death_fx.as_deref(),
+                &p.death_throw
+            ),
+            (Some("Boom"), Some("Fx"), &None)
+        );
+        assert_eq!(
+            t.brain_named("layer").unwrap().death_throw,
+            Some(("Egg".to_string(), 3))
+        );
+        assert_eq!(
+            t.brain_named("many").unwrap().death_throw,
+            Some(("Egg".to_string(), DEATH_THROW_MAX))
+        );
+        assert_eq!(t.brain_named("bare").unwrap().death_blast, None);
     }
 }

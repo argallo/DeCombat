@@ -4042,6 +4042,19 @@ fn shell_hud_event(
         ShellRead::Spy(e) => HudEvent::Spy(e),
         ShellRead::Mission(e) => HudEvent::Mission(e),
         ShellRead::CoopClock { running, secs } => HudEvent::CoopClock { running, secs },
+        // SPEC: GAME_MESSAGES_2009_S2C.md §3.5 row 0xd7 subs 1 / 3; DC-DEFAULT: CLI-1872 (proposed)
+        ShellRead::CoopPoints {
+            pid,
+            gained,
+            total,
+            record,
+            ..
+        } => HudEvent::CoopPoints {
+            pid,
+            gained,
+            total,
+            record,
+        },
         ShellRead::Note(ObjectNote::Countdown { obj, remaining }) => {
             countdown.insert(obj, remaining);
             return None;
@@ -4341,7 +4354,7 @@ fn remote_look(s: &BotSession, obj: u16, t: &Track, now: u32) -> Option<RemoteLo
 /// The body entry's render styles as the model block names them (CLI-1150); a name the file table lacks drops the
 /// whole list, the table row's styles then stay (CLI-109).
 // SPEC: UDP_SESSION_2009_B.md §3.4 (per entry the render-style file ids)
-fn block_body_styles(
+pub(crate) fn block_body_styles(
     models: &[dc_botclient::objects::ModelFileEntry],
     name: impl Fn(u16) -> Option<String>,
 ) -> Vec<String> {

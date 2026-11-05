@@ -109,10 +109,16 @@ pub enum Voice {
     /// Fire Team: the mode's message sound with each 0xc9 banner (sub 2) and text note (sub 3).
     // EVIDENCE: cshell+0x31490 (the key pushed to cshell+0x300a0 after cshell+0xbdd20 and cshell+0x81fe0)
     CoopMessage,
+    /// Fire Team: the pickup sound of a drop-item note (0xc9 sub 6: 1 the health pack, 2 the ammunition, 3 the
+    /// ammunition box).
+    // EVIDENCE: cshell+0x3194a..0x3197b (the item byte selects one of three keys pushed to cshell+0x300a0)
+    CoopMedikit,
+    CoopMagazine,
+    CoopBulletbox,
 }
 
 impl Voice {
-    pub const ALL: [Voice; 42] = [
+    pub const ALL: [Voice; 45] = [
         Voice::Opener,
         Voice::OneKill,
         Voice::HeadHit,
@@ -155,6 +161,9 @@ impl Voice {
         Voice::BntIntelGet,
         Voice::BntIntelGetAll,
         Voice::CoopMessage,
+        Voice::CoopMedikit,
+        Voice::CoopMagazine,
+        Voice::CoopBulletbox,
     ];
 
     /// Our name of the line (sound log).
@@ -202,6 +211,9 @@ impl Voice {
             Voice::BntIntelGet => "spy_intel_get",
             Voice::BntIntelGetAll => "spy_intel_get_all",
             Voice::CoopMessage => "coop_message",
+            Voice::CoopMedikit => "coop_pickup_health",
+            Voice::CoopMagazine => "coop_pickup_ammo",
+            Voice::CoopBulletbox => "coop_pickup_ammo_box",
         }
     }
 
@@ -263,6 +275,9 @@ impl Voice {
             Voice::BntIntelGetAll => (0x3d4ca4, "9033dbd43c23ec19", 27),
             // EVIDENCE: cshell+0x300a0 (the key looked up through cshell+0x1b2c00 and played by cshell+0x1b20c0)
             Voice::CoopMessage => (0x3cee90, "eeac58fd8dad2b9d", 16),
+            Voice::CoopMedikit => (0x3cee54, "156f337822ca99ca", 16),
+            Voice::CoopMagazine => (0x3cee68, "9e5134d8fb981f07", 17),
+            Voice::CoopBulletbox => (0x3cee7c, "adf84eb64b4c0000", 18),
         };
         Pin {
             what: "interface sound key",
@@ -706,6 +721,9 @@ mod tests {
             Voice::BntIntelGet,
             Voice::BntIntelGetAll,
             Voice::CoopMessage,
+            Voice::CoopMedikit,
+            Voice::CoopMagazine,
+            Voice::CoopBulletbox,
         ] {
             assert!(l.voice_file(v).is_some(), "{}", v.label());
         }

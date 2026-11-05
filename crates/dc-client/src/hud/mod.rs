@@ -20,6 +20,7 @@ pub mod board;
 pub mod bomb;
 pub mod chat;
 pub mod compose;
+pub mod coopscore;
 pub mod crosshair;
 pub mod death;
 pub mod exitbox;
@@ -34,6 +35,7 @@ pub mod modetop;
 pub mod modhud;
 pub mod msgs;
 pub mod netview;
+pub mod npcbar;
 pub mod panel;
 pub mod qrt;
 pub mod radar;
@@ -429,7 +431,7 @@ impl Hud {
             state.letterbox.progress(state.now_ms),
             self.letterbox_percent,
         );
-        // CLI-1847: the fall's red screen-edge band, over the world and under every HUD element
+        // CLI-1847: the fall's red screen-edge vignette, over the world and under every HUD element
         marks.push(("fall_border", items.len()));
         if state.result_screen.is_none() && death::live_widgets(state) {
             fallborder::push_items(&mut items, state.fall_border, self.size.0, self.size.1);
@@ -1006,7 +1008,24 @@ impl HudDriver {
             &|obj| forced.contains(&obj),
         );
         let mate = marks::mate_target(&self.state, remotes, target);
-        let now = self.state.now_ms;
+        // CLI-1871: the AI health bars; CLI-1872: a live points popup recomposes every frame while it rises
+        let bars = npcbar::frame_bars(
+            &self.state,
+            remotes,
+            &|p| project(camera, p),
+            target,
+            points,
+        );
+        if bars != self.state.npc_bars
+            || self
+                .state
+                .points_popup
+                .is_some_and(|p| now.saturating_sub(p.at) <= npcbar::POPUP_MS)
+            || self.state.coop.moving(now, &self.hud.layout.top.coop)
+        {
+            self.dirty = true;
+        }
+        self.state.npc_bars = bars;
         let flashing = !self.state.mark_hits.is_empty();
         if marks::step_hits(&mut self.state, target, now, &self.hud.layout.marks) || flashing {
             self.dirty = true;
@@ -1149,6 +1168,11 @@ impl HudDriver {
     /// CLI-1639: this match is Gun Game, these are its guns' names, rung 0 first.
     pub fn set_gun_game(&mut self, names: Vec<String>) {
         self.state.gun_game = Some(state::GunGameHud::new(names));
+    }
+
+    /// use-items-sweep: the reticle item in use (shape bits, `0xAARRGGBB`; 0 keeps the weapon's colour; CLI-1878).
+    pub fn set_reticle(&mut self, shape: u16, argb: u32) {
+        self.state.reticle = Some((shape, crate::menu::catalog::argb(argb)));
     }
 
     pub fn set_reality(&mut self, on: bool) {
@@ -1353,6 +1377,7 @@ mod sound_tests {
         use crate::spread::AimMarkView;
         use crate::world::FrameState;
         let mark = AimMarkView {
+            shape: crate::spread::mark::SHAPE_PLAIN,
             distance: 10.0,
             since_shot_s: None,
             colour: [0, 255, 0, 255],
@@ -1460,10 +1485,9 @@ mod sound_tests {
         // (border fills, sector arcs) in the frame's display list
         let count = |d: &mut HudDriver| -> (usize, usize) {
             let items = d.items_due(true).expect("items");
-            let c = fallborder::COLOUR;
             let border = items
                 .iter()
-                .filter(|i| matches!(i, DrawItem::Fill { colour, .. } if colour[..3] == c && colour[3] > 0))
+                .filter(|i| matches!(i, DrawItem::Image { tex, tint, .. } if tex == fallborder::TEXTURE && tint[3] > 0))
                 .count();
             let arcs = items
                 .iter()
@@ -1530,9 +1554,9 @@ mod sound_tests {
         }
     }
 
-    /// CLI-1847: one headless frame (the CPU compositor the GPU overlay mirrors) with the band: pixels at all four
-    /// edges are red-tinted, strongest at the very edge, the centre is untouched and the band stops short of the
-    /// inner 80 % of the height.
+    /// CLI-1847: one headless frame (the CPU compositor the GPU overlay mirrors) with the vignette: pixels at all
+    /// four edges are red-tinted below the peak alpha, fainter further in, the centre and the inner part are
+    /// untouched.
     #[test]
     fn the_fall_border_tints_the_edges_and_leaves_the_centre() {
         use crate::world::FrameState;
@@ -1580,19 +1604,22 @@ mod sound_tests {
         ] {
             let p = hit.pixel(x, y);
             assert!(
-                p[3] > 120 && p[0] > p[1] + 100 && p[0] > p[2] + 100,
+                p[3] >= 80
+                    && p[3] as f32 <= fallborder::PEAK_ALPHA
+                    && p[0] > p[1] + 100
+                    && p[0] > p[2] + 100,
                 "{name}: red-tinted at the edge: {p:?}"
             );
             assert_ne!(p, plain.pixel(x, y), "{name}");
         }
         // fading inward: deeper pixels are fainter, and the inner part of the frame is untouched
-        let (e, m) = (hit.pixel(1, h / 2), hit.pixel(20, h / 2));
+        let (e, m) = (hit.pixel(1, h / 2), hit.pixel(w / 16, h / 2));
         assert!(m[3] > 0 && m[3] < e[3], "{m:?} vs {e:?}");
         for (x, y) in [
             (w / 2, h / 2),
-            (w / 4, h / 4),
+            (w * 3 / 8, h / 2),
             (w / 2, h / 2 + 100),
-            (w / 5 + 20, h / 2),
+            (w / 4, h / 2),
         ] {
             assert_eq!(hit.pixel(x, y), plain.pixel(x, y), "({x}, {y}) untouched");
         }

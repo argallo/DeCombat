@@ -51,6 +51,15 @@ pub const PAIN_FORM: SoundForm = SoundForm {
     outer: 500,
     ratio: 17,
 };
+/// Priority, outer radius and inner ratio of the voice of a death by falling (a lethal landing or a drop through a kill
+/// volume): the pain form with the outer radius of the ROM surface rows' body-fall sound (`BodyFallSndRadius`, 800).
+// OBSERVED: ROM table key SURFACE.TXT `BodyFallSndRadius` (800 on the rows that name a body-fall sound; the number only)
+// DC-DEFAULT: DSV-596 (proposed) a fall death carries further than a pain grunt (800 against 500)
+pub const FALL_DEATH_FORM: SoundForm = SoundForm {
+    prio: 2,
+    outer: 800,
+    ratio: 17,
+};
 /// Priority, outer radius and inner ratio of a grenade impact.
 // OBSERVED: tdm4 c6 seq 7690 / 7715, tdm6 c6 seq 9409 / 9423 / 20098 (prio 1, outer 1000, ratio 17; REFERENCE)
 pub const BOUNCE_FORM: SoundForm = SoundForm {
@@ -334,8 +343,56 @@ impl EventSoundTables {
         let f = files_by_key(vfs, &keys);
         t.infected = [f[0].clone(), f[1].clone()];
         t.host = [f[2].clone(), f[3].clone()];
+        t.redirect_missing_voices(vfs);
         Ok(t)
     }
+
+    /// Points every voice file the tables name under the male folder at the female folder's file of the same name when
+    /// the male one is not in the archives. Logs the redirects once, here at load.
+    // DC-DEFAULT: DSV-596 (proposed; amends DSV-152) the ROM's `Hurtfalling_W` row names
+    // the male folder's `Hurtfalling_Female.wav`, which the archives hold only under the female folder: a missing male
+    // folder file falls back to the female folder's file of the same name (any row, not this one alone)
+    fn redirect_missing_voices(&mut self, vfs: &RezVfs) {
+        let mut redirected: Vec<(String, String)> = Vec::new();
+        let mut fix = |f: &mut String| {
+            if let Some(alt) = female_folder_fallback(f) {
+                if !rom_has(vfs, f) && rom_has(vfs, &alt) {
+                    redirected.push((f.clone(), alt.clone()));
+                    *f = alt;
+                }
+            }
+        };
+        for f in self
+            .pain
+            .iter_mut()
+            .chain(self.pain_w.iter_mut())
+            .chain(self.headshot.iter_mut())
+            .chain(self.fall.iter_mut())
+            .chain(self.fall_w.iter_mut())
+            .chain(self.grenade_impact.values_mut())
+        {
+            fix(f);
+        }
+        for (from, to) in redirected {
+            eprintln!("dc-dserver: voice file {from} is not in the archives, using {to}");
+        }
+    }
+}
+
+/// The female folder's path of a voice file named under the male folder (`CHARS_SND\MALE\x.wav` ->
+/// `CHARS_SND\FEMALE\x.wav`; either slash, any letter case; the rest of the path kept as written); `None` for any
+/// other path.
+pub fn female_folder_fallback(path: &str) -> Option<String> {
+    const MALE: &str = "CHARS_SND\\MALE\\";
+    let p = path.trim().replace('/', "\\");
+    let head = p.get(..MALE.len())?;
+    head.eq_ignore_ascii_case(MALE)
+        .then(|| format!("CHARS_SND\\FEMALE\\{}", &p[MALE.len()..]))
+}
+
+fn rom_has(vfs: &RezVfs, path: &str) -> bool {
+    crate::chars::archive_of(path)
+        .is_some_and(|(rez, entry)| matches!(vfs.entry(&rez, &entry), Ok(Some(_))))
 }
 
 /// Play time of a PCM wave file in ms (`data` bytes / byte rate of the `fmt ` chunk), `None` when the bytes are not
@@ -465,6 +522,34 @@ mod tests {
         assert!(rows(VoiceFamily::Default) > 0 && rows(VoiceFamily::Second) > 0);
         assert_eq!(t.fall_of(VoiceFamily::Second), Some(fw));
         assert_eq!(t.fall_of(VoiceFamily::Default), Some(f));
+    }
+
+    /// DSV-596 / DSV-152: a path under the male voice folder has a female folder twin; nothing else does.
+    #[test]
+    fn male_voice_paths_have_a_female_folder_fallback() {
+        assert_eq!(
+            female_folder_fallback("CHARS_SND\\MALE\\Hurtfalling_Female.wav").as_deref(),
+            Some("CHARS_SND\\FEMALE\\Hurtfalling_Female.wav")
+        );
+        assert_eq!(
+            female_folder_fallback("chars_snd/male/x/Y.wav").as_deref(),
+            Some("CHARS_SND\\FEMALE\\x\\Y.wav")
+        );
+        assert_eq!(female_folder_fallback("CHARS_SND\\FEMALE\\a.wav"), None);
+        assert_eq!(female_folder_fallback("CHARS_SND\\MALEX\\a.wav"), None);
+        assert_eq!(female_folder_fallback("GUNS_SND\\MALE\\a.wav"), None);
+        assert_eq!(female_folder_fallback("CHARS_SND\\MALE"), None);
+        assert_eq!(female_folder_fallback(""), None);
+    }
+
+    /// ROM-gated: both fall rows resolve to files the archives hold.
+    #[test]
+    fn rom_both_fall_voices_exist() {
+        let rom = dc_rez::dc_rom::rom_or_skip!();
+        let vfs = RezVfs::new(&rom);
+        let t = EventSoundTables::from_vfs(&vfs).expect("tables");
+        assert!(rom_has(&vfs, t.fall_w.as_ref().expect("fall w")));
+        assert!(rom_has(&vfs, t.fall.as_ref().expect("fall")));
     }
 
     #[test]

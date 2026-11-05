@@ -1165,6 +1165,45 @@ pub fn weapon_drop_blob(weapon: u16, rounds: u16) -> BitWriter {
     w
 }
 
+/// The pickup kind of a co-op AI pack (DSV-591): a kind without fields, so the client keeps the record's fields and
+/// draws the object by its model block only (no weapon row is looked up).
+// SPEC: GAME_MESSAGES_2009_S2C.md §8.2 row 0x17 (fields only for kinds 2, 3, 5, 6)
+// DISASM: cshell+0x2824ff (only kind 6 looks a weapon row up; every kind keeps record +0x30..+0x48)
+// OBSERVED: capture 20261025_065016_tdm6 c5 / c6 (the reference stack's kind-0 pickups were accepted by the real
+// client; REFERENCE)
+// DC-DEFAULT: DSV-591 (proposed)
+pub const PICKUP_KIND_PACK: u32 = 0;
+
+/// The type-0x17 blob of an AI pack: `[0x17][0][0][1][""][0]` (51 bits).
+// SPEC: GAME_MESSAGES_2009_S2C.md §8.2 row 0x17
+// DC-DEFAULT: DSV-591 (proposed) the fall flag of a dropped weapon ([`DROP_BLOB_FLAGS`])
+pub fn pack_drop_blob() -> BitWriter {
+    let mut w = BitWriter::new();
+    w.write_u8(BLOB_PICKUP);
+    for f in DROP_BLOB_FLAGS {
+        w.write_bit(f);
+    }
+    w.write_u8(0);
+    w.write_u32(PICKUP_KIND_PACK);
+    w
+}
+
+/// The pack model's tracker: its first animation (a prop model has no weapon animation 1).
+// DC-DEFAULT: DSV-591 (proposed)
+pub const PACK_DROP_ANIM: u16 = 0;
+
+/// The create of an AI pack: the dropped weapon's form ([`weapon_drop_create`]) with the kind-0 blob and the
+/// model's first animation; `s.weapon` and `s.rounds` are not sent.
+// DC-DEFAULT: DSV-591 (proposed)
+pub fn pack_drop_create(s: &DropSpec) -> ModelRecord {
+    let mut r = weapon_drop_create(s);
+    r.blob = Some(pack_drop_blob());
+    if let Some(t) = r.anim.as_mut().and_then(|a| a.first_mut()) {
+        t.anim = PACK_DROP_ANIM;
+    }
+    r
+}
+
 /// What the create of a dropped weapon needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropSpec {
@@ -1268,6 +1307,18 @@ mod tests {
 
     /// DSV-93: the dropped weapon's blob is `[0x17][0][0][1][""][6][weapon][rounds]` (83 bits) and its create uses
     /// the case's field set (`cf` 0x053b) with the drop's flag words and tracker, read back field by field.
+    #[test]
+    fn pack_blob_is_kind_0_without_fields() {
+        let b = pack_drop_blob();
+        assert_eq!(b.bit_len(), 8 + 3 + 8 + 32);
+        let mut r = b.reader();
+        assert_eq!(r.read_u8(), BLOB_PICKUP);
+        assert_eq!([r.read_bit(), r.read_bit(), r.read_bit()], DROP_BLOB_FLAGS);
+        assert_eq!(r.read_u8(), 0, "no FX name");
+        assert_eq!(r.read_u32(), PICKUP_KIND_PACK);
+        assert!(r.at_end());
+    }
+
     #[test]
     fn weapon_drop_create_has_the_kind_6_blob() {
         let b = weapon_drop_blob(145, 120);

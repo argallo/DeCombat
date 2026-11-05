@@ -22,11 +22,14 @@ pub mod charinfo;
 pub mod chatdrop;
 pub mod clan;
 pub mod clanpage;
+pub mod colorbox;
+pub mod countrybox;
 pub mod create;
 pub mod cursor;
 pub mod diagbox;
 pub mod drawlist;
 pub mod dropdown;
+pub mod facebox;
 pub mod figure;
 pub mod frontfx;
 pub mod gm;
@@ -36,6 +39,8 @@ pub mod inbox;
 pub mod link;
 pub mod lobby;
 pub mod login;
+pub mod markbox;
+pub mod megabox;
 pub mod messenger;
 pub mod modbrowser;
 pub mod modcache;
@@ -614,6 +619,11 @@ pub trait Screen {
     }
     /// A wheel turn the screen takes itself (lists it scrolls on its own); true = taken.
     fn wheel(&mut self, _p: [f32; 2], _notches: i32, _ctx: &mut Ctx) -> bool {
+        false
+    }
+    /// use-items-emblem: a window of the screen is over its layout lists, so a press goes to the screen before a list's
+    /// scroll bar can take it.
+    fn over_lists(&self) -> bool {
         false
     }
     /// shop-model: the character model the screen shows ([`modelview`]); `None`: none.
@@ -1592,7 +1602,9 @@ impl Menu {
                 }
                 // a scrolling layout list's bar takes the press before the screen's rows and the controls
                 // EVIDENCE: cshell+0x2f07e0 (the list asks its bar first), cshell+0x2f1030
-                if self.screen.sheet_mut().list_press(p) {
+                // DC-DEFAULT: CLI-1884 (proposed) not while a window of the screen lies over the lists (a use window's
+                // slot over the storage list's bar)
+                if !self.screen.over_lists() && self.screen.sheet_mut().list_press(p) {
                     self.pressed = None;
                     return;
                 }

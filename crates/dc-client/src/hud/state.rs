@@ -320,6 +320,16 @@ pub struct HudState {
     pub observed: Option<(u8, u16)>,
     /// The last health / armour notes (type 0x18 subs 0x14 / 0x15) of each character object.
     pub vitals: BTreeMap<u16, [Option<u16>; 2]>,
+    /// Fire Team: each AI character's last health note (type 0x18 sub 0x24, CLI-1871).
+    pub npc_health: BTreeMap<u16, super::npcbar::NpcHealth>,
+    /// Fire Team: the AI health bars of this frame ([`super::npcbar::frame_bars`]).
+    pub npc_bars: Vec<super::npcbar::NpcBar>,
+    /// Fire Team: each player's points total from 0xd7 sub 1 (record +0x1f4), by engine client id.
+    pub coop_points: BTreeMap<u32, u32>,
+    /// Fire Team: the own points popup of the last 0xd7 sub 1 / 3 naming the own id (CLI-1872).
+    pub points_popup: Option<super::npcbar::PointsPopup>,
+    /// Fire Team: the own score shown, the drop-item notes and the kill run (CLI-1881..1883).
+    pub coop: super::coopscore::CoopScoreHud,
     pub mode_class: Option<u8>,
     pub roster: BTreeMap<u8, BoardRow>,
     pub feed: VecDeque<FeedLine>,
@@ -405,6 +415,9 @@ pub struct HudState {
     pub leave_box: Option<crate::loading::LeaveView>,
     /// The held weapon's aim_mark (`None`: not drawn).
     pub aim_mark: Option<crate::spread::AimMarkView>,
+    /// use-items-sweep: the reticle item in use at the match start: the mark's shape bits and its colour (alpha 0:
+    /// the weapon's colour; CLI-1878).
+    pub reticle: Option<(u16, [u8; 4])>,
     /// The held weapon hides the aim cross (CLI-616).
     pub aim_cross_hidden: bool,
     /// A round result came and the next round has not begun (0x46 until 0x44 / 0x45): no aim cross (CLI-1103).
@@ -1128,6 +1141,9 @@ impl HudState {
             ObjectNote::Vitals { obj, armour, value } => {
                 self.vitals.entry(obj).or_default()[usize::from(armour)] = Some(value);
             }
+            ObjectNote::NpcHealth { obj, percent } => {
+                super::npcbar::on_health(&mut self.npc_health, obj, percent, now);
+            }
             _ => {}
         }
     }
@@ -1278,6 +1294,13 @@ pub enum HudEvent {
     ClockStop(u32),
     /// 0xd7 sub 4.
     CoopClock { running: bool, secs: u32 },
+    /// 0xd7 sub 1 / 3 (`record`: sub 1).
+    CoopPoints {
+        pid: u32,
+        gained: u32,
+        total: u32,
+        record: bool,
+    },
     /// 0x3f.
     ResultScreen { flag: bool, value: u32 },
     /// 0x65 row.
@@ -1342,6 +1365,8 @@ impl HudState {
                 super::banners::on_kill(self, k, now);
             }
             HudEvent::KillRun { kills, head, combo } => {
+                // DC-DEFAULT: CLI-1882 (proposed) a server that sends 0xc8 orders the co-op kill banners itself
+                self.coop.server_runs = true;
                 super::banners::on_run(self, *kills, *head, *combo, now)
             }
             // EVIDENCE: cshell+0x9f750 (shown flag, class and show time on every local weapon change)
@@ -1427,6 +1452,12 @@ impl HudState {
             } => self.on_round_result(*round_secs, *win_team, *wins, now),
             HudEvent::ClockStop(secs) => self.on_round_close(*secs, now),
             HudEvent::CoopClock { running, secs } => self.on_coop_clock(*running, *secs, now),
+            HudEvent::CoopPoints {
+                pid,
+                gained,
+                total,
+                record,
+            } => super::npcbar::on_points(self, *pid, *gained, *total, *record, now),
             HudEvent::ResultScreen { flag, value } => self.on_result_screen(*flag, *value, now),
             HudEvent::Summary(row) => {
                 self.summary.insert(row.pid, *row);

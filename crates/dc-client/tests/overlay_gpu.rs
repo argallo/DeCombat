@@ -218,6 +218,7 @@ fn items() -> Vec<DrawItem> {
             colour: [0, 255, 0, 200],
         },
         DrawItem::AimMark(dc_client::spread::AimMarkView {
+            shape: dc_client::spread::mark::SHAPE_PLAIN,
             distance: 10.0,
             since_shot_s: None,
             colour: [255, 64, 64, 255],

@@ -419,9 +419,21 @@ impl Game {
             self.apply_damage(vpid, killer, dmg, dir, src, TODO_KILL_ZONE_BODY, now);
             hurt += 1;
         }
+        // DC-DEFAULT: DSV-604 (proposed) the AI in the radius take it too, credited to the breaker
+        let ai_hit = self.blast_ais(
+            &super::coop::AiBlast {
+                at: x.pos,
+                lifted,
+                radius: x.radius,
+                full: x.damage,
+                dtype,
+                by: killer,
+            },
+            now,
+        );
         let name = String::from_utf8_lossy(&x.name).into_owned();
         self.log(format!(
-            "explosion {name} at ({:.0}, {:.0}, {:.0}): {hurt} player(s) within {:.0}",
+            "explosion {name} at ({:.0}, {:.0}, {:.0}): {hurt} player(s), {ai_hit} AI within {:.0}",
             x.pos[0], x.pos[1], x.pos[2], x.radius
         ));
         self.blast_breakables(

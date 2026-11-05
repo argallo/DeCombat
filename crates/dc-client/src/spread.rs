@@ -173,6 +173,32 @@ pub mod mark {
     // OBSERVED: xhair2-frozen rest_1.png (core pixels (1, 252, 1) over the world)
     // DC-DEFAULT: CLI-65 (proposed) opaque green
     pub const COLOUR: [u8; 4] = [0, 255, 0, 255];
+    /// use-items-sweep: the mark's shape bits: the left, right, top and bottom arms, four diagonal arms, the centre
+    /// pixel and a ring.
+    // EVIDENCE: cshell+0x845f0 (bit 1 left, 2 right, 4 top, 8 bottom arm; 0x10 / 0x40 / 0x80 / 0x20 an arm at a
+    // quarter, three quarters, five quarters and seven quarters of the angle constant; 0x100 a 1 x 1 quad at the
+    // centre; 0x200 a 32-segment ring turned by a sixteenth of it a step: the constant is pi)
+    pub const LEFT: u16 = 1;
+    pub const RIGHT: u16 = 2;
+    pub const TOP: u16 = 4;
+    pub const BOTTOM: u16 = 8;
+    pub const DIAGONALS: u16 = 0x10 | 0x20 | 0x40 | 0x80;
+    pub const DOT: u16 = 0x100;
+    pub const RING: u16 = 0x200;
+    /// The plain mark (no reticle item).
+    pub const SHAPE_PLAIN: u16 = LEFT | RIGHT | TOP | BOTTOM;
+    /// The shapes of a reticle item's `ShapeType` 1..4 (index 0: the plain mark).
+    // EVIDENCE: cshell+0x857e0 (the mark's shape list: 0xf, 0x10f, 0x10b, 0x1f0, 0x300), cshell+0x851f0 (shape 1..4 ->
+    // its entry, else the first)
+    pub const SHAPES: [u16; 5] = [SHAPE_PLAIN, 0x10f, 0x10b, 0x1f0, 0x300];
+
+    /// The shape of `ShapeType` `n`.
+    pub fn shape_of(n: i32) -> u16 {
+        match n {
+            1..=4 => SHAPES[n as usize],
+            _ => SHAPE_PLAIN,
+        }
+    }
 }
 
 /// The spread and recoil numbers of one weapon.
@@ -774,6 +800,7 @@ impl SpreadState {
             .map(|t| ((now_ms - t) / 1000.0) as f32)
             .filter(|s| (0.0..mark::FIRING_S).contains(s));
         Some(AimMarkView {
+            shape: mark::SHAPE_PLAIN,
             distance: cone_units(row, m, self.value()),
             since_shot_s: since,
             colour: mark::COLOUR,
@@ -829,6 +856,75 @@ pub struct AimMarkView {
     pub colour: [u8; 4],
     /// The row's `MinPerturb`: the distance at rest, for a drawn crosshair without recoil (CLI-1633).
     pub rest: f32,
+    /// use-items-sweep: the shape bits ([`mark::SHAPES`]; the plain mark without a reticle item, CLI-1878).
+    pub shape: u16,
+}
+
+/// use-items-sweep: the target pixels `[x0, y0, x1, y1]` (exclusive ends) the mark of `v` covers: the arms of its shape
+/// ([`aim_mark_rects`]), the centre pixel, the diagonal arms and the ring.
+// EVIDENCE: cshell+0x845f0 (the centre quad at (cx - 1.5, cy - 1.5), 1 x 1; a diagonal arm: the two ends of a
+// horizontal arm, from the centre outward, turned by its angle and drawn as a 1-pixel line; the ring: a start point at
+// the arms' inner end turned by pi / 16 per segment)
+// DC-DEFAULT: CLI-1878 (proposed) a line is walked one pixel per step of its longer axis from the pixel the arms cross;
+// the ring's radius is the arms' inner end
+pub fn aim_mark_fills(width: u32, height: u32, v: &AimMarkView) -> Vec<[i32; 4]> {
+    let mut out = Vec::new();
+    let bits = [mark::LEFT, mark::RIGHT, mark::TOP, mark::BOTTOM];
+    for (b, r) in bits.iter().zip(aim_mark_rects(width, height, v)) {
+        if v.shape & b != 0 {
+            let (x0, x1) = covered(r[0], r[2]);
+            let (y0, y1) = covered(r[1], r[3]);
+            out.push([x0, y0, x1, y1]);
+        }
+    }
+    let (cx, cy) = ((width / 2) as i32 - 1, (height / 2) as i32 - 1);
+    let s = width as f32 / mark::VIRTUAL_WIDTH;
+    let arms = aim_mark_rects(width, height, v);
+    // the right arm's ends relative to the pixel the arms cross
+    let inner = arms[1][0] + 0.5 - cx as f32;
+    let len = arms[1][2];
+    let line = |a: [f32; 2], b: [f32; 2], out: &mut Vec<[i32; 4]>| {
+        let n = (b[0] - a[0])
+            .abs()
+            .max((b[1] - a[1]).abs())
+            .round()
+            .max(1.0) as i32;
+        let mut last = None;
+        for k in 0..=n {
+            let t = k as f32 / n as f32;
+            let x = cx + (a[0] + (b[0] - a[0]) * t).round() as i32;
+            let y = cy + (a[1] + (b[1] - a[1]) * t).round() as i32;
+            if last != Some((x, y)) {
+                out.push([x, y, x + 1, y + 1]);
+                last = Some((x, y));
+            }
+        }
+    };
+    if v.shape & mark::DIAGONALS != 0 {
+        for (bit, q) in [(0x10u16, 0.25f32), (0x40, 0.75), (0x80, 1.25), (0x20, 1.75)] {
+            if v.shape & bit != 0 {
+                let (sn, cs) = (std::f32::consts::PI * q).sin_cos();
+                let at = |r: f32| [r * cs, r * sn];
+                line(at(inner), at(inner + len - 1.0), &mut out);
+            }
+        }
+    }
+    if v.shape & mark::RING != 0 {
+        let r = inner.max(s);
+        let step = std::f32::consts::PI / 16.0;
+        for k in 0..32 {
+            let (a, b) = (k as f32 * step, (k + 1) as f32 * step);
+            line(
+                [r * a.cos(), r * a.sin()],
+                [r * b.cos(), r * b.sin()],
+                &mut out,
+            );
+        }
+    }
+    if v.shape & mark::DOT != 0 {
+        out.push([cx, cy, cx + 1, cy + 1]);
+    }
+    out
 }
 
 /// The four arms in target pixels `(x, y, w, h)` in the 2009 client's 2D coordinates (a pixel `i` is covered when
@@ -992,6 +1088,54 @@ mod tests {
         assert!((d.motion - 0.02).abs() < 1e-5, "{}", d.motion);
     }
 
+    /// use-items-sweep (CLI-1878): the reticle shapes' pixels.
+    #[test]
+    fn reticle_shapes_cover_their_arms_dot_diagonals_and_ring() {
+        let v = |shape: u16| AimMarkView {
+            shape,
+            distance: 10.0,
+            since_shot_s: None,
+            colour: mark::COLOUR,
+            rest: 10.0,
+        };
+        assert_eq!(
+            (mark::shape_of(0), mark::shape_of(2), mark::shape_of(9)),
+            (mark::SHAPE_PLAIN, 0x10b, mark::SHAPE_PLAIN)
+        );
+        // the plain mark: the four arms exactly as before
+        let plain = aim_mark_fills(1024, 768, &v(mark::SHAPE_PLAIN));
+        let arms: Vec<[i32; 4]> = aim_mark_rects(1024, 768, &v(mark::SHAPE_PLAIN))
+            .iter()
+            .map(|r| {
+                let (x0, x1) = covered(r[0], r[2]);
+                let (y0, y1) = covered(r[1], r[3]);
+                [x0, y0, x1, y1]
+            })
+            .collect();
+        assert_eq!(plain, arms);
+        let (cx, cy) = (511, 383);
+        let has = |f: &[[i32; 4]], x: i32, y: i32| {
+            f.iter()
+                .any(|r| r[0] <= x && x < r[2] && r[1] <= y && y < r[3])
+        };
+        // shape 2: no top arm, the centre pixel
+        let t = aim_mark_fills(1024, 768, &v(mark::shape_of(2)));
+        assert_eq!(t.len(), 4);
+        assert!(has(&t, cx, cy) && !has(&t, cx, cy - 13) && has(&t, cx, cy + 13));
+        // shape 3: the diagonals only, the first pixel at the arms' inner end along each
+        let x = aim_mark_fills(1024, 768, &v(mark::shape_of(3)));
+        assert!(!has(&x, cx + 12, cy) && has(&x, cx, cy));
+        let r = 12.0 / 2f32.sqrt();
+        for (sx, sy) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
+            let (px, py) = (cx + (sx * r).round() as i32, cy + (sy * r).round() as i32);
+            assert!(has(&x, px, py), "{sx} {sy}");
+        }
+        // shape 4: a ring through the arms' inner ends and the centre pixel
+        let ring = aim_mark_fills(1024, 768, &v(mark::shape_of(4)));
+        assert!(has(&ring, cx + 12, cy) && has(&ring, cx, cy - 12) && has(&ring, cx, cy));
+        assert!(!has(&ring, cx + 14, cy) && !has(&ring, cx + 6, cy));
+    }
+
     #[test]
     fn the_fall_waits_for_the_delay_counted_in_ticks_then_one_step_per_tick() {
         let (r, k) = (row(), rates());
@@ -1061,6 +1205,7 @@ mod tests {
         let (w, h) = (1680u32, 1050u32);
         let s = w as f32 / mark::VIRTUAL_WIDTH;
         let v = AimMarkView {
+            shape: mark::SHAPE_PLAIN,
             distance: 5.0,
             since_shot_s: None,
             colour: mark::COLOUR,
@@ -1088,6 +1233,7 @@ mod tests {
             w,
             h,
             &AimMarkView {
+                shape: mark::SHAPE_PLAIN,
                 distance: 15.0,
                 ..v
             },
@@ -1102,6 +1248,7 @@ mod tests {
             w,
             h,
             &AimMarkView {
+                shape: mark::SHAPE_PLAIN,
                 since_shot_s: Some(0.0),
                 ..v
             },
@@ -1112,6 +1259,7 @@ mod tests {
             w,
             h,
             &AimMarkView {
+                shape: mark::SHAPE_PLAIN,
                 since_shot_s: Some(mark::FIRING_S / 2.0),
                 ..v
             },

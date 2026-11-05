@@ -130,6 +130,7 @@ fn rom_coop_worlds_spawn_ai_from_their_spawners() {
             table_spawners
         };
         let mut cfg = ServerTuning::default();
+        let cap = cfg.game.coop.speed;
         cfg.game.coop.first_wave_ms = 200;
         cfg.game.coop.spawn_interval_ms = 50;
         cfg.game.coop.max_alive = 4;
@@ -209,6 +210,7 @@ fn rom_coop_worlds_spawn_ai_from_their_spawners() {
             .cloned()
             .collect();
         assert!(ais.len() >= 2, "AIs created: {}", ais.len());
+        let mut armed = 0;
         for a in &ais {
             let obj = a.obj.unwrap();
             let o = &client.seen.objects[&obj];
@@ -229,11 +231,26 @@ fn rom_coop_worlds_spawn_ai_from_their_spawners() {
                 "AI body {} shares the player rig",
                 short(&body)
             );
-            assert_eq!(
-                o.attached.first().map(|x| x.1),
-                Some(2),
-                "weapon at socket 2"
-            );
+            // DSV-589: a melee AI (the round world's infected) holds no weapon object; the others hold theirs at
+            // socket 2 and walk at `coop.speed` (DSV-588: their attribute rows are faster)
+            // DSV-590: an AI whose template's hand slot is empty (the mission world's placed live AI) holds nothing
+            if a.spec.melee.is_some() {
+                assert!(o.attached.is_empty(), "a melee AI holds no weapon object");
+                assert!(a.spec.speed < cap, "a melee AI walks slower than the cap");
+            } else if a.spec.unarmed {
+                assert!(
+                    o.attached.is_empty(),
+                    "an unarmed AI holds no weapon object"
+                );
+            } else {
+                assert_eq!(
+                    o.attached.first().map(|x| x.1),
+                    Some(2),
+                    "weapon at socket 2"
+                );
+                assert_eq!(a.spec.speed, cap, "an armed AI walks at coop.speed");
+                armed += 1;
+            }
             let mut r = o.blob.as_ref().unwrap().reader();
             r.read_u8();
             assert_eq!((r.read_bit(), r.read_bit()), (false, true));
@@ -249,6 +266,15 @@ fn rom_coop_worlds_spawn_ai_from_their_spawners() {
                     | dc_dserver::game::coop::AiState::Dead { .. }
             ));
         }
+        // the mission world's soldiers keep their guns (DSV-589 leaves an AI with a ranged brain armed)
+        let unarmed = ais.iter().filter(|a| a.spec.unarmed).count();
+        if c.mission && c.rounds.is_none() {
+            assert_eq!(
+                armed + unarmed,
+                ais.len(),
+                "a mission-world AI holds its weapon or none"
+            );
+        }
         println!(
             "  {} AI created by {} ms, bodies {:?}",
             ais.len(),
@@ -257,5 +283,53 @@ fn rom_coop_worlds_spawn_ai_from_their_spawners() {
                 .map(|a| short(&a.spec.look.assets.body[0]))
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+/// DSV-591: every brain row a co-op world's AI templates name has drop rows whose item words are packs we know
+/// (matched by hash), each row's chance in (0, 100] and the rows' sum at most 100; the three pack models resolve
+/// from the ROM with a texture each. Counts only; no ROM value is asserted beyond those bounds.
+#[test]
+fn rom_ai_brains_drop_known_packs_with_rom_models() {
+    use dc_dserver::game::packs::{pack_kind, pack_looks_from_rom, PackKind};
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let vfs = RezVfs::new(&rom);
+    let tables = AiTables::from_vfs(&vfs);
+    let mut kinds = std::collections::BTreeSet::new();
+    let mut brains = 0;
+    for (_key, w) in coop_worlds(&vfs) {
+        let world = load_from_rom(&rom, &w, NameForm::Argument, None).expect("co-op world");
+        for t in &world.coop.templates {
+            let Some(b) = t.brain.as_deref().and_then(|b| tables.brain_named(b)) else {
+                continue;
+            };
+            brains += 1;
+            assert!(
+                !b.drops.is_empty(),
+                "brain {} has drop rows",
+                short(&b.name)
+            );
+            let mut sum = 0.0;
+            for (word, chance) in &b.drops {
+                let k = pack_kind(word);
+                assert!(
+                    k.is_some(),
+                    "brain {}: an unknown item word",
+                    short(&b.name)
+                );
+                kinds.insert(k.unwrap());
+                assert!(*chance > 0.0 && *chance <= 100.0);
+                sum += chance;
+            }
+            assert!(sum <= 100.0, "brain {}: rows sum {sum}", short(&b.name));
+        }
+    }
+    assert!(brains > 0, "the templates name brain rows");
+    println!("brains named by templates: {brains}, pack kinds: {kinds:?}");
+    assert_eq!(kinds.len(), 4, "every pack kind is dropped by some brain");
+    let looks = pack_looks_from_rom(&vfs);
+    for k in [PackKind::Health, PackKind::Ammo, PackKind::HeavyAmmo] {
+        let l = looks.of(k).unwrap_or_else(|| panic!("{k:?} model"));
+        assert_eq!(l.textures.len(), 1, "{k:?} skin");
     }
 }

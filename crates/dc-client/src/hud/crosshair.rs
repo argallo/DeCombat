@@ -381,6 +381,7 @@ mod tests {
 
     fn view(distance: f32, since: Option<f32>) -> AimMarkView {
         AimMarkView {
+            shape: crate::spread::mark::SHAPE_PLAIN,
             distance,
             since_shot_s: since,
             colour: BLUE,

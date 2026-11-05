@@ -12,7 +12,7 @@
 // DC-DEFAULT: DSV-576..DSV-578 (proposed)
 
 use dc_bute::GameRoomData;
-use dc_dserver::game::coop::{AiState, STAGE_COMPLETE};
+use dc_dserver::game::coop::{AiState, STAGE_COMPLETE, STAGE_TIMEOUT};
 use dc_dserver::rom_tables::RomTables;
 use dc_dserver::session::{Output, Server, ServerTuning};
 use dc_dserver::synth_client::{SynthClient, SynthConfig};
@@ -139,6 +139,7 @@ fn play(rom: &std::path::Path, key: &str, w: &WorldInfo, goal: u32) -> Outcome {
     cfg.game.move_check = false;
     // the test holds the start: the AI do not hit the human
     cfg.game.coop.hit_chance = [0.0; 3];
+    cfg.game.coop.melee_hit = 0.0;
     cfg.game.fall.enabled = false;
     let trig = trig_field(rom, key, &w.announce, goal);
     let mut server = Server::with_tables(cfg, w.clone(), tables, 0);
@@ -321,4 +322,255 @@ fn rom_cabin_fever_runs_its_round_loop_to_each_difficultys_end() {
         assert_eq!(o.weapon_drops, want, "difficulty {goal}");
         assert_eq!(o.first_drop_round, (want > 0).then_some(11));
     }
+}
+
+/// One synthetic client of the two-player match, by its address.
+struct Peer2 {
+    addr: u32,
+    client: SynthClient,
+    up: SimChannel,
+    down: SimChannel,
+}
+
+fn step_all(server: &mut Server<u32>, peers: &mut [Peer2], now: u32) {
+    for p in peers.iter_mut() {
+        for d in p.client.poll(now) {
+            p.up.send(now, d);
+        }
+    }
+    for p in peers.iter_mut() {
+        for d in p.up.deliver(now) {
+            server.handle_datagram(now, p.addr, &d);
+        }
+    }
+    for o in server.poll(now) {
+        match o {
+            Output::Transmit { to, bytes } => {
+                if let Some(p) = peers.iter_mut().find(|p| p.addr == to) {
+                    p.down.send(now, bytes);
+                }
+            }
+            Output::Log(l) if std::env::var("ROUNDS_LOG").is_ok() => println!("{now}: {l}"),
+            _ => {}
+        }
+    }
+    for p in peers.iter_mut() {
+        for d in p.down.deliver(now) {
+            p.client.handle_datagram(now, &d);
+        }
+    }
+}
+
+/// A server on the round world for `room` (the line after `room `) with the humans `names` in the world and alive,
+/// the AI harmless; the time reached.
+fn two_up(
+    rom: &std::path::Path,
+    w: &WorldInfo,
+    room: &str,
+    names: &[&str],
+) -> (Server<u32>, Vec<Peer2>, u32) {
+    let (tables, _) = RomTables::load(rom);
+    let mut cfg = ServerTuning::default();
+    cfg.game.move_check = false;
+    cfg.game.coop.hit_chance = [0.0; 3];
+    cfg.game.coop.melee_hit = 0.0;
+    cfg.game.fall.enabled = false;
+    let mut server = Server::with_tables(cfg, w.clone(), tables, 0);
+    assert!(server.handle_line(0, &format!("room {room}")));
+    let mut peers: Vec<Peer2> = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        assert!(server.handle_line(0, &format!("user {} {} 99 0 120 {n}", 7 + i, 3 + i)));
+        let mut c = SynthConfig::named(n);
+        c.box_bounds = Some((w.extent_min, w.extent_max));
+        c.walk_step = 0.0;
+        c.mode_class_hint = Some(5);
+        peers.push(Peer2 {
+            addr: 1 + i as u32,
+            client: SynthClient::new(c),
+            up: SimChannel::new(3 + 2 * i as u64, Faults::clean(2)),
+            down: SimChannel::new(4 + 2 * i as u64, Faults::clean(2)),
+        });
+    }
+    let mut now = 0u32;
+    while now < 30_000 && peers.iter().any(|p| p.client.life_state() != 1) {
+        step_all(&mut server, &mut peers, now);
+        now += 10;
+    }
+    assert!(peers.iter().all(|p| p.client.life_state() == 1), "alive");
+    (server, peers, now)
+}
+
+fn pid_named(server: &Server<u32>, name: &str) -> u8 {
+    server
+        .game()
+        .players()
+        .values()
+        .find(|p| p.name8.starts_with(name.as_bytes()))
+        .map(|p| p.pid)
+        .expect("placed")
+}
+
+/// DSV-593 / DSV-594 on the ROM's round world, Hard (it crosses the first chapter): two humans; in round 1 Dave is
+/// set to 33 health and 9 + 20 in his gun: the round end's `healinpart` gives each of the two living half the row's
+/// round total, his reserve grows to a new kit's count beside the 9 in the clip; in round 2 Erin dies (her only
+/// life): the round end brings her back before round 3 starts; in round 10 Dave is set to 40 health: round 11 (a new
+/// chapter) starts with his health at the maximum.
+// OBSERVED: ROM CabinFever (its round loop, the GMS rows' `RecoverRoundTotalHP` and health-rate rows, read at run
+// time)
+// DC-DEFAULT: DSV-593, DSV-594 (proposed)
+#[test]
+fn rom_cabin_fever_recovers_between_rounds_and_chapters() {
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let Some((key, w)) = round_world(&rom) else {
+        println!("skipped: no co-op round world");
+        return;
+    };
+    let goal = 1u32;
+    let vfs = RezVfs::new(&rom);
+    let doc = dc_dserver::coop_rom::find_gms(&vfs, &key, &w.announce).expect("the GMS");
+    let row = dc_dserver::coop_rom::CoopPlan::from_gms(&doc, goal).difficulty;
+    let total = row.recover_hp.expect("the row's round total");
+    let trig = trig_field(&rom, &key, &w.announce, goal);
+    let (mut server, mut peers, mut now) = two_up(
+        &rom,
+        &w,
+        &format!("key={key} type=5 goal={goal} ff=0 time=36000{trig}"),
+        &["Dave", "Erin"],
+    );
+    let dave = pid_named(&server, "Dave");
+    let erin = pid_named(&server, "Erin");
+    let gun = |s: &Server<u32>| {
+        s.game().players()[&dave]
+            .weapons
+            .iter()
+            .find(|w| w.clip_size > 0 && !w.own_ammo)
+            .map(|w| (w.clip, w.stock, w.clip_size))
+            .expect("a gun")
+    };
+    // the new kit: a full clip and the stock cap
+    let (_, cap, clip_size) = gun(&server);
+    assert!(clip_size > 9, "a clip above 9");
+    let max = server.game().players()[&dave].health;
+    let mut step = 0;
+    let mut erin_back_by_round = None;
+    let cap_ms = 3600 * 1000;
+    while now < cap_ms {
+        step_all(&mut server, &mut peers, now);
+        now += 10;
+        if !now.is_multiple_of(250) {
+            continue;
+        }
+        let c = server.game().coop().expect("a co-op room").clone();
+        assert!(c.stage.is_none(), "the mission went on: {:?}", c.stage);
+        match step {
+            0 if c.round == 1 => {
+                server.harness_vitals(dave, 33.0, Some((9, 20)));
+                step = 1;
+            }
+            1 if c.recoveries == 1 => {
+                // DSV-593: two living share the total; the reserve to the kit's count, the clip kept
+                let share = (total / 2.0).floor();
+                let p = &server.game().players()[&dave];
+                assert_eq!(p.health, (33.0 + share).min(max), "the share");
+                assert_eq!(gun(&server).0, 9, "the clip untouched");
+                assert_eq!(gun(&server).1, cap + clip_size - 9, "a new kit's count");
+                assert_eq!(c.heals, 1);
+                step = 2;
+            }
+            2 if c.round == 2 => {
+                server.harness_kill_human(now, erin);
+                assert_eq!(server.game().coop_lives_of(erin), 0, "her only life");
+                step = 3;
+            }
+            3 if c.round >= 3 => {
+                erin_back_by_round = Some(c.round);
+                assert_eq!(
+                    server.game().players()[&erin].life,
+                    dc_dserver::game::Life::Alive,
+                    "Erin back at the round start"
+                );
+                step = 4;
+            }
+            4 if c.round == 10 => {
+                server.harness_vitals(dave, 40.0, None);
+                step = 5;
+            }
+            5 if c.round == 11 => {
+                assert_eq!(c.chapter_recoveries, 1, "the chapter's recovery");
+                assert_eq!(server.game().players()[&dave].health, max);
+                step = 6;
+            }
+            _ => {}
+        }
+        if step == 6 {
+            break;
+        }
+        let alive: Vec<usize> = c
+            .ais
+            .iter()
+            .filter(|a| a.state == AiState::Alive)
+            .map(|a| a.slot)
+            .collect();
+        for s in alive {
+            server.harness_kill_ai(now, s, dave);
+        }
+    }
+    assert_eq!(step, 6, "reached round 11 in {} s", now / 1000);
+    assert_eq!(erin_back_by_round, Some(3));
+    // Erin's client took the spawn set (alive again), and every message read
+    assert_eq!(peers[1].client.life_state(), 1);
+    for p in &peers {
+        assert!(
+            p.client.seen.errors.is_empty(),
+            "{:?}",
+            p.client.seen.errors
+        );
+    }
+    let c = server.game().coop().unwrap();
+    println!(
+        "recoveries {} (chapter {}), heals {} by round {} in {} s",
+        c.recoveries,
+        c.chapter_recoveries,
+        c.heals,
+        c.round,
+        now / 1000
+    );
+}
+
+/// DSV-595 / FT-15 on the round world: a room line without `time=` takes the difficulty row's `TimeLimit` as the
+/// mission timer; a room time of one minute running out ends the mission as timed out.
+#[test]
+fn rom_cabin_fever_mission_timer_ends_the_match() {
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let Some((key, w)) = round_world(&rom) else {
+        println!("skipped: no co-op round world");
+        return;
+    };
+    let vfs = RezVfs::new(&rom);
+    let doc = dc_dserver::coop_rom::find_gms(&vfs, &key, &w.announce).expect("the GMS");
+    let limit = dc_dserver::coop_rom::CoopPlan::from_gms(&doc, 0)
+        .difficulty
+        .time_limit_s
+        .expect("the row's time limit");
+    let trig = trig_field(&rom, &key, &w.announce, 0);
+    let (server, _, _) = two_up(
+        &rom,
+        &w,
+        &format!("key={key} type=5 goal=0 ff=0{trig}"),
+        &["Dave"],
+    );
+    assert_eq!(server.game().rules().round_secs, limit);
+    let (mut server, mut peers, mut now) = two_up(
+        &rom,
+        &w,
+        &format!("key={key} type=5 goal=0 ff=0 time=60{trig}"),
+        &["Dave"],
+    );
+    assert_eq!(server.game().rules().round_secs, 60);
+    while now < 120_000 && server.game().coop().unwrap().stage.is_none() {
+        step_all(&mut server, &mut peers, now);
+        now += 10;
+    }
+    assert_eq!(server.game().coop().unwrap().stage, Some(STAGE_TIMEOUT));
+    assert!(now >= 60_000, "not before the time ran out ({now} ms)");
 }

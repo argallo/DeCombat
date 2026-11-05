@@ -650,6 +650,9 @@ impl Game {
             v.health = health;
         }
         let lethal = health <= 0.0;
+        // DC-DEFAULT: DSV-596 (proposed) a fall's own voice (hurt or death) before the messages, as the reference stack
+        // sent the fall-hurt file before the 0x74 (DSV-152)
+        let voiced = self.plunge_voice(vpid, lethal, now);
         if lethal {
             self.kill_feed(vpid, killer, src.weapon, zone, now);
         }
@@ -680,7 +683,9 @@ impl Game {
         }
         // DC-DEFAULT: DSV-64 (proposed) the pain (and head-shot) sound of a damaging hit
         if to_health > 0.0 {
-            self.pain_sound(vpid, zone == gs::KILL_ZONE_HEAD, now);
+            if !voiced {
+                self.pain_sound(vpid, zone == gs::KILL_ZONE_HEAD, now);
+            }
             // DC-DEFAULT: DSV-127 (proposed) the hit reaction (on by default, project decision)
             if !lethal {
                 self.pose_on_hit(vpid, dir, now);
@@ -918,21 +923,30 @@ impl Game {
     // the record's later fields)
     // DC-DEFAULT: DC-C2S-13 (amended, staged DSV-105) window 4 s, first multi-kill form at level 2, cap 7
     fn chain_level(&mut self, killer: u8, now: Millis) -> u8 {
-        let window = self.cfg.multi_kill_window_ms;
         let min = self.cfg.multi_kill_min;
-        let Some(p) = self.players.get_mut(&killer) else {
+        let Some(level) = self.chain_step(killer, now) else {
             return TODO_KILL_KIND;
         };
-        let level = match p.kill_chain {
-            Some((t, l)) if since(now, t) <= window => l.saturating_add(1),
-            _ => 1,
-        };
-        p.kill_chain = Some((now, level));
         if u32::from(level) < min {
             TODO_KILL_KIND
         } else {
             level.min(KILL_LEVEL_MAX)
         }
+    }
+
+    /// One step of `killer`'s kill chain at `now`: the previous level + 1 when the previous kill came at most the
+    /// window earlier in the same life, else 1 (`None` for an unknown player). The raw level, neither limited by
+    /// `multi_kill_min` nor capped.
+    // DC-DEFAULT: DSV-105 (staged) the window and the chain; DSV-602 (proposed) shared by the co-op combo count
+    pub(super) fn chain_step(&mut self, killer: u8, now: Millis) -> Option<u8> {
+        let window = self.cfg.multi_kill_window_ms;
+        let p = self.players.get_mut(&killer)?;
+        let level = match p.kill_chain {
+            Some((t, l)) if since(now, t) <= window => l.saturating_add(1),
+            _ => 1,
+        };
+        p.kill_chain = Some((now, level));
+        Some(level)
     }
 
     /// The victim's death states.

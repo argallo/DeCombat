@@ -24,8 +24,12 @@ use dc_net_engine::time::{later, since};
 use dc_net_engine::Millis;
 
 mod nav;
+mod recovery;
+mod specials;
 use nav::{NavGoal, NavMove};
 pub use nav::{NavSlot, NavStats};
+pub use recovery::heal_share;
+pub use specials::{Cloud, DeathSpecial, Growth};
 
 /// Team of the humans and of the AI characters: the NPC bar is drawn only for entries of another team than the
 /// own (FIRETEAM §1.4 draw rule).
@@ -72,6 +76,14 @@ pub fn heal_in_part(
 // DC-DEFAULT: FT-S3 (proposed)
 pub const FALLBACK_CAPTION: &[u8] = b"AI";
 
+/// A dead AI's drop rows (item word, chance in percent), its position and its box (DSV-591).
+pub type AiDropRows = (Vec<(String, f32)>, [f32; 3], [f32; 3]);
+/// Reach of a melee AI whose brain row and weapon row give none, and the share of its reach it closes to before it
+/// stops (it strikes from there while the target stays within reach).
+// DC-DEFAULT: DSV-589 (proposed) 100 units (the ROM brains' common melee range), two thirds
+pub const MELEE_REACH_DEFAULT: f32 = 100.0;
+pub const MELEE_CLOSE: f32 = 2.0 / 3.0;
+
 /// Co-op rule values (`-coop key=value,...`). Every value is a DeCombat default.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoopTuning {
@@ -97,7 +109,8 @@ pub struct CoopTuning {
     /// A spawner within this distance of a living human is skipped.
     // DC-DEFAULT: FT-10 (proposed) 256 units
     pub spawn_clear: f32,
-    /// A dead AI lies still this long, then it is hidden (and its object reused, FT-R1).
+    /// A dead AI's corpse lies this long; then the corpse is removed and the AI's slot (its hidden objects) may be
+    /// reused (FT-R1, DSV-585).
     // DC-DEFAULT: FT-4 (proposed) 3000 ms
     pub corpse_ms: u32,
     /// Walk speed (units per second), approach stop distance, firing range and interval, hit chance per difficulty
@@ -109,9 +122,16 @@ pub struct CoopTuning {
     pub fire_ms: u32,
     pub hit_chance: [f32; 3],
     pub default_damage: f32,
+    /// Hit chance of a melee strike of an AI whose brain or weapon fights in melee only (DSV-589), every difficulty.
+    // DC-DEFAULT: DSV-589 (proposed) 1.0
+    pub melee_hit: f32,
     /// AI health without a ROM value.
     // DC-DEFAULT: FT-12 (proposed) template HitPoints, else the placed object's MaxHitPoints, else 100
     pub default_health: f32,
+    /// Where an AI's health maximum comes from: its kind's attribute row first (`rows`), or the placed object's
+    /// `MaxHitPoints` first (`world`).
+    // DC-DEFAULT: DSV-603 (proposed) rows
+    pub ai_health: AiHealthSource,
     /// AI step period.
     // DC-DEFAULT: FT-S5 (proposed) 50 ms
     pub step_ms: u32,
@@ -125,6 +145,17 @@ pub struct CoopTuning {
     /// The AI plan their way over the navigation grid and walk with their body (off: FT-S5's steering only).
     // DC-DEFAULT: FT-S11 (proposed) on
     pub nav: bool,
+    /// `healinpart` splits the difficulty row's `RecoverRoundTotalHP` among the living humans (off: each gets all).
+    // DC-DEFAULT: DSV-593 (proposed) on
+    pub heal_split: bool,
+    /// The kinds' specials: the walk-then-rush (DSV-597) and what a dead AI's brain row sets off (DSV-598..DSV-600).
+    // DC-DEFAULT: DSV-597..DSV-600 (proposed) on
+    pub specials: bool,
+    /// A dead AI's dropped item goes off when a living human comes this close to it, once it has lain this long
+    /// (else at its fuse).
+    // DC-DEFAULT: DSV-599 (proposed) 1000 ms, 96 units
+    pub growth_arm_ms: u32,
+    pub growth_trigger: f32,
 }
 
 impl Default for CoopTuning {
@@ -145,17 +176,32 @@ impl Default for CoopTuning {
             fire_ms: 700,
             hit_chance: [0.2, 0.3, 0.4],
             default_damage: 8.0,
+            melee_hit: 1.0,
             default_health: 100.0,
+            ai_health: AiHealthSource::Rows,
             step_ms: 50,
             ray_hits: true,
             npc_rank: 0,
             nav: true,
+            heal_split: true,
+            specials: true,
+            growth_arm_ms: 1_000,
+            growth_trigger: 96.0,
         }
     }
 }
 
+/// Where an AI's health maximum comes from (`coop.ai_health`, DSV-603).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiHealthSource {
+    /// The `HitPoints` of the attribute row named as its body row, else the placed object's `MaxHitPoints`.
+    Rows,
+    /// The placed object's `MaxHitPoints` (every ROM AI: the same value), else the attribute row's.
+    World,
+}
+
 /// The `-coop` keys.
-pub const COOP_KEYS: [&str; 13] = [
+pub const COOP_KEYS: [&str; 19] = [
     "max_alive",
     "lives",
     "waves",
@@ -167,8 +213,14 @@ pub const COOP_KEYS: [&str; 13] = [
     "fire_ms",
     "hit_chance",
     "default_damage",
+    "melee_hit",
     "ray_hits",
     "nav",
+    "heal_split",
+    "specials",
+    "growth_arm_ms",
+    "growth_trigger",
+    "ai_health",
 ];
 
 impl CoopTuning {
@@ -197,6 +249,7 @@ impl CoopTuning {
             "fire_ms" => self.fire_ms = int()?.max(50),
             "hit_chance" => self.hit_chance = [num()?.min(1.0); 3],
             "default_damage" => self.default_damage = num()?,
+            "melee_hit" => self.melee_hit = num()?.min(1.0),
             "ray_hits" => {
                 self.ray_hits = match v {
                     "on" => true,
@@ -208,6 +261,29 @@ impl CoopTuning {
                 self.nav = match v {
                     "on" => true,
                     "off" => false,
+                    _ => return Err(bad()),
+                }
+            }
+            "heal_split" => {
+                self.heal_split = match v {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(bad()),
+                }
+            }
+            "specials" => {
+                self.specials = match v {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(bad()),
+                }
+            }
+            "growth_arm_ms" => self.growth_arm_ms = int()?,
+            "growth_trigger" => self.growth_trigger = num()?,
+            "ai_health" => {
+                self.ai_health = match v {
+                    "rows" => AiHealthSource::Rows,
+                    "world" => AiHealthSource::World,
                     _ => return Err(bad()),
                 }
             }
@@ -226,7 +302,8 @@ impl CoopTuning {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiState {
     Alive,
-    /// Killed at `at`; the body lies still until the corpse time is over.
+    /// Killed at `at`: its objects are hidden at once and a corpse lies in its place (DSV-585); the slot is kept
+    /// until the corpse time is over.
     Dead {
         at: Millis,
     },
@@ -245,6 +322,37 @@ pub struct AiSpec {
     pub max_health: f32,
     pub caption: Vec<u8>,
     pub kind: u8,
+    /// Walk speed in units per second (DSV-588).
+    pub speed: f32,
+    /// The reach of an AI that fights in melee only (DSV-589); `None`: it shoots within `shot_range`.
+    pub melee: Option<f32>,
+    /// The held weapon's `AniType` (the upper-body family a melee AI is posed with, DSV-589).
+    pub ani: Option<u8>,
+    /// Its template's hand slot is empty: it holds nothing and does not attack (DSV-590).
+    pub unarmed: bool,
+    /// A melee AI walks at `walk` until a human comes within `rush`, then at `speed` (DSV-597); `None`: always at
+    /// `speed`.
+    pub walk: Option<f32>,
+    pub rush: Option<f32>,
+    /// What its death sets off (DSV-598..DSV-600).
+    pub death: DeathSpecial,
+    /// The hit nodes of its own body row's skeleton when it wears another row's body (DSV-601): a hit's factor is
+    /// its own row's for the hit's location.
+    pub own_nodes: Option<Vec<chars::HitNode>>,
+    /// The weapon table's gear row its own body row names (DSV-604): the damage types a blast cannot hurt it with.
+    pub gear: Option<u16>,
+}
+
+/// A blast as the AI take it ([`Game::blast_ais`]): its point, the line-of-sight ray's start, its radius, the damage at
+/// its centre with every scale applied, its damage type and the player it is credited to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::game) struct AiBlast {
+    pub at: [f32; 3],
+    pub lifted: [f32; 3],
+    pub radius: f32,
+    pub full: f32,
+    pub dtype: u8,
+    pub by: Option<u8>,
 }
 
 /// One AI character slot (the objects stay for the match).
@@ -275,6 +383,10 @@ pub struct AiChar {
     pub template: Option<Vec<u8>>,
     pub target: Option<u8>,
     next_fire: Millis,
+    /// The last melee strike (its play-once clip runs from here, DSV-589).
+    struck_at: Option<Millis>,
+    /// It saw a human within its rush distance and runs from then on (DSV-597).
+    pub rushing: bool,
     waypoint: Option<[f32; 3]>,
     repath_at: Millis,
     /// Shots fired and hits scored on humans (tests, logs).
@@ -283,8 +395,11 @@ pub struct AiChar {
 }
 
 impl AiChar {
+    /// The AI's own objects stand in the world (and are streamed): only while it lives; a dead AI's body is its
+    /// corpse object (DSV-585).
+    // DC-DEFAULT: DSV-585 (proposed)
     pub fn visible(&self) -> bool {
-        matches!(self.state, AiState::Alive | AiState::Dead { .. })
+        self.state == AiState::Alive
     }
 
     /// Half extents of the AI's box (the body's stand box, else the default player box).
@@ -389,12 +504,46 @@ pub struct Coop {
     /// The round the world's round counter reached last (0: none yet), and the `healinpart` statements run.
     pub round: u32,
     pub heals: u32,
+    /// A round world's cleared round still owes its recovery (DSV-593): `healinpart` or, without one, the next
+    /// round's start pays it.
+    pub recovery_owed: bool,
+    /// The last rounds of the easier difficulties (a chapter ends there, DSV-594), and the recoveries made.
+    pub chapter_ends: Vec<u32>,
+    pub recoveries: u32,
+    pub chapter_recoveries: u32,
     /// What the statements showed (DSV-579..DSV-583): the music trigger playing (its index in the world's list),
     /// the characters hidden by `hidecharacter`, and counts for logs and tests.
     pub show: super::coop_show::Shown,
+    /// Dead AIs' dropped items waiting for a human (DSV-599) and their clouds (DSV-600).
+    pub growths: Vec<Growth>,
+    pub clouds: Vec<Cloud>,
+    /// Death specials set off (tests, logs): blasts, dropped items, clouds.
+    pub death_blasts: u32,
+    pub death_throws: u32,
+    pub death_clouds: u32,
 }
 
 /// The account key of a player for the per-account co-op counters (the account id, else the client id).
+/// The upper-body clip of a melee AI and the ms into it: the strike clip of its weapon's family while the last strike
+/// plays, else the family's aim clip of its motion (the player's stand / walk clip is the rifle pose); `None` for a
+/// shooting AI (its upper body stays on the player's clips) or a rig without that family.
+// SPEC: FIRETEAM_2009.md §1.8 (trackers travel in the object stream as for players)
+// DC-DEFAULT: DSV-589 (proposed); DSV-125 (proposed) the families by `AniType`
+fn ai_melee_upper(a: &AiChar, now: Millis) -> Option<(crate::anims::ClipRef, u32)> {
+    a.spec.melee?;
+    let table = &a.spec.look.anims.table;
+    let strike = a.struck_at.and_then(|at| {
+        let c = table.action_clip(a.spec.ani, crate::anims::Act::Fire, a.motion)?;
+        let t = since(now, at);
+        (t < c.1).then_some((c, t))
+    });
+    strike.or_else(|| {
+        table
+            .aim_clip(a.spec.ani, a.motion)
+            .map(|c| (c, since(now, a.motion_since)))
+    })
+}
+
 fn key_of(uid: Option<u32>, pid: u8) -> u32 {
     uid.unwrap_or(0x8000_0000 | u32::from(pid))
 }
@@ -486,7 +635,16 @@ impl Coop {
             round_world: false,
             round: 0,
             heals: 0,
+            recovery_owed: false,
+            chapter_ends: Vec::new(),
+            recoveries: 0,
+            chapter_recoveries: 0,
             show: Default::default(),
+            growths: Vec::new(),
+            clouds: Vec::new(),
+            death_blasts: 0,
+            death_throws: 0,
+            death_clouds: 0,
         }
     }
 
@@ -575,7 +733,7 @@ impl Game {
     // DC-DEFAULT: FT-12 (proposed) the room goal selects `[Object<goal>]`
     pub(super) fn coop_setup(&mut self) {
         let goal = self.rules.goal.min(2);
-        let (plan, tables, note) = match self.vfs.as_ref() {
+        let (plan, tables, note, chapter_ends) = match self.vfs.as_ref() {
             Some(v) => {
                 let key = self.room.mode_key().to_string();
                 let doc = coop_rom::find_gms(v, &key, &self.world_announce);
@@ -587,10 +745,22 @@ impl Game {
                     .as_ref()
                     .map(|d| CoopPlan::from_gms(d, goal))
                     .unwrap_or_default();
-                (plan, AiTables::from_vfs(v), note)
+                // DC-DEFAULT: DSV-594 (proposed) a chapter ends at the last round of each easier difficulty
+                let chapters = doc
+                    .as_ref()
+                    .map(|d| recovery::chapter_ends(d, goal))
+                    .unwrap_or_default();
+                (plan, AiTables::from_vfs(v), note, chapters)
             }
-            None => (CoopPlan::default(), AiTables::default(), "no ROM".into()),
+            None => (
+                CoopPlan::default(),
+                AiTables::default(),
+                "no ROM".into(),
+                Vec::new(),
+            ),
         };
+        // DC-DEFAULT: DSV-595 (proposed) the difficulty row's `TimeLimit` when the room line gives no time
+        self.coop_mission_clock(&plan);
         let mut c = Coop::new(plan, goal, tables, &self.cfg.coop);
         // DC-DEFAULT: DSV-571 (proposed) a mission world runs its own trigger network: no wave plan
         // (a world whose GMS has spawn tables keeps its waves: its statements count the rounds, DSV-571)
@@ -602,6 +772,9 @@ impl Game {
         // rounds follow the world's round counter
         c.round_world = !c.mission && !c.plan.rounds.is_empty() && self.coop_world.rounds.is_some();
         c.network = c.mission || c.round_world;
+        if c.round_world {
+            c.chapter_ends = chapter_ends;
+        }
         let line = format!(
             "co-op room: difficulty {goal} ({note}), {} wave(s){}, {} spawner(s), {} AI template(s), {} AI node(s), {} AI body row(s)",
             c.waves_total(),
@@ -788,11 +961,13 @@ impl Game {
     }
 
     /// Resolves what an AI of `template` (an AI character object of the world, by name) spawns as: its body row
-    /// when that row shares the player rig, else the first such row, else the default player character; its
-    /// right-hand weapon, else the first default-loadout weapon; its health maximum x the difficulty's rate of the
-    /// wave; the caption (boss: the GMS boss name) and the kind.
-    // DC-DEFAULT: FT-S2 (proposed) body fallback; FT-S3 (proposed) caption; FT-12 (proposed) health; FT-14 / FT-K1
-    // (proposed) boss kind 2
+    /// when that row shares the player rig, else the first such row the world's templates name, else the first
+    /// such row, else the default player character; its right-hand weapon (a template whose slot is empty holds
+    /// none; a name the weapon table lacks, or no template, gets the first default-loadout weapon); its health
+    /// maximum x the difficulty's rate of the wave; the caption (boss: the GMS boss name) and the kind; its speed
+    /// (DSV-588) and whether it fights in melee (DSV-589).
+    // DC-DEFAULT: FT-S2 (proposed) body fallback, DSV-590 (proposed) the world's rows first and the empty hand slot;
+    // FT-S3 (proposed) caption; FT-12 (proposed) health; FT-14 / FT-K1 (proposed) boss kind 2
     fn ai_spec(&mut self, template: Option<&[u8]>) -> Option<AiSpec> {
         let key = template
             .map(|t| String::from_utf8_lossy(t).to_ascii_uppercase())
@@ -804,39 +979,61 @@ impl Game {
         let player = self.player_rig();
         let mut assets = None;
         let mut row_name = None;
+        let mut worn: Option<String> = None;
         if let (Some(player), Some(c)) = (player.as_ref(), self.coop.as_ref()) {
             let rows: Vec<AiBodyRow> = c.tables.bodies.values().cloned().collect();
             let wanted = t.as_ref().and_then(|t| t.body_row.clone());
-            let order = rows
+            let named =
+                |r: &AiBodyRow, w: Option<&str>| w.is_some_and(|w| r.name.eq_ignore_ascii_case(w));
+            let world_rows: Vec<&AiBodyRow> = rows
                 .iter()
                 .filter(|r| {
-                    wanted
-                        .as_deref()
-                        .is_some_and(|w| r.name.eq_ignore_ascii_case(w))
+                    self.coop_world
+                        .templates
+                        .iter()
+                        .any(|t| named(r, t.body_row.as_deref()))
                 })
+                .collect();
+            let order = rows
+                .iter()
+                .filter(|r| named(r, wanted.as_deref()))
+                .chain(world_rows)
                 .chain(rows.iter());
             for r in order {
                 if let Some(a) = self.ai_row_look(r, player) {
                     assets = Some(a);
                     row_name = Some(r.ai_name.clone().unwrap_or_default());
+                    worn = Some(r.name.clone());
                     break;
                 }
             }
         }
-        let weapon = t
-            .as_ref()
-            .and_then(|t| t.right_hand.as_deref())
-            .and_then(|n| self.weapon_named(n))
-            .or_else(|| self.loadout_weapons(None).first().map(|w| w.1));
+        let weapon = match t.as_ref().map(|t| t.right_hand.as_deref()) {
+            Some(None) => None,
+            Some(Some(n)) => self
+                .weapon_named(n)
+                .or_else(|| self.loadout_weapons(None).first().map(|w| w.1)),
+            None => self.loadout_weapons(None).first().map(|w| w.1),
+        };
+        let weapon = weapon.map(|w| (w, self.tables.weapons.ammo_of(w).unwrap_or(0)));
+        let (speed, melee) = self.ai_kind(t.as_ref(), weapon);
+        let (walk, rush) = self.ai_rush(t.as_ref(), speed, melee.is_some());
+        let death = self.ai_death_special(t.as_ref());
+        let own_nodes = self.ai_own_nodes(t.as_ref(), worn.as_deref());
+        // a melee AI's hand is not attached: the ROM's hand rows draw it with a transparent style only (DSV-589)
+        let held = weapon.filter(|_| melee.is_none()).map(|w| w.0);
         let look = match assets {
             Some(a) => CharacterLook {
                 anims: AnimSet::from_rig(&a.rig),
-                weapon: weapon.and_then(|w| self.weapon_look(w)),
+                weapon: held.and_then(|w| self.weapon_look(w)),
                 assets: a,
             },
             None => match self.character_for(None) {
                 Ok(Some(mut c)) => {
-                    c.weapon = weapon.and_then(|w| self.weapon_look(w)).or(c.weapon);
+                    c.weapon = match melee {
+                        Some(_) => None,
+                        None => held.and_then(|w| self.weapon_look(w)).or(c.weapon),
+                    };
                     c
                 }
                 _ => {
@@ -860,22 +1057,94 @@ impl Game {
             _ => None,
         }
         .unwrap_or_else(|| FALLBACK_CAPTION.to_vec());
-        let max_health = t
+        let max_health = self.ai_health_max(t.as_ref());
+        let gear = t
             .as_ref()
-            .and_then(|t| t.max_health)
-            .unwrap_or(self.cfg.coop.default_health);
+            .and_then(|t| t.body_row.as_deref())
+            .zip(self.coop.as_ref())
+            .and_then(|(n, c)| c.tables.body_named(n)?.gear);
         let spec = AiSpec {
             key: key.clone(),
-            weapon: weapon.map(|w| (w, self.tables.weapons.ammo_of(w).unwrap_or(0))),
+            weapon,
             look,
             max_health,
             caption,
             kind: if boss { NPC_KIND_BOSS } else { NPC_KIND_NORMAL },
+            speed,
+            melee,
+            ani: weapon.and_then(|w| self.tables.weapons.weapons.get(&w.0)?.ani_type),
+            unarmed: t.as_ref().is_some_and(|t| t.right_hand.is_none()),
+            walk,
+            rush,
+            death,
+            own_nodes,
+            gear,
         };
         if let Some(c) = self.coop.as_mut() {
             c.specs.insert(key, Some(spec.clone()));
         }
         Some(spec)
+    }
+
+    /// The health maximum of an AI of template `t` before the round's rate (DSV-603): with `coop.ai_health=rows` the
+    /// `HitPoints` of the attribute row named as its body row (the kind's own value), else the placed object's
+    /// `MaxHitPoints`; with `world` the other way round; else `coop.default_health`.
+    // OBSERVED: ROM co-op worlds (every AI character writes the same `MaxHitPoints` and `MaxArmor`, and empty
+    // attribute-override texts; 2026-11-05 scratch run); ROM table key AIBUTES.TXT [AttributeTemplate<n>] HitPoints
+    // DC-DEFAULT: DSV-603 (proposed; refines FT-12) the row first
+    fn ai_health_max(&self, t: Option<&crate::world::AiTemplate>) -> f32 {
+        let row = t
+            .and_then(|t| t.body_row.as_deref())
+            .zip(self.coop.as_ref())
+            .and_then(|(n, c)| c.tables.attributes_named(n)?.hit_points);
+        let placed = t.and_then(|t| t.max_health);
+        match self.cfg.coop.ai_health {
+            AiHealthSource::Rows => row.or(placed),
+            AiHealthSource::World => placed.or(row),
+        }
+        .unwrap_or(self.cfg.coop.default_health)
+    }
+
+    /// The speed and the melee reach of an AI of template `t` holding `weapon` (weapon, ammunition).
+    ///
+    /// Speed (DSV-588): the template's own run speed, else the run speed of the attribute row named as its body
+    /// row, at most `coop.speed` (a faster row, the soldiers' one, walks at `coop.speed` as before).
+    /// Melee (DSV-589): an AI whose brain row attacks in melee only, or whose weapon's ammunition does melee or hands
+    /// damage, strikes within its reach: the brain's melee range, else the weapon row's `Range`, else
+    /// [`MELEE_REACH_DEFAULT`].
+    // DC-DEFAULT: DSV-588 (proposed), DSV-589 (proposed)
+    fn ai_kind(
+        &self,
+        t: Option<&crate::world::AiTemplate>,
+        weapon: Option<(u16, u16)>,
+    ) -> (f32, Option<f32>) {
+        let cap = self.cfg.coop.speed;
+        let tables = self.coop.as_ref().map(|c| &c.tables);
+        let row_speed = t
+            .and_then(|t| t.body_row.as_deref())
+            .zip(tables)
+            .and_then(|(n, tb)| tb.attributes_named(n)?.run_speed);
+        let speed = t
+            .and_then(|t| t.run_speed)
+            .or(row_speed)
+            .map_or(cap, |s| s.min(cap));
+        let brain = t
+            .and_then(|t| t.brain.as_deref())
+            .zip(tables)
+            .and_then(|(n, tb)| tb.brain_named(n));
+        // EVIDENCE: cshell+0x27f320 (the melee and hands damage types, `destruct::MELEE_DAMAGE_TYPES`)
+        let melee_weapon = weapon
+            .and_then(|(w, am)| self.tables.weapons.damage_type(w, am))
+            .is_some_and(|d| super::destruct::MELEE_DAMAGE_TYPES.contains(&d));
+        let melee = (brain.is_some_and(|b| b.melee_only()) || melee_weapon).then(|| {
+            brain
+                .and_then(|b| b.melee_max)
+                .filter(|r| *r > 0.0)
+                .or_else(|| weapon.and_then(|(w, _)| self.tables.weapons.range(w)))
+                .filter(|r| *r > 0.0)
+                .unwrap_or(MELEE_REACH_DEFAULT)
+        });
+        (speed, melee)
     }
 
     // ------------------------------------------------------------------------------------------- waves
@@ -999,7 +1268,7 @@ impl Game {
                 }
                 Effect::Lives(n) => self.coop_add_lives(n),
                 Effect::Round(n) => self.coop_round_counted(n, now),
-                Effect::HealInPart => self.coop_heal_in_part(),
+                Effect::HealInPart => self.coop_heal_in_part(now),
                 Effect::Complete => self.coop_finish(now, STAGE_COMPLETE),
                 Effect::Freeze(f) => {
                     if let Some(c) = self.coop.as_mut() {
@@ -1097,11 +1366,16 @@ impl Game {
         let idx = n as usize - 1;
         let busy = c.phase == WavePhase::Spawning;
         let fits = idx < c.waves.len();
-        if fits && !busy && c.stage.is_none() {
+        let starts = fits && !busy && c.stage.is_none();
+        if starts {
             c.wave = idx;
             c.phase = WavePhase::Next { at: now };
         }
         let total = c.waves.len();
+        // DC-DEFAULT: DSV-594 (proposed) a new chapter starts with the full recovery; DSV-593 (proposed) a round end
+        // without `healinpart` pays its recovery at the next round's start
+        let chapter = starts && c.chapter_ends.contains(&(n - 1));
+        let owed = starts && c.recovery_owed;
         self.log(format!(
             "co-op: the world counts round {n} of {total}{}",
             if !fits {
@@ -1112,25 +1386,35 @@ impl Game {
                 ""
             }
         ));
+        if chapter || owed {
+            self.coop_recover(now, chapter);
+        }
     }
 
-    /// `healinpart`: every living human recovers the difficulty row's round health (`RecoverRoundTotalHP`, 100 when
-    /// absent): health first up to its maximum, the rest as armour up to the armour's maximum; the new values go out
-    /// as player status.
-    // DC-DEFAULT: DSV-578 (proposed)
-    fn coop_heal_in_part(&mut self) {
-        let Some(c) = self.coop.as_mut() else {
-            return;
-        };
-        c.heals += 1;
-        let pool = c.plan.difficulty.recover_hp.unwrap_or(RECOVER_HP_DEFAULT);
-        let max_health = self.cfg.max_health;
+    /// `healinpart`: the living humans share the difficulty row's round health (`RecoverRoundTotalHP`, 100 when
+    /// absent; DSV-593: split evenly, whole points): health first up to its maximum, the rest as armour up to the
+    /// armour's maximum; the new values go out as player status. A round world's owed recovery follows (DSV-593).
+    // DC-DEFAULT: DSV-578 (proposed), amended by DSV-593 (proposed) the split
+    fn coop_heal_in_part(&mut self, now: Millis) {
         let pids: Vec<u8> = self
             .players
             .values()
             .filter(|p| p.introduced && p.life == Life::Alive)
             .map(|p| p.pid)
             .collect();
+        let split = self.cfg.coop.heal_split;
+        let Some(c) = self.coop.as_mut() else {
+            return;
+        };
+        c.heals += 1;
+        let total = c.plan.difficulty.recover_hp.unwrap_or(RECOVER_HP_DEFAULT);
+        let pool = if split {
+            heal_share(total, pids.len())
+        } else {
+            total
+        };
+        let owed = c.round_world && c.recovery_owed;
+        let max_health = self.cfg.max_health;
         for pid in pids {
             let max_armor = self.armour_of(pid).max;
             let Some(p) = self.players.get_mut(&pid) else {
@@ -1142,7 +1426,12 @@ impl Game {
             self.send(pid, gs::player_status(gs::STATUS_HEALTH, health));
             self.send(pid, gs::player_status(gs::STATUS_ARMOR, armor));
         }
-        self.log(format!("co-op: the living humans recover {pool} points"));
+        self.log(format!(
+            "co-op: the living humans recover {pool} points each ({total} in all)"
+        ));
+        if owed {
+            self.coop_recover(now, false);
+        }
     }
 
     /// The goal list (0xc9 sub 1): the goals the statements added, with the difficulty row's texts and their
@@ -1462,6 +1751,8 @@ impl Game {
             template: want.clone(),
             target: None,
             next_fire: now.wrapping_add(fire_ms),
+            struck_at: None,
+            rushing: false,
             waypoint: None,
             repath_at: now,
             shots: 0,
@@ -1521,7 +1812,7 @@ impl Game {
                     if !due || c.alive() >= cap {
                         break;
                     }
-                    // a pool slot must be free (a corpse keeps its slot until it is hidden)
+                    // a pool slot must be free (a dead AI keeps its slot for the corpse time)
                     let pool = self.cfg.coop.max_alive as usize;
                     let free =
                         c.ais.len() < pool || c.ais.iter().any(|a| a.state == AiState::Hidden);
@@ -1561,6 +1852,8 @@ impl Game {
                         if let Some(c) = self.coop.as_mut() {
                             c.waves_cleared += 1;
                             c.phase = WavePhase::Idle;
+                            // DC-DEFAULT: DSV-593 (proposed) the cleared round owes its recovery
+                            c.recovery_owed = true;
                         }
                         self.out.push(GameOut::WorldScript(cmd));
                         self.log(format!(
@@ -1674,8 +1967,8 @@ impl Game {
 
     // ------------------------------------------------------------------------------------------- AI steps
 
-    /// One AI step: corpses are hidden after the corpse time; living AIs pick the nearest living human, walk to it
-    /// and shoot it.
+    /// One AI step: a dead AI's slot is freed after the corpse time; living AIs pick the nearest living human, walk
+    /// to it and shoot it.
     pub(super) fn tick_coop(&mut self, now: Millis) {
         if self.coop.is_none() || !matches!(self.phase, RoundPhase::Running { .. }) {
             return;
@@ -1706,6 +1999,8 @@ impl Game {
             self.ai_step(slot, dt, now);
         }
         self.ai_nav_end();
+        // DC-DEFAULT: DSV-599 / DSV-600 (proposed) the dead AIs' dropped items and clouds
+        self.coop_tick_hazards(now);
         if matches!(self.phase, RoundPhase::Running { .. }) {
             self.coop_check_failure(now);
         }
@@ -1753,12 +2048,12 @@ impl Game {
         match a.state {
             AiState::Hidden => return,
             AiState::Dead { at } => {
+                // the objects were hidden at the death (DSV-585): the slot is free for the next spawn
                 if since(now, at) >= self.cfg.coop.corpse_ms {
                     if let Some(c) = self.coop.as_mut() {
                         c.ais[slot].state = AiState::Hidden;
                         c.events.push(format!("hide slot {slot}"));
                     }
-                    self.out.push(GameOut::AiHide { slot });
                 }
                 return;
             }
@@ -1792,18 +2087,29 @@ impl Game {
             let dist = len3(sub3(tpos, a.pos));
             let teye = add3(tpos, [0.0, self.dims_of(tpid)[1] * 0.8, 0.0]);
             let los = self.sight_clear(eye, teye);
+            // DC-DEFAULT: DSV-597 (proposed) a human in sight within the rush distance starts the rush, for good
+            new.rushing = a.rushing || a.spec.rush.is_some_and(|r| los && dist <= r);
             if let Some(d) = norm2(sub3(tpos, a.pos)) {
                 new.yaw = d[0].atan2(d[2]);
             }
-            if los && dist <= cfg.shot_range && !later(a.next_fire, now) {
+            // DC-DEFAULT: DSV-589 (proposed) a melee AI strikes within its reach and closes to `MELEE_CLOSE` of it;
+            // DSV-590 (proposed) an AI whose template's hand slot is empty does not attack
+            let (reach, hold) = match a.spec.melee {
+                Some(r) => (r, r * MELEE_CLOSE),
+                None => (cfg.shot_range, cfg.hold_range),
+            };
+            if !a.spec.unarmed && los && dist <= reach && !later(a.next_fire, now) {
                 new.next_fire = now.wrapping_add(cfg.fire_ms);
+                if a.spec.melee.is_some() {
+                    new.struck_at = Some(now);
+                }
                 self.ai_fire(slot, &a, tpid, eye, teye, dist, now);
                 if let Some(c) = self.coop.as_ref() {
                     new.shots = c.ais[slot].shots;
                     new.hits = c.ais[slot].hits;
                 }
             }
-            if !(los && dist <= cfg.hold_range) {
+            if !(los && dist <= hold) {
                 // DC-DEFAULT: FT-S11 (proposed) the way over the navigation grid when it has one; else (FT-S5) the
                 // human in sight, else a waypoint toward it
                 let goal = match self.ai_nav_waypoint(&a, tpos, now) {
@@ -1827,7 +2133,9 @@ impl Game {
                         Some(new.waypoint.unwrap_or(tpos))
                     }
                 };
-                let stride = cfg.speed * dt;
+                // DC-DEFAULT: DSV-588 (proposed) the AI's own speed; DSV-597 (proposed) its walk before the rush
+                let speed = specials::step_speed(&a.spec, new.rushing);
+                let stride = speed * dt;
                 let walked = match goal {
                     Some(goal) => self.ai_nav_walk(&a, goal, stride, now),
                     None => NavMove::Blocked,
@@ -1835,7 +2143,7 @@ impl Game {
                 match walked {
                     // FT-S11: the body over the navigation world
                     NavMove::Moved(p, d) => {
-                        new.vel = scale3(d, cfg.speed);
+                        new.vel = scale3(d, speed);
                         new.pos = p;
                         new.yaw = d[0].atan2(d[2]);
                         moving = true;
@@ -1856,7 +2164,7 @@ impl Game {
                             {
                                 let mut p = add3(a.pos, scale3(d, stride));
                                 p = self.follow_floor(p, dims[1]);
-                                new.vel = scale3(d, cfg.speed);
+                                new.vel = scale3(d, speed);
                                 new.pos = p;
                                 new.yaw = d[0].atan2(d[2]);
                                 moving = true;
@@ -1923,7 +2231,11 @@ impl Game {
         let cfg = self.cfg.coop.clone();
         let goal = self.coop.as_ref().map_or(0, |c| c.goal.min(2) as usize);
         let falloff = 1.0 - 0.5 * (dist / cfg.shot_range.max(1.0)).clamp(0.0, 1.0);
-        let chance = cfg.hit_chance[goal] * falloff;
+        // DC-DEFAULT: DSV-589 (proposed) a melee strike hits by `melee_hit`, at any distance within the reach
+        let chance = match a.spec.melee {
+            Some(_) => cfg.melee_hit,
+            None => cfg.hit_chance[goal] * falloff,
+        };
         let roll = (self.next_rand() % 10_000) as f32 / 10_000.0;
         let hit = roll < chance;
         let d = sub3(teye, eye);
@@ -2117,23 +2429,25 @@ impl Game {
         } else {
             (self.cfg.body_factor, super::TODO_KILL_ZONE_BODY)
         };
-        if by_ray || !self.cfg.zone_factors_from_rom {
-            return geometry;
+        let node = (!by_ray && self.cfg.zone_factors_from_rom)
+            .then(|| self.ai_hit_node(a, f, geometry.1))
+            .flatten();
+        let worn = node.unwrap_or(geometry);
+        // DC-DEFAULT: DSV-601 (proposed) a substitute body's hit counts by the AI's own skeleton row
+        match a.spec.own_nodes.as_deref() {
+            Some(own) => (specials::own_factor(own, worn, node.is_some()), worn.1),
+            None => worn,
         }
+    }
+
+    /// The factor and location of the skeleton node a client-reported hit named on the body the AI wears (a node
+    /// without a location keeps `zone`).
+    fn ai_hit_node(&self, a: &AiChar, f: &UpFire, zone: u8) -> Option<(f32, u8)> {
         let hit_obj = f.hit.and_then(|h| h.1);
         f.extra
             .filter(|x| x.obj.is_some() && x.obj == hit_obj)
             .and_then(|x| a.spec.look.assets.hit_nodes.get(x.kind as usize).copied())
-            .map_or(geometry, |n| {
-                (
-                    n.factor,
-                    if n.location == 0 {
-                        geometry.1
-                    } else {
-                        n.location
-                    },
-                )
-            })
+            .map(|n| (n.factor, if n.location == 0 { zone } else { n.location }))
     }
 
     /// Points of a hit by zone (head, body, arms, legs) and of a kill, x the difficulty's `ScoreFactor`.
@@ -2154,7 +2468,15 @@ impl Game {
         (c.plan.score.hit[i].unwrap_or(def) * f).round().max(0.0) as u32
     }
 
-    fn coop_kill_points(&self, boss: bool, head: bool) -> u32 {
+    /// The points of a killing blow: the kill (or boss death) and, for a head kill, its extra, all x the factor
+    /// (the ROM's); plus the lethal hit's own zone points and, when the kill came inside the player's kill chain
+    /// (`combo`, the 0xc8 combo above 1), the combo bonus x the factor.
+    // OBSERVED: ROM table keys GMS [CooperativeModeScoreTable] DamagePlusByEtcDeath / ...BossDeath / ...HeadShotDeath /
+    // DamagePlusByCombo and the difficulty row's ScoreFactor (the keys and the factor are the ROM's)
+    // DC-DEFAULT: DSV-605 (proposed; amends FT-13, DSV-602) USER-PROVIDED OBSERVATION 2026-11-05: a December 2009
+    // recording shows +33 and +42 per kill (24 + 9, 24 + 18); that the lethal hit also pays and that the bonus is paid
+    // by every kill of a chain (not once per chain) is our reading of it
+    fn coop_kill_points(&self, boss: bool, head: bool, zone: u8, combo: bool) -> u32 {
         let Some(c) = self.coop.as_ref() else {
             return 0;
         };
@@ -2170,16 +2492,37 @@ impl Game {
             0.0
         };
         let f = c.plan.difficulty.score_factor.unwrap_or(1.0);
-        ((base + extra) * f).round().max(0.0) as u32
+        let bonus = if combo {
+            (s.combo.unwrap_or(30.0) * f).round().max(0.0) as u32
+        } else {
+            0
+        };
+        let kill = ((base + extra) * f).round().max(0.0) as u32;
+        kill.saturating_add(self.coop_hit_points(zone))
+            .saturating_add(bonus)
     }
 
     /// Damage to an AI: its health, the bar of every client (0xa6 sub 0x24), the shooter's points (0xd7 sub 3 for
-    /// a hit, sub 1 with the record total for a kill), the kill credit; a dead AI lies still, then is hidden.
+    /// a hit, sub 1 with the record total for a kill), the kill credit; a dead AI is hidden and its corpse lies in its
+    /// place (DSV-585).
     // SPEC: FIRETEAM_2009.md §1.5 (sub 0x24), §2.2 rows 1 and 3 (points), §1.7 (no death message for an AI, no kill
     // feed in class 5)
     // DC-DEFAULT: FT-3 (proposed; per hit, no coalescing in slice 1); FT-13 (proposed); FT-R1 (proposed)
     fn ai_damage(&mut self, slot: usize, pid: u8, dmg: f32, zone: u8, now: Millis) {
-        let key = self.player_key(pid);
+        self.ai_hurt(slot, Some(pid), dmg, zone, now);
+    }
+
+    /// [`Game::ai_damage`] by a player (`by`) or by nothing (an AI's blast, a breakable no player broke): without a
+    /// player no points, no kill credit and no points message.
+    pub(in crate::game) fn ai_hurt(
+        &mut self,
+        slot: usize,
+        by: Option<u8>,
+        dmg: f32,
+        zone: u8,
+        now: Millis,
+    ) {
+        let key = by.map(|p| self.player_key(p));
         let Some(a) = self.coop.as_mut().and_then(|c| c.ais.get_mut(slot)) else {
             return;
         };
@@ -2198,26 +2541,59 @@ impl Game {
             a.vel = [0.0; 3];
             a.motion = Motion::Stand;
             a.motion_since = now;
+            // the death shown as a player's (DSV-44): the AI's objects leave the world at once (a body left standing
+            // is drawn and hit on the clients while the server takes no more damage on it: the owner's
+            // "unlimited health", 2026-11-04) and a corpse plays the body's death clip in its place
+            // DC-DEFAULT: DSV-585 (proposed; amends FT-4 and FT-S5's standing corpse)
+            let clip =
+                a.spec
+                    .look
+                    .anims
+                    .death_clip(zone == gs::KILL_ZONE_HEAD, [0.0, 0.0, 1.0], a.yaw);
+            let (pos, yaw) = (a.pos, a.yaw);
+            self.out.push(GameOut::AiDied {
+                slot,
+                pos,
+                yaw,
+                clip,
+            });
         }
         if let Some(o) = obj {
             self.broadcast(&gs::npc_health_note(o, frac));
         }
-        let gained = if lethal {
-            self.coop_kill_points(boss, zone == gs::KILL_ZONE_HEAD)
-        } else {
-            self.coop_hit_points(zone)
+        // the killer's place in its kill chain (DSV-105 / DSV-602): the combo count of the banner and the bonus
+        let combo = match (by, lethal) {
+            (Some(pid), true) => self.chain_step(pid, now),
+            _ => None,
+        };
+        let gained = match (key, lethal) {
+            (None, _) => 0,
+            (Some(_), true) => self.coop_kill_points(
+                boss,
+                zone == gs::KILL_ZONE_HEAD,
+                zone,
+                combo.is_some_and(|c| c > 1),
+            ),
+            (Some(_), false) => self.coop_hit_points(zone),
         };
         let total = {
             let Some(c) = self.coop.as_mut() else {
                 return;
             };
-            let t = c.points.entry(key).or_default();
-            *t = t.saturating_add(gained);
-            let total = *t;
+            let total = key.map_or(0, |k| {
+                let t = c.points.entry(k).or_default();
+                *t = t.saturating_add(gained);
+                *t
+            });
             if lethal {
                 c.ai_killed += 1;
-                *c.kills.entry(key).or_default() += 1;
-                c.events.push(format!("kill slot {slot} by client {pid}"));
+                if let Some(k) = key {
+                    *c.kills.entry(k).or_default() += 1;
+                }
+                c.events.push(match by {
+                    Some(pid) => format!("kill slot {slot} by client {pid}"),
+                    None => format!("kill slot {slot} by no player"),
+                });
             }
             total
         };
@@ -2232,6 +2608,14 @@ impl Game {
             if let Some(cmd) = death {
                 self.out.push(GameOut::WorldScript(cmd));
             }
+            // DC-DEFAULT: DSV-591 (proposed) the dead AI's brain row decides what falls at its body
+            self.coop_ai_drops(slot, now);
+            // DC-DEFAULT: DSV-598..DSV-600 (proposed) and what goes off there
+            self.coop_death_specials(slot, now);
+            let Some(pid) = by else {
+                self.log(format!("co-op: AI slot {slot} killed by no player"));
+                return;
+            };
             if let Some(u) = self.players.get(&pid).and_then(|p| p.uid) {
                 let s = self.stats.entry(u).or_default();
                 s.kills += 1;
@@ -2240,10 +2624,27 @@ impl Game {
                 }
             }
             self.broadcast(&gs::coop_points(u32::from(pid), obj, gained, total));
+            // the killer's own banner: its AI kill count, the head flag of the lethal hit, the combo count
+            // DC-DEFAULT: DSV-602 (proposed) 0xc8 per AI kill to the killer; the kill chain of DSV-105 (window 4 s)
+            let count = self
+                .coop
+                .as_ref()
+                .zip(key)
+                .map_or(0, |(c, k)| c.kills.get(&k).copied().unwrap_or(0));
+            if let Some(combo) = combo {
+                self.send(
+                    pid,
+                    gs::streak_banner(
+                        count.min(u32::from(u16::MAX)) as u16,
+                        zone == gs::KILL_ZONE_HEAD,
+                        u32::from(combo),
+                    ),
+                );
+            }
             self.log(format!(
                 "client {pid}: killed AI slot {slot} (+{gained}, {total} points)"
             ));
-        } else {
+        } else if let Some(pid) = by {
             self.broadcast(&gs::coop_points_note(
                 u32::from(pid),
                 gained.min(255) as u8,
@@ -2263,6 +2664,99 @@ impl Game {
         if let Some(h) = hp {
             self.ai_damage(slot, pid, h + 1.0, gs::KILL_ZONE_HEAD, now);
         }
+    }
+
+    /// A blast's damage to the living AI (DSV-604): every AI within the radius whose centre the trace world does not
+    /// hide (the line-of-sight rule of `-combat blast_los`) takes `full` x the falloff of DSV-39, less the share its
+    /// own body's gear row protects of the blast's damage type (a full share: nothing), through the AI damage path at
+    /// the body location, credited to `by` (a kill: 0xd7 sub 1 and the kill points as for a shot). Returns the AI hit.
+    // OBSERVED: ROM table key MODELBUTES.TXT [AIModel<n>] GearId, WEAPONS.TXT [Gear<n>] protection slots (the infected
+    // rows' gear covers their own death weapons' damage types in full, not the players' explosives'; 2026-11-05)
+    // DC-DEFAULT: DSV-604 (proposed; amends DSV-598's "other AI take nothing"); DSV-39 / DSV-92 the falloff and the line
+    // of sight
+    pub(in crate::game) fn blast_ais(&mut self, b: &AiBlast, now: Millis) -> usize {
+        let Some(c) = self.coop.as_ref() else {
+            return 0;
+        };
+        let pt = self.cfg.projectile;
+        let near: Vec<(usize, [f32; 3], Option<u16>)> = c
+            .ais
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.state == AiState::Alive)
+            .map(|(i, a)| (i, a.pos, a.spec.gear))
+            .collect();
+        let mut hit = 0;
+        for (slot, pos, gear) in near {
+            let d = len3(sub3(pos, b.at));
+            if !(d.is_finite() && d < b.radius) {
+                continue;
+            }
+            let guard = gear
+                .and_then(|g| self.tables.weapons.gear.get(&g))
+                .map_or(0.0, |r| r.share(b.dtype, super::TODO_KILL_ZONE_BODY));
+            if guard >= 1.0 {
+                continue;
+            }
+            if pt.blast_los && self.projectile_ray(b.lifted, pos).is_some() {
+                self.log(format!("blast: AI slot {slot} behind a wall"));
+                continue;
+            }
+            let dmg = b.full
+                * super::projectile::blast_factor(d, b.radius, pt.inner_fraction)
+                * (1.0 - guard);
+            if !(dmg.is_finite() && dmg > 0.0) {
+                continue;
+            }
+            if !matches!(self.phase, RoundPhase::Running { .. }) {
+                break;
+            }
+            self.log(format!(
+                "blast: AI slot {slot} takes {dmg:.1} at {d:.0} units (type {})",
+                b.dtype
+            ));
+            self.ai_hurt(slot, b.by, dmg, super::TODO_KILL_ZONE_BODY, now);
+            hit += 1;
+        }
+        hit
+    }
+
+    /// The drop rows of the brain row the template of the AI in `slot` names (DSV-591; empty: no brain, no row), its
+    /// position and its box.
+    pub(super) fn coop_ai_drop_rows(&self, slot: usize) -> Option<AiDropRows> {
+        let c = self.coop.as_ref()?;
+        let a = c.ais.get(slot)?;
+        let rows = a
+            .template
+            .as_deref()
+            .and_then(|t| self.coop_world.template(t))
+            .and_then(|t| t.brain.as_deref())
+            .and_then(|b| c.tables.brain_named(b))
+            .map(|b| b.drops.clone())
+            .unwrap_or_default();
+        Some((rows, a.pos, a.dims(self.cfg.player_dims)))
+    }
+
+    /// Spawns one AI of `template` at `pos` (unit tests of the AI's death).
+    #[cfg(test)]
+    pub(super) fn coop_spawn_test_ai(
+        &mut self,
+        template: &[u8],
+        pos: [f32; 3],
+        now: Millis,
+    ) -> bool {
+        let spot = SpawnSpot {
+            pos,
+            yaw: 0.0,
+            template: Some(template.to_vec()),
+        };
+        self.coop_spawn_ai(None, &spot, None, now)
+    }
+
+    /// The AI tables of the co-op state (unit tests with synthetic brain rows).
+    #[cfg(test)]
+    pub(super) fn coop_tables_mut(&mut self) -> Option<&mut AiTables> {
+        self.coop.as_mut().map(|c| &mut c.tables)
     }
 
     // ------------------------------------------------------------------------------------------- session view
@@ -2311,17 +2805,23 @@ impl Game {
             .iter()
             .filter(|a| a.visible())
             .filter_map(|a| {
+                let mut anim = a.spec.look.anims.trackers(
+                    a.motion,
+                    since(now, a.spawned_at),
+                    since(now, a.motion_since),
+                );
+                if let Some(((clip, len), t)) = ai_melee_upper(a, now) {
+                    anim[1].anim = clip;
+                    anim[1].len_ms = len;
+                    anim[1].time_ms = if len > 0 { t % len } else { 0 };
+                }
                 Some(StreamEntry {
                     obj: a.obj?,
                     pos: a.pos,
                     vel: a.vel,
                     rot: None,
                     yaw8: Some(a.yaw),
-                    anim: Some(a.spec.look.anims.trackers(
-                        a.motion,
-                        since(now, a.spawned_at),
-                        since(now, a.motion_since),
-                    )),
+                    anim: Some(anim),
                 })
             })
             .collect()
@@ -2373,6 +2873,22 @@ mod tests {
         assert!(!t.ray_hits);
         assert!(t.set("nope", "1").is_err());
         assert!(t.set("speed", "-1").is_err());
+        // DSV-589: one melee hit chance for every difficulty, at most 1
+        assert_eq!(t.melee_hit, 1.0);
+        t.set("coop.melee_hit", "3").unwrap();
+        assert_eq!(t.melee_hit, 1.0);
+        t.set("melee_hit", "0.25").unwrap();
+        assert_eq!(t.melee_hit, 0.25);
+        // DSV-597..DSV-601: the specials switch and the dropped items' numbers
+        assert!(t.specials);
+        t.set("specials", "off").unwrap();
+        t.set("growth_arm_ms", "500").unwrap();
+        t.set("coop.growth_trigger", "64").unwrap();
+        assert_eq!(
+            (t.specials, t.growth_arm_ms, t.growth_trigger),
+            (false, 500, 64.0)
+        );
+        assert!(t.set("specials", "1").is_err());
     }
 
     #[test]

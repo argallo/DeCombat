@@ -38,6 +38,7 @@ pub const SUB_CLAN_RECORD: i32 = 3;
 pub const SUB_PLAYER_NAME: i32 = 4;
 pub const SUB_PLAYER_RECORD: i32 = 5;
 pub const SUB_WEAPON_CHANGE: i32 = 12;
+pub const SUB_COUNTRY: i32 = 17;
 pub const SUB_MEGAPHONE: i32 = 22;
 
 /// What a use of a function item of kind `sub` opens.
@@ -52,9 +53,19 @@ pub enum UseAction {
     WeaponChange,
     /// use-windows: the record reset window (player 5, clan 3; CLI-1371).
     Record { clan: bool },
-    /// A window DeCombat does not build yet (clan mark 2, faces 6 / 7, colours 8 / 9 / 11, country 17, megaphone
-    /// 22).
-    NotBuilt(i32),
+    /// use-items: the country window (kind 17; CLI-1873).
+    Country,
+    /// use-items: the megaphone (kind 22; CLI-1874): an item not in use is used at once (the generic window) and its
+    /// ok answer opens the composer; an item in use opens the composer.
+    Megaphone,
+    /// use-items-sweep: the colour window (player name 8, clan name 9, reticle 11; CLI-1876).
+    Colour { kind: i32 },
+    /// use-items-emblem: the clan mark window (kind 2; CLI-1884).
+    Mark,
+    /// use-items-emblem: the face window (base character 6, gender 7; CLI-1885).
+    Face { kind: i32 },
+    /// A kind the 2009 manager opens no window for: the use shows nothing.
+    NoWindow(i32),
 }
 
 /// The window of kind `sub`.
@@ -63,7 +74,13 @@ pub enum UseAction {
 // 0x1876 first), cshell+0x242bc0 (the generic send: the unique id, an empty name, zeros, the change item number for
 // kind 12)
 // EVIDENCE: cshell+0x1db2c0 (the manager's windows: kinds 3 and 5 share the record window class cshell+0x2445b0)
-// DC-DEFAULT: CLI-1365 (proposed) the windows of kinds 2, 6..9, 11, 17 and 22 are not built: their use shows nothing
+// EVIDENCE: cshell+0x1db770 (kind 0x11 -> the country window +0x48 (class cshell+0x2a9350); kind 0x16 -> the generic
+// window +0x5c, or with the in-use flag the composer +0x60 (class cshell+0x2a7020))
+// EVIDENCE: cshell+0x1db2c0 (kinds 8, 9 and 11 share the colour window class cshell+0x246ba0)
+// EVIDENCE: cshell+0x1db2c0 (kind 2: the clan mark window class cshell+0x2aacc0, slot +0x14; kinds 6 and 7 share the
+// face window class cshell+0x246960)
+// DC-DEFAULT: CLI-1365 (amended by CLI-1873 / CLI-1874 / CLI-1876 / CLI-1884 / CLI-1885) every kind of the 2009
+// manager has its window; another kind shows nothing
 pub fn action_of(sub: i32) -> UseAction {
     match sub {
         SUB_CLAN_NAME => UseAction::Rename { clan: true },
@@ -71,8 +88,13 @@ pub fn action_of(sub: i32) -> UseAction {
         SUB_CLAN_RECORD => UseAction::Record { clan: true },
         SUB_PLAYER_RECORD => UseAction::Record { clan: false },
         SUB_WEAPON_CHANGE => UseAction::WeaponChange,
+        SUB_COUNTRY => UseAction::Country,
+        SUB_MEGAPHONE => UseAction::Megaphone,
+        8 | 9 | 11 => UseAction::Colour { kind: sub },
+        2 => UseAction::Mark,
+        6 | 7 => UseAction::Face { kind: sub },
         10 | 13..=16 | 18..=21 => UseAction::Direct,
-        k => UseAction::NotBuilt(k),
+        k => UseAction::NoWindow(k),
     }
 }
 
@@ -172,25 +194,25 @@ pub struct NameLayout {
 // EVIDENCE: cshell+0x243690 (Check, OK and Cancel sized 0x78 x 0x19 through their vfunc +0x144)
 pub const BUTTON_SIZE: [i32; 2] = [0x78, 0x19];
 
-/// DC-DEFAULT: CLI-1366 (proposed) without the ROM's layout section the window takes these places (the 2009 ROM's
-/// values); the texts are font 0xe size 0xe.
+/// DC-DEFAULT: CLI-1366 (proposed) our fallback when the ROM's layout section is missing: a 600 x 400 window on a
+/// simple grid of our own round numbers (the real places are read from the ROM first); the texts are font 0xe size 0xe.
 impl Default for NameLayout {
     fn default() -> Self {
         NameLayout {
-            window_at: [276, 255],
-            window_size: [478, 258],
-            edit_img_at: [100, 60],
-            check_at: [295, 58],
-            ok_at: [112, 207],
-            cancel_at: [230, 207],
-            title_at: [10, 7],
-            current_at: [21, 41],
-            input_at: [21, 60],
-            error_at: [216, 94],
-            error_width: 390,
-            warning_at: [21, 137],
-            warning_width: 390,
-            edit_at: [102, 62],
+            window_at: [212, 184],
+            window_size: [600, 400],
+            edit_img_at: [100, 100],
+            check_at: [300, 100],
+            ok_at: [200, 350],
+            cancel_at: [320, 350],
+            title_at: [10, 10],
+            current_at: [20, 50],
+            input_at: [20, 100],
+            error_at: [20, 200],
+            error_width: 560,
+            warning_at: [20, 250],
+            warning_width: 560,
+            edit_at: [102, 102],
             edit_size: [160, 40],
         }
     }
@@ -239,28 +261,17 @@ pub struct NameTexts {
 }
 
 impl NameTexts {
-    /// DC-DEFAULT: CLI-1366 (proposed) without the ROM's string section the ids of the 2009 ROM's section.
-    pub fn fallback(clan: bool) -> NameTexts {
-        if clan {
-            NameTexts {
-                errors: [6083, 6208, 6085, 6145, 6146],
-                title: 6073,
-                field_label: 6075,
-                warning: 6076,
-                current: 6080,
-                box_title: 6101,
-                box_text: 6077,
-            }
-        } else {
-            NameTexts {
-                errors: [6083, 6084, 6085, 6145, 6146],
-                title: 6079,
-                field_label: 6081,
-                warning: 6082,
-                current: 6074,
-                box_title: 6100,
-                box_text: 6086,
-            }
+    /// DC-DEFAULT: CLI-1366 (proposed) our fallback when the ROM's string section is missing: no text (id 0); the real
+    /// ids are read from the ROM first.
+    pub fn fallback(_clan: bool) -> NameTexts {
+        NameTexts {
+            errors: [0; 5],
+            title: 0,
+            field_label: 0,
+            warning: 0,
+            current: 0,
+            box_title: 0,
+            box_text: 0,
         }
     }
 
@@ -797,8 +808,17 @@ mod tests {
         assert_eq!(action_of(12), UseAction::WeaponChange);
         assert_eq!(action_of(3), UseAction::Record { clan: true });
         assert_eq!(action_of(5), UseAction::Record { clan: false });
-        for k in [2, 6, 7, 8, 9, 11, 17, 22] {
-            assert_eq!(action_of(k), UseAction::NotBuilt(k), "kind {k}");
+        assert_eq!(action_of(17), UseAction::Country);
+        assert_eq!(action_of(22), UseAction::Megaphone);
+        for k in [8, 9, 11] {
+            assert_eq!(action_of(k), UseAction::Colour { kind: k });
+        }
+        assert_eq!(action_of(2), UseAction::Mark);
+        for k in [6, 7] {
+            assert_eq!(action_of(k), UseAction::Face { kind: k });
+        }
+        for k in [0, 23, -1] {
+            assert_eq!(action_of(k), UseAction::NoWindow(k), "kind {k}");
         }
     }
 

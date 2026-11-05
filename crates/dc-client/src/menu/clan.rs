@@ -382,6 +382,12 @@ pub struct ClanMarks {
     /// Index -> texture path (`None`: category -1, no mark).
     pub emblems: Vec<Option<String>>,
     pub backgrounds: Vec<Option<String>>,
+    /// use-items-emblem: index -> the entry's category (-1 none, 0 not on a tab, 1..6 the tab), for the mark item
+    /// window's tabs.
+    // EVIDENCE: cshell+0x280a90 (per entry `<kind>Category<n>`: -1 an empty entry, 0 only in the look-up list, k >= 1
+    // in tab 0 (all) and tab k), cshell+0x27fb90 (a tab's list)
+    pub emblem_cats: Vec<i32>,
+    pub background_cats: Vec<i32>,
 }
 
 impl ClanMarks {
@@ -414,6 +420,7 @@ impl ClanMarks {
             let (e_end, b_end) = (last(&keys[1]), last(&keys[2]));
             let (e_dir, b_dir) = (get(&keys[3]), get(&keys[4]));
             let read = |list: &mut Vec<Option<String>>,
+                        cats: &mut Vec<i32>,
                         from: usize,
                         end: i64,
                         dir: &str,
@@ -427,13 +434,35 @@ impl ClanMarks {
                     let path = (category != "-1" && !tex.is_empty()).then(|| join(dir, &tex));
                     if list.len() <= i {
                         list.resize(i + 1, None);
+                        cats.resize(i + 1, -1);
                     }
+                    cats[i] = if path.is_some() {
+                        category.parse().unwrap_or(0)
+                    } else {
+                        -1
+                    };
                     list[i] = path;
                 }
                 end.max(from)
             };
-            e0 = read(&mut out.emblems, e0, e_end, &e_dir, &keys[5], &keys[6]);
-            b0 = read(&mut out.backgrounds, b0, b_end, &b_dir, &keys[7], &keys[8]);
+            e0 = read(
+                &mut out.emblems,
+                &mut out.emblem_cats,
+                e0,
+                e_end,
+                &e_dir,
+                &keys[5],
+                &keys[6],
+            );
+            b0 = read(
+                &mut out.backgrounds,
+                &mut out.background_cats,
+                b0,
+                b_end,
+                &b_dir,
+                &keys[7],
+                &keys[8],
+            );
         }
         out
     }
@@ -1527,6 +1556,7 @@ mod tests {
         let m = ClanMarks {
             emblems: vec![None, Some("e1".into()), None],
             backgrounds: vec![None, Some("b1".into())],
+            ..Default::default()
         };
         assert_eq!(m.textures(1, 1), Some(("e1", "b1")));
         assert_eq!(m.textures(0, 1), None);

@@ -1525,7 +1525,12 @@ impl<A: Ord + Clone + Display> Server<A> {
                 GameOut::ProjectileGone { key } => self.on_projectile_gone(key),
                 GameOut::AiCreate { slot } => self.on_ai_create(slot),
                 GameOut::AiShow { slot } => self.on_ai_show(slot),
-                GameOut::AiHide { slot } => self.on_ai_hide(slot),
+                GameOut::AiDied {
+                    slot,
+                    pos,
+                    yaw,
+                    clip,
+                } => self.on_ai_died(slot, pos, yaw, clip, now),
                 GameOut::AiLook { slot } => self.on_ai_look(slot),
                 GameOut::WorldScript(t) => {
                     if self.script_texts.len() < crate::doors::DELAYED_MAX {
@@ -2616,11 +2621,12 @@ impl<A: Ord + Clone + Display> Server<A> {
         }
     }
 
-    /// A dead AI is hidden at the park point; its objects stay (FT-R1).
+    /// The hidden flag words of an AI slot's character and weapon at the park point (a dead AI's objects stay for
+    /// the next spawn, FT-R1).
     // DC-DEFAULT: FT-R1 (proposed)
-    fn on_ai_hide(&mut self, slot: usize) {
+    fn ai_hidden_records(&mut self, slot: usize) -> Vec<BitWriter> {
         let Some((obj, wobj, _, _)) = self.ai_objects(slot) else {
-            return;
+            return Vec::new();
         };
         let pbox = self.pos_box();
         let park = self.vis.park_point();
@@ -2628,11 +2634,45 @@ impl<A: Ord + Clone + Display> Server<A> {
         if let Some(w) = wobj {
             recs.push(modelobj::weapon_hidden(w, park).write(&pbox));
         }
+        recs
+    }
+
+    /// An AI died: one object group to every client in the world hides its character and weapon at the park point
+    /// (FT-R1: the objects stay for the next spawn) and creates a corpse object wearing its body that plays the death
+    /// clip where it stood; the corpse is removed after the co-op corpse time. A body left standing until then is
+    /// drawn and hit on the clients while the server takes no damage on it (the owner's report, 2026-11-04).
+    // DC-DEFAULT: DSV-585 (proposed; the corpse in the DSV-44 / CLI-585 form of a player's death)
+    fn on_ai_died(&mut self, slot: usize, pos: [f32; 3], yaw: f32, clip: (u16, u32), now: Millis) {
+        let Some(look) = self.game.ai_chars().get(slot).map(|a| a.spec.look.clone()) else {
+            return;
+        };
+        let mut recs = self.ai_hidden_records(slot);
+        if recs.is_empty() {
+            return;
+        }
+        let pbox = self.pos_box();
+        let models = self.character_models(&look);
+        let corpse = self.free_object_id();
+        let dims = self.game.ai_dims(slot);
+        recs.push(
+            modelobj::corpse_create(
+                corpse,
+                models,
+                clip,
+                dims,
+                pos,
+                crate::stream::yaw_quat(yaw),
+            )
+            .write(&pbox),
+        );
         for v in self.world_viewers() {
             if let Some(g) = objects::obj_group(&recs) {
                 self.send(&v, g);
             }
         }
+        let ms = self.cfg.game.coop.corpse_ms;
+        self.corpses
+            .push((corpse, (ms > 0).then(|| now.wrapping_add(ms))));
     }
 
     /// A reused AI slot gets the body and the weapon model of its new spec.
@@ -2896,14 +2936,20 @@ impl<A: Ord + Clone + Display> Server<A> {
         let obj = self.free_object_id();
         self.drops.insert(d.key, obj);
         let model = self.weapon_model(&d.look);
-        let rec = modelobj::weapon_drop_create(&modelobj::DropSpec {
+        let spec = modelobj::DropSpec {
             obj,
             weapon: d.look.weapon,
             rounds: d.rounds,
             model,
             pos: d.pos,
             rot: crate::stream::yaw_quat(d.yaw),
-        })
+        };
+        // DC-DEFAULT: DSV-591 (proposed) an AI pack is a kind-0 pickup drawn by its model
+        let rec = if d.pickup_kind == modelobj::PICKUP_KIND_WEAPON {
+            modelobj::weapon_drop_create(&spec)
+        } else {
+            modelobj::pack_drop_create(&spec)
+        }
         .write(&self.pos_box());
         for v in self.world_viewers() {
             if let Some(g) = objects::obj_group(std::slice::from_ref(&rec)) {
@@ -4483,6 +4529,17 @@ impl<A: Ord + Clone + Display> Server<A> {
     pub fn harness_kill_ai(&mut self, now: Millis, slot: usize, pid: u8) {
         self.game.coop_kill_ai(slot, pid, now);
         self.apply_game(now);
+    }
+
+    /// Harness entry of the recovery tests: client `pid` dies at once (as in a kill volume).
+    pub fn harness_kill_human(&mut self, now: Millis, pid: u8) {
+        self.game.volume_death(pid, now);
+        self.apply_game(now);
+    }
+
+    /// Harness entry of the recovery tests: a player's health and his first weapon's clip and reserve on the server.
+    pub fn harness_vitals(&mut self, pid: u8, health: f32, gun: Option<(u32, u32)>) {
+        self.game.harness_vitals(pid, health, gun);
     }
 
     /// Harness entry of the mission tests: the bound breakable of this name is destroyed (as by shots of nobody).

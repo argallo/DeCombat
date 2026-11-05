@@ -472,6 +472,7 @@ pub fn simulated_mark(secs: f32, colour: [u8; 4]) -> AimMarkView {
         ((1.0 - (t - 1.0) / 1.5).max(0.0), None)
     };
     AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
         distance: REST + (TOP - REST) * f,
         since_shot_s: since,
         colour,

@@ -12,6 +12,7 @@
 // DC-DEFAULT: DSV-39 (proposed)
 
 use super::combat::DamageSource;
+use super::coop::AiBlast;
 use super::{
     finite3, len3, sub3, Game, GameOut, Life, ProjectileOut, RoundPhase, WeaponLook,
     THROW_FIRE_WINDOW_MS, TODO_DAMAGE_ZONE, TODO_KILL_ZONE_BODY,
@@ -324,6 +325,95 @@ impl Game {
         true
     }
 
+    /// A throw without a thrower's release (a dead AI's dropped items, DSV-599): the flight of `weapon` (its
+    /// ammunition `ammo`) from `from` with the velocity `vel`, gravity and fuse from its projectile row as a throw's,
+    /// owned by the object `owner_obj` of team `owner_team` and no client ([`gs::SHOT_CLIENT_NONE`]); the object goes
+    /// to every client as a thrown one. Returns the flight's key.
+    // DC-DEFAULT: DSV-39 (proposed) the flight; DSV-599 (proposed) the owner without a client
+    pub(super) fn server_throw(
+        &mut self,
+        owner_obj: u16,
+        owner_team: u8,
+        (weapon, ammo): (u16, u16),
+        from: [f32; 3],
+        vel: [f32; 3],
+        now: Millis,
+    ) -> u32 {
+        let pt = self.cfg.projectile;
+        let row = self
+            .tables
+            .weapons
+            .projectile_fx(weapon, ammo)
+            .and_then(|n| self.tables.projectiles.get(n))
+            .cloned();
+        let gravity = match &row {
+            Some(r) if r.gravity == Some(false) => 0.0,
+            Some(r) => r
+                .gravity_override
+                .filter(|g| g.is_finite() && *g < 0.0)
+                .unwrap_or(pt.gravity),
+            None => pt.gravity,
+        };
+        let fuse_ms = row
+            .as_ref()
+            .and_then(|r| r.lifetime_s)
+            .filter(|s| s.is_finite() && *s > 0.0 && *s < 600.0)
+            .map_or(pt.fuse_ms, |s| (s * 1000.0).round() as u32);
+        let scale = row.as_ref().and_then(|r| r.scale).unwrap_or([1.0; 3]);
+        let key = self.next_flight;
+        self.next_flight = self.next_flight.wrapping_add(1).max(1);
+        self.flights.push(Flight {
+            key,
+            owner: gs::SHOT_CLIENT_NONE,
+            owner_obj,
+            owner_team,
+            weapon,
+            ammo,
+            origin: from,
+            pos: from,
+            vel,
+            gravity,
+            detonate_at: now.wrapping_add(fuse_ms),
+            last: now,
+            resting: false,
+            impact: false,
+            burst: false,
+        });
+        let look = self.projectile_look(weapon, ammo);
+        let yaw = vel[0].atan2(vel[2]);
+        self.out.push(GameOut::Projectile(Box::new(ProjectileOut {
+            key,
+            weapon,
+            ammo,
+            look,
+            scale,
+            pos: from,
+            vel,
+            rot: crate::stream::yaw_quat(yaw),
+        })));
+        self.log(format!(
+            "AI drop {key} (weapon {weapon} ammo {ammo}), gravity {gravity:.0}, fuse {fuse_ms} ms"
+        ));
+        key
+    }
+
+    /// Sets the flight `key` to blow up in this tick (a dead AI's dropped item a human came near, DSV-599); `false`
+    /// when no such flight is in the air.
+    pub(super) fn burst_flight(&mut self, key: u32) -> bool {
+        match self.flights.iter_mut().find(|f| f.key == key) {
+            Some(f) => {
+                f.burst = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The position of the flight `key`, if it is in the air.
+    pub(super) fn flight_pos(&self, key: u32) -> Option<[f32; 3]> {
+        self.flights.iter().find(|f| f.key == key).map(|f| f.pos)
+    }
+
     /// After a throw's release: `GS_PLAYER_STATUS` kind 1 to the thrower with the throwable's remaining count (every
     /// round it still carries, clip and stock, after the throw's round was booked), as the reference stack answered the
     /// release. A 2-pack: 1.0 after the first throw, 0.0 after the second; a single grenade: 0.0.
@@ -528,6 +618,15 @@ impl Game {
             self.flame_burst(fl, prog, now);
             return;
         }
+        // DC-DEFAULT: DSV-599 (proposed) a dead AI's dropped item hurts by the difficulty's AI damage factor
+        let scale = self.coop_growth_scale(fl.key);
+        self.blast(fl, scale, now);
+    }
+
+    /// The blast of `fl` at its position (the effect record, the area damage x `scale` and the breakables), without
+    /// the object's removal: a flight's fuse, and a dead AI's death explosion (DSV-598), which has no object.
+    // DC-DEFAULT: DSV-39 (proposed), DSV-598 (proposed)
+    pub(super) fn blast(&mut self, fl: &Flight, scale: f32, now: Millis) {
         let pt = self.cfg.projectile;
         let area = self
             .tables
@@ -602,7 +701,8 @@ impl Game {
             let dmg = area.damage
                 * blast_factor(d, area.radius, pt.inner_fraction)
                 * pt.blast_damage_scale
-                * self.agent_damage_scale(fl.owner);
+                * self.agent_damage_scale(fl.owner)
+                * scale;
             if !(dmg.is_finite() && dmg > 0.0) {
                 continue;
             }
@@ -621,8 +721,21 @@ impl Game {
             self.apply_damage(vpid, killer, dmg, dir, src, TODO_KILL_ZONE_BODY, now);
             hit += 1;
         }
+        // DC-DEFAULT: DSV-604 (proposed) the AI in the radius take it too, credited to the thrower
+        let full = area.damage * pt.blast_damage_scale * self.agent_damage_scale(fl.owner) * scale;
+        let ai_hit = self.blast_ais(
+            &AiBlast {
+                at: fl.pos,
+                lifted,
+                radius: area.radius,
+                full,
+                dtype: src.dtype,
+                by: killer,
+            },
+            now,
+        );
         self.log(format!(
-            "throw {} blew up at ({:.0}, {:.0}, {:.0}): {hit} player(s) hit within {:.0}",
+            "throw {} blew up at ({:.0}, {:.0}, {:.0}): {hit} player(s), {ai_hit} AI hit within {:.0}",
             fl.key, fl.pos[0], fl.pos[1], fl.pos[2], area.radius
         ));
         // DC-DEFAULT: DSV-119 (proposed) a blast also damages the breakables in its radius

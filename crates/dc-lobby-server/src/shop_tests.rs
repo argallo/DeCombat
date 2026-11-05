@@ -238,6 +238,23 @@ SubType=10
 [UseItem8]
 ItemID=109
 SubType=9
+[UseItem11]
+ItemID=117
+SubType=17
+[UseItem20]
+ItemID=115
+SubType=11
+IsCanUnEquip=1
+[UseItem21]
+ItemID=116
+SubType=11
+IsCanUnEquip=1
+[UseItem22]
+ItemID=106
+SubType=6
+[UseItem23]
+ItemID=107
+SubType=7
 [BackpackItem0]
 ItemID=1
 MultyInvenSlot=1
@@ -759,6 +776,67 @@ fn megaphone_queue_is_fifo_with_growing_serials() {
     assert_eq!(u32_at(&c.take(MEGAPHONE_SEND_REPLY), 6), 0);
 }
 
+/// use-items (owner report: the country code change and the megaphone did nothing): the country window's 0x330 sets
+/// the nation everyone's views carry and consumes the item; the megaphone's first 0x330 keeps it, its queue question
+/// and send put the message on air for the other players.
+#[test]
+fn country_change_and_megaphone_from_the_item_windows() {
+    let mut st = rom_state();
+    st.rules.shop.megaphone_secs = 1;
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let (mut b, _) = player(&mut st, 2, "b", "Bob");
+    // country: an out-of-range nation is refused and the item stays; nation 16 is set and the item consumed
+    let u = give(&st, a, 9117, 1, 0);
+    let d = use_window(&mut c, &mut st, u, "", 0, 0, 0, 300);
+    assert_eq!(u32_at(&d, 6), 0);
+    assert!(db::item(&st.db, u).unwrap().is_some());
+    let d = use_window(&mut c, &mut st, u, "", 0, 0, 0, 16);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xe)), (1, u as u32));
+    assert!(
+        db::item(&st.db, u).unwrap().is_none(),
+        "the client deletes it too"
+    );
+    assert_eq!(col(&st, a, "nation"), 16);
+    // what the other players see: the lobby user list, the room seat and the profile all carry the flag
+    let me = st.character(a).unwrap();
+    assert_eq!(st.lobby_user(a).nation, 16);
+    assert_eq!(st.seat_row(a, 0, 0, 0).nation, 16);
+    assert_eq!(st.profile(&me).nation, 16);
+    // and the own 0x303 at +0x100
+    c.send(&mut st, dc_wire::CHARACTER_INFO, &[]);
+    assert_eq!(u32_at(&c.take(dc_wire::CHARACTER_INFO_REPLY), 0x100), 16);
+    // megaphone: the first use answers ok with the count and keeps the item
+    let m = give(&st, a, 9122, 3, 2);
+    let d = use_window(&mut c, &mut st, m, "", 0, 0, 0, 0);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0x1e)), (1, 2));
+    assert!(db::item(&st.db, m).unwrap().is_some());
+    c.send(&mut st, MEGAPHONE_QUEUE, &[]);
+    assert_eq!(u32_at(&c.take(MEGAPHONE_QUEUE_REPLY), 6), 1);
+    let mut body = u32s(&[m as u32, 1]);
+    body.extend(wstr("hello lobby", 101));
+    body.extend(vec![0u8; 402]);
+    c.send(&mut st, MEGAPHONE_SEND, &body);
+    let d = c.take(MEGAPHONE_SEND_REPLY);
+    assert_eq!(
+        (u32_at(&d, 6), u32_at(&d, 0xe), u32_at(&d, 0x12)),
+        (1, m as u32, 1)
+    );
+    let on_air = b.take(BROADCAST_PUSH);
+    assert_eq!((u32_at(&on_air, 6), u32_at(&on_air, 0x16)), (1, a));
+    assert_eq!(
+        dc_wire::PktReader::from_raw(&on_air).at(0x48).wstr(100),
+        "hello lobby"
+    );
+    assert_eq!(
+        dc_wire::PktReader::from_raw(&on_air).at(0x26).wstr(17),
+        "Alice"
+    );
+    assert!(
+        c.has(BROADCAST_PUSH),
+        "the sender hears it too (CLI-1392 box)"
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn use_window(
     c: &mut Client,
@@ -775,6 +853,168 @@ fn use_window(
     v.extend(u32s(&[0, 0, face, colour, 0, change, nation]));
     c.send(st, crate::msg::ITEM_USE, &v);
     c.take(crate::msg::ITEM_USE_REPLY)
+}
+
+/// use-items-emblem: the clan mark window's use with the pair at +0x2c / +0x30.
+fn use_mark(c: &mut Client, st: &mut Core, uid: i64, emblem: u32, background: u32) -> Vec<u8> {
+    let mut v = u32s(&[uid as u32]);
+    v.extend(wstr("", 17));
+    v.extend(u32s(&[emblem, background, 0, 0, 0, 0, 0]));
+    c.send(st, crate::msg::ITEM_USE, &v);
+    c.take(crate::msg::ITEM_USE_REPLY)
+}
+
+fn mark_check(c: &mut Client, st: &mut Core, emblem: u32, background: u32) -> (u32, u32) {
+    c.send(
+        st,
+        crate::clan::CLAN_MARK_CHECK,
+        &u32s(&[emblem, background]),
+    );
+    let d = c.take(crate::clan::CLAN_MARK_CHECK_REPLY);
+    (u32_at(&d, 6), u32_at(&d, 0xa))
+}
+
+/// use-items-emblem (CLI-1884): the clan mark window end to end: the check refuses a pair another clan wears and a
+/// member who is not the leader, the use stores the pair on the clan (the item stays, in use), the other members are
+/// told and every player's profile of a member shows the new mark.
+#[test]
+fn the_clan_mark_window_sets_the_mark_other_players_see() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let (mut b, bn) = player(&mut st, 2, "b", "Bob");
+    let (mut z, zn) = player(&mut st, 3, "z", "Zed");
+    let clan = |st: &Core, name: &str, master: u32, mark: (i64, i64)| -> i64 {
+        st.db
+            .execute(
+                "INSERT INTO clans (name, master, emblem, background) VALUES (?1, ?2, ?3, ?4)",
+                params![name, master as i64, mark.0, mark.1],
+            )
+            .unwrap();
+        st.db.last_insert_rowid()
+    };
+    let join = |st: &Core, who: u32, k: i64, role: i64, name: &str| {
+        st.db
+            .execute(
+                "UPDATE characters SET clan_uid = ?2, clan_type = ?3, clan_name = ?4 WHERE user_no = ?1",
+                params![who as i64, k, role, name],
+            )
+            .unwrap();
+    };
+    let wolves = clan(&st, "Wolves", a, (0, 0));
+    let bears = clan(&st, "Bears", zn, (5, 6));
+    join(&st, a, wolves, 5, "Wolves");
+    join(&st, bn, wolves, 1, "Wolves");
+    join(&st, zn, bears, 5, "Bears");
+    // the check: another clan's pair, a plain member, a free pair
+    assert_eq!(mark_check(&mut c, &mut st, 5, 6), (0, 0x4c));
+    assert_eq!(mark_check(&mut b, &mut st, 7, 8), (0, 0x4b));
+    assert_eq!(mark_check(&mut c, &mut st, 7, 8), (1, 0));
+    // the use: kept in use, the clan's mark stored, the member told
+    let u = give(&st, a, 9102, 1, 999);
+    let d = use_mark(&mut c, &mut st, u, 7, 8);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xe)), (1, u as u32));
+    let it = db::item(&st.db, u).unwrap().unwrap();
+    assert_eq!(it.used, 1);
+    let pair: (i64, i64) = st
+        .db
+        .query_row(
+            "SELECT emblem, background FROM clans WHERE clan_uid = ?1",
+            [wolves],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(pair, (7, 8));
+    b.take(CLAN_INFO_STALE_PUSH);
+    // another player's view of the leader and of a member: the new mark (0x379 +0x9e / +0xa2)
+    for who in [a, bn] {
+        z.send(&mut st, crate::msg::PROFILE_FETCH, &u32s(&[who]));
+        let d = z.take(crate::msg::PROFILE_REPLY);
+        assert_eq!(
+            (u32_at(&d, 0x9e), u32_at(&d, 0xa2)),
+            (7, 8),
+            "account {who}"
+        );
+    }
+    // the pair is now the Wolves': the Bears' leader may not take it
+    let u2 = give(&st, zn, 9102, 1, 999);
+    assert_eq!(mark_check(&mut z, &mut st, 7, 8), (0, 0x4c));
+    let d = use_mark(&mut z, &mut st, u2, 7, 8);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xa)), (0, 0x4c));
+}
+
+/// use-items-emblem (CLI-1885): the base character and gender items end to end: the face value is stored, the own
+/// character record and the game server's player line carry it, the item is gone; a value outside the face rows is
+/// refused and the item stays.
+#[test]
+fn the_face_windows_set_the_face_the_match_shows() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let u = give(&st, a, 9106, 1, 0);
+    let d = use_window(&mut c, &mut st, u, "", 7000, 0, 0, 0);
+    assert_eq!(u32_at(&d, 6), 0, "not a face value");
+    assert!(db::item(&st.db, u).unwrap().is_some());
+    let d = use_window(&mut c, &mut st, u, "", 6014, 0, 0, 0);
+    assert_eq!(u32_at(&d, 6), 1);
+    assert!(db::item(&st.db, u).unwrap().is_none());
+    assert_eq!(col(&st, a, "face"), 14);
+    c.send(&mut st, crate::msg::CHAR_SHEET_FETCH, &[]);
+    assert_eq!(u32_at(&c.take(crate::msg::CHAR_SHEET_REPLY), 0x56), 6014);
+    let me = st.character(a).unwrap();
+    assert!(crate::game::loadout_tokens(&st, a, &me).contains(" face=14"));
+    // the gender item likewise
+    let u = give(&st, a, 9107, 1, 0);
+    assert_eq!(
+        u32_at(&use_window(&mut c, &mut st, u, "", 6004, 0, 0, 0), 6),
+        1
+    );
+    assert_eq!(col(&st, a, "face"), 4);
+}
+
+/// use-items-sweep (CD-100): a colour item's use with the item it replaces at +0x3c.
+fn use_colour(c: &mut Client, st: &mut Core, uid: i64, colour: u32, used: i64) -> Vec<u8> {
+    let mut v = u32s(&[uid as u32]);
+    v.extend(wstr("", 17));
+    v.extend(u32s(&[0, 0, 0, colour, used as u32, 0, 0]));
+    c.send(st, crate::msg::ITEM_USE, &v);
+    c.take(crate::msg::ITEM_USE_REPLY)
+}
+
+#[test]
+fn a_reticle_replaces_the_one_in_use_and_the_same_item_extends() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    // the first reticle: in use with its colour, in a function slot
+    let r1 = give(&st, a, 9115, 1, 30);
+    let d = use_colour(&mut c, &mut st, r1, 3, 0);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0x12)), (1, 0));
+    let it = db::item(&st.db, r1).unwrap().unwrap();
+    assert_eq!((it.used, it.func_value), (1, 3));
+    let end1 = it.end_time;
+    assert!(end1 > 0);
+    // another reticle replacing it: the old one goes and is reported in +0x12
+    let r2 = give(&st, a, 9116, 1, 30);
+    let d = use_colour(&mut c, &mut st, r2, 5, r1);
+    assert_eq!(
+        (u32_at(&d, 6), u32_at(&d, 0xe), u32_at(&d, 0x12)),
+        (1, r2 as u32, r1 as u32)
+    );
+    assert!(db::item(&st.db, r1).unwrap().is_none());
+    let end2 = db::item(&st.db, r2).unwrap().unwrap().end_time;
+    // the same item number again: its period runs on from the old end
+    let r3 = give(&st, a, 9116, 1, 30);
+    let d = use_colour(&mut c, &mut st, r3, 5, r2);
+    assert_eq!(u32_at(&d, 0x12), r2 as u32);
+    let it = db::item(&st.db, r3).unwrap().unwrap();
+    assert!(
+        it.end_time >= end2 + 29 * crate::clock::TICKS_PER_DAY,
+        "extended"
+    );
+    assert_eq!(u64_at(&d, 0x16), it.end_time as u64);
+    // a used uid that is not the account's item of the kind is ignored
+    let n = give(&st, a, 9108, 1, 30);
+    let d = use_colour(&mut c, &mut st, n, 2, r3);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0x12)), (1, 0));
+    assert!(db::item(&st.db, r3).unwrap().is_some());
 }
 
 #[test]
@@ -1471,4 +1711,226 @@ fn a_purchase_below_the_rank_requirement_is_refused() {
     let d = buy(&mut c, &mut st, 2, 1, 0);
     assert_eq!(u32_at(&d, 6), 1);
     assert_eq!(col(&st, a, "nx"), 5000 - 50);
+}
+
+/// The (credit, prepaid) of the next 0x345 the client got.
+fn next_balance(c: &mut Client) -> (u32, u32) {
+    let b = c.take(crate::msg::BALANCE_REPLY);
+    (u32_at(&b, 0xe), u32_at(&b, 0x12))
+}
+
+/// LG-405 (owner report 2026-11-04: the NX in game was not the admin dashboard's): the balance a purchase checks and
+/// the 0x345 after its answer are the DB row's at that moment, also when the row changed behind the session as the
+/// admin dashboard and the account CLI change it; opening the shop reports the row too.
+#[test]
+fn a_balance_changed_behind_the_session_is_what_the_next_buy_checks_and_reports() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let (mut b, _) = player(&mut st, 2, "b", "Bob");
+    let set_nx = |st: &Core, nx: i64| {
+        st.db
+            .execute(
+                "UPDATE characters SET nx = ?2 WHERE user_no = ?1",
+                params![a as i64, nx],
+            )
+            .unwrap();
+    };
+    // the shop opens (0x30a {1}): its answer, then the row's balance
+    c.send(&mut st, crate::msg::PRIVATE_STATE, &u32s(&[1]));
+    c.take(crate::msg::PRIVATE_STATE_REPLY);
+    assert_eq!(next_balance(&mut c), (0, 5000));
+    // the row drops behind the session: product 2 (50 prepaid) is refused on it and the answer reports it
+    set_nx(&st, 30);
+    let d = buy(&mut c, &mut st, 2, 1, 0);
+    assert_eq!((u32_at(&d, 6), u32_at(&d, 0xa) & 0xffff), (0, 0x3b));
+    assert_eq!(next_balance(&mut c), (0, 30));
+    assert_eq!(col(&st, a, "nx"), 30);
+    // the row rises behind the session: the purchase is checked and charged on it, the answer reports what is left
+    set_nx(&st, 120);
+    let d = buy(&mut c, &mut st, 2, 1, 0);
+    assert_eq!(u32_at(&d, 6), 1);
+    assert_eq!(next_balance(&mut c), (0, 70));
+    assert_eq!(col(&st, a, "nx"), 70);
+    // the credit balance the same way (option 0)
+    st.db
+        .execute(
+            "UPDATE characters SET nx_cr = 60 WHERE user_no = ?1",
+            [a as i64],
+        )
+        .unwrap();
+    let d = buy(&mut c, &mut st, 2, 0, 0);
+    assert_eq!(u32_at(&d, 6), 1);
+    assert_eq!(next_balance(&mut c), (10, 70));
+    // a gift is paid from the row and its answer reports it
+    set_nx(&st, 55);
+    let mut g = u32s(&[2]);
+    g.extend(wstr("Bob", 17));
+    g.extend(wstr("hi", 83));
+    c.send(&mut st, GIFT_SEND, &g);
+    assert_eq!(u32_at(&c.take(GIFT_SEND_REPLY), 6), 1);
+    assert_eq!(next_balance(&mut c), (10, 5));
+    // the receiver's balance did not move and was not reported to it
+    assert!(!b.has(crate::msg::BALANCE_REPLY));
+}
+
+/// One played match of `players` (account, kills) on team 1 through the game server's result lines (LG-200 pays the
+/// passes, LG-201 counts them).
+fn play_match(st: &mut Core, id: u64, players: &[(u32, u32)]) {
+    let key = crate::room::RoomKey { channel: 1, no: 0 };
+    st.games.insert(
+        id,
+        crate::game::Game {
+            id,
+            room: key,
+            port: 0,
+            map: 0,
+            mode: 0,
+            link: Default::default(),
+            ready: true,
+            over: false,
+            players: Vec::new(),
+            clients: Default::default(),
+            left: Default::default(),
+            result_done: false,
+            entry_keys: Default::default(),
+            seat_tickets: Default::default(),
+            seat_told: Default::default(),
+            reap_scheduled: false,
+            tmp_workdir: None,
+            hisec_keys: Default::default(),
+            net: Default::default(),
+        },
+    );
+    st.scope(|st| {
+        for (cl, (u, kills)) in players.iter().enumerate() {
+            crate::game::on_line(st, id, &format!("@join {cl} {u} 1 {cl} N{u}"))?;
+            crate::game::on_line(
+                st,
+                id,
+                &format!("@player uid={u} kills={kills} deaths=1 team=1 tk=0 hs=0 name=N{u}"),
+            )?;
+        }
+        crate::game::on_line(
+            st,
+            id,
+            "@result mode=TDM win=1 alpha=5 bravo=2 limit=5 rounds=1:0",
+        )
+    })
+    .unwrap();
+}
+
+/// OWNER REPORT 2026-11-04 ("the bonus EXP passes are not supposed to be permanent items"): a bought pass is not
+/// permanent. A 7-day pass (consume 1) starts at its use and ends 7 days later; it pays its ExpPercent in a match
+/// result before the end and nothing after it, and the expiry sweep removes it with 0x33f. A counted pass (consume 3,
+/// the 2009 ROM's kind for the Bonus EXP / GP passes) keeps no end, pays in each match while it has uses, loses one
+/// per match and goes at 0 with 0x33f. The control player has no pass.
+// DC-DEFAULT: CD-53 (period starts at the use), CD-72 (consume kinds), LG-200 / LG-201 (passes pay and count)
+#[test]
+fn bought_passes_end_pay_only_while_active_and_are_removed() {
+    let mut st = rom_state();
+    let extra = "
+[Product20]
+ProductID=20
+SaleType=0
+Shopview=1
+Price=10
+SalePrice=10
+Itemnum=1
+Itemindex0=7
+Consumetype0=1
+Period0=7
+[Product21]
+ProductID=21
+SaleType=0
+Shopview=1
+Price=10
+SalePrice=10
+Itemnum=1
+Itemindex0=7
+Consumetype0=3
+Period0=2
+[ItemInfo7]
+Itemindex=7
+Itemid=9113
+Itemtype=21
+";
+    Arc::get_mut(&mut st.rom).unwrap().shop.catalog = Some(ShopCatalog::from_doc(&ButeDoc::parse(
+        &format!("{SHOP}{extra}"),
+    )));
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let (_b, b) = player(&mut st, 2, "b", "Bob");
+    let exp = |st: &Core, u: u32| st.character(u).unwrap().exp;
+    // the gain of a match: (with the pass, the control)
+    let mut game = 500;
+    let mut gains = |st: &mut Core| {
+        let before = (exp(st, a), exp(st, b));
+        game += 1;
+        play_match(st, game, &[(a, 3), (b, 3)]);
+        (exp(st, a) - before.0, exp(st, b) - before.1)
+    };
+    let base = gains(&mut st);
+    assert_eq!(base.0, base.1, "no pass: the same gain");
+    assert!(base.1 > 0, "the match pays");
+    let bonus = (base.1 as f64 * 0.25).round() as i64;
+    assert!(bonus > 0);
+
+    // the 7-day pass: no end and not active until used
+    let d = buy(&mut c, &mut st, 20, 0, 0);
+    assert_eq!(u32_at(&d, 6), 1, "bought");
+    let uid = u32_at(&d, 0xe) as i64;
+    let it = db::item(&st.db, uid).unwrap().unwrap();
+    assert_eq!((it.use_type, it.remain, it.end_time, it.used), (1, 7, 0, 0));
+    assert_eq!(gains(&mut st), base, "an unused pass pays nothing");
+    let r = use_window(&mut c, &mut st, uid, "", 0, 0, 0, 0);
+    assert_eq!(u32_at(&r, 6), 1, "used");
+    let now = crate::clock::now_ticks();
+    let end = u64_at(&r, 0x16) as i64;
+    let week = 7 * crate::clock::TICKS_PER_DAY;
+    assert!(
+        (end - (now + week)).abs() < 60 * crate::clock::TICKS_PER_SEC,
+        "the end is 7 days out: {end} vs {now}"
+    );
+    assert_eq!(db::item(&st.db, uid).unwrap().unwrap().end_time, end);
+    assert_eq!(
+        gains(&mut st),
+        (base.0 + bonus, base.1),
+        "the pass pays before its end"
+    );
+    assert!(
+        db::item(&st.db, uid).unwrap().is_some(),
+        "a period pass is not counted"
+    );
+    // its end passes: no bonus, and the sweep removes it and tells the owner
+    st.db
+        .execute(
+            "UPDATE items SET end_time = ?2 WHERE uid = ?1",
+            params![uid, now - 1],
+        )
+        .unwrap();
+    assert_eq!(gains(&mut st), base, "an ended pass pays nothing");
+    c.got.clear();
+    st.scope(|st| crate::inventory::expire(st, Some(a), true))
+        .unwrap();
+    assert!(
+        db::item(&st.db, uid).unwrap().is_none(),
+        "the sweep removed it"
+    );
+    let p = c.take(crate::msg::EXPIRY_PUSH);
+    assert_eq!((u32_at(&p, 0xe), u32_at(&p, 0x12)), (1, uid as u32));
+
+    // the counted pass: two matches, then gone
+    let d = buy(&mut c, &mut st, 21, 0, 0);
+    let uid = u32_at(&d, 0xe) as i64;
+    let it = db::item(&st.db, uid).unwrap().unwrap();
+    assert_eq!((it.use_type, it.remain, it.end_time), (3, 2, 0));
+    let r = use_window(&mut c, &mut st, uid, "", 0, 0, 0, 0);
+    assert_eq!((u32_at(&r, 6), u32_at(&r, 0x1e)), (1, 2), "used, two uses");
+    assert_eq!(gains(&mut st), (base.0 + bonus, base.1));
+    assert_eq!(db::item(&st.db, uid).unwrap().unwrap().remain, 1);
+    c.got.clear();
+    assert_eq!(gains(&mut st), (base.0 + bonus, base.1));
+    assert!(db::item(&st.db, uid).unwrap().is_none(), "used up");
+    let p = c.take(crate::msg::EXPIRY_PUSH);
+    assert_eq!((u32_at(&p, 0xe), u32_at(&p, 0x12)), (1, uid as u32));
+    assert_eq!(gains(&mut st), base, "a used-up pass pays nothing");
 }

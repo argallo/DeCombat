@@ -189,11 +189,15 @@ impl Game {
         };
         let weapon = p.hand_weapon.unwrap_or(FALL_DEATH_WEAPON);
         self.log(format!("client {pid}: fell {h:.1} units, damage {d:.2}"));
-        self.fall_sound(pid, now);
         let src = DamageSource {
             weapon,
             dtype: FALL_DAMAGE_TYPE,
         };
+        // the landing's voice is chosen inside the damage call, once it is known whether the fall kills: a hurting
+        // landing plays the fall-hurt file before the 0x74, a lethal one the fall-death sound
+        // OBSERVED: tdm4 c6 seq 6695, tdm1 c5 seq 6660 (the fall-hurt file in the tick of the landing; REFERENCE)
+        // DC-DEFAULT: DSV-596 (proposed), DSV-152 (proposed)
+        self.plunge = Some((pid, true));
         self.apply_hit_as(
             pid,
             None,
@@ -205,15 +209,7 @@ impl Game {
             FALL_DAMAGE_KIND,
             now,
         );
-    }
-
-    /// The fall sound in the tick of the landing, before the 0x74 (as the reference stack sent it in tdm4 c6 seq 6695 and
-    /// tdm1 c5 seq 6660): the fall-hurt file of the player's voice family from the ROM's preload table
-    /// ([`Game::fall_hurt_sound`]); it stands for the pain sound of the fall's damage.
-    // OBSERVED: tdm4 c6 seq 6695, tdm1 c5 seq 6660 / 7933 (REFERENCE)
-    // DC-DEFAULT: DSV-64 (proposed) the event sound path; DSV-152 (proposed) the fall-hurt file
-    fn fall_sound(&mut self, pid: u8, now: Millis) {
-        self.fall_hurt_sound(pid, now);
+        self.plunge = None;
     }
 }
 

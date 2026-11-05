@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use dc_sim::{Collider, CollisionWorld, ConvexVolume, Cylinder, MovementParams, V3};
 
+pub mod follow;
 pub mod testworld;
 
 /// Lattice step, units.
@@ -861,6 +862,12 @@ impl NavGrid {
     /// body sweeps free; a sweep passes a polygon from its back).
     pub fn clear_way(&mut self, a: [f32; 3], b: [f32; 3]) -> bool {
         self.walkable(V3::new(a[0], a[1], a[2]), V3::new(b[0], b[1], b[2]))
+    }
+
+    /// Whether a ray from `a` reaches `b` through the world (BOT-121: the end of a way is the target's place only
+    /// when it sees the target, not from the other side of a wall).
+    pub fn in_sight(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        self.sees(V3::new(a[0], a[1], a[2]), V3::new(b[0], b[1], b[2]))
     }
 
     /// Whether the body fits at `p` (the world does not overlap it).

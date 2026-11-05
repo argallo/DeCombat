@@ -864,6 +864,8 @@ fn rom_a_gp_case_purchase_shows_the_award_not_the_bought_box() {
         }
     }
     let (tab, cmd, w) = found.expect("the catalogue lists a GP supply case");
+    // a detached link: no "connection ended" box races the reply fed below
+    m.detach_link();
     m.data.store.view = Some(vec![w.product]);
     m.data.store.lists_asked = true;
     m.data.store.inbox_fetched = true;

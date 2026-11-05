@@ -936,6 +936,28 @@ fn fill(at: [i32; 2], size: [i32; 2], colour: [u8; 4]) -> DrawItem {
     }
 }
 
+/// The NX balance a purchase with this 0x328 option word is charged to: 0 the credit balance, any other the prepaid
+/// balance (dc-lobby-server's CD-37 rule).
+// DC-DEFAULT: CLI-1875 (proposed) the client checks and deducts the balance the lobby charges for the option it sends
+pub fn charged_balance(data: &MenuData, option: u32) -> i64 {
+    if option == 0 {
+        i64::from(data.balance.0)
+    } else {
+        i64::from(data.balance.1)
+    }
+}
+
+/// Takes an accepted credit purchase's price off the balance its option word is charged to (until the lobby's
+/// 0x345 sets the balance again).
+// EVIDENCE: cshell+0x150c40 (credit product ok: SalePrice off +0x108 (credit) or +0x11c (prepaid))
+pub fn deduct(data: &mut MenuData, option: u32, price: u32) {
+    if option == 0 {
+        data.balance.0 = data.balance.0.saturating_sub(price);
+    } else {
+        data.balance.1 = data.balance.1.saturating_sub(price);
+    }
+}
+
 /// The shop's purchase check of the chosen product (the request, or the box string that refuses it).
 // EVIDENCE: cshell+0x145b60 (a request in flight -> res 0x46f; GP products: each item the player owns is extended by
 // its unique id, an owned permanent item -> res 0x46d; balance (GP, or credit for mode 1 / prepaid otherwise) below
@@ -1048,8 +1070,11 @@ pub fn mod_purchase(
     if busy {
         return Err((0x46f, 0x371));
     }
+    // CLI-1875: a credit product is checked against the balance the lobby charges for the option word (the prepaid
+    // one, CD-37), not the 2009 credit balance: with the credit balance at 0 every NX mod was refused here
+    let option = if offer.sale_type == 1 { mode } else { 0 };
     let (balance, short) = if offer.sale_type == 1 {
-        (i64::from(data.balance.0), (0x1873, SHORT_NX_TITLE))
+        (charged_balance(data, option), (0x1873, SHORT_NX_TITLE))
     } else {
         (i64::from(data.profile.gp), (0x46e, 0x346))
     };
@@ -1058,7 +1083,7 @@ pub fn mod_purchase(
     }
     Ok(LinkCmd::BuyWith {
         product: offer.product,
-        option: if offer.sale_type == 1 { mode } else { 0 },
+        option,
         extend: [0; 5],
     })
 }
@@ -1081,13 +1106,10 @@ pub fn extend_purchase(
     if busy {
         return Err((0x46f, 0x371));
     }
+    // CLI-1875: the balance the lobby charges for the option word sent (mode 1 is charged to the prepaid balance)
+    let option = if offer.sale_type == 1 { mode } else { 0 };
     let (balance, short) = if offer.sale_type == 1 {
-        let b = if mode == MODE_CREDIT {
-            data.balance.0
-        } else {
-            data.balance.1
-        };
-        (i64::from(b), (0x1873, SHORT_NX_TITLE))
+        (charged_balance(data, option), (0x1873, SHORT_NX_TITLE))
     } else {
         (i64::from(data.profile.gp), (0x46e, 0x346))
     };
@@ -1096,7 +1118,7 @@ pub fn extend_purchase(
     }
     Ok(LinkCmd::BuyWith {
         product: offer.product,
-        option: if offer.sale_type == 1 { mode } else { 0 },
+        option,
         extend: [uid, 0, 0, 0, 0],
     })
 }
@@ -1141,6 +1163,61 @@ mod tests {
             fill_form("%s (%s) - %s GP", &["G23", "7 days", "1,200"]),
             "G23 (7 days) - 1,200 GP"
         );
+    }
+
+    /// CLI-1875: every purchase check tests the balance the lobby charges for the option word it sends (CD-37: 0
+    /// credit, else prepaid); the Modification page sends the window's mode, so both of its modes are charged to the
+    /// prepaid balance, and the credit balance (0 on our servers) no longer refuses an NX mod.
+    #[test]
+    fn every_purchase_check_tests_the_balance_its_option_word_is_charged_to() {
+        let mut data = MenuData::default();
+        let nx = Offer {
+            sale_type: 1,
+            price: 300,
+            ..offer(0, 7, 0)
+        };
+        let opt = |r: Result<LinkCmd, (i32, i32)>| match r {
+            Ok(LinkCmd::BuyWith { option, .. }) => Ok(option),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e.0),
+        };
+        data.balance = (0, 5000);
+        assert_eq!(opt(mod_purchase(&nx, MODE_CREDIT, &data, false)), Ok(1));
+        assert_eq!(opt(mod_purchase(&nx, MODE_PREPAID, &data, false)), Ok(2));
+        assert_eq!(
+            opt(extend_purchase(&nx, MODE_CREDIT, 9, &data, false)),
+            Ok(1)
+        );
+        assert_eq!(
+            opt(extend_purchase(&nx, MODE_PREPAID, 9, &data, false)),
+            Ok(2)
+        );
+        data.balance = (5000, 0);
+        assert_eq!(
+            opt(mod_purchase(&nx, MODE_CREDIT, &data, false)),
+            Err(0x1873)
+        );
+        assert_eq!(
+            opt(extend_purchase(&nx, MODE_CREDIT, 9, &data, false)),
+            Err(0x1873)
+        );
+        // the shop's own window: credit mode sends option 0 and is checked on the credit balance
+        let store = Store::default();
+        assert!(purchase(&nx, MODE_CREDIT, &store, &data, false).is_ok());
+        assert_eq!(
+            purchase(&nx, MODE_PREPAID, &store, &data, false).err(),
+            Some(0x1873)
+        );
+        // the deduction of an accepted answer takes the same balance
+        assert_eq!(
+            (charged_balance(&data, 0), charged_balance(&data, 2)),
+            (5000, 0)
+        );
+        deduct(&mut data, 0, 300);
+        assert_eq!(data.balance, (4700, 0));
+        data.balance = (0, 200);
+        deduct(&mut data, 1, 300);
+        assert_eq!(data.balance, (0, 0), "never below 0");
     }
 
     #[test]

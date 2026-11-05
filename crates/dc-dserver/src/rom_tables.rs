@@ -976,6 +976,15 @@ impl WeaponTable {
         })
     }
 
+    /// `ProgDamageLifetime` of `weapon_id` / `ammo_id` in seconds (how long its progressive damage lingers where it
+    /// went off: a dead AI's cloud, DSV-600), when positive.
+    // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] ProgDamageLifetime
+    pub fn prog_lifetime(&self, weapon_id: u16, ammo_id: u16) -> Option<f32> {
+        self.ammo_row(weapon_id, ammo_id)?
+            .prog_lifetime
+            .filter(|v| v.is_finite() && *v > 0.0)
+    }
+
     /// Whether `weapon_id` / `ammo_id` fires a projectile (a launcher's rocket): ammunition `Type` 1 with a
     /// projectile row. The client sends such a shot without a hit; the server flies it (DSV-181).
     pub fn fires_projectile(&self, weapon_id: u16, ammo_id: u16) -> bool {

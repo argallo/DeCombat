@@ -427,7 +427,9 @@ pub fn use_reply(d: &[u8]) -> UseReply {
 // SPEC: PROTOCOL_2009.md §4.3 0x330 (+6 u32 unique id; +0xa wstr[17] new name; +0x2c emblem, +0x30 background, +0x34
 // face, +0x38 colour, +0x3c used unique id, +0x40 change item number, +0x44 nation)
 // EVIDENCE: cshell+0x18e1d0 (the sender; the name copied with at most 16 units)
-pub fn item_use_packet(uid: u32, name: &str, change_item: u32) -> PktWriter {
+// use-items: the country window's +0x44
+// EVIDENCE: cshell+0x2a9440 (the country window's send: the unique id, an empty name, zeros, the chosen nation last)
+pub fn item_use_packet(uid: u32, name: &str, change_item: u32, nation: u32) -> PktWriter {
     let mut w = PktWriter::new(ITEM_USE);
     let name: String = name
         .encode_utf16()
@@ -435,9 +437,122 @@ pub fn item_use_packet(uid: u32, name: &str, change_item: u32) -> PktWriter {
         .map(|u| char::from_u32(u32::from(u)).unwrap_or('?'))
         .collect();
     w.u32(uid).wstr(&name, 17);
-    w.u32(0).u32(0).u32(0).u32(0).u32(0).u32(change_item).u32(0);
+    w.u32(0)
+        .u32(0)
+        .u32(0)
+        .u32(0)
+        .u32(0)
+        .u32(change_item)
+        .u32(nation);
     w
 }
+
+/// use-items-sweep: the colour window's 0x330: the unique id, an empty name, the picked colour at +0x38 and the
+/// unique id of the item of the same kind in use at +0x3c (0 = none).
+// SPEC: PROTOCOL_2009.md §4.3 0x330 (+0x38 colour, +0x3c used unique id)
+// EVIDENCE: cshell+0x242b80 (the colour window's send: only with a picked colour; window +0x24 and +0x34)
+pub fn colour_use_packet(uid: u32, colour: u32, used: u32) -> PktWriter {
+    let mut w = PktWriter::new(ITEM_USE);
+    w.u32(uid).wstr("", 17);
+    w.u32(0).u32(0).u32(0).u32(colour).u32(used).u32(0).u32(0);
+    w
+}
+
+/// use-items-emblem: the clan mark window's 0x330: the unique id, an empty name, the picked emblem at +0x2c and
+/// background at +0x30.
+// SPEC: PROTOCOL_2009.md §4.3 0x330 (+0x2c emblem, +0x30 background)
+// EVIDENCE: cshell+0x2ae470 (command 0x262: the unique id, an empty name, the window's emblem and background, zeros)
+pub fn mark_use_packet(uid: u32, emblem: u32, background: u32) -> PktWriter {
+    let mut w = PktWriter::new(ITEM_USE);
+    w.u32(uid).wstr("", 17);
+    w.u32(emblem)
+        .u32(background)
+        .u32(0)
+        .u32(0)
+        .u32(0)
+        .u32(0)
+        .u32(0);
+    w
+}
+
+/// use-items-emblem: the face window's 0x330: the unique id, an empty name and the face value (6000 + the picked
+/// face row) at +0x34.
+// SPEC: PROTOCOL_2009.md §4.3 0x330 (+0x34 face)
+// DISASM: cshell+0x242ad0 (the face window's send: the unique id, an empty name, the picked face + 0x1770 as the face
+// word, zeros)
+pub fn face_use_packet(uid: u32, face: u32) -> PktWriter {
+    let mut w = PktWriter::new(ITEM_USE);
+    w.u32(uid).wstr("", 17);
+    w.u32(0).u32(0).u32(face).u32(0).u32(0).u32(0).u32(0);
+    w
+}
+
+/// use-items-emblem: the clan mark check 0x34c (+6 emblem, +0xa background).
+// SPEC: PROTOCOL_2009.md §5.1 0x34c
+// DISASM: cshell+0x2aada0 (the mark window's check: the window's emblem and background through cshell+0x18e6b0)
+pub fn mark_check_packet(emblem: u32, background: u32) -> PktWriter {
+    let mut w = PktWriter::new(CLAN_MARK_CHECK);
+    w.u32(emblem).u32(background);
+    w
+}
+
+/// use-items: a megaphone queue reply 0x36f.
+// SPEC: PROTOCOL_2009.md §4.3 0x36f (+6 ok; ok: +0xe seconds per message, +0x12 order on air, +0x16 last queued order,
+// +0x1e players waiting; refused: +0xa reason)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct QueueReply {
+    pub ok: bool,
+    pub reason: u32,
+    pub secs: u32,
+    pub on_air: u32,
+    pub last: u32,
+    pub waiting: u32,
+}
+
+pub fn queue_reply(d: &[u8]) -> QueueReply {
+    QueueReply {
+        ok: u32_at(d, 6) != 0,
+        reason: u32_at(d, 0xa),
+        secs: u32_at(d, 0xe),
+        on_air: u32_at(d, 0x12),
+        last: u32_at(d, 0x16),
+        waiting: u32_at(d, 0x1e),
+    }
+}
+
+/// use-items: a megaphone send reply 0x36d.
+// SPEC: PROTOCOL_2009.md §4.3 0x36d (+6 ok, +0xa reason, +0xe unique id, +0x12 uses left)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SendReply {
+    pub ok: bool,
+    pub reason: u32,
+    pub uid: u32,
+    pub left: u32,
+}
+
+pub fn send_reply(d: &[u8]) -> SendReply {
+    SendReply {
+        ok: u32_at(d, 6) != 0,
+        reason: u32_at(d, 0xa),
+        uid: u32_at(d, 0xe),
+        left: u32_at(d, 0x12),
+    }
+}
+
+/// use-items: the megaphone send 0x36c (0x26a bytes): the item, 1, the message (at most 65 characters) and the colour
+/// runs (none: the default colour).
+// SPEC: PROTOCOL_2009.md §4.3 0x36c (+6 u32 unique id; +0xa u32 1; +0xe wstr[101] message; +0xd8 wstr[201] colour runs)
+// EVIDENCE: cshell+0x2a5be0 (the composer's send: the text copied, 0x41 characters, 1), cshell+0x18f470 (the sender)
+pub fn megaphone_packet(uid: u32, text: &str) -> PktWriter {
+    let mut w = PktWriter::new(MEGAPHONE_SEND);
+    let text: String = text.chars().take(MEGAPHONE_MAX).collect();
+    w.u32(uid).u32(1).wstr(&text, 101).pad(402);
+    w
+}
+
+/// use-items: the most characters a megaphone message has.
+// EVIDENCE: cshell+0x2a5be0 / cshell+0x2a8870 (0x41)
+pub const MEGAPHONE_MAX: usize = 0x41;
 
 /// audit-function: 0x33f, the expired unique ids and the re-read flag.
 pub fn expiry_push(d: &[u8]) -> (Vec<u32>, bool) {
@@ -491,6 +606,9 @@ pub struct CharExtras {
     pub headshots: u32,
     pub kills: u32,
     pub deaths: u32,
+    /// use-items-sweep: +0xe0 / +0xe4 the name and clan-name colour ids (the colour window's ok answer sets them).
+    pub name_colour: u32,
+    pub clan_colour: u32,
 }
 
 /// Reads [`CharExtras`] from a 0x303 frame.
@@ -511,6 +629,9 @@ pub fn char_extras(d: &[u8]) -> CharExtras {
         // SPEC: PROTOCOL_2009.md §3.3 table 3.3a (+0x62 / +0x66 / +0x6a)
         headshots: u32_at(d, 0x62),
         kills: u32_at(d, 0x66),
+        // SPEC: PROTOCOL_2009.md §3.3 table 3.3a (+0xe0 / +0xe4 name / clan-name colour ids)
+        name_colour: u32_at(d, 0xe0),
+        clan_colour: u32_at(d, 0xe4),
         deaths: u32_at(d, 0x6a),
     }
 }
@@ -796,6 +917,38 @@ pub enum LinkCmd {
         uid: u32,
         name: String,
         change_item: u32,
+        /// use-items: the country window's chosen nation (0 otherwise).
+        nation: u32,
+    },
+    /// use-items: the megaphone queue state (0x36e; the answer 0x36f).
+    MegaphoneQueue,
+    /// use-items-sweep: the colour window's use of item `uid` with colour index `colour`, replacing the item `used`
+    /// of the same kind (0x330; the answer 0x331).
+    ColourUse {
+        uid: u32,
+        colour: u32,
+        used: u32,
+    },
+    /// use-items-emblem: the clan mark window's use of item `uid` with the picked pair (0x330; the answer 0x331).
+    MarkUse {
+        uid: u32,
+        emblem: u32,
+        background: u32,
+    },
+    /// use-items-emblem: may the own clan take this pair (0x34c; the answer 0x34d).
+    MarkCheck {
+        emblem: u32,
+        background: u32,
+    },
+    /// use-items-emblem: the face window's use of item `uid` with face value `face` (0x330; the answer 0x331).
+    FaceUse {
+        uid: u32,
+        face: u32,
+    },
+    /// use-items: broadcast `text` with megaphone `uid` (0x36c; the answer 0x36d).
+    MegaphoneSend {
+        uid: u32,
+        text: String,
     },
     /// name-change: is this name free (0x346; the rename window reads the answer 0x347).
     NameCheck(String),
@@ -995,7 +1148,22 @@ impl std::fmt::Debug for LinkCmd {
                 uid,
                 name,
                 change_item,
-            } => write!(f, "ItemUse({uid}, {name:?}, {change_item})"),
+                nation,
+            } => write!(f, "ItemUse({uid}, {name:?}, {change_item}, {nation})"),
+            LinkCmd::MegaphoneQueue => write!(f, "MegaphoneQueue"),
+            LinkCmd::ColourUse { uid, colour, used } => {
+                write!(f, "ColourUse({uid}, {colour}, {used})")
+            }
+            LinkCmd::MarkUse {
+                uid,
+                emblem,
+                background,
+            } => write!(f, "MarkUse({uid}, {emblem}, {background})"),
+            LinkCmd::MarkCheck { emblem, background } => {
+                write!(f, "MarkCheck({emblem}, {background})")
+            }
+            LinkCmd::FaceUse { uid, face } => write!(f, "FaceUse({uid}, {face})"),
+            LinkCmd::MegaphoneSend { uid, text } => write!(f, "MegaphoneSend({uid}, {text:?})"),
             LinkCmd::NameCheck(name) => write!(f, "NameCheck({name:?})"),
             LinkCmd::OwnName(name) => write!(f, "OwnName({name:?})"),
             LinkCmd::ClanInfo => write!(f, "ClanInfo"),
@@ -1250,6 +1418,10 @@ pub enum LinkEvent {
     InboxStale,
     /// name-change: the answer to an item use (0x331).
     ItemUsed(UseReply),
+    /// use-items: the megaphone queue state (0x36f).
+    MegaphoneQueued(QueueReply),
+    /// use-items: the answer to a megaphone send (0x36d).
+    MegaphoneSent(SendReply),
     /// audit-function (CLI-1389): 0x33f, the unique ids of expired items and whether the equipment is read again.
     Expired {
         uids: Vec<u32>,
@@ -1261,6 +1433,11 @@ pub enum LinkEvent {
     OwnMegaphone,
     /// name-change: the answer to a name check (0x347): the name is free.
     NameChecked(bool),
+    /// use-items-emblem: the answer to a clan mark check (0x34d): ok, else the reason.
+    MarkChecked {
+        ok: bool,
+        reason: u32,
+    },
     /// w3-clan: an ok clan info reply 0x3c3.
     ClanInfo(ClanInfoView),
     /// w3-clan: an ok clan member reply 0x3c5.
@@ -1434,10 +1611,13 @@ fn event_label(e: &LinkEvent) -> &'static str {
         LinkEvent::InboxOpened(_) => "InboxOpened",
         LinkEvent::InboxStale => "InboxStale",
         LinkEvent::ItemUsed(_) => "ItemUsed",
+        LinkEvent::MegaphoneQueued(_) => "MegaphoneQueued",
+        LinkEvent::MegaphoneSent(_) => "MegaphoneSent",
         LinkEvent::Expired { .. } => "Expired",
         LinkEvent::ExpiryBoxes(_) => "ExpiryBoxes",
         LinkEvent::OwnMegaphone => "OwnMegaphone",
         LinkEvent::NameChecked(_) => "NameChecked",
+        LinkEvent::MarkChecked { .. } => "MarkChecked",
         _ => "event",
     }
 }
@@ -1832,10 +2012,15 @@ const HANDLED: &[u16] = &[
     INBOX_STALE_PUSH,
     // name-change
     ITEM_USE_REPLY,
+    // use-items
+    MEGAPHONE_QUEUE_REPLY,
+    MEGAPHONE_SEND_REPLY,
     // audit-function
     EXPIRY_PUSH,
     EXPIRY_NOTICE_PUSH,
     RECIPIENT_CHECK_REPLY,
+    // use-items-emblem
+    CLAN_MARK_CHECK_REPLY,
     // w3-clan
     CHARACTER_INFO_REPLY,
     CLAN_LOGIN_REPLY,
@@ -3299,7 +3484,26 @@ impl Worker {
                 uid,
                 name,
                 change_item,
-            } => s.link.send(&item_use_packet(uid, &name, change_item)),
+                nation,
+            } => s
+                .link
+                .send(&item_use_packet(uid, &name, change_item, nation)),
+            // SPEC: PROTOCOL_2009.md §4.3 0x36e (header only)
+            // EVIDENCE: cshell+0x18f5d0 (the sender, called by the composer's OK cshell+0x2a8d60)
+            LinkCmd::MegaphoneQueue => s.link.send_empty(MEGAPHONE_QUEUE),
+            LinkCmd::ColourUse { uid, colour, used } => {
+                s.link.send(&colour_use_packet(uid, colour, used))
+            }
+            LinkCmd::MarkUse {
+                uid,
+                emblem,
+                background,
+            } => s.link.send(&mark_use_packet(uid, emblem, background)),
+            LinkCmd::MarkCheck { emblem, background } => {
+                s.link.send(&mark_check_packet(emblem, background))
+            }
+            LinkCmd::FaceUse { uid, face } => s.link.send(&face_use_packet(uid, face)),
+            LinkCmd::MegaphoneSend { uid, text } => s.link.send(&megaphone_packet(uid, &text)),
             // SPEC: PROTOCOL_2009.md §4.3 0x346 (+6 wstr[17] name)
             // EVIDENCE: cshell+0x18e410 (the sender), cshell+0x242660 (the rename window's check)
             LinkCmd::NameCheck(name) => {
@@ -3808,6 +4012,10 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
         INBOX_STALE_PUSH => ev.push(LinkEvent::InboxStale),
         // name-change: the open use window reads the reply (cshell+0x33790 -> cshell+0x1db910)
         ITEM_USE_REPLY => ev.push(LinkEvent::ItemUsed(use_reply(d))),
+        // use-items: the megaphone composer reads both (cshell+0x367b0 -> cshell+0x2a8990, cshell+0x36770 ->
+        // cshell+0x2a5c90)
+        MEGAPHONE_QUEUE_REPLY => ev.push(LinkEvent::MegaphoneQueued(queue_reply(d))),
+        MEGAPHONE_SEND_REPLY => ev.push(LinkEvent::MegaphoneSent(send_reply(d))),
         // audit-function (CLI-1389): the expiry push; a set +0x1a2 asks for the equipment again
         // EVIDENCE: cshell+0x22cde0 (each unique id: box 0x1786 with the item's name, title 0x371, the record
         // removed (cshell+0x22ccb0); +0x1a2 != 0 -> the equipment request cshell+0x28adb0)
@@ -3821,6 +4029,12 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
         // SPEC: PROTOCOL_2009.md §4.3 0x347 (the rename window reads ok != 0 as "name free")
         // EVIDENCE: cshell+0x2426d0
         RECIPIENT_CHECK_REPLY => ev.push(LinkEvent::NameChecked(u32_at(d, 6) != 0)),
+        // use-items-emblem: the open clan mark window reads it (cshell+0x33940 -> cshell+0x1db9b0, its vfunc +0x48)
+        // SPEC: PROTOCOL_2009.md §5.1 0x34d (+6 ok, +0xa reason)
+        CLAN_MARK_CHECK_REPLY => ev.push(LinkEvent::MarkChecked {
+            ok: u32_at(d, 6) != 0,
+            reason: u32_at(d, 0xa),
+        }),
         // w3-clan: a character info reply after the login (a clan join or leave sends it again)
         // SPEC: PROTOCOL_2009.md §3.3 table 3.3a; §5.2 (create / join / leave push 0x303 to the user)
         CHARACTER_INFO_REPLY => {
@@ -4298,6 +4512,80 @@ mod tests {
             dispatch(s, BROADCAST_PUSH, &payload(&b), &mut ev);
             assert_eq!(ev.iter().any(|e| matches!(e, LinkEvent::OwnMegaphone)), own);
         }
+    }
+
+    // use-items: the country window's nation at +0x44; the megaphone send and both megaphone answers
+    #[test]
+    fn country_and_megaphone_requests_and_answers_follow_the_spec() {
+        let p = payload(&item_use_packet(9, "", 0, 23));
+        assert_eq!((p.len(), u32_at(&p, 6), u32_at(&p, 0x44)), (0x48, 9, 23));
+        // use-items-sweep: the colour window's colour at +0x38 and the replaced item at +0x3c
+        let p = payload(&colour_use_packet(9, 5, 31));
+        assert_eq!(
+            (
+                p.len(),
+                u32_at(&p, 6),
+                u32_at(&p, 0x38),
+                u32_at(&p, 0x3c),
+                u32_at(&p, 0x44)
+            ),
+            (0x48, 9, 5, 31, 0)
+        );
+        // use-items-emblem: the mark window's pair at +0x2c / +0x30, the face window's face at +0x34, the check 0x34c
+        let p = payload(&mark_use_packet(9, 12, 34));
+        assert_eq!(
+            (
+                p.len(),
+                u32_at(&p, 6),
+                u32_at(&p, 0x2c),
+                u32_at(&p, 0x30),
+                u32_at(&p, 0x34)
+            ),
+            (0x48, 9, 12, 34, 0)
+        );
+        let p = payload(&face_use_packet(9, 6014));
+        assert_eq!(
+            (
+                p.len(),
+                u32_at(&p, 0x2c),
+                u32_at(&p, 0x34),
+                u32_at(&p, 0x38)
+            ),
+            (0x48, 0, 6014, 0)
+        );
+        let p = payload(&mark_check_packet(12, 34));
+        assert_eq!((p.len(), u32_at(&p, 6), u32_at(&p, 0xa)), (0xe, 12, 34));
+        let long: String = "x".repeat(80);
+        let p = payload(&megaphone_packet(7, &long));
+        assert_eq!((p.len(), u32_at(&p, 6), u32_at(&p, 0xa)), (0x26a, 7, 1));
+        assert_eq!(wstr_at(&p, 0xe, 101).chars().count(), MEGAPHONE_MAX);
+        let p = payload(&megaphone_packet(7, "hello"));
+        assert_eq!(wstr_at(&p, 0xe, 101), "hello");
+        let (mut w, _rx, _peer) = held_worker(None);
+        let s = w.session.as_mut().unwrap();
+        let mut ev = Vec::new();
+        let mut q = PktWriter::new(MEGAPHONE_QUEUE_REPLY);
+        q.u32(1).u32(0).u32(30).u32(4).u32(6).u32(0).u32(2);
+        dispatch(s, MEGAPHONE_QUEUE_REPLY, &payload(&q), &mut ev);
+        let mut r = PktWriter::new(MEGAPHONE_SEND_REPLY);
+        r.u32(1).u32(0).u32(7).u32(2);
+        dispatch(s, MEGAPHONE_SEND_REPLY, &payload(&r), &mut ev);
+        let q = QueueReply {
+            ok: true,
+            reason: 0,
+            secs: 30,
+            on_air: 4,
+            last: 6,
+            waiting: 2,
+        };
+        assert!(matches!(&ev[0], LinkEvent::MegaphoneQueued(r) if *r == q));
+        let sent = SendReply {
+            ok: true,
+            reason: 0,
+            uid: 7,
+            left: 2,
+        };
+        assert!(matches!(&ev[1], LinkEvent::MegaphoneSent(r) if *r == sent));
     }
 
     #[test]

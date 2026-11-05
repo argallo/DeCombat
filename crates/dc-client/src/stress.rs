@@ -461,6 +461,7 @@ fn hud_inputs(fs: &mut FrameState, p: &Prepared, f: u64, now: u32) {
         infinite: false,
     });
     fs.aim_mark = Some(crate::spread::AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
         distance: 6.0 + (f % 20) as f32,
         since_shot_s: None,
         colour: [0, 255, 0, 255],

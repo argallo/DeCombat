@@ -419,8 +419,8 @@ pub struct CamShot {
     /// The round start and the round end were handled.
     started: bool,
     ended: bool,
-    /// The game round the two latches belong to (RND-2).
-    round: u32,
+    /// The game round the two latches belong to (RND-2); `None` before the first tick.
+    round: Option<u32>,
     /// Steps applied so far (logs and tests).
     pub applied: u32,
     /// Field-of-view changes applied and not yet sent: (camera object, degrees) (DSV-580).
@@ -469,16 +469,16 @@ impl CamShot {
     /// The game's round number (each tick): a new round of a round mode runs the start triggers again at its start
     /// and the end trigger again at its result.
     // DC-DEFAULT: RND-2 (staged) the between-round camera shot of DSV-112 at every round
+    // DC-DEFAULT: DSV-567 (proposed) every change of the number resets the latches, also into and out of round 0:
+    // the warm-up's result is numbered round 0 (1 -> 0 -> 1), and round 1 must not inherit its `ended`
     pub fn track_round(&mut self, round_no: u32) {
-        if round_no != self.round {
-            if self.round != 0 {
-                self.started = false;
-                self.ended = false;
-                // steps of the last round's scripts still waiting do not run into the new round
-                self.pending.clear();
-            }
-            self.round = round_no;
+        if self.round.is_some_and(|r| r != round_no) {
+            self.started = false;
+            self.ended = false;
+            // steps of the last round's scripts still waiting do not run into the new round
+            self.pending.clear();
         }
+        self.round = Some(round_no);
     }
 
     /// The round started: the start triggers' camera statements are scheduled (once).
@@ -831,6 +831,28 @@ mod tests {
         assert_eq!(shot.take_fov_notes(), vec![(5, [55.0, 41.25])]);
         assert_eq!(shot.cameras[0].info.fov, [55.0, 41.25]);
         assert_eq!(shot.pending(), 0);
+    }
+
+    /// DSV-567: the warm-up's result is numbered round 0; round 1 after it (1 -> 0 -> 1) gets its own start and end
+    /// shot, as does every later round.
+    #[test]
+    fn the_round_after_the_warmup_result_has_its_own_end_shot() {
+        let pbox = PosBox {
+            min: [-1000.0; 3],
+            max: [1000.0; 3],
+        };
+        let (c, s) = (cams(), scripts());
+        let mut shot = CamShot::plan(&c, Some("|StartT|EndT|"), || 5);
+        // the warm-up runs as round 1, its result as round 0
+        for (round, at) in [(1, 0), (0, 1_000), (1, 2_000), (2, 3_000)] {
+            shot.track_round(round);
+            shot.round_started(&s, &c, at);
+            shot.due(at, &c.points, &pbox);
+            assert!(!shot.cameras[0].live, "round {round}: off at its start");
+            shot.round_ended(&s, &c, at + 500);
+            shot.due(at + 500, &c.points, &pbox);
+            assert!(shot.cameras[0].live, "round {round}: the end shot");
+        }
     }
 
     /// DSV-580: the statement runner's camera cues (a mission or round world): `on`, a move to a point, a field of

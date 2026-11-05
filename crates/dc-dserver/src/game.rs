@@ -37,6 +37,7 @@ pub mod hisec;
 pub mod possession;
 // weapons dropped at a death (DSV-93..DSV-95)
 pub mod drops;
+pub mod packs;
 // DC-DEFAULT: DSV-115..DSV-120 (proposed) destructible world objects (world-objects)
 // DC-DEFAULT: DSV-200..DSV-204 (proposed) Search and Destroy: bomb carrier, plant, defuse, explosion
 pub mod bomb;
@@ -1447,9 +1448,13 @@ pub enum GameOut {
     AiShow {
         slot: usize,
     },
-    /// Co-op: a dead AI is hidden at the park point (its objects stay, FT-R1).
-    AiHide {
+    /// Co-op: an AI died: its objects are hidden at the park point and a corpse object at `pos` facing `yaw` plays
+    /// `clip` (combined clip index, length in ms) for the co-op corpse time (DSV-585).
+    AiDied {
         slot: usize,
+        pos: [f32; 3],
+        yaw: f32,
+        clip: (u16, u32),
     },
     /// Co-op: a reused AI slot gets another body and weapon model (`CF_FILES`).
     AiLook {
@@ -1864,10 +1869,16 @@ pub struct Game {
     play_ms_cache: BTreeMap<String, u32>,
     /// Until when each player's last pain sound plays (DSV-64).
     pain_until: BTreeMap<u8, Millis>,
+    /// The player whose damage is being applied is falling to his end (DSV-596): `(pid, true)` for the damage of a
+    /// landing, `(pid, false)` for a drop through a kill volume. Set around the one damage call, read by its sound.
+    plunge: Option<(u8, bool)>,
     next_case_key: u32,
     /// Weapons dropped at deaths and the next drop key (DSV-93).
     drops: Vec<drops::Drop>,
     next_drop_key: u32,
+    /// The packs dead co-op AI dropped (DSV-591) and their models, resolved from the ROM on first use.
+    packs: Vec<packs::Pack>,
+    pack_looks: Option<packs::PackLooks>,
     /// The breakables and their death effects (DSV-115).
     destruct: destruct::DestructState,
     /// The flags, capture zones and captures of a flag-mode room (DSV-190..DSV-193).
@@ -1982,9 +1993,12 @@ impl Game {
             end_hold_ms: 0,
             play_ms_cache: BTreeMap::new(),
             pain_until: BTreeMap::new(),
+            plunge: None,
             next_case_key: 1,
             drops: Vec::new(),
             next_drop_key: 1,
+            packs: Vec::new(),
+            pack_looks: None,
             destruct: destruct::DestructState::new(world.destructibles.clone()),
             ctf: ctf::CtfState::from_world(world, |t| tables.teams.team_of(t)),
             bomb: bomb::SndState::from_world(world),
@@ -4506,6 +4520,7 @@ impl Game {
         self.tick_burns(now);
         self.tick_hisec(now);
         self.tick_drops(now);
+        self.tick_packs(now);
         self.tick_destruct(now);
         self.tick_spawn_notes(now);
         self.tick_ctf(now);
@@ -10979,6 +10994,99 @@ S0 = \"B\"
                 .unwrap()
         };
         assert!(pos(gs::GS_KILL) < pos(gs::GS_DAMAGE_TAKEN));
+    }
+
+    /// A game with made-up event-sound rows: one pain variant and one fall voice, told apart by name.
+    fn voiced_fall_game() -> Game {
+        let mut g = fall_game();
+        g.tables.event_sounds = crate::sounds::EventSoundTables {
+            pain: vec!["pain.wav".into()],
+            fall: Some("fall.wav".into()),
+            ..Default::default()
+        };
+        g
+    }
+
+    /// The event sounds of an output: (file, form).
+    fn voices(o: &[GameOut]) -> Vec<(String, crate::sounds::SoundForm)> {
+        o.iter()
+            .filter_map(|x| match x {
+                GameOut::Sound(s) => Some((s.file.clone(), s.form)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// DSV-596: a lethal landing plays the fall voice in the fall-death form, once, and no pain variant; a hurting
+    /// landing keeps the fall-hurt sound in the pain form (DSV-152); a shot kill keeps the pain variant; a drop
+    /// through a kill volume plays the fall-death sound.
+    #[test]
+    fn a_fall_death_plays_the_fall_voice_and_the_other_causes_keep_theirs() {
+        use crate::sounds::{FALL_DEATH_FORM, PAIN_FORM};
+        // a lethal landing (800 units: 200 damage)
+        let mut g = voiced_fall_game();
+        let o = fall_run(
+            &mut g,
+            &[(800.0, true, 10), (700.0, false, 0), (0.0, true, 10)],
+            1_000,
+        );
+        assert!(matches!(g.players[&0].life, Life::Dying { .. }));
+        assert_eq!(voices(&o), vec![("fall.wav".to_string(), FALL_DEATH_FORM)]);
+        assert!(g.plunge.is_none());
+        // a hurting landing (21 damage) stays the fall-hurt sound
+        let mut g = voiced_fall_game();
+        let o = fall_run(
+            &mut g,
+            &[(716.441, true, 10), (600.0, false, 0), (374.027, true, 10)],
+            1_000,
+        );
+        assert_eq!(g.players[&0].life, Life::Alive);
+        assert_eq!(voices(&o), vec![("fall.wav".to_string(), PAIN_FORM)]);
+        // a shot kill keeps the pain variant
+        let mut g = voiced_fall_game();
+        let src = combat::DamageSource {
+            weapon: 3,
+            dtype: 1,
+        };
+        g.apply_damage(
+            0,
+            Some(1),
+            500.0,
+            [1.0, 0.0, 0.0],
+            src,
+            TODO_KILL_ZONE_BODY,
+            2_000,
+        );
+        assert!(matches!(g.players[&0].life, Life::Dying { .. }));
+        assert_eq!(
+            voices(&g.take_out()),
+            vec![("pain.wav".to_string(), PAIN_FORM)]
+        );
+        // a drop through a kill volume
+        let mut g = voiced_fall_game();
+        g.volume_death(0, 2_000);
+        assert!(matches!(g.players[&0].life, Life::Dying { .. }));
+        assert_eq!(
+            voices(&g.take_out()),
+            vec![("fall.wav".to_string(), FALL_DEATH_FORM)]
+        );
+        // a fall death is not swallowed by a pain sound that still plays
+        let mut g = voiced_fall_game();
+        g.pain_sound(0, false, 2_000);
+        g.take_out();
+        g.volume_death(0, 2_100);
+        assert_eq!(
+            voices(&g.take_out()),
+            vec![("fall.wav".to_string(), FALL_DEATH_FORM)]
+        );
+        // without a fall row the pain variant plays as before
+        let mut g = voiced_fall_game();
+        g.tables.event_sounds.fall = None;
+        g.volume_death(0, 2_000);
+        assert_eq!(
+            voices(&g.take_out()),
+            vec![("pain.wav".to_string(), PAIN_FORM)]
+        );
     }
 
     /// `-combat` fall keys reach the rule.

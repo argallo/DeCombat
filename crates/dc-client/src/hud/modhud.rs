@@ -132,6 +132,7 @@ pub fn apply_overrides(
                 DrawItem::AimCross {
                     half_gap, colour, ..
                 } => Some(crate::spread::AimMarkView {
+                    shape: crate::spread::mark::SHAPE_PLAIN,
                     distance: *half_gap,
                     since_shot_s: None,
                     colour: *colour,
@@ -967,6 +968,7 @@ mod tests {
     #[test]
     fn the_crosshair_log_names_the_drawing_unit() {
         let mark = DrawItem::AimMark(crate::spread::AimMarkView {
+            shape: crate::spread::mark::SHAPE_PLAIN,
             distance: 10.0,
             since_shot_s: None,
             colour: [0, 255, 0, 255],

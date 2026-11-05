@@ -129,6 +129,40 @@ impl Game {
         true
     }
 
+    /// A death by falling: the fall voice of the character's voice family at the player in the fall-death form, also
+    /// when a pain sound is still playing (a death is never swallowed by the grunt before it). Returns whether it
+    /// started (false without event sounds or a fall row: the usual pain sound plays then).
+    // DC-DEFAULT: DSV-596 (proposed) the fall row of the preload table is the only fall voice of the ROM (no row names
+    // a fall-death file: the CharDeathSound rows of the client table name files the archives do not hold, and the
+    // client reads no such key); a fall death plays it instead of the pain variant
+    pub(super) fn fall_death_sound(&mut self, pid: u8, now: Millis) -> bool {
+        if !self.cfg.event_sounds {
+            return false;
+        }
+        let Some(pos) = self.players.get(&pid).map(|p| p.pos) else {
+            return false;
+        };
+        let family = self.voice_family(pid);
+        let Some(f) = self.tables.event_sounds.fall_of(family).cloned() else {
+            return false;
+        };
+        let play = self.event_sound(f, pos, sounds::FALL_DEATH_FORM);
+        self.pain_until.insert(pid, now.wrapping_add(play));
+        true
+    }
+
+    /// The voice of a hit that is a fall (the damage of a landing, or the drop through a kill volume), chosen once the
+    /// hit's outcome is known: a lethal one plays the fall-death sound, a hurting landing the fall-hurt sound. Returns
+    /// whether a voice started, so the hit's own pain sound is left out. Shots, blasts and the rest return false.
+    // DC-DEFAULT: DSV-596 (proposed), DSV-152 (the hurt case)
+    pub(super) fn plunge_voice(&mut self, pid: u8, lethal: bool, now: Millis) -> bool {
+        match self.plunge {
+            Some((p, _)) if p == pid && lethal => self.fall_death_sound(pid, now),
+            Some((p, true)) if p == pid => self.fall_hurt_sound(pid, now),
+            _ => false,
+        }
+    }
+
     /// A thrown object hit a surface of the given ROM surface id: that surface's grenade impact sound at the point.
     // OBSERVED: capture 20261025_065016_tdm6 c6 seq 9409 / 9423 (two bounces of one throw on
     // JUNK_FLEA: the wood and the stone impact files, the surfaces' `GrenadeImpactSnd`), 20261025_002236_tdm4 c6 seq

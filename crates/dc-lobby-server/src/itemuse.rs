@@ -358,6 +358,47 @@ fn use_kind(
     })
 }
 
+/// use-items-sweep: a colour item's use names the item of the same kind it replaces (0x330 +0x3c): that item, when it
+/// is the account's, in use and of the same kind, is deleted and reported in 0x331 +0x12 (the client deletes it); with
+/// the same item number the new item's period runs on from the old one's end.
+// DC-DEFAULT: CD-100 (proposed) the replaced colour item goes; the same item number extends (the 2009 question
+// 0x1865 / 0x183b: "extend the usage of the current color"); 0x330 +0x3c is the colour window's in-use item
+// (cshell+0x244f30, cshell+0x242b80)
+fn replace_used(
+    st: &Core,
+    account: u32,
+    it: &db::Item,
+    kind: i64,
+    used_uid: u32,
+    o: &mut Outcome,
+) -> rusqlite::Result<()> {
+    if !o.ok || used_uid == 0 || i64::from(used_uid) == it.uid {
+        return Ok(());
+    }
+    let Some(old) = db::item(&st.db, i64::from(used_uid))?
+        .filter(|u| u.user_no == account && u.used != 0 && subtype(st, u.item_no) == Some(kind))
+    else {
+        return Ok(());
+    };
+    if old.item_no == it.item_no && old.end_time != 0 && o.end != 0 {
+        let now = clock::now_ticks();
+        let end = old
+            .end_time
+            .max(now)
+            .saturating_add(o.end.saturating_sub(now).max(0));
+        st.db.execute(
+            "UPDATE items SET end_time = ?2 WHERE uid = ?1",
+            params![it.uid, end],
+        )?;
+        o.end = end;
+    }
+    db::delete_item(&st.db, old.uid)?;
+    st.db
+        .execute("DELETE FROM function_slots WHERE uid = ?1", [old.uid])?;
+    o.removed = old.uid;
+    Ok(())
+}
+
 /// Weapon change: the item becomes the account's default weapon of its slot kind, permanent; the old default of
 /// that kind is deleted (its unique id goes in 0x331 +0x12, the client deletes it: cshell+0x2452f0 kind 12).
 // DC-DEFAULT: CD-80 (proposed) the target is the ROM ChangeItemID (the request's +0x40 must match when the ROM
@@ -419,7 +460,10 @@ pub fn on_use(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
         return Ok(());
     };
     let kind = subtype(st, it.item_no);
-    let o = use_kind(st, account, &it, kind, &req)?;
+    let mut o = use_kind(st, account, &it, kind, &req)?;
+    if let Some(k @ (SUB_NAME_COLOUR | SUB_CLAN_COLOUR | SUB_RETICLE)) = kind {
+        replace_used(st, account, &it, k, req.used_uid, &mut o)?;
+    }
     if o.ok && o.consumed {
         db::delete_item(&st.db, it.uid)?;
         st.db

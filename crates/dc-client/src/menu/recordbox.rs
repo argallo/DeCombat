@@ -73,18 +73,18 @@ pub struct RecordLayout {
     pub warning_at: [i32; 2],
 }
 
-/// DC-DEFAULT: CLI-1371 (proposed) without the ROM's layout section the window takes these places (the 2009 ROM's
-/// values).
+/// DC-DEFAULT: CLI-1371 (proposed) our fallback when the ROM's layout section is missing: a 600 x 400 window on a
+/// simple grid of our own round numbers (the real places are read from the ROM first).
 impl Default for RecordLayout {
     fn default() -> Self {
         RecordLayout {
-            window_at: [276, 255],
-            window_size: [478, 258],
-            ok_at: [112, 207],
-            cancel_at: [230, 207],
-            title_at: [10, 7],
-            record_at: [41, 61],
-            warning_at: [41, 104],
+            window_at: [212, 184],
+            window_size: [600, 400],
+            ok_at: [200, 350],
+            cancel_at: [320, 350],
+            title_at: [10, 10],
+            record_at: [20, 60],
+            warning_at: [20, 150],
         }
     }
 }
@@ -122,28 +122,17 @@ pub struct RecordTexts {
 }
 
 impl RecordTexts {
-    /// DC-DEFAULT: CLI-1371 (proposed) without the ROM's string section the ids of the 2009 ROM's section.
-    pub fn fallback(clan: bool) -> RecordTexts {
-        if clan {
-            RecordTexts {
-                title: 6167,
-                warning: 6091,
-                current: 6090,
-                ask_title: 6173,
-                ask_text: 6171,
-                done_title: 6166,
-                done_text: 6163,
-            }
-        } else {
-            RecordTexts {
-                title: 6168,
-                warning: 6089,
-                current: 6088,
-                ask_title: 6172,
-                ask_text: 6170,
-                done_title: 6165,
-                done_text: 6164,
-            }
+    /// DC-DEFAULT: CLI-1371 (proposed) our fallback when the ROM's string section is missing: no text (id 0); the real
+    /// ids are read from the ROM first.
+    pub fn fallback(_clan: bool) -> RecordTexts {
+        RecordTexts {
+            title: 0,
+            warning: 0,
+            current: 0,
+            ask_title: 0,
+            ask_text: 0,
+            done_title: 0,
+            done_text: 0,
         }
     }
 
@@ -352,9 +341,12 @@ mod tests {
         assert_eq!(b.press(at([200, 150])), Some(RecordStep::None));
         b.waiting = true;
         assert_eq!(b.press(at(l.ok_at)), Some(RecordStep::None));
+        // the string ids are ours here (the fallback has none)
+        b.texts.ask_title = 4001;
+        b.texts.done_title = 4002;
         let q = b.ask_box(&c);
         assert_eq!(q.tag, BoxTag::UseConfirm { uid: 7 });
-        assert_eq!(q.title, 6172);
-        assert_eq!(b.done_box(&c).title, 6165);
+        assert_eq!(q.title, 4001);
+        assert_eq!(b.done_box(&c).title, 4002);
     }
 }

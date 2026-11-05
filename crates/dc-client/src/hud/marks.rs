@@ -241,6 +241,12 @@ pub fn frame_marks_forced(
         if Some(r.pid) == s.own_pid || !shown(r) {
             continue;
         }
+        // an AI character (the NPC id, a caption) is marked like any other entry: its caption and rank icon follow the
+        // 2009 rules below (an enemy under the cross), and super::npcbar adds its health bar
+        // SPEC: FIRETEAM_2009.md §1.4 (the marker add gives an AI with a caption a caption element and two rank icons;
+        // the entry is drawn while its elements exist and its point is valid)
+        // DC-DEFAULT: CLI-1870 (USER DECISION 2026-11-05: follow the 2009 evidence; the 2026-11-04 no-tag direction is
+        // reversed)
         let team = team_of(s, r);
         // DC-DEFAULT: CLI-685 (proposed) FFA team values run past 2: there any value but 0 is a player's
         let ffa = s.mode_class == Some(FFA_CLASS);
@@ -465,6 +471,35 @@ mod tests {
         let mut left = remotes.clone();
         left[0].pos[0] = -600.0;
         assert!(frame_marks(&s, &left, &flat, None, &none()).is_empty());
+    }
+
+    /// CLI-1870 (2009 evidence, FIRETEAM_2009.md §1.4): an AI with a caption is marked like any entry: an enemy AI
+    /// under the cross only, an AI of the own team always, the caption being the create's.
+    #[test]
+    fn an_ai_with_a_caption_gets_the_2009_mark() {
+        let s = state();
+        let ai = |obj: u16, team: u8, x: f32| RemoteBody {
+            pid: crate::net::NPC_PID,
+            name: "Guard".into(),
+            ..body(obj, 0, team, x)
+        };
+        let remotes = [ai(20, 2, 0.0), ai(21, 1, 100.0)];
+        let m = frame_marks(&s, &remotes, &flat, None, &none());
+        assert_eq!(
+            m.iter()
+                .map(|x| (x.obj, x.name.as_str(), x.state))
+                .collect::<Vec<_>>(),
+            [(21, "Guard", MarkState::Mate)]
+        );
+        let m = frame_marks(&s, &remotes, &flat, Some(20), &none());
+        assert_eq!(
+            m.iter().map(|x| (x.obj, x.state)).collect::<Vec<_>>(),
+            [(20, MarkState::Enemy), (21, MarkState::Mate)]
+        );
+        // no caption, no entry (FIRETEAM_2009.md §1.4)
+        let mut bare = remotes.clone();
+        bare[0].name.clear();
+        assert!(frame_marks(&s, &bare[..1], &flat, Some(20), &none()).is_empty());
     }
 
     /// CLI-685: in a free-for-all match nobody is a mate: a player of the own team value is marked only under the

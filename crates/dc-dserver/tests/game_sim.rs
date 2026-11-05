@@ -1914,6 +1914,7 @@ fn coop_net(cfg: ServerTuning, room: &str) -> Net {
             max_health: Some(60.0),
             template: true,
             death_cmd: Vec::new(),
+            ..Default::default()
         }],
         nodes: vec![[0.0, 0.0, 0.0]],
         mission: false,
@@ -2085,6 +2086,7 @@ fn coop_ai_created_hit_killed_hidden_and_reused() {
     // kill every AI of the wave with reported hits; watch the pool: hidden, then shown again
     let mut hidden_seen = std::collections::BTreeSet::new();
     let mut reshown = std::collections::BTreeSet::new();
+    let mut corpse_seen = false;
     let end = net.now + 60_000;
     while net.now < end && net.c(0).seen.coop_result.is_none() {
         let alive: Vec<u16> = net
@@ -2100,6 +2102,7 @@ fn coop_ai_created_hit_killed_hidden_and_reused() {
         }
         net.run_for(40);
         for (o, so) in &net.c(1).seen.objects {
+            corpse_seen |= so.blob_type == Some(0x26);
             if so.blob_pid == Some(0xff) {
                 if so.flags == Some(0x2802) {
                     hidden_seen.insert(*o);
@@ -2135,6 +2138,8 @@ fn coop_ai_created_hit_killed_hidden_and_reused() {
         "never removed"
     );
     assert!(!hidden_seen.is_empty(), "a dead AI was hidden");
+    // DSV-585: a corpse lies where an AI fell
+    assert!(corpse_seen, "an AI corpse object");
     assert!(
         !reshown.is_empty(),
         "and its object shown again for the next AI"

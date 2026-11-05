@@ -2,7 +2,7 @@
 //! a reaction delay after a target becomes visible, a per-shot aim error, bursts with pauses and the weapon's ROM
 //! spread, so a person can fight the bot and its traffic looks like a player's. All numbers are DeCombat bot rules
 //! (test traffic), scaled linearly by the skill; none of them is a 2009 rule.
-// DC-DEFAULT: BOT-20..BOT-25 (proposed, staged in DC_DEFAULTS.md)
+// DC-DEFAULT: BOT-20..BOT-25 (proposed, staged in DC_DEFAULTS.md); BOT-123 (proposed) the sniper rule
 // DC-DEFAULT: CLI-31 (proposed) the spread law of dc-client, applied to the bot's own shots
 
 use std::f32::consts::{PI, TAU};
@@ -66,7 +66,20 @@ pub struct Skill {
     /// BOT-90: a target already engaged is kept unless another one is nearer than this fraction of its distance.
     // DC-DEFAULT: BOT-90 (proposed) 0.55 at every skill
     pub stick_ratio: f32,
+    /// BOT-123: with a scoped sniper rifle the per-shot aim error is this many times larger (on top of BOT-114's 0.4).
+    // DC-DEFAULT: BOT-123 (proposed) 2.0 at 0 .. 1.2 at 100 (1.6 at 50)
+    pub sniper_sigma_mult: f32,
+    /// BOT-123: with a scoped sniper rifle the first shot of a sighting waits this much longer (the scope settling), ms.
+    // DC-DEFAULT: BOT-123 (proposed) 400 ms at 0 .. 100 ms at 100 (250 at 50)
+    pub sniper_settle_ms: u32,
+    /// BOT-123: the chance that the first shot of a sighting beyond [`SNIPER_FAR_RANGE`] goes wide (a clean miss).
+    // DC-DEFAULT: BOT-123 (proposed) 0.40 at 0 .. 0.20 at 100 (0.30 at 50)
+    pub sniper_far_miss: f32,
 }
+
+/// BOT-123: a scoped sniper rifle's first shot of a sighting may go wide beyond this distance to the target, units.
+// DC-DEFAULT: BOT-123 (proposed) 1500 units (fifteen body heights)
+pub const SNIPER_FAR_RANGE: f32 = 1500.0;
 
 /// BOT-90: time constant of the aim wander, ms.
 pub const WANDER_TAU_MS: u32 = 600;
@@ -101,6 +114,9 @@ impl Skill {
             recoil_deg: lerp(0.9, 0.25, t),
             moving_factor: lerp(1.9, 1.25, t),
             stick_ratio: 0.55,
+            sniper_sigma_mult: lerp(2.0, 1.2, t),
+            sniper_settle_ms: lerp(400.0, 100.0, t).round() as u32,
+            sniper_far_miss: lerp(0.40, 0.20, t),
         }
     }
 
@@ -337,6 +353,21 @@ mod tests {
             lo.overshoot > hi.overshoot
                 && lo.recoil_deg > hi.recoil_deg
                 && lo.moving_factor > hi.moving_factor
+        );
+        // BOT-123: the sniper rule at 0 / 50 / 100
+        assert_eq!(
+            (
+                lo.sniper_settle_ms,
+                mid.sniper_settle_ms,
+                hi.sniper_settle_ms
+            ),
+            (400, 250, 100)
+        );
+        assert!(
+            (mid.sniper_sigma_mult - 1.6).abs() < 1e-5 && (mid.sniper_far_miss - 0.3).abs() < 1e-5
+        );
+        assert!(
+            lo.sniper_sigma_mult > hi.sniper_sigma_mult && lo.sniper_far_miss > hi.sniper_far_miss
         );
         assert_eq!(Skill::parse_level("40", 1), Some(40));
         assert_eq!(Skill::parse_level("off", 1), None);

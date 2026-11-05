@@ -1453,6 +1453,7 @@ fn user_rows_draw_their_clan_mark() {
     let marks = dc_client::menu::clan::ClanMarks {
         emblems: vec![None, Some("e1".into())],
         backgrounds: vec![None, Some("b1".into())],
+        ..Default::default()
     };
     let mut style = row_style();
     style.user_mark_at = [180, 5];

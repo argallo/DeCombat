@@ -8,9 +8,12 @@
 // EVIDENCE: cshell+0x2450e0 / 0x2452f0 (weapon change), cshell+0x2427e0 / 0x244c00 / 0x244cf0 (record window)
 
 use dc_client::hud::items::DrawItem;
+use dc_client::menu::clan::ClanLits;
+use dc_client::menu::facebox::{self, FaceLayout, FaceTexts};
 use dc_client::menu::link::{
     ClanInfoView, InboxRow, InvRecord, LinkEvent, LinkOptions, OpenReply, UseReply,
 };
+use dc_client::menu::markbox::{self, MarkLayout};
 use dc_client::menu::shop::CMD_WEAR;
 use dc_client::menu::storage::Wares;
 use dc_client::menu::usebox::{NOTICE_TITLE, WEAPON_CHANGE_ASK};
@@ -165,7 +168,7 @@ fn rom_weapon_change_asks_then_sends_the_change_item_and_converts_the_item() {
     m.input(MenuInput::Key(MenuKey::Enter));
     assert_eq!(
         m.link_latest_request(),
-        format!("ItemUse(600, \"\", {change})")
+        format!("ItemUse(600, \"\", {change}, 0)")
     );
     // refused: the reason box
     m.feed_event(LinkEvent::ItemUsed(UseReply {
@@ -187,7 +190,7 @@ fn rom_weapon_change_asks_then_sends_the_change_item_and_converts_the_item() {
     m.input(MenuInput::Key(MenuKey::Enter));
     assert_eq!(
         m.link_latest_request(),
-        format!("ItemUse(600, \"\", {change})")
+        format!("ItemUse(600, \"\", {change}, 0)")
     );
     m.feed_event(LinkEvent::ItemUsed(UseReply {
         ok: true,
@@ -249,7 +252,7 @@ fn rom_record_reset_shows_the_record_asks_and_clears_it() {
     // OK, OK: 0x330 with the unique id alone; refused -> the reason box, the window stays
     m.input(MenuInput::Key(MenuKey::Enter));
     m.input(MenuInput::Key(MenuKey::Enter));
-    assert_eq!(m.link_latest_request(), "ItemUse(700, \"\", 0)");
+    assert_eq!(m.link_latest_request(), "ItemUse(700, \"\", 0, 0)");
     m.feed_event(LinkEvent::ItemUsed(UseReply {
         ok: false,
         reason: 0x5f,
@@ -303,7 +306,7 @@ fn rom_clan_record_reset_asks_for_the_clan_record() {
     // ok: the clan success box, the item gone
     m.input(MenuInput::Key(MenuKey::Enter));
     m.input(MenuInput::Key(MenuKey::Enter));
-    assert_eq!(m.link_latest_request(), "ItemUse(701, \"\", 0)");
+    assert_eq!(m.link_latest_request(), "ItemUse(701, \"\", 0, 0)");
     m.feed_event(LinkEvent::ItemUsed(UseReply {
         ok: true,
         uid: 701,
@@ -312,4 +315,132 @@ fn rom_clan_record_reset_asks_for_the_clan_record() {
     settle(&mut m);
     assert_eq!(m.popup().map(|p| p.title), Some(6166));
     assert!(!m.data.store.items.iter().any(|r| r.uid == 701));
+}
+
+/// The first function item of `SubType` `sub` in the ROM item table.
+fn item_of(sub: i32) -> Option<i32> {
+    let rom = dc_rom::resolve_rom().ok()?;
+    let wares = Wares::cached(Some(&rom));
+    (9000..10000).find(|&n| wares.art_of(n).is_some_and(|a| a.sub_type == sub))
+}
+
+fn press(m: &mut Menu, at: [i32; 2]) {
+    let p = [(at[0] + 5) as f32, (at[1] + 5) as f32];
+    m.input(MenuInput::Move(p));
+    m.input(MenuInput::Press(p));
+    m.input(MenuInput::Release(p));
+}
+
+/// use-items-emblem (CLI-1884): the clan emblem item opens the mark window: Next wants an emblem, Check a background,
+/// an ok check enables OK, the confirmation's OK sends the pair and the answer makes it the clan's mark.
+#[test]
+fn rom_clan_mark_window_checks_then_sends_the_pair() {
+    let Some(item) = item_of(markbox::SUB_CLAN_MARK) else {
+        eprintln!("skipped: no CA_ROM or no clan emblem item");
+        return;
+    };
+    let Some(mut m) = opened(item, 702, |_| {}) else {
+        eprintln!("skipped: no clan emblem product");
+        return;
+    };
+    let title = m.cat.text(markbox::TITLE_TEXT);
+    assert!(texts(&mut m).contains(&title), "the mark window");
+    let l = MarkLayout::read(&m.cat);
+    let w = l.window_at();
+    let at = |p: [i32; 2]| [w[0] + p[0], w[1] + p[1]];
+    let marks = ClanLits::from_rom(m.cat.rom.as_deref().unwrap()).marks;
+    let first = |cats: &[i32]| cats.iter().position(|&c| c >= 1).unwrap() as u32;
+    let (e, g) = (first(&marks.emblem_cats), first(&marks.background_cats));
+    // Next without an emblem: the box titled 0x346
+    m.input(MenuInput::Key(MenuKey::Enter));
+    let q = m.popup().cloned().expect("no emblem box");
+    assert_eq!(
+        (q.text, q.title),
+        (m.cat.text(markbox::NO_EMBLEM_TEXT), 0x346)
+    );
+    m.input(MenuInput::Key(MenuKey::Enter));
+    press(&mut m, at(l.list_at));
+    shot(&mut m, "mark_emblem");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    press(&mut m, at(l.list_at));
+    let before = m.link_latest_request();
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(m.link_latest_request(), format!("MarkCheck({e}, {g})"));
+    assert_ne!(before, m.link_latest_request());
+    m.feed_event(LinkEvent::MarkChecked {
+        ok: true,
+        reason: 0,
+    });
+    settle(&mut m);
+    let q = m.popup().cloned().expect("check box");
+    assert_eq!(q.title, markbox::CHECKED_TITLE);
+    m.input(MenuInput::Key(MenuKey::Enter));
+    shot(&mut m, "mark_background");
+    // OK: the confirmation; its OK sends
+    m.input(MenuInput::Key(MenuKey::Enter));
+    shot(&mut m, "mark_confirm");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(m.link_latest_request(), format!("MarkUse(702, {e}, {g})"));
+    m.feed_event(LinkEvent::ItemUsed(UseReply {
+        ok: true,
+        uid: 702,
+        ..Default::default()
+    }));
+    settle(&mut m);
+    assert_eq!(m.popup().map(|p| p.title), Some(markbox::DONE_TITLE));
+    let x = &m.data.char_extras;
+    assert_eq!((x.clan_mark, x.clan_mark_ground), (e, g));
+    assert!(m.data.store.items.iter().any(|r| r.uid == 702 && r.in_use));
+}
+
+/// use-items-emblem (CLI-1885): the base character item lists the own gender's other characters, OK confirms, the
+/// confirmation's OK sends 6000 + the picked face and the answer sets the own face; Cancel shows the cancelled box.
+#[test]
+fn rom_face_window_confirms_then_sends_the_face() {
+    let Some(item) = item_of(facebox::SUB_FACE) else {
+        eprintln!("skipped: no CA_ROM or no base character item");
+        return;
+    };
+    let Some(mut m) = opened(item, 703, |m| m.data.profile.face = 6002) else {
+        eprintln!("skipped: no base character product");
+        return;
+    };
+    let texts_of = FaceTexts::read(&m.cat, facebox::SUB_FACE);
+    let title = m.cat.text(texts_of.title);
+    assert!(texts(&mut m).contains(&title), "the face window");
+    let rows = facebox::rows_from_rom(m.cat.rom.as_deref());
+    let list = facebox::choices(&rows, facebox::SUB_FACE, 2);
+    let l = FaceLayout::read(&m.cat);
+    let w = l.window_at();
+    press(&mut m, [w[0] + l.list_at[0], w[1] + l.list_at[1]]);
+    shot(&mut m, "face_pick");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    shot(&mut m, "face_confirm");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert_eq!(
+        m.link_latest_request(),
+        format!("FaceUse(703, {})", 6000 + list[0].face)
+    );
+    m.feed_event(LinkEvent::ItemUsed(UseReply {
+        ok: true,
+        uid: 703,
+        ..Default::default()
+    }));
+    settle(&mut m);
+    assert_eq!(m.data.profile.face, 6000 + list[0].face);
+    assert!(!m.data.store.items.iter().any(|r| r.uid == 703));
+    // the gender item: Escape cancels
+    let Some(item) = item_of(facebox::SUB_GENDER) else {
+        return;
+    };
+    let Some(mut m) = opened(item, 704, |m| m.data.profile.face = 6002) else {
+        return;
+    };
+    let title = m
+        .cat
+        .text(FaceTexts::read(&m.cat, facebox::SUB_GENDER).title);
+    assert!(texts(&mut m).contains(&title), "the gender window");
+    shot(&mut m, "gender");
+    m.input(MenuInput::Key(MenuKey::Escape));
+    cancelled(&mut m);
 }

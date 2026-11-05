@@ -631,6 +631,24 @@ pub enum HudKey {
     CoopBannerFontSize,
     CoopBannerTextPos,
     CoopBannerColour,
+    // The co-op element's drop-item note (cshell+0x7f290 reads its keys, cshell+0x80090 starts a note for 0xc9 sub 6,
+    // cshell+0x81930 times, fades and stacks the notes) and the class-5 score of the scoreboard element (cshell+0x8ebe0
+    // reads the label and digit keys, cshell+0x91cd0 sets the six digits).
+    CoopDropRect,
+    CoopDropPos,
+    CoopDropOffset,
+    CoopDropPlayTime,
+    CoopDropFadeTime,
+    CoopDropAmmoTex,
+    CoopDropAmmoBoxTex,
+    CoopDropHealthTex,
+    CoopScoreImgTex,
+    CoopScoreImgRect,
+    CoopScoreImgPos,
+    CoopScoreNumTex,
+    CoopScoreNumRect,
+    CoopScoreNumFirstPos,
+    CoopScoreNumSpace,
 }
 
 /// `(key, literal rva, sha16, length, evidence rva, value form)` per key.
@@ -5105,6 +5123,147 @@ const EXTRA: [(HudKey, u32, &str, usize, u32, ValueKind, HudSection); HudKey::EX
         ValueKind::Colour,
         HudSection::Coop,
     ),
+    // EVIDENCE: cshell+0x7f290 (each key pushed with the co-op section literal: the note's size, place and per-note
+    // offset through the pair getter cshell+0x15a6c0, its show and fade times through the real getter cshell+0x157b80
+    // (times 1000: milliseconds), the three pictures through the text getter cshell+0x157ab0)
+    (
+        HudKey::CoopDropRect,
+        0x3d5dbc,
+        "22b3f68b6f74bc10",
+        12,
+        0x7fcae,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropPos,
+        0x3d5db0,
+        "05081c3bfe38bd00",
+        11,
+        0x7fccd,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropOffset,
+        0x3d5da0,
+        "b76297490d8fc3a6",
+        14,
+        0x7fcf8,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropPlayTime,
+        0x3d5d8c,
+        "4a7cb58bbd262107",
+        16,
+        0x7fd23,
+        ValueKind::Real,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropFadeTime,
+        0x3d5d78,
+        "9889055efaae345c",
+        16,
+        0x7fd44,
+        ValueKind::Real,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropAmmoTex,
+        0x3d5d68,
+        "971675920ca7c5ea",
+        15,
+        0x7fd6a,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropAmmoBoxTex,
+        0x3d5d54,
+        "21c1e4a9148bbcd0",
+        18,
+        0x7fda0,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopDropHealthTex,
+        0x3d5d40,
+        "67dc6198fe6d588d",
+        17,
+        0x7fdd6,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    // EVIDENCE: cshell+0x8ebe0 (each key pushed with the co-op section literal: the label picture through the text
+    // getter, its size and place through the pair getter, the digit picture form, the digit size and first place, and
+    // the digit spacing through the integer getter cshell+0x157b40)
+    (
+        HudKey::CoopScoreImgTex,
+        0x3d67f4,
+        "78a61da7f461fbb3",
+        11,
+        0x90069,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopScoreImgRect,
+        0x3d67e4,
+        "f3d14a6a2b4fc410",
+        12,
+        0x90094,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopScoreImgPos,
+        0x3d67d8,
+        "8e4e2e7abe599168",
+        11,
+        0x900af,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopScoreNumTex,
+        0x3d67cc,
+        "5bef14f5056a2c37",
+        11,
+        0x9012c,
+        ValueKind::Text,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopScoreNumRect,
+        0x3d67bc,
+        "bef74ebf9eebed7a",
+        12,
+        0x90166,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopScoreNumFirstPos,
+        0x3d67a8,
+        "6d50b5d1ab186fbc",
+        16,
+        0x90183,
+        ValueKind::Pair,
+        HudSection::Coop,
+    ),
+    (
+        HudKey::CoopScoreNumSpace,
+        0x3d6798,
+        "7ce983836dd5bb98",
+        13,
+        0x901aa,
+        ValueKind::Int,
+        HudSection::Coop,
+    ),
 ];
 
 impl HudKey {
@@ -5115,8 +5274,9 @@ impl HudKey {
     /// Search and Destroy (21), modes-r11b Quarantine (26), modes-polish Quarantine (22), modes-polish
     /// Capture the Flag (12), modes-spyhunt Spy Hunt (47), ctf-clan-r12 flag marker texts (4), modes-r12b
     /// Quarantine round pictures (2), class-13 top and team-change sprite (18), modes-r13 host timer scale (1),
-    /// doors-gear-r13 door prompt (3), match-r15 item prompt (3), mission-hud co-op goal list and banner (14).
-    pub const EXTRA_COUNT: usize = 383;
+    /// doors-gear-r13 door prompt (3), match-r15 item prompt (3), mission-hud co-op goal list and banner (14),
+    /// fireteam-client-score co-op drop-item note and score (15).
+    pub const EXTRA_COUNT: usize = 398;
 
     /// Every key in table order.
     pub fn all() -> impl Iterator<Item = HudKey> {

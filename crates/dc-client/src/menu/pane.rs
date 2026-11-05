@@ -6,7 +6,9 @@
 // while the character has no backpack slots (+0x2dc < 1); body list 4 six items MyItemSlot_Off / _On 0xc2 x 0x47)
 
 use super::catalog::Catalog;
-use super::sheet::{image_fit, place_text, ALIGN_LEFT};
+use super::link::InvRecord;
+use super::scrollbar::ScrollBar;
+use super::sheet::{image_fit, list_row, place_text, Part, ALIGN_LEFT};
 use super::storage::{Store, Wares};
 use crate::hud::items::DrawItem;
 use dc_ui_data::pages::Align;
@@ -555,54 +557,76 @@ pub fn shop_window_image(market: bool) -> &'static str {
     }
 }
 
-/// The black market tab's list of the character's function items (list 5 of the pane): up to 16 rows, the first
-/// row named by string 0x17cc while the character holds none.
-// EVIDENCE: cshell+0x1496e0 (list 5 shown; one row per held item of the shell's item list, at most 0x10, each with
-// the item's image and name of type 0x15; the first row stays with string 0x17cc and no item when the list is
-// empty), cshell+0x14b8a0 (tab 2 of the shop and storage pages runs it), cshell+0x1425d0 (its 16 items
-// MyItemSlot_Off 0xc2 x 0x47)
-// DC-DEFAULT: CLI-741 (proposed) the held items listed are the inventory records of item type 0x15 (the shell list
-// +0x38 the 2009 code reads is not traced); rows at the list's x + 12 (OBSERVED screens-sweep/
-// cpp/shop/shop_bb03_shop_market.png: the row's left edge at x 260, the list record at 248)
+/// The black market tab's list of the character's active function items (list 5 of the pane): the function list
+/// sorted by `SubType`, at most 16 rows, the first row named by string 0x17cc while the list is empty. The list
+/// scrolls: its rows run under the list's scroll bar (the record's), which is shown from 7 rows on.
+// EVIDENCE: cshell+0x1496e0 (list 5 shown; one row per record of the function list (inventory manager +0x38), at
+// most 0x10, each with the item's image and name of type 0x15; the first row stays with string 0x17cc and no item
+// when the list is empty; fewer than 7 records: the list's bar off (cshell+0x3f0330(0)) and width 0x104, else bar on
+// and width 0xf8), cshell+0x2292e0 (the function list: the records of the seven function slots, then every record
+// of type 0x15 in use whose row +0x241 is 0), cshell+0x145a10 (the copy sorted by the row's +0x14 = SubType,
+// cshell+0x227070, then the row's +0), cshell+0x14b8a0 (tab 2 of the shop and storage pages runs it),
+// cshell+0x1425d0 (its 16 items MyItemSlot_Off 0xc2 x 0x47)
+// DC-DEFAULT: CLI-741 (amended, OWNER REPORT 2026-11-04 "activating all of them causes them to clip off screen")
+// the rows are the function list's records (the records in the function slots, then the records in use without
+// IsCanUnEquip), sorted by SubType then item number (row +0 taken for the item number); rows at the list's x + 12
+// (OBSERVED screens-sweep/cpp/shop/shop_bb03_shop_market.png: the row's left edge at x 260, the list record at 248);
+// the list record's height (450: six rows) clips them, the record's bar scrolls them (wheel, arrows, thumb) a row
+// at a time; the row x stays where it is when the bar shows (the 2009 width 0xf8 is not applied to the rows)
 pub const MARKET_LIST: i32 = 5;
 pub const MARKET_ROWS: usize = 0x10;
 pub const MARKET_EMPTY_TEXT: i32 = 0x17cc;
 pub const MARKET_ROW_DX: i32 = 12;
-const FUNCTION_ITEM: i32 = 0x15;
+/// The list shows its scroll bar from this many rows on.
+// EVIDENCE: cshell+0x1496e0 (count < 7 -> bar off)
+pub const MARKET_BAR_ROWS: usize = 7;
 
-/// Draws the black market list at `at` (the list record's position).
+/// The records the black market list shows, in its order (see [`MARKET_LIST`]).
+pub fn market_records<'a>(wares: &Wares, store: &'a Store) -> Vec<&'a InvRecord> {
+    let mut list = wares.function_list(store);
+    list.sort_by_key(|r| {
+        (
+            wares.art_of(r.item_no as i32).map_or(-1, |a| a.sub_type),
+            r.item_no,
+        )
+    });
+    list.truncate(MARKET_ROWS);
+    list
+}
+
+/// Draws the black market list into list record `list` (its bar scrolls the rows; rows outside the list's height
+/// are not drawn).
 pub fn draw_market_rows(
     cat: &mut Catalog,
-    at: [i32; 2],
+    list: &Part,
     wares: &Wares,
     store: &Store,
     out: &mut Vec<DrawItem>,
 ) {
-    let held: Vec<i32> = store
-        .items
+    let held: Vec<i32> = market_records(wares, store)
         .iter()
         .map(|r| r.item_no as i32)
-        .filter(|n| wares.kind_of(*n) == Some(FUNCTION_ITEM))
-        .take(MARKET_ROWS)
         .collect();
-    let x = at[0] + MARKET_ROW_DX;
     let row = |i: usize| {
-        [
-            x,
-            at[1] + i as i32 * (ROW_SIZE[1] + 3),
-            ROW_SIZE[0],
-            ROW_SIZE[1],
-        ]
+        list_row(list, ROW_SIZE[1], i, 0)
+            .map(|at| [at[0] + MARKET_ROW_DX, at[1], ROW_SIZE[0], ROW_SIZE[1]])
     };
     if held.is_empty() {
-        let r = row(0);
+        let r = [
+            list.pos[0] + MARKET_ROW_DX,
+            list.pos[1],
+            ROW_SIZE[0],
+            ROW_SIZE[1],
+        ];
         out.push(image_fit(cat, BODY_ROW_IMAGE, [r[0], r[1]], ROW_SIZE));
         let t = cat.text(MARKET_EMPTY_TEXT);
         out.push(row_text(&t, r));
         return;
     }
     for (i, n) in held.iter().enumerate() {
-        let r = row(i);
+        let Some(r) = row(i) else {
+            continue;
+        };
         out.push(image_fit(cat, BODY_ROW_IMAGE, [r[0], r[1]], ROW_SIZE));
         if let Some(icon) = wares
             .art_of(*n)
@@ -617,6 +641,17 @@ pub fn draw_market_rows(
             ));
         }
         out.push(row_text(&wares.label_of(*n), r));
+    }
+    if let Some(b) = market_bar(list, held.len()) {
+        b.draw(cat, out);
+    }
+}
+
+/// The black market list's bar (None while it is hidden: fewer than [`MARKET_BAR_ROWS`] rows).
+pub fn market_bar(list: &Part, rows: usize) -> Option<&ScrollBar> {
+    match &list.look {
+        super::sheet::Look::List { bar: Some(b), .. } if rows >= MARKET_BAR_ROWS => Some(b),
+        _ => None,
     }
 }
 

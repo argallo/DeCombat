@@ -89,7 +89,8 @@ pub const GS_BOUNTY_MODE: u8 = 0xcb;
 pub const GS_PERF_STATS: u8 = 0xc3;
 /// `GS_MULTI_KILL` (0xc8): `[kills:u16][head:bool1][combo:u32]`, a banner the server orders directly: `combo` > 1
 /// the "N COMBO" banner, else the one-kill banner with `kills` (the head-shot banner when `head`). Not the
-/// multi-kill banner of TDM, which the 0x6d `kill_kind` level selects; DeCombat does not send it (DSV-105).
+/// multi-kill banner of TDM, which the 0x6d `kill_kind` level selects; sent only per AI kill in co-op (DSV-602), never in
+/// the kill modes (DSV-105).
 // SPEC: GAME_MESSAGES_2009_S2C.md §3.3 (cshell+0x2d8ca)
 // DISASM: cshell+0x2d8ca..0x2d918 (the reads and the two calls), cshell+0xa52a0, cshell+0xa57b0
 pub const GS_MULTI_KILL: u8 = 0xc8;
@@ -1527,7 +1528,8 @@ pub fn kill(k: &Kill) -> BitWriter {
 /// `GS_MULTI_KILL` `[kills:u16][head:bool1][combo:u32]`: `combo` > 1 shows the client's "N COMBO" banner with the
 /// digits of `combo` (a sound only when `head` is set); else the head-shot banner when `head`, else the one-kill
 /// banner with the digits of `kills` (nothing for 0). The banner shows on the receiving client whoever it is.
-/// Unused by the TDM rule (DSV-105): the multi-kill banner with its voice line is the 0x6d level.
+/// Not used by the TDM rule (DSV-105): the multi-kill banner with its voice line is the 0x6d level; co-op sends it per
+/// AI kill (DSV-602).
 // SPEC: GAME_MESSAGES_2009_S2C.md §3.3
 // DISASM: cshell+0x2d8ef..0x2d918 (`combo` > 1 -> cshell+0xa52a0(`head`, `combo`, 0), else
 // cshell+0xa57b0(`head`, `kills`, 0)); cshell+0xa52e0 / cshell+0xa57f9 (`head` is the head-shot flag), cshell+0xa588d
@@ -1595,6 +1597,14 @@ pub const GS_COOP_MISSION: u8 = 0xc9;
 pub const MISSION_LIST: u8 = 1;
 pub const MISSION_BANNER: u8 = 2;
 pub const MISSION_CAPTION: u8 = 3;
+pub const MISSION_PICKUP: u8 = 6;
+/// `GS_COOP_MISSION` sub 6 `pickup` values: the HUD's drop-item note with the co-op layout's health, ammunition or
+/// ammunition-box picture (and one of the three pickup sounds).
+// DISASM: cshell+0x80090 (1 -> note object +0xfc, 2 -> +0xf4, 3 -> +0xf8, other values nothing), cshell+0x7f290 (the
+// layout section's three drop-item picture keys load +0xf4 (ammunition), +0xf8 (ammunition box), +0xfc (health))
+pub const PICKUP_NOTE_HEALTH: u8 = 1;
+pub const PICKUP_NOTE_AMMO: u8 = 2;
+pub const PICKUP_NOTE_AMMO_BOX: u8 = 3;
 /// `GS_MUSIC` 0xd9: `[op:u8]`, op 0 stop, op 1 `[loop:bool1][fade:f32][file:zstr8(261)]` (the file relative to the
 /// client's game folder).
 // SPEC: GAME_MESSAGES_2009_S2C.md §4.2 row 0xd9 (cshell+0x5de30)
@@ -1678,6 +1688,15 @@ pub fn coop_mission_list(goals: &[MissionGoal], timers: &[f32], a: u8, b: u8) ->
             w.write_f32(*t);
         }
         w.write_u8(a).write_u8(b);
+    })
+}
+
+/// `GS_COOP_MISSION` sub 6 `[pickup:u8]`: the drop-item note of the own HUD ([`PICKUP_NOTE_HEALTH`] ..
+/// [`PICKUP_NOTE_AMMO_BOX`]).
+// SPEC: GAME_MESSAGES_2009_S2C.md §6.2 (sub 6 `[pickup:u8]`, cshell+0x80090); FIRETEAM_2009.md row 0xc9 sub 6
+pub fn coop_pickup_note(pickup: u8) -> BitWriter {
+    shell(GS_COOP_MISSION, |w| {
+        w.write_u8(MISSION_PICKUP).write_u8(pickup);
     })
 }
 

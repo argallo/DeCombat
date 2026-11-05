@@ -207,6 +207,8 @@ pub struct TuningScreen {
     pub selected: Option<usize>,
     cells: Vec<[i32; 4]>,
     buying: Option<Ware>,
+    /// CLI-1875: the option word and price of a credit purchase in flight, deducted on its accepted answer.
+    charge: Option<(u32, u32)>,
     /// The weapon the sockets show (unique id).
     pub weapon: Option<u32>,
     /// The socket whose option storage is open (index in [`OPTION_KINDS`]).
@@ -433,6 +435,7 @@ impl TuningScreen {
             selected: None,
             cells: grid_cells(cat, pages::TUNING, SHOP_WINDOW, SHOP_GRID),
             buying: None,
+            charge: None,
             weapon: None,
             socket: None,
             picked: None,
@@ -832,6 +835,12 @@ impl TuningScreen {
         match checked {
             Ok(cmd) => {
                 self.buy_busy = true;
+                self.charge = match &cmd {
+                    LinkCmd::BuyWith { option, .. } if offer.sale_type == 1 => {
+                        Some((*option, offer.price))
+                    }
+                    _ => None,
+                };
                 ctx.send(cmd);
             }
             Err((buybox::SHORT_NX_TEXT, _)) => ctx.popups.push(buybox::short_nx_box(ctx.cat)),
@@ -1394,6 +1403,13 @@ impl Screen for TuningScreen {
                         .filter(|w| (1000..2000).contains(&w.item_no))
                         .map(|w| (r.uid, w.item_no as u32));
                 }
+                // DC-DEFAULT: CLI-1875 (proposed) an accepted credit purchase here takes its price off the balance
+                // it was charged to, as the shop's answer does (cshell+0x150c40); the 2009 handler of this page
+                // (cshell+0x1588a0) is not traced for it. LG-405's 0x345 after the answer sets the lobby's own.
+                if let Some((option, price)) = self.charge.take().filter(|_| r.ok) {
+                    buybox::deduct(ctx.data, option, price);
+                    self.refresh(ctx.data);
+                }
                 self.buy_busy = false;
                 self.buying = None;
             }
@@ -1735,5 +1751,63 @@ impl TuningScreen {
             page_count(shown.len()),
             out,
         );
+    }
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::super::link::{BuyReply, Link};
+    use super::*;
+
+    /// CLI-1875: a credit purchase on the Modification page is checked on the balance the lobby charges (the prepaid
+    /// one for either mode) and its accepted answer takes the price off it; a refusal takes nothing.
+    #[test]
+    fn a_credit_purchase_here_is_checked_and_deducted_on_the_charged_balance() {
+        let cat = Catalog::fallback(None, 1024, 768);
+        let mut data = MenuData {
+            balance: (0, 5000),
+            ..Default::default()
+        };
+        let mut s = TuningScreen::new(&cat, &data);
+        let link = Link::detached();
+        let (mut popups, mut go, mut quit, mut sounds) = (Vec::new(), None, false, Vec::new());
+        let mut ctx = Ctx {
+            cat: &cat,
+            data: &mut data,
+            link: &link,
+            popups: &mut popups,
+            go: &mut go,
+            quit: &mut quit,
+            sounds: &mut sounds,
+        };
+        let mod_offer = buybox::Offer {
+            product: 1300,
+            price: 300,
+            sale_type: 1,
+            bonus: 0,
+            consume: 1,
+            period: 30,
+            items: vec![1300],
+        };
+        s.extend_request(&mod_offer, buybox::MODE_CREDIT, 0, &mut ctx);
+        let sent: Vec<String> = link.take_sent().iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(sent.len(), 1, "the credit balance of 0 does not refuse it");
+        let ok = BuyReply {
+            ok: true,
+            award: -1,
+            ..Default::default()
+        };
+        s.event(&LinkEvent::Bought(ok), &mut ctx);
+        assert_eq!(ctx.data.balance, (0, 4700));
+        s.extend_request(&mod_offer, buybox::MODE_PREPAID, 0, &mut ctx);
+        s.event(
+            &LinkEvent::Bought(BuyReply {
+                ok: false,
+                reason: 0x3b,
+                ..ok
+            }),
+            &mut ctx,
+        );
+        assert_eq!(ctx.data.balance, (0, 4700));
     }
 }

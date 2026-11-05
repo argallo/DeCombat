@@ -929,6 +929,9 @@ impl Screen for ResultScreen {
 
     fn enter(&mut self, ctx: &mut Ctx) {
         ctx.sound(self.entry_sound());
+        // CLI-1880: the active bonus passes lose the match's use
+        super::storage::Wares::cached(ctx.cat.rom.as_deref())
+            .count_down_passes(&mut ctx.data.store);
     }
     fn sheet(&self) -> &Sheet {
         &self.sheet

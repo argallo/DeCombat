@@ -141,6 +141,7 @@ fn run(nav: bool, secs: u32) -> (f32, u32, u32) {
             max_health: Some(60.0),
             template: true,
             death_cmd: Vec::new(),
+            ..Default::default()
         }],
         nodes: Vec::new(),
         mission: false,

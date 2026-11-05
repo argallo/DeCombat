@@ -617,6 +617,12 @@ pub fn build_marked(
             anchor: [0.5, 1.0],
         });
     }
+    // Fire Team: the AI health bars where the names stand and the own points popup, with the marks' layer
+    // DC-DEFAULT: CLI-1871, CLI-1872 (proposed)
+    if notes {
+        super::npcbar::bar_items(&s.npc_bars, &mut out);
+        super::npcbar::popup_items(s, &mut out);
+    }
     elems.push(("crosshair", out.len()));
     // ---- aim_mark (the first element of the 2009 HUD list, drawn after the arcs of the same element)
     // SPEC: FMT_CRES_UI.md §8 (element 1, update slot 1); EVIDENCE: cshell+0x853f0 (draw slot calls cshell+0x845f0)
@@ -651,6 +657,14 @@ pub fn build_marked(
         // DC-DEFAULT: CLI-87 (proposed) the flash blends the mark's colour toward white by the flash strength
         let flash = s.hit_flash();
         if let Some(mut v) = s.aim_mark {
+            // use-items-sweep: a reticle item's shape and colour (CLI-1878)
+            // EVIDENCE: cshell+0x845f0 (the mark's colour is its +0x798 when set, else the weapon's)
+            if let Some((shape, colour)) = s.reticle {
+                v.shape = shape;
+                if colour[3] != 0 {
+                    v.colour = colour;
+                }
+            }
             v.colour = flash_colour(v.colour, flash);
             out.push(DrawItem::AimMark(v));
         } else if let (Some(c), None) = (&layout.aim_cross, s.result_screen) {
@@ -927,6 +941,8 @@ pub fn build_marked(
     // DC-DEFAULT: CLI-1858 (proposed) drawn with the note layer (the 2009 element's layer is not traced)
     if notes {
         super::mission::draw(&mut out, &layout.top.mission, s, tex_size);
+        // DC-DEFAULT: CLI-1881, CLI-1883 (proposed) the class-5 score and the drop-item notes, with the note layer
+        super::coopscore::draw(&mut out, &layout.top.coop, s);
     }
     elems.push(("team_counters", out.len()));
     // ---- team counters (classes 1, 4, 7, 8, 10 show the 0xb5 pair; 2, 3, 12, 13 the round wins)
@@ -947,7 +963,10 @@ pub fn build_marked(
     }
     // Spy Hunt (class 9): no team marks and counters either; its own element shows the intel counters (CLI-1082)
     // EVIDENCE: cshell+0x90a60 (the counters only for classes 1, 4, 7, 8, 10 and 2, 3, 12, 13), cshell+0x70760
-    let no_teams = ffa || s.mode_class == Some(9);
+    // Fire Team (class 5): no team marks or counters either; the co-op score stands there (CLI-1883)
+    // EVIDENCE: cshell+0x9259d (cshell+0x91ee0(0) hides the block's parts), cshell+0x9272c..0x9277c (class 5 shows only
+    // the mode picture, the score label and its six digits)
+    let no_teams = ffa || matches!(s.mode_class, Some(5 | 9));
     // Quarantine (class 11): its element draws its own team marks (HumanTeam / InfectedTeam) where the Alpha / Bravo
     // marks sit; the counters and the own-team bar stay
     // DC-DEFAULT: CLI-1110 (proposed, playtest report "the human and infected logos seem messed up": both mark sets
@@ -1912,6 +1931,38 @@ mod tests {
         ] {
             assert!(t.iter().any(|x| x == want), "{want} in {t:?}");
         }
+    }
+
+    /// CLI-1870: the AI's mark carries a rank icon left of its caption as a player's does (rank 0: the AI's rank is
+    /// the server's `npc_rank`, FT-1 default 0, not read by the client yet).
+    #[test]
+    fn an_ai_mark_has_a_rank_icon_and_a_caption() {
+        use crate::hud::marks::{MarkState, PlayerMark};
+        let mut l = HudLayout::fallback();
+        l.rank_icons = Some(crate::hud::rank::RankIcons {
+            small: vec!["r0.dtx".into()],
+            rank_mark: vec!["0".into()],
+            forms: ["%s_O.dtx".into(), "%s_G.dtx".into()],
+        });
+        let measure = |_f: i32, t: &str| t.len() as f32 * 8.0;
+        let mut s = HudState {
+            life_state: 1,
+            ..HudState::default()
+        };
+        s.marks = vec![PlayerMark {
+            pid: crate::net::NPC_PID,
+            obj: 40,
+            name: "Guard".into(),
+            at: [500.0, 300.0],
+            state: MarkState::Enemy,
+        }];
+        let items = build(&l, &s, &measure, &|_| None);
+        assert!(items
+            .iter()
+            .any(|i| matches!(i, DrawItem::Image { tex, .. } if tex == "r0_O.dtx")));
+        assert!(items
+            .iter()
+            .any(|i| matches!(i, DrawItem::Label { text, .. } if text == "Guard")));
     }
 
     #[test]

@@ -690,6 +690,7 @@ fn the_declared_test_crosshair_draws_in_a_headless_frame_beside_the_xray_mod() {
         let mut d = HudDriver::new(hud);
         alive(&mut d);
         d.state.aim_mark = Some(crate::spread::AimMarkView {
+            shape: crate::spread::mark::SHAPE_PLAIN,
             distance: 10.0,
             since_shot_s: None,
             colour: [0, 255, 0, 255],
@@ -740,6 +741,7 @@ fn the_declared_test_crosshair_replaces_the_aim_mark_while_the_radar_draws() {
         d.state.own_pid = Some(0);
         d.state.now_ms = 5000;
         d.state.aim_mark = Some(crate::spread::AimMarkView {
+            shape: crate::spread::mark::SHAPE_PLAIN,
             distance: 10.0,
             since_shot_s: None,
             colour: [0, 255, 0, 255],
@@ -836,6 +838,7 @@ fn the_declared_test_crosshair_draws_on_the_gpu_hud_layer() {
     d.state.own_pid = Some(0);
     // a rifle in hand: the weapon's green aim mark is the crosshair element
     d.state.aim_mark = Some(crate::spread::AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
         distance: 10.0,
         since_shot_s: None,
         colour: [0, 255, 0, 255],
@@ -1265,6 +1268,7 @@ fn crosshair_driver(mods: &crate::modassets::MatchMods, w: u32, h: u32) -> HudDr
     d.state.own_pid = Some(0);
     d.state.now_ms = 5000;
     d.state.aim_mark = Some(crate::spread::AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
         distance: 10.0,
         since_shot_s: None,
         colour: [0, 255, 0, 255],
@@ -1380,6 +1384,7 @@ fn the_drawn_ring_follows_the_mark_and_recoil_off_stays_fixed() {
         crate::modassets::MatchMods::open(Some(&r)).expect("the mod loads")
     };
     let view = |distance: f32, since: Option<f32>| crate::spread::AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
         distance,
         since_shot_s: since,
         colour: [0, 255, 0, 255],
@@ -1689,6 +1694,7 @@ fn every_crosshair_option_changes_the_pixels_on_the_gpu_layer() {
     let camera = dc_render::Camera::looking(glam::Vec3::ZERO, 0.0, 0.0, 1.5, 1.2);
     // a firing mark, so the recoil options show
     let firing = crate::spread::AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
         distance: 30.0,
         since_shot_s: Some(0.02),
         colour: [0, 255, 0, 255],
@@ -1825,4 +1831,54 @@ fn help_lists_the_local_commands_and_the_mods_only_with_a_bridge() {
         assert!(local_command(&c.command).is_some(), "{}", c.command);
         assert!(want.iter().any(|l| l.starts_with(&c.command)), "{}", c.command);
     }
+}
+
+/// use-items-sweep (CLI-1878): a reticle item in use draws the mark in its shape and colour on the composed frame;
+/// without one the plain green mark stays.
+#[test]
+fn a_reticle_item_draws_its_shape_and_colour_in_the_frame() {
+    let hud = match dc_rom::test_rom() {
+        Some(rom) => Hud::from_rom(&rom, 1024, 768, None).expect("ROM HUD"),
+        None => Hud::fallback(1024, 768, None),
+    };
+    let mut d = HudDriver::new(hud);
+    d.state.life_state = 1;
+    d.state.health = Some(100.0);
+    d.state.own_pid = Some(0);
+    d.state.now_ms = 5000;
+    d.state.aim_mark = Some(crate::spread::AimMarkView {
+        shape: crate::spread::mark::SHAPE_PLAIN,
+        distance: 10.0,
+        since_shot_s: None,
+        colour: [0, 255, 0, 255],
+        rest: 10.0,
+    });
+    let fills = |d: &mut HudDriver| -> Vec<([i32; 4], [f32; 4])> {
+        let items = d.items_due(true).expect("a list");
+        crate::hud::compose::resolve(&items, &mut d.hud.assets, 1024, 768)
+            .into_iter()
+            .filter_map(|p| match p {
+                crate::hud::compose::Prim::Fill { rect, colour } => Some((rect, colour)),
+                _ => None,
+            })
+            .collect()
+    };
+    let green = [0.0, 255.0, 0.0, 255.0];
+    let plain: Vec<_> = fills(&mut d).into_iter().filter(|f| f.1 == green).collect();
+    assert_eq!(plain.len(), 4, "the plain mark's four arms");
+    d.set_reticle(crate::spread::mark::shape_of(4), 0xff12_3456);
+    let mark: Vec<_> = fills(&mut d)
+        .into_iter()
+        .filter(|f| f.1 == [18.0, 52.0, 86.0, 255.0])
+        .collect();
+    assert!(mark.len() > 30, "the ring and the dot: {}", mark.len());
+    assert!(
+        mark.iter().any(|f| f.0 == [511, 383, 512, 384]),
+        "the centre pixel"
+    );
+    assert!(fills(&mut d).iter().all(|f| f.1 != green));
+    // a colour outside the table keeps the weapon's colour with the item's shape
+    d.set_reticle(crate::spread::mark::shape_of(2), 0);
+    let t: Vec<_> = fills(&mut d).into_iter().filter(|f| f.1 == green).collect();
+    assert_eq!(t.len(), 4, "three arms and the dot");
 }

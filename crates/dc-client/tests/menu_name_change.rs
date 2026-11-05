@@ -192,7 +192,7 @@ fn rom_name_change_item_opens_the_rename_window_and_sends_the_checked_name() {
     m.input(MenuInput::Key(MenuKey::Enter));
     assert_eq!(
         m.link_latest_request(),
-        "ItemUse(555, \"Abcdef\", 0)",
+        "ItemUse(555, \"Abcdef\", 0, 0)",
         "0x330 with the checked name"
     );
     // refused with 0x53 (the name is in use, a GM prefix for a non-GM account too): the reason box, window stays
@@ -214,7 +214,7 @@ fn rom_name_change_item_opens_the_rename_window_and_sends_the_checked_name() {
     m.feed_event(LinkEvent::NameChecked(true));
     settle(&mut m);
     m.input(MenuInput::Key(MenuKey::Enter));
-    assert_eq!(m.link_latest_request(), "ItemUse(555, \"Abcdef\", 0)");
+    assert_eq!(m.link_latest_request(), "ItemUse(555, \"Abcdef\", 0, 0)");
     m.feed_event(LinkEvent::ItemUsed(UseReply {
         ok: true,
         uid: 555,

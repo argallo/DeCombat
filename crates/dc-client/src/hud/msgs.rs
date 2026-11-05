@@ -95,6 +95,10 @@ pub enum ObjectNote {
     // DISASM: cshell+0x26f60 (sub 0x14 `read(16)` -> object +0x5ae, sub 0x15 `read(16)` -> +0x5b0), cshell+0x28970 /
     // cshell+0x28980 (the object's slots +0x74 / +0x78 return them)
     Vitals { obj: u16, armour: bool, value: u16 },
+    /// Type 0x18 sub 0x24: an AI character's health percent for its marker's bar ([`npc_percent`] of the note's
+    /// fraction).
+    // SPEC: FIRETEAM_2009.md §1.5 (`[fraction:u32 = f32 bits]`, read only for an object with the NPC tail)
+    NpcHealth { obj: u16, percent: u8 },
 }
 
 /// The HUD's reading of a whole shell message.
@@ -135,12 +139,23 @@ pub enum ShellRead {
     Qrt(super::qrt::QrtEvent),
     /// 0xcb `GS_BOUNTY_MODE` subs 0..6 (Spy Hunt).
     Spy(super::spy::SpyEvent),
-    /// 0xc9 `GS_COOP_MISSION` subs 1 / 2 / 3 / 5 (Fire Team: the goal list, the banner and the caption).
+    /// 0xc9 `GS_COOP_MISSION` subs 1 / 2 / 3 / 5 / 6 (Fire Team: the goal list, the banner, the caption and the
+    /// drop-item note).
     Mission(super::mission::MissionEvent),
     /// 0xd7 sub 4: the round clock set to `secs`, running or frozen.
     CoopClock {
         running: bool,
         secs: u32,
+    },
+    /// 0xd7 sub 1 (`record`: the player's points total is written, `obj` the object the points were for) or sub 3
+    /// (no record write, no object): `pid` gained `gained` points and has `total`.
+    // SPEC: GAME_MESSAGES_2009_S2C.md §3.5 row 0xd7; FIRETEAM_2009.md §2.2 rows 1 and 3
+    CoopPoints {
+        pid: u32,
+        obj: Option<u16>,
+        gained: u32,
+        total: u32,
+        record: bool,
     },
     Note(ObjectNote),
     /// 0x68 `GS_CHAT`.
@@ -157,6 +172,18 @@ pub enum ShellRead {
     PingTable(Vec<(u16, u16)>),
     /// DSV-480 (our shell 0xf1, not a 2009 id): other players' health (CLI-1631).
     RemoteHealth(Vec<dc_wire::remotehealth::HealthEntry>),
+}
+
+/// The bar percent of an AI health fraction: `trunc(fraction x 100)` as the 2009 client keeps it, held to 0..100 (a
+/// value that is not finite reads as 0). The product is taken in double precision, so 0.29 shows 28 as the spec's
+/// truncation trap says (in f32 the product rounds up to 29).
+// SPEC: FIRETEAM_2009.md §1.5 (x 100.0 with truncation toward zero, "0.29 shows 28"; the bar's maximum is 100)
+// DC-DEFAULT: CLI-1871 (proposed) the hold to 0..100 (the 2009 element keeps the 16-bit value as it is)
+pub fn npc_percent(fraction: f32) -> u8 {
+    if !fraction.is_finite() {
+        return 0;
+    }
+    (f64::from(fraction) * 100.0).trunc().clamp(0.0, 100.0) as u8
 }
 
 /// The end marker of the ping table's pairs.
@@ -475,8 +502,8 @@ pub fn read_shell(
         }
         // SPEC: GAME_MESSAGES_2009_S2C.md §6.2 row 0xc9 (sub 1 `[n:u32]` n x `[id:u32][label:zstr8(1000)][state:u8]`
         // `[m:u32]` m x `[timer:f32]` `[a:u8][b:u8]`; sub 2 `[text:zstr8(1000)][secs:f32]`; sub 3 `[text:zstr8(1000)]`
-        // `[secs:f32]` (DSV-579); sub 5 `[op:u8][id:u32]`, op 1 `[label:zstr8(1000)]`, op 3 `[state:u8]`); the other subs
-        // are not read here (their elements are not drawn)
+        // `[secs:f32]` (DSV-579); sub 5 `[op:u8][id:u32]`, op 1 `[label:zstr8(1000)]`, op 3 `[state:u8]`; sub 6
+        // `[pickup:u8]`); the other subs are not read here (their elements are not drawn)
         // EVIDENCE: cshell+0x31490 (the reads in this order; the timer read as 32 bits of a float)
         0xc9 => {
             use super::mission::{wire_text, Goal, MissionEvent};
@@ -561,16 +588,37 @@ pub fn read_shell(
                         _ => return None,
                     }
                 }
+                // EVIDENCE: cshell+0x3192d..0x31945 (one read(8), handed to the drop-item note cshell+0x80090)
+                6 if need(8, &r) => MissionEvent::Pickup { item: r.read_u8() },
                 _ => return None,
             })
         }
         0xd7 => {
-            if !need(8, &r) || r.read_u8() != 4 || !need(33, &r) {
+            if !need(8, &r) {
                 return None;
             }
-            ShellRead::CoopClock {
-                running: r.read_bit(),
-                secs: r.read_u32(),
+            match r.read_u8() {
+                // sub 1 `[pid:u32][obj:objref16][x:u32][points:u32]`
+                1 if need(112, &r) => ShellRead::CoopPoints {
+                    pid: r.read_u32(),
+                    obj: r.read_objref16(),
+                    gained: r.read_u32(),
+                    total: r.read_u32(),
+                    record: true,
+                },
+                // sub 3 `[pid:u32][x:u8][points:u32]`
+                3 if need(72, &r) => ShellRead::CoopPoints {
+                    pid: r.read_u32(),
+                    obj: None,
+                    gained: u32::from(r.read_u8()),
+                    total: r.read_u32(),
+                    record: false,
+                },
+                4 if need(33, &r) => ShellRead::CoopClock {
+                    running: r.read_bit(),
+                    secs: r.read_u32(),
+                },
+                _ => return None,
             }
         }
         0xa6 => {
@@ -593,6 +641,10 @@ pub fn read_shell(
                     obj,
                     armour: sub == 0x15,
                     value: r.read_u16(),
+                }),
+                (0x18, 0x24) if need(32, &r) => ShellRead::Note(ObjectNote::NpcHealth {
+                    obj,
+                    percent: npc_percent(r.read_f32()),
                 }),
                 _ => return None,
             }
@@ -1049,6 +1101,27 @@ mod tests {
         assert!(dc_botclient::session::RAW_SHELL_EVENTS.contains(&0xc9));
     }
 
+    /// 0xc9 sub 6 from the server's encoder (DSV-592 `coop_pickup_note`): the item byte; a short one is ignored.
+    #[test]
+    fn coop_pickup_note_from_the_servers_encoder() {
+        use super::super::mission::MissionEvent;
+        use dc_dserver::gs::{
+            coop_pickup_note, PICKUP_NOTE_AMMO, PICKUP_NOTE_AMMO_BOX, PICKUP_NOTE_HEALTH,
+        };
+        for item in [PICKUP_NOTE_HEALTH, PICKUP_NOTE_AMMO, PICKUP_NOTE_AMMO_BOX] {
+            let w = coop_pickup_note(item);
+            let b = w.as_bytes();
+            assert_eq!(b[1], 0xc9);
+            let (body, bits) = (&b[2..], w.bit_len() - 16);
+            assert_eq!(bits, 16, "[sub:u8][pickup:u8]");
+            assert_eq!(
+                read_shell(0xc9, body, bits, Some(5)),
+                Some(ShellRead::Mission(MissionEvent::Pickup { item }))
+            );
+            assert_eq!(read_shell(0xc9, body, 8, Some(5)), None, "short");
+        }
+    }
+
     #[test]
     fn hisec_coop_notes_and_round_messages() {
         let mut w = BitWriter::new();
@@ -1069,6 +1142,55 @@ mod tests {
                 secs: 90
             })
         );
+        // the co-op points: sub 1 (kill: record, object), sub 3 (hit: no record, no object), short ones dropped
+        let mut w = BitWriter::new();
+        w.write_u8(1)
+            .write_u32(2)
+            .write_objref16(Some(0x91))
+            .write_u32(40)
+            .write_u32(130);
+        assert_eq!(
+            read_shell(0xd7, w.as_bytes(), w.bit_len(), Some(5)),
+            Some(ShellRead::CoopPoints {
+                pid: 2,
+                obj: Some(0x91),
+                gained: 40,
+                total: 130,
+                record: true
+            })
+        );
+        let mut w = BitWriter::new();
+        w.write_u8(3).write_u32(2).write_u8(10).write_u32(90);
+        assert_eq!(
+            read_shell(0xd7, w.as_bytes(), w.bit_len(), Some(5)),
+            Some(ShellRead::CoopPoints {
+                pid: 2,
+                obj: None,
+                gained: 10,
+                total: 90,
+                record: false
+            })
+        );
+        assert_eq!(read_shell(0xd7, w.as_bytes(), 40, Some(5)), None);
+        // the AI health note (sub 0x24, an f32 fraction)
+        let mut w = BitWriter::new();
+        w.write_u8(0x18)
+            .write_u16(0x91)
+            .write_u8(0x24)
+            .write_u32(0.505f32.to_bits());
+        assert_eq!(
+            read_shell(0xa6, w.as_bytes(), w.bit_len(), Some(5)),
+            Some(ShellRead::Note(ObjectNote::NpcHealth {
+                obj: 0x91,
+                percent: 50
+            }))
+        );
+        // the 2009 truncation (0.29 shows 28), clamped to 0..100
+        assert_eq!(npc_percent(0.29), 28);
+        assert_eq!(npc_percent(1.0), 100);
+        assert_eq!(npc_percent(7.0), 100);
+        assert_eq!(npc_percent(-0.5), 0);
+        assert_eq!(npc_percent(f32::NAN), 0);
         // the reference stack's countdown note to object 0x70: `17 70 00 02 0a 00 00 00`
         // OBSERVED: capture 20261025_065016_tdm6 conn 6 (0xa6 type 0x17 sub 2 notes)
         let b = [0x17u8, 0x70, 0x00, 0x02, 0x0a, 0x00, 0x00, 0x00];

@@ -278,6 +278,8 @@ impl Game {
             weapon,
             dtype: VOLUME_DEATH_TYPE,
         };
+        // DC-DEFAULT: DSV-596 (proposed) the drop through the volume is a death by falling: the fall voice
+        self.plunge = Some((pid, false));
         self.apply_damage(
             pid,
             None,
@@ -287,6 +289,7 @@ impl Game {
             super::TODO_KILL_ZONE_BODY,
             now,
         );
+        self.plunge = None;
     }
 }
 

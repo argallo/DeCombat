@@ -1213,6 +1213,7 @@ fn run_window_mode(
         },
         room_hacks: None,
         gun_ladder: Vec::new(),
+        reticle: None,
         sound: dc_client::sound::SoundOptions {
             enabled: a.sound,
             log: a.sound_log.clone(),
@@ -1518,6 +1519,7 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
         mods: None,
         room_hacks: None,
         gun_ladder: Vec::new(),
+        reticle: None,
         sound: dc_client::sound::SoundOptions {
             enabled: a.sound,
             log: a.sound_log.clone(),

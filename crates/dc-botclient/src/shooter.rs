@@ -587,6 +587,11 @@ pub struct Shooter {
     /// The spread fraction and the time of the last shot.
     spread_f: f32,
     last_shot: Option<Millis>,
+    /// BOT-123: no shot has left since the sighting began (the first shot of a sighting).
+    first_of_sighting: bool,
+    /// BOT-123: the extra settle of a sniper's sighting (from, to): the overshoot does not fall in it, so the longer
+    /// wait is a delay only and the first shot is no steadier for it.
+    settle_hold: Option<(Millis, Millis)>,
     no_world_said: bool,
     /// BOT-115: a round class without respawns in the round: a victim stays down until the round is over.
     no_respawn: bool,
@@ -614,6 +619,8 @@ impl Shooter {
             target_dist: None,
             spread_f: 0.0,
             last_shot: None,
+            first_of_sighting: false,
+            settle_hold: None,
             no_world_said: false,
             no_respawn: false,
             next_throw: None,
@@ -1205,7 +1212,19 @@ impl Shooter {
         let (yaw, pitch) = aim;
         let sigma = sk.aim_sigma_deg.to_radians();
         let (ea, eb) = (self.aim_rng.normal() * sigma, self.aim_rng.normal() * sigma);
-        let shot_dir = skill::tilt(forward(yaw, pitch), ea, eb);
+        let mut shot_dir = skill::tilt(forward(yaw, pitch), ea, eb);
+        // DC-DEFAULT: BOT-123 (proposed) the first shot of a sighting through a sniper scope, beyond SNIPER_FAR_RANGE,
+        // goes wide with the skill's chance: the aim is pulled off by 1.6..3.2 target half heights (a clean miss)
+        let first = std::mem::take(&mut self.first_of_sighting);
+        if first && self.scoped(w) {
+            let dist = len(sub(tpos, origin));
+            if dist > skill::SNIPER_FAR_RANGE && self.aim_rng.unit() < sk.sniper_far_miss {
+                let off = (1.6 + 1.6 * self.aim_rng.unit()) * half_t[1] / dist;
+                let phi = std::f32::consts::TAU * self.aim_rng.unit();
+                shot_dir =
+                    skill::tilt(shot_dir, (off * phi.cos()).atan(), (off * phi.sin()).atan());
+            }
+        }
         // the aim error turns the view itself: the sent rotation looks along the erred direction, and the cone tilts
         // every pellet from that rotation's forward axis
         let (ayaw, apitch) = aim_angles([0.0; 3], shot_dir);
@@ -1346,7 +1365,12 @@ impl Shooter {
         self.wander.1 = self.wander.1 * k + kick * self.aim_rng.normal();
         self.wander.2 = Some(now);
         let ko = (-dtf / (skill::OVERSHOOT_TAU_MS as f32 / 1000.0)).exp();
-        self.over = (self.over.0 * ko, self.over.1 * ko);
+        let held = self
+            .settle_hold
+            .is_some_and(|(from, to)| !later(from, now) && later(to, now));
+        if !held {
+            self.over = (self.over.0 * ko, self.over.1 * ko);
+        }
         self.recoil *= (-dtf / (skill::RECOIL_TAU_MS as f32 / 1000.0)).exp();
         let true_want = aim_angles(eye, aim_at);
         let base = aim_angles(eye, aim_lag);
@@ -1409,11 +1433,22 @@ impl Shooter {
                 let again = self.lost_at.is_some_and(|(p, t)| {
                     p == target.pid && since(now, t) <= skill::REACQUIRE_WINDOW_MS
                 });
-                let delay = if again {
+                let mut delay = if again {
                     sk.reacquire_ms
                 } else {
                     sk.reaction_ms
                 };
+                // DC-DEFAULT: BOT-123 (proposed) a scoped sniper rifle settles longer before the first shot
+                let settle = self
+                    .held
+                    .filter(|h| self.scoped(h))
+                    .map_or(0, |_| sk.sniper_settle_ms);
+                self.settle_hold = (settle > 0).then(|| {
+                    let from = now.wrapping_add(delay);
+                    (from, from.wrapping_add(settle))
+                });
+                delay += settle;
+                self.first_of_sighting = true;
                 let at = now.wrapping_add(delay);
                 self.ready_at = Some((target.pid, at));
                 self.lost_at = None;
@@ -1497,8 +1532,9 @@ impl Shooter {
             sk_shot.aim_sigma_deg *= sk.moving_factor;
         }
         // BOT-114: a shot through the scope is aimed with more care (a person holds the crosshair on the target)
+        // BOT-123: but not as much care as a person: the sniper multiplier of the skill (1.6 at 50) widens it again
         if self.scoped(&h) {
-            sk_shot.aim_sigma_deg *= SCOPED_SIGMA_FACTOR;
+            sk_shot.aim_sigma_deg *= SCOPED_SIGMA_FACTOR * sk.sniper_sigma_mult;
         }
         let (reports, hits) = self.skill_shot(view, &target, &h, &world, aim, &sk_shot, f);
         self.recoil -= sk.recoil_deg.to_radians();
@@ -2183,6 +2219,139 @@ mod tests {
         let plain = shots(false);
         assert!(plain.iter().all(|p| !p.moving));
         assert!(plain.iter().any(|p| off(p) > 0.02));
+    }
+
+    /// BOT-123: one engagement of a stationary target `dist` ahead, polled every 50 ms for 8 s with the look fed back as
+    /// the facing; returns (first shot hit, time of the first shot, shots, hit claims). `sniper`: the synthetic row in
+    /// the L96A1's shape (plain bounds 100 / 100, zoomed 4 / 60, cycle 1500 ms) typed a sniper rifle, else a rifle row.
+    fn engagement(sniper: bool, sk: Skill, dist: f32, seed: u64) -> (bool, u32, u32, u32) {
+        let mut r = (*rom()).clone();
+        r.rows.insert(
+            27,
+            RomWeapon {
+                pellets: Some(1),
+                clip: Some(50),
+                ammo: Some(28),
+                range: Some(9000.0),
+                max_amount: Some(100),
+                cone: ConeRow {
+                    min: if sniper { 100 } else { 3 },
+                    max: 100,
+                    zoomed: if sniper { (4, 60) } else { (0, 0) },
+                    ..ConeRow::default()
+                },
+                cycle_ms: Some(1500),
+                ..RomWeapon::default()
+            },
+        );
+        r.kinds.insert(
+            27,
+            if sniper {
+                dc_bute::arms::TYPE_SNIPER
+            } else {
+                0
+            },
+        );
+        let mut s = Shooter::new(ShooterConfig {
+            loadout: vec![27],
+            rom: Some(Arc::new(r)),
+            skill: Some(sk),
+            seed,
+            ..ShooterConfig::default()
+        });
+        s.on_shot_seed(12345);
+        s.on_life(0, 1);
+        s.on_grant(grant(0, 27, 28, 100.0));
+        let mut v = walled_view(vec![enemy(1, 40, [dist, 50.0, 0.0])], (0.0, 0.0));
+        let (mut first, mut first_t, mut shots, mut hits) = (false, 0, 0, 0);
+        for t in (0..8000u32).step_by(50) {
+            let a = s.poll(t, &v);
+            v.facing = s.look().or(v.facing);
+            for f in fires(&a) {
+                if shots == 0 {
+                    first = f[0].hit.is_some();
+                    first_t = t;
+                }
+                shots += 1;
+                hits += f.iter().filter(|p| p.hit.is_some()).count() as u32;
+            }
+        }
+        (first, first_t, shots, hits)
+    }
+
+    /// BOT-123: a sniper rifle at skill 50 settles +250 ms, errs 1.6 times as much and goes wide on 30 % of
+    /// its far first shots; a rifle's engagements are bit for bit what they were. Prints the hit rates (run with
+    /// `--nocapture`) at 300 / 900 / 2000 units, before (the BOT-123 fields neutral) and after.
+    #[test]
+    fn a_sniper_bot_is_less_accurate_a_rifle_bot_is_unchanged() {
+        let mut rows = Vec::new();
+        for level in [50u8, 80] {
+            let after = Skill::new(level);
+            let mut before = after;
+            before.sniper_sigma_mult = 1.0;
+            before.sniper_settle_ms = 0;
+            before.sniper_far_miss = 0.0;
+            if level == 50 {
+                assert_eq!((after.sniper_sigma_mult * 10.0).round(), 16.0);
+                assert_eq!(
+                    (
+                        after.sniper_settle_ms,
+                        (after.sniper_far_miss * 100.0).round()
+                    ),
+                    (250, 30.0)
+                );
+            }
+            let n = 800u64;
+            for dist in [300.0f32, 900.0, 2000.0] {
+                let mut cells = [(0u32, 0u32, 0u32, 0u32, 0u64); 4];
+                for seed in 0..n {
+                    for (k, (sniper, sk)) in [
+                        (true, before),
+                        (true, after),
+                        (false, before),
+                        (false, after),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let (f, ft, sh, hi) = engagement(sniper, sk, dist, seed + 1);
+                        let c = &mut cells[k];
+                        c.0 += f as u32;
+                        c.1 += sh;
+                        c.2 += hi;
+                        c.3 += (sh > 0) as u32;
+                        c.4 += ft as u64;
+                    }
+                }
+                // a rifle is not touched by the sniper rule
+                assert_eq!(cells[2], cells[3], "rifle at {dist}");
+                let pct = |c: (u32, u32, u32, u32, u64)| {
+                    (
+                        100.0 * c.0 as f32 / c.3.max(1) as f32,
+                        100.0 * c.2 as f32 / c.1.max(1) as f32,
+                        c.4 as f32 / c.3.max(1) as f32,
+                    )
+                };
+                let (b, a) = (pct(cells[0]), pct(cells[1]));
+                let r = pct(cells[3]);
+                rows.push(format!(
+                "skill {level}, {dist:>5} units: sniper first-shot hit {:.1}% -> {:.1}%, all shots in 8 s {:.1}% -> {:.1}%, first shot at {:.0} -> {:.0} ms; rifle (unchanged) first {:.1}% all {:.1}% at {:.0} ms",
+                b.0, a.0, b.1, a.1, b.2, a.2, r.0, r.1, r.2
+            ));
+                assert!(a.0 <= b.0 + 4.0 && a.1 <= b.1 + 4.0, "{dist}: {b:?} {a:?}");
+                assert!(a.2 >= b.2 + 100.0, "{dist}: settle {b:?} {a:?}");
+                if dist > skill::SNIPER_FAR_RANGE {
+                    assert!(a.0 < b.0 * 0.93, "far first shot: {b:?} {a:?}");
+                }
+            }
+        }
+        println!(
+            "{}",
+            rows.join(
+                "
+"
+            )
+        );
     }
 
     /// BOT-115: in a round class without respawns (Search and Destroy) a victim stays down for the rest of the round

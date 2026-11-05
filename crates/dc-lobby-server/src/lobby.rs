@@ -694,6 +694,10 @@ fn on_private_state(st: &mut Core, sid: Sid, p: &[u8]) {
         }
     }
     st.send(sid, wire::ok_reply(PRIVATE_STATE_REPLY, ok, 0xa));
+    // LG-405: the page that shows and spends the balances opens with the DB row's values
+    if ok {
+        crate::shop::send_balance(st, sid);
+    }
 }
 
 /// 0x30c: the client leaves the private state; answered with 0x30d (+6 u32 result).

@@ -51,6 +51,7 @@ pub mod shooter;
 pub mod shotcycle;
 pub mod skill;
 pub mod spyrun;
+pub mod squad;
 pub mod swarm;
 pub mod timeline;
 pub mod tls;

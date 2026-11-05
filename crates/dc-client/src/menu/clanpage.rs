@@ -883,6 +883,7 @@ mod tests {
         let marks = ClanMarks {
             emblems: vec![None; 46],
             backgrounds: vec![None; 3],
+            ..Default::default()
         };
         assert_eq!(CreatePage::pages(&marks, 0), 3);
         let mut c = CreatePage::new(None);

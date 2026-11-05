@@ -177,6 +177,23 @@ fn clamp_u32(v: i64) -> u32 {
     v.clamp(0, u32::MAX as i64) as u32
 }
 
+/// 0x345 with the account's credit and prepaid balance as its DB row holds them now, to this session. The lobby keeps
+/// no copy of the balances: a purchase checks and charges the row, and this reports the same row, so a change made
+/// behind the session (the admin dashboard, the account CLI, a reward) shows at the latest with the next purchase
+/// answer or shop visit.
+// SPEC: PROTOCOL_2009.md §3.3 0x345 (EVIDENCE: cshell+0x337b0 stores the values whatever screen is up)
+// DC-DEFAULT: LG-405 (proposed) 0x345 follows every 0x329 and 0x32b and every accepted 0x30a (shop, Modification,
+// clan page); the 2009 lobby's own pushes after a purchase are not observed
+pub fn send_balance(st: &mut Core, sid: Sid) {
+    let Some(c) = account_of(st, sid).and_then(|a| st.character(a)) else {
+        return;
+    };
+    st.send(
+        sid,
+        crate::wire::balance_reply(clamp_u32(c.nx_cr), clamp_u32(c.nx)),
+    );
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // catalogue lists and versions (§4.1)
 // ---------------------------------------------------------------------------------------------------------------
@@ -925,8 +942,15 @@ pub fn dispatch(st: &mut Core, sid: Sid, id: u16, p: &[u8]) -> Result<bool, Faul
     match id {
         SHOP_VIEW_FETCH | LIST_FETCH_0 | LIST_FETCH_1 | LIST_FETCH_2 | LIST_FETCH_3
         | LIST_FETCH_4 | PRICE_FETCH => on_list_fetch(st, sid, id)?,
-        SHOP_BUY => on_buy(st, sid, p)?,
-        GIFT_SEND => on_gift(st, sid, p)?,
+        // LG-405: every purchase and gift answer is followed by the balance of the DB row
+        SHOP_BUY => {
+            on_buy(st, sid, p)?;
+            send_balance(st, sid);
+        }
+        GIFT_SEND => {
+            on_gift(st, sid, p)?;
+            send_balance(st, sid);
+        }
         RECIPIENT_CHECK => on_recipient_check(st, sid, p)?,
         INBOX_PAGE => inbox::on_page(st, sid, p)?,
         INBOX_OPEN => inbox::on_open(st, sid, p)?,
