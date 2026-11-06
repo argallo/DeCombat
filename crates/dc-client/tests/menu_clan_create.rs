@@ -17,10 +17,13 @@ use dc_client::menu::clan::{
     TALK_FIELD, TALK_WINDOW,
 };
 use dc_client::menu::clanpage::{
-    CELL, CELL_STEP, CREATE_BUTTON, GRID_AT, GRID_DY, LEAVE_BUTTON, NAME_FIELD, PAGE, ROW_BUTTON,
-    ROW_STEP, ROW_Y, SECOND_BUTTON, T_CREATE_A_CLAN, T_JOIN, T_LEAVE_QUESTION, T_NAME, T_REMOVE,
+    at_row, ACCEPT_BUTTON, CELL, CELL_STEP, CREATE_BUTTON, GRID_AT, GRID_DY, INVITE_BUTTON,
+    INVITE_FIELD, LEAVE_BUTTON, NAME_FIELD, PAGE, ROW_BUTTON, ROW_STEP, ROW_Y, SECOND_BUTTON,
+    T_ACCEPT, T_APPLICANT, T_APPLY, T_CREATE_A_CLAN, T_INVITE_HINT, T_LEAVE_QUESTION, T_NAME,
+    T_REMOVE,
 };
 use dc_client::menu::link::LinkOptions;
+use dc_client::menu::popup::BoxTag;
 use dc_client::menu::{Go, Menu, MenuInput, MenuOptions};
 use dc_client::steps::{parse, Here, StepRunner};
 use dc_ui_data::WidgetKind;
@@ -221,6 +224,33 @@ fn to_clan(m: &mut Menu) {
     assert!(until(m, 10, |m| m.screen_name() == "clan" && m.fading().is_none()));
 }
 
+/// CLI-1901: the leader opens Clan Setting, finds `name` as the first row's applicant and accepts it.
+fn accept_first_applicant(m: &mut Menu, name: &str) {
+    m.input(MenuInput::Command(CMD_MANAGE));
+    assert!(
+        until(m, 10, |m| {
+            let t = texts(m);
+            t.iter().any(|x| x == name)
+                && t.iter().any(|x| x == T_APPLICANT)
+                && t.iter().any(|x| x == T_ACCEPT)
+        }),
+        "the manage page lists the applicant {name}: {:?}",
+        texts(m)
+    );
+    click(m, at_row(ACCEPT_BUTTON, 0));
+    let done = format!("{name} joined the clan.");
+    assert!(
+        until(m, 10, |m| {
+            let t = texts(m);
+            t.iter().any(|x| *x == done) && !t.iter().any(|x| x == T_APPLICANT)
+        }),
+        "accepted: {:?}",
+        texts(m)
+    );
+    // the web window is modal: close it so the screen's other controls work again
+    m.input(MenuInput::Key(dc_client::menu::MenuKey::Escape));
+}
+
 fn page_shown(m: &mut Menu) -> bool {
     let page = [
         PAGE[0] as f32,
@@ -296,9 +326,9 @@ fn rom_create_clan_through_the_page_makes_the_master_screen() {
     assert!(log.contains("'Bravo' created by account"), "{log}");
 }
 
-/// Item 2: a clanless player finds the clan on the find page, joins it with the row's Join button (the member view
-/// follows: two rows, the member's own role, Clan Setting disabled), the leader's open screen refreshes to two
-/// members; then the member leaves through the leave page (Leave Clan -> the page's confirmation -> Leave Clan) and
+/// Item 2: a clanless player finds the clan on the find page and applies with the row's Apply button (LG-420 /
+/// CLI-1901: "Application sent"); the leader accepts on the Clan Setting page (the member view follows: two rows, the
+/// member's own role, Clan Setting disabled), the leader's open screen refreshes to two members; then the member leaves through the leave page (Leave Clan -> the page's confirmation -> Leave Clan) and
 /// is clanless again, the leader back to one member.
 #[test]
 fn rom_find_join_and_leave_through_the_pages() {
@@ -321,9 +351,9 @@ fn rom_find_join_and_leave_through_the_pages() {
     assert!(
         until(&mut b, 10, |m| {
             let t = texts(m);
-            t.iter().any(|x| x == "Charlie") && t.iter().any(|x| x == T_JOIN)
+            t.iter().any(|x| x == "Charlie") && t.iter().any(|x| x == T_APPLY)
         }),
-        "the find page lists the clan with Join"
+        "the find page lists the clan with Apply"
     );
     let join = [
         ROW_BUTTON[0],
@@ -334,10 +364,15 @@ fn rom_find_join_and_leave_through_the_pages() {
     click(&mut b, join);
     assert!(
         until(&mut b, 10, |m| m.popup().map(|p| p.text.as_str())
-            == Some("You joined Charlie.")),
-        "joined"
+            == Some("Application sent to Charlie.")),
+        "applied"
     );
     b.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+    assert_eq!(
+        b.data.char_extras.clan_id, 0,
+        "no member before the leader accepts"
+    );
+    accept_first_applicant(&mut a, "Recruit");
     assert!(
         until(&mut b, 10, |m| info(m, NAME_TEXT) == "Charlie"
             && info(m, LEADER_TEXT) == "Boss"
@@ -367,7 +402,7 @@ fn rom_find_join_and_leave_through_the_pages() {
     assert!(until(&mut a, 10, |m| info(m, MEMBERS_TEXT).starts_with('1')));
     let log = stack.stop();
     assert!(
-        log.contains("joined clan") && log.contains("left clan"),
+        log.contains("applied to join") && log.contains("joined clan") && log.contains("left clan"),
         "{log}"
     );
 }
@@ -391,7 +426,7 @@ fn rom_clan_chat_reaches_members_and_the_leader_removes_one() {
     a.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
     to_clan(&mut b);
     b.input(MenuInput::Command(CMD_FIND));
-    assert!(until(&mut b, 10, |m| texts(m).iter().any(|x| x == T_JOIN)));
+    assert!(until(&mut b, 10, |m| texts(m).iter().any(|x| x == T_APPLY)));
     click(
         &mut b,
         [
@@ -401,8 +436,9 @@ fn rom_clan_chat_reaches_members_and_the_leader_removes_one() {
             ROW_BUTTON[3],
         ],
     );
-    assert!(until(&mut b, 10, |m| m.popup().is_some()), "joined");
+    assert!(until(&mut b, 10, |m| m.popup().is_some()), "applied");
     b.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+    accept_first_applicant(&mut a, "Grunt");
     assert!(until(&mut a, 10, |m| info(m, MEMBERS_TEXT).starts_with('2')));
 
     // chat: the field of the chat window, Enter sends
@@ -464,6 +500,68 @@ fn rom_clan_chat_reaches_members_and_the_leader_removes_one() {
     assert!(until(&mut b, 10, |m| m.data.char_extras.clan_id == 0));
     assert!(until(&mut a, 10, |m| info(m, MEMBERS_TEXT).starts_with('1')));
     stack.stop();
+}
+
+/// CLI-1901 / LG-420: the leader types a name into Clan Setting's invitation entry and presses Invite; the invited
+/// player (on the lobby screen) gets the question box with the clan's name, Enter does not answer it, a click on Yes
+/// joins (the member's clan data follows, the leader's screen counts two members).
+#[test]
+fn rom_the_leader_invites_and_a_click_on_yes_joins() {
+    let Some(rom) = rom() else {
+        eprintln!("CA_ROM not set: skipped");
+        return;
+    };
+    let watchdog = Watchdog::arm("menu-clan-invite", Duration::from_secs(240));
+    let stack = Stack::start("menu-clan-invite", &watchdog);
+    let mut a = login(rom.clone(), &stack, "Captain");
+    let mut b = login(rom, &stack, "Invitee");
+    to_clan(&mut a);
+    create(&mut a, "Echo", 1, 1);
+    assert!(until(&mut a, 10, |m| m.popup().is_some()), "created");
+    a.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+    assert!(until(&mut a, 10, |m| info(m, MEMBERS_TEXT).starts_with('1')));
+    a.input(MenuInput::Command(CMD_MANAGE));
+    assert!(
+        until(&mut a, 10, |m| texts(m).iter().any(|x| x == T_INVITE_HINT)),
+        "the manage page's answer is in (the invitation entry is the leader's)"
+    );
+    click(&mut a, INVITE_FIELD);
+    for c in "invitee".chars() {
+        a.input(MenuInput::Char(c));
+    }
+    click(&mut a, INVITE_BUTTON);
+    assert!(
+        until(&mut a, 10, |m| texts(m)
+            .iter()
+            .any(|x| x == "Invitation sent to Invitee.")),
+        "invited: {:?}",
+        texts(&mut a)
+    );
+    assert!(
+        until(&mut b, 10, |m| m.popup().is_some_and(|p| matches!(
+            p.tag,
+            BoxTag::ClanInvite(_)
+        ) && p
+            .text
+            .contains("Echo"))),
+        "the invitation box"
+    );
+    b.input(MenuInput::Key(dc_client::menu::MenuKey::Enter));
+    assert!(b.popup().is_some(), "Enter does not answer it");
+    let yes = b.popup().unwrap().buttons()[0];
+    click(&mut b, yes);
+    assert!(
+        until(&mut b, 10, |m| m.data.char_extras.clan_id != 0),
+        "joined; log:\n{}",
+        std::fs::read_to_string(&stack.log).unwrap_or_default()
+    );
+    a.input(MenuInput::Key(dc_client::menu::MenuKey::Escape));
+    assert!(until(&mut a, 10, |m| info(m, MEMBERS_TEXT).starts_with('2')));
+    let log = stack.stop();
+    assert!(
+        log.contains("invited account") && log.contains("accepted the invitation"),
+        "{log}"
+    );
 }
 
 /// CLI-1020: after the create the lobby screen shows the new clan: the Character Info panel's clan text, and the

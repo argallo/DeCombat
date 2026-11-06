@@ -349,7 +349,12 @@ impl Game {
         // is let go with no 0x4d for the whole sprint (CLI-573, the 2009 gap), and as a shot its record was drawn by
         // every client as the grenade's explosion at once (the user's 2026-11-04 report)
         let held = self.take_throw(pid, now);
-        let throw = held || self.tables.weapons.throws_round(f.weapon_id, f.ammo_id);
+        // DC-DEFAULT: DSV-611 (proposed) a mine (ammunition `Type` 1 whose projectile row names mine class data) is
+        // thrown, with or without a hold: before, without a hold it flew as a rocket and blew up where it first met
+        // the world (the owner's 2026-11-05 report "mines go off instantly")
+        let throw = held
+            || self.tables.weapons.throws_round(f.weapon_id, f.ammo_id)
+            || self.mine_row(f.weapon_id, f.ammo_id).is_some();
         let launched = !throw && self.tables.weapons.fires_projectile(f.weapon_id, f.ammo_id);
         let wall = if throw {
             self.throw_sound(pid, f);

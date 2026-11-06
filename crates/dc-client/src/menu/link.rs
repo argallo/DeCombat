@@ -866,6 +866,11 @@ pub enum LinkCmd {
         kind: u32,
         value: u32,
     },
+    /// CLI-1905: the host's room password from the lock box (0x38c type 1, the password form; empty unlocks).
+    RoomPassword {
+        mode: i32,
+        password: String,
+    },
     /// LG-274: the host's Hacks pick (our request 0x3f04).
     RoomHacks(u32),
     /// LG-306: the host's Hardcore pick (our request 0x3f09).
@@ -877,6 +882,8 @@ pub enum LinkCmd {
     QuitRoom,
     /// CLI-1314: the start watchdog ran out: 0x394 {1}.
     StartFailed,
+    /// CLI-1899: the waiting room's Invite button: 0x396 (header only).
+    InviteAll,
     Chat(String),
     /// w3-options: a player report (0x312, kind 0): the reported name and the description.
     Report {
@@ -1110,6 +1117,19 @@ pub fn clan_web_get(addr: SocketAddr, target: &str) -> Option<String> {
         .then(|| body.to_string())
 }
 
+/// CLI-1905: 0x38c in its password form (0x58 bytes): +6 the room's mode, +0xa type 1, +0xe not written (0),
+/// +0x12 the length (the 2009 client stores it as 4 bytes; the spec reads its low u16), +0x16 the password as
+/// wstr[33].
+// SPEC: PROTOCOL_2009.md §3.7 (0x38c password form)
+// EVIDENCE: cshell+0x18a9c0 (the form: wcsncpy of 0x21 units, the wcslen at +0x12, size 0x58), cshell+0x164810
+// (command 0x53: the room's mode at screen +0x1565 * 4 and type 1 with the box's text, no length test)
+pub fn room_password_packet(mode: i32, password: &str) -> PktWriter {
+    let units = password.encode_utf16().take(32).count() as u32;
+    let mut w = PktWriter::new(ROOM_SETTING_CHANGE);
+    w.i32(mode).u32(1).u32(0).u32(units).wstr(password, 33);
+    w
+}
+
 /// The player report 0x312 (kind 0).
 // SPEC: PROTOCOL_2009.md §3.4 (0xe4c bytes: +6 kind, +0xa / +0xe the player keys, wstr[17] name at +0x12, wstr[601]
 // text at +0x34; no reply)
@@ -1144,6 +1164,9 @@ impl std::fmt::Debug for LinkCmd {
             LinkCmd::Ready(on) => write!(f, "Ready({on})"),
             LinkCmd::Team(t) => write!(f, "Team({t})"),
             LinkCmd::Setting { kind, value, .. } => write!(f, "Setting({kind}, {value})"),
+            LinkCmd::RoomPassword { password, .. } => {
+                write!(f, "RoomPassword(locked {})", !password.is_empty())
+            }
             LinkCmd::RoomHacks(v) => write!(f, "RoomHacks({v})"),
             LinkCmd::RoomGunGame(v) => write!(f, "RoomGunGame({v})"),
             LinkCmd::RoomHardcore(v) => write!(f, "RoomHardcore({v})"),
@@ -1165,6 +1188,7 @@ impl std::fmt::Debug for LinkCmd {
             LinkCmd::Start => write!(f, "Start"),
             LinkCmd::QuitRoom => write!(f, "QuitRoom"),
             LinkCmd::StartFailed => write!(f, "StartFailed"),
+            LinkCmd::InviteAll => write!(f, "InviteAll"),
             LinkCmd::Logout => write!(f, "Logout"),
             LinkCmd::Leave => write!(f, "Leave"),
             LinkCmd::Quit => write!(f, "Quit"),
@@ -1590,6 +1614,10 @@ pub enum LinkEvent {
     KickReply {
         ok: bool,
         reason: u32,
+    },
+    /// CLI-1899: 0x397, the answer to the room's invite (+6 u32 ok).
+    InviteAllReply {
+        ok: bool,
     },
     /// The lobby or auth connection closed or failed.
     Closed(String),
@@ -2223,6 +2251,8 @@ const HANDLED: &[u16] = &[
     OP_LOOKUP_REPLY,
     OP_MUTE_REPLY,
     ROOM_KICK_REPLY,
+    // room-invite (CLI-1899)
+    ROOM_INVITE_ALL_REPLY,
 ];
 
 struct Session {
@@ -3508,6 +3538,8 @@ impl Worker {
             LinkCmd::Start => send_flag(&mut s.link, 0, 2),
             // SPEC: PROTOCOL_2009.md §3.7 (0x394 +6 u32 phase; 1 = the start failed, cshell+0x18b010 via cshell+0x1608b0)
             LinkCmd::StartFailed => send_u32(&mut s.link, MATCH_EXIT, 1),
+            // CLI-1899: SPEC: PROTOCOL_2009.md §3.7 (0x396 header only; EVIDENCE: cshell+0x18d960)
+            LinkCmd::InviteAll => s.link.send_empty(ROOM_INVITE_ALL),
             // SPEC: PROTOCOL_2009.md §3.7 (0x392 (1, 2) away, (1, 0) present)
             LinkCmd::Away(away) => send_flag(&mut s.link, 1, if away { 2 } else { 0 }),
             // SPEC: PROTOCOL_2009.md §3.7 (0x392 (1, 1) shopping, (1, 0) present)
@@ -3532,6 +3564,9 @@ impl Worker {
                 let mut w = PktWriter::new(ROOM_SETTING_CHANGE);
                 w.i32(mode).u32(kind).u32(value).u32(0);
                 s.link.send(&w)
+            }
+            LinkCmd::RoomPassword { mode, password } => {
+                s.link.send(&room_password_packet(mode, &password))
             }
             LinkCmd::RoomHacks(value) => {
                 // DC-DEFAULT: LG-274 (proposed) our request 0x3f04: +6 u32 the wanted Hacks bits
@@ -4302,6 +4337,10 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
             ok: u32_at(d, 6) != 0,
             reason: u32_at(d, 0xa),
         }),
+        // CLI-1899: SPEC: PROTOCOL_2009.md §3.7 (0x397 +6 u32 ok; EVIDENCE: cshell+0x39060)
+        ROOM_INVITE_ALL_REPLY => ev.push(LinkEvent::InviteAllReply {
+            ok: u32_at(d, 6) != 0,
+        }),
         DC_MESSENGER_PUSH => ev.push(LinkEvent::Messenger(messenger_fields(d))),
         // LG-274: our push after the room info and on every change (the lobby sends none without a Hacks choice)
         DC_ROOM_HACKS_PUSH => {
@@ -4880,6 +4919,27 @@ mod tests {
             left: 2,
         };
         assert!(matches!(&ev[1], LinkEvent::MegaphoneSent(r) if *r == sent));
+    }
+
+    /// CLI-1899: 0x397's u32 at +6 is the invite's answer; the frame is one the steady-state reader handles.
+    #[test]
+    fn invite_all_reply_reads_ok_at_plus_6() {
+        let (mut w, _rx, _peer) = held_worker(None);
+        let s = w.session.as_mut().unwrap();
+        let mut ev = Vec::new();
+        for ok in [1u32, 0] {
+            let mut r = PktWriter::new(ROOM_INVITE_ALL_REPLY);
+            r.u32(ok);
+            dispatch(s, ROOM_INVITE_ALL_REPLY, &payload(&r), &mut ev);
+        }
+        assert!(matches!(
+            ev.as_slice(),
+            [
+                LinkEvent::InviteAllReply { ok: true },
+                LinkEvent::InviteAllReply { ok: false }
+            ]
+        ));
+        assert!(HANDLED.contains(&ROOM_INVITE_ALL_REPLY));
     }
 
     #[test]

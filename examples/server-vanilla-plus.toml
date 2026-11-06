@@ -15,6 +15,9 @@
 # refuses a room on a community map on a host without it and logs why. `host = ""` runs the entry's matches on the
 # lobby's own machine.
 #
+# `client_visual_allowed = true` lets the players' own cosmetic mods (kind client_visual, such as drawn_crosshair) load on
+# this entry beside its packs (LG-426); without it they stay off as on any vanilla server.
+#
 # Check it on the host:  /opt/decombat/bin/dc-config check /opt/decombat/config/server.toml --fs
 # DC-DEFAULT: MAP-71
 
@@ -25,3 +28,4 @@ host = ""
 mods = [
   { id = "starter_map", version = "0.1.0", sha256 = "a3e196620794c64527a06a985e5d8c89d8c60cec8ea4a2bd7da21da55b795ce8" },
 ]
+client_visual_allowed = true

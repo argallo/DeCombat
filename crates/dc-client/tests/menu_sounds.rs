@@ -114,7 +114,11 @@ fn rom_interface_sound_keys_resolve_to_files() {
         .map(|(_, n, _)| *n)
         .collect();
     println!("interface keys with a file: {found:?}");
-    for id in [frontfx::SOUND_SELECT, frontfx::SOUND_START_COUNT] {
+    for id in [
+        frontfx::SOUND_SELECT,
+        frontfx::SOUND_START_COUNT,
+        frontfx::SOUND_MESSENGER_TWINKLE,
+    ] {
         assert!(
             l.sounds.contains_key(&id),
             "{} has a file",

@@ -884,6 +884,7 @@ fn add_notice_edit(sheet: &mut Sheet) -> Option<usize> {
         wrap_max: 0,
         colour_set: false,
         placed: true,
+        blink: 0.0,
     };
     sheet.parts.push(part);
     Some(sheet.parts.len() - 1)
@@ -1031,12 +1032,15 @@ impl Screen for ClanScreen {
                         self.sheet.focus(self.search_field);
                         return true;
                     }
-                    PageHit::Search => {
+                    // CLI-1901: the manage page's Invite sends the field's name as the find page's Search sends its text
+                    PageHit::Search | PageHit::Invite => {
                         self.search(ctx);
                         return true;
                     }
                     PageHit::Refresh => Some(l.ask(&user)),
                     PageHit::Row(i) if !l.busy => l.row_request(i, &user),
+                    PageHit::Accept(i) if !l.busy => l.answer_request(i, true, &user),
+                    PageHit::Decline(i) if !l.busy => l.answer_request(i, false, &user),
                     PageHit::Second => {
                         self.open_page(CMD_CREATE, ctx);
                         return true;
@@ -1305,12 +1309,13 @@ impl ClanScreen {
                 };
                 let mut l = ListPage::new(kind);
                 l.member = in_clan(ctx.data);
+                // CLI-1896: the search field starts empty and takes the keyboard; CLI-1901: on the manage page the
+                // same field is the leader's invitation entry (empty, the keyboard on a click)
+                if let Some(i) = self.search_field {
+                    self.sheet.parts[i].text.clear();
+                }
+                l.field = self.search_field;
                 if kind == ListKind::Search {
-                    // CLI-1896: the search field starts empty and takes the keyboard
-                    if let Some(i) = self.search_field {
-                        self.sheet.parts[i].text.clear();
-                    }
-                    l.field = self.search_field;
                     self.sheet.focus(self.search_field);
                 }
                 l.busy = true;
@@ -1352,6 +1357,12 @@ impl ClanScreen {
                         ctx.popups.push(Popup::ok(m, BoxTag::None));
                     } else {
                         l.answer(b);
+                        // CLI-1901: a sent invitation empties the entry
+                        if target.starts_with("/clan/invite") && done.is_some() {
+                            if let Some(i) = self.search_field {
+                                self.sheet.parts[i].text.clear();
+                            }
+                        }
                     }
                 }
                 None => {
@@ -1401,6 +1412,21 @@ impl ClanScreen {
         let WebPage::List(l) = &mut self.web else {
             return;
         };
+        // CLI-1901: the leader's manage page invites the typed name
+        if l.offers_invite() {
+            if l.busy {
+                return;
+            }
+            if let Some(t) = l.invite_request(&self.sheet, &ctx.data.user) {
+                l.busy = true;
+                l.message = None;
+                if !web_get(ctx, t) {
+                    l.busy = false;
+                    l.message = Some(clanpage::T_UNREACHABLE.into());
+                }
+            }
+            return;
+        }
         // a search while the list is still coming asks again: the later answer is the one shown
         if l.kind != ListKind::Search {
             return;

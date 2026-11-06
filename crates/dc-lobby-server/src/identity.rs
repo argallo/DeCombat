@@ -528,11 +528,12 @@ pub fn run_subcommand(args: &[String]) -> i32 {
 /// login name must still match). Elsewhere the `identity_links` row of (issuer, account) names it; without one a new
 /// password-less account with the token's login name is made and linked. A local account that already holds the
 /// login name without being linked is NOT taken over: Err(reason) (the caller refuses with the wrong-password box).
+/// A token issued before the account's last password write (LG-425) is refused the same way.
 // DC-DEFAULT: LG-69 local account mapping
 pub fn local_account(st: &mut Core, c: &Claims) -> db::DbResult<Result<db::Account, String>> {
     if st.identity.is_own(c) {
         return Ok(match db::account_by_no(&st.db, c.account)? {
-            Some(a) if a.login.eq_ignore_ascii_case(&c.login) => Ok(a),
+            Some(a) if a.login.eq_ignore_ascii_case(&c.login) => issued_after_password(a, c),
             Some(_) => Err(format!(
                 "own token of account {} names another login",
                 c.account
@@ -541,9 +542,10 @@ pub fn local_account(st: &mut Core, c: &Claims) -> db::DbResult<Result<db::Accou
         });
     }
     if let Some(no) = db::identity_link(&st.db, &c.issuer, c.account)? {
-        return Ok(
-            db::account_by_no(&st.db, no)?.ok_or_else(|| format!("linked account {no} is gone"))
-        );
+        return Ok(match db::account_by_no(&st.db, no)? {
+            Some(a) => issued_after_password(a, c),
+            None => Err(format!("linked account {no} is gone")),
+        });
     }
     if db::account_by_login(&st.db, &c.login)?.is_some() {
         return Ok(Err(format!(
@@ -559,6 +561,19 @@ pub fn local_account(st: &mut Core, c: &Claims) -> db::DbResult<Result<db::Accou
         no, c.login, c.issuer, c.account
     ));
     Ok(db::account_by_no(&st.db, no)?.ok_or_else(|| "new account vanished".to_string()))
+}
+
+/// LG-425 (security audit M5): the account of a token issued at or after its last password write, else the reason.
+// DC-DEFAULT: LG-425 (proposed) a password write ends the account's older tokens (a 24 h token no longer outlives
+// a reset or a recovery)
+fn issued_after_password(a: db::Account, c: &Claims) -> Result<db::Account, String> {
+    if c.issued < a.tokens_valid_after {
+        return Err(format!(
+            "token of {} issued before its password changed",
+            a.login
+        ));
+    }
+    Ok(a)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1409,6 +1424,93 @@ mod tests {
             expires: now + 3600,
         };
         format!("LOCAL:tok:{}", sign(kp, &c).unwrap())
+    }
+
+    /// A token of `dc.main` for (`account`, `login`) issued at `issued`.
+    fn token_at(kp: &Ed25519KeyPair, account: u32, login: &str, issued: i64) -> String {
+        let c = Claims {
+            issuer: "dc.main".into(),
+            account,
+            login: login.into(),
+            nick: "Quinn".into(),
+            issued,
+            expires: issued + 24 * 3600,
+        };
+        format!("LOCAL:tok:{}", sign(kp, &c).unwrap())
+    }
+
+    // ------------------------------------------------------------------ LG-425: a password write ends older tokens
+
+    #[test]
+    fn a_password_write_refuses_the_tokens_issued_before_it() {
+        let (mut st, kp) = trusting();
+        let now = crate::clock::unix_now();
+        let old = token_at(&kp, 77, "quinnan224", now - 600);
+        let (ok, _, no) = login(&mut st, 1, &old, "");
+        assert_eq!(ok, 1, "valid before any password write");
+        // the host sets a password (the account CLI's reset-password and the recovery go through this write)
+        db::set_password_phc(&st.db, no, &crate::pwhash::encode(&[7; 16], "dummy-pass-1")).unwrap();
+        let (ok, reason, _) = login(&mut st, 2, &old, "");
+        assert_eq!((ok, reason), (0, crate::wire::REASON_BAD_PASSWORD));
+        // a token issued after the change still logs in
+        let fresh = token_at(&kp, 77, "quinnan224", now + 1);
+        assert_eq!(login(&mut st, 3, &fresh, "").0, 1);
+        // the mark never moves back
+        db::set_password_phc_at(
+            &st.db,
+            no,
+            &crate::pwhash::encode(&[8; 16], "dummy-pass-2"),
+            5,
+        )
+        .unwrap();
+        assert_eq!(login(&mut st, 4, &old, "").0, 0);
+    }
+
+    #[test]
+    fn an_own_token_ends_with_the_password_change_but_not_with_the_argon2_upgrade() {
+        let (mut issuer, public) = issuer_state();
+        issuer.opts.autochar = true;
+        let alice = db::account_by_login(&issuer.db, "alice")
+            .unwrap()
+            .unwrap()
+            .user_no;
+        let (_, body) = route(
+            &mut issuer,
+            "POST",
+            br#"{"login":"alice","password":"rabbit-hole"}"#,
+            "1.2.3.4:5",
+            Instant::now(),
+        )
+        .unwrap();
+        let token = format!("tok:{}", field(&body, "token"));
+        let issued = verify(
+            &token["tok:".len()..],
+            &public,
+            "dc.main",
+            crate::clock::unix_now(),
+        )
+        .unwrap()
+        .issued;
+        // the LG-140 rewrite of the same password keeps the token
+        db::rehash_password_phc(
+            &issuer.db,
+            alice,
+            &crate::pwhash::encode(&[9; 16], "rabbit-hole"),
+        )
+        .unwrap();
+        assert_eq!(login(&mut issuer, 1, &token, "").0, 1);
+        // a password change after the token's issue time ends it
+        db::set_password_phc_at(
+            &issuer.db,
+            alice,
+            &crate::pwhash::encode(&[9; 16], "dummy-pass-3"),
+            issued + 1,
+        )
+        .unwrap();
+        assert_eq!(
+            login(&mut issuer, 2, &token, "").1,
+            crate::wire::REASON_BAD_PASSWORD
+        );
     }
 
     fn nick_of(st: &Core, account: u32) -> Option<String> {

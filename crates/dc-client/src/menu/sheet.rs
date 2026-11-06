@@ -223,6 +223,20 @@ pub struct Part {
     /// The screen moved the control at run time (the 2009 screen code calls the control's position setter, vtable
     /// +0x20): `pos` and `text_at` hold the new place, which the draw-list check then takes instead of the record's.
     pub placed: bool,
+    /// Buttons: the blink period in seconds (0 = no blink). While set, an enabled, unselected button shows its C
+    /// (pressed) texture in every other period ([`blink_on`]); the caption keeps its colour.
+    // EVIDENCE: cshell+0x33de40 (button draw: not selected, blink phase on, enabled (vtable +0xbc) and blink mode
+    // +0x1f0 0 or 2 -> texture slot +0x18c, else slot +0x188 = C; the caption takes the blink colour +0x1ec only in
+    // modes 1 / 2), cshell+0x33e430 (the constructor clears the period +0x1e8, mode +0x1f0 and slot +0x18c),
+    // cshell+0x33d7f0 (the texture setter fills only the slots +0x17c .. +0x188)
+    pub blink: f32,
+}
+
+/// The blink phase of a button blinking every `period` seconds at clock `secs`: on in the even periods.
+// EVIDENCE: cshell+0x33dc20 (period <= 0 -> off; once `period` seconds passed since the last flip the shared phase
+// flips: on and off take one period each)
+pub fn blink_on(period: f32, secs: f32) -> bool {
+    period > 0.0 && ((secs.max(0.0) / period) as u64).is_multiple_of(2)
 }
 
 /// The record index of a control the screen builds at run time (it has no record: the draw trace finds none).
@@ -268,6 +282,7 @@ impl Part {
             wrap_max: 0,
             colour_set: false,
             placed: true,
+            blink: 0.0,
         }
     }
 
@@ -331,6 +346,7 @@ impl Part {
             wrap_max: 0,
             colour_set: false,
             placed: false,
+            blink: 0.0,
         }
     }
 }
@@ -433,6 +449,7 @@ impl Sheet {
             wrap_max: 0,
             colour_set: false,
             placed: false,
+            blink: 0.0,
         };
         let size_of = |r: [i32; 4]| [r[2] - r[0], r[3] - r[1]];
         let mut part = match w {
@@ -1080,8 +1097,14 @@ fn draw_part(p: &Part, cat: &mut Catalog, secs: f32, out: &mut Vec<DrawItem>) {
             } else {
                 0
             };
+            // a blinking button's texture only (blink mode 0: the caption keeps the state's colour)
+            let tex_state = if state < 2 && blink_on(p.blink, secs) {
+                2
+            } else {
+                state
+            };
             if !prefix.is_empty() {
-                let letter = BUTTON_LETTER[state];
+                let letter = BUTTON_LETTER[tex_state];
                 let tex = format!("{prefix}{letter}.dtx");
                 let tex = if cat.tex_size(&tex).is_some() {
                     tex

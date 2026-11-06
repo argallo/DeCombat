@@ -63,7 +63,7 @@ fits):
 | `nettest` | the last connection test's result (when one ran) |
 | `note` | the player's text (`/report`, the bug form), at most 1000 characters |
 | `login` | the login name the player typed |
-| `files` | `[{"name", "text"}]`: the tails of `dc-client.out` (256 KiB), the previous run's `dc-client.prev.out` (256 KiB), `dc-client.net.jsonl` (512 KiB, the last match), `dc-client.watchdog.log` (64 KiB), `dc-client.hang.txt`; the text files of `stall_*` and `crash_*` folders and `panic_*.txt` not yet reported (128 KiB each) |
+| `files` | `[{"name", "text"}]`: the tails of `dc-client.out` (256 KiB; the Windows pack's `DeCombat.exe` sends its game's output there, CLI-1906), the previous run's `dc-client.prev.out` (256 KiB), `dc-client.net.jsonl` (512 KiB, the last match), `dc-client.watchdog.log` (64 KiB), `dc-client.hang.txt`; the text files of `stall_*` and `crash_*` folders and `panic_*.txt` not yet reported (128 KiB each) |
 
 **Never in a report** (redaction, applied to every text before it is packed): passwords (`password` / `--password`
 values, JSON `"password"` fields), identity tokens (`tok:...`, `Bearer ...`, JSON `"token"` fields, any

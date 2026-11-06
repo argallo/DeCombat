@@ -227,11 +227,20 @@ fn a_mailed_code_sets_the_new_password_and_the_auth_port_takes_it() {
     );
     // the right code in lower case with a dash
     let typed = format!("{}-{}", c[..4].to_lowercase(), &c[4..]);
+    st.db
+        .execute("UPDATE accounts SET tokens_valid_after = 0", [])
+        .unwrap();
+    let before = crate::clock::unix_now();
     assert_eq!(
         confirm(&mut st, 3, &typed, NEW_PW, T0 + 20),
         (200, ok(MSG_CHANGED))
     );
     assert!(pw_is(&st, NEW_PW) && !pw_is(&st, OLD_PW));
+    // LG-425: the recovery ends the account's older identity tokens
+    let a = crate::db::account_by_login(&st.db, "Erika")
+        .unwrap()
+        .unwrap();
+    assert!(a.tokens_valid_after >= before);
     // single use
     assert_eq!(
         confirm(&mut st, 4, &c, "another-pass-5", T0 + 30).1,

@@ -513,7 +513,13 @@ fn join_leave_kick_and_handover_pushes() {
     let (mut c, cn) = player(&mut st, 3, "cora", "Cora");
     let k = act(&mut st, |st| create(st, an, "Testers", 0, 0)).unwrap();
     a.clear();
-    assert_eq!(b.chat(&mut st, "!clan join testers"), "You joined Testers.");
+    // LG-420: the chat join is an application; the leader's accept makes the member
+    assert_eq!(
+        b.chat(&mut st, "!clan join testers"),
+        "Application sent to Testers."
+    );
+    a.clear();
+    act(&mut st, |st| crate::clanreq::accept(st, an, bn)).unwrap();
     assert_eq!(
         a.ids(),
         vec![CLAN_INFO_STALE_PUSH, CLAN_MEMBERS_STALE_PUSH],

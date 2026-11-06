@@ -55,9 +55,8 @@ Router: forward each port of the table to this machine's LAN address (same port 
 
 - Their own 2009 Combat Arms client folder (nothing of the game is shipped).
 - The Windows package (`python tools/friend_pack_win.py --client <dc-client.exe> --server <host> [--fingerprint <fp>]`):
-  `dc-client.exe`, `DeCombat.bat` and a README, preset to your server. The player puts their 2009 client folder next
-  to `DeCombat.bat` and double-clicks it; the first start asks for the account name, the login screen takes the
-  password. When the host's lobby issues identity tokens (docs/VPS.md §7a), name and password buy a token there first
+  `DeCombat.exe`, `pack.json` (your server and fingerprint) and a README. The player puts their 2009 client folder
+  next to `DeCombat.exe` and double-clicks it; the login screen takes the account name and the password. When the host's lobby issues identity tokens (docs/VPS.md §7a), name and password buy a token there first
   and the login carries only the token, which the player's profile keeps (`identity_token.json`) until it expires
   (`--identity off` keeps the plain password login, CLI-1610).
 - The macOS player pack (`tools/friend_pack_mac.sh --server <host> [--fingerprint <fp>]`, run on a Mac with the
@@ -145,7 +144,7 @@ the login request 0x200 carries the login token (`LOCAL:<name>` from our client)
 wraps the auth port and the web port (registration page) in TLS 1.3 (our own deviation, LG-220 .. LG-226): a public
 lobby refuses plain logins from outside, so no password crosses the network in clear text. `dc-lobby-server tls --db <ca.db>`
 prints the lobby's certificate fingerprint; give it to your players (`--fingerprint <fp>` of the package scripts puts it
-into their launcher), or let their client remember the certificate at the first login. The
+into their pack: `pack.json` on Windows, the app's launcher on macOS), or let their client remember the certificate at the first login. The
 2009 client itself cannot speak TLS: it can only reach a public lobby started with `--plain-auth-public` (unsafe,
 trusted networks only). A reverse proxy, tunnel or port forwarder on the same host as the lobby makes remote players look like loopback (the lobby judges the socket peer), so their passwords would cross the public leg in clear text. If one runs there, start the lobby with `--tls loopback`; the lobby logs this at start-up when `--public` is on and `--tls` is not `loopback`. Details, certificate replacement and pinning: docs/SERVER.md section 4b. Passwords are still
 best not shared with other services.

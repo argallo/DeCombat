@@ -378,11 +378,13 @@ mod tests {
         *PACK_OVERRIDE.lock().unwrap() = Some(Some(Pack {
             commit: "abcd1234".into(),
             update_dir: None,
+            ..Default::default()
         }));
         assert!(check_button().list.is_empty());
         *PACK_OVERRIDE.lock().unwrap() = Some(Some(Pack {
             commit: "abcd1234".into(),
             update_dir: Some(PathBuf::from("C:/nowhere")),
+            ..Default::default()
         }));
         assert_eq!(check_button().list.len(), 1);
         *PACK_OVERRIDE.lock().unwrap() = None;

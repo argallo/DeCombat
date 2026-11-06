@@ -131,6 +131,27 @@ pub const KEY_PFX_GRAVITY: &str = "Gravity";
 pub const KEY_PFX_GRAVITY_OVERRIDE: &str = "GravityOverride";
 pub const KEY_PFX_LIFETIME: &str = "Lifetime";
 pub const KEY_PFX_VELOCITY: &str = "Velocity";
+/// A projectile row's object class and the name of the class-data row it uses.
+// OBSERVED: ROM table key FX.TXT [ProjectileFX<k>] Class, ClassData (the mine rows name a class-data row, the grenade
+// and rocket rows none; 2026-11-05 scratch run)
+// EVIDENCE: cshell+0x292f90 (the client's projectile row reader takes `Class` and resolves `ClassData` by name in
+// the class-data rows, cshell+0x28fdf0)
+pub const KEY_PFX_CLASS: &str = "Class";
+pub const KEY_PFX_CLASS_DATA: &str = "ClassData";
+/// The mine class-data rows of the FX table and their keys: the distance at which a mine goes off and the delay
+/// before it is armed (seconds).
+// DISASM: cshell+0x295e44 (the FX table loader reads `LandTrapClassData<n>` rows from 0 up), cshell+0x28e680 (the
+// row reader: `Name`, `DetonateRadius` as an integer, `ArmDelay` as a float)
+// OBSERVED: ROM table key FX.TXT [LandTrapClassData<n>] Name, ArmDelay (the user's ROM has one row and no
+// DetonateRadius; values read at run time)
+pub const TRAP_SECTION: &str = "LandTrapClassData";
+pub const KEY_TRAP_DETONATE_RADIUS: &str = "DetonateRadius";
+pub const KEY_TRAP_ARM_DELAY: &str = "ArmDelay";
+/// The 2009 client's values for a mine class-data row without `DetonateRadius` / `ArmDelay`.
+// DISASM: cshell+0x28e6ab (`push 0x40` as the integer default of DetonateRadius), cshell+0x28e6ba (the float default
+// of ArmDelay, the double at cshell+0x3d61a8 = 1.0)
+pub const TRAP_DEFAULT_DETONATE_RADIUS: f32 = 64.0;
+pub const TRAP_DEFAULT_ARM_DELAY_S: f32 = 1.0;
 
 /// `[Gear<n>]` armour rows of the weapon table: the armour points (`Armor`) and, per protection slot i, the damage
 /// type the slot protects (`ProtectionType<i>`) and the share of a hit it takes on the head, torso, arms and legs
@@ -1019,12 +1040,44 @@ pub struct ProjectileRow {
     /// `Lifetime` in seconds.
     pub lifetime_s: Option<f32>,
     pub velocity: Option<f32>,
+    /// `Class` (the object class the row's round is).
+    pub class: Option<String>,
+    /// `ClassData` (the name of a class-data row; a mine's names a [`TRAP_SECTION`] row).
+    pub class_data: Option<String>,
 }
 
-/// The projectile rows of the FX table, by folded `Name`.
+/// One `[LandTrapClassData<n>]` row: what a mine of a projectile row naming it does once it lies.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TrapRow {
+    /// `DetonateRadius` (units), when the row has it.
+    pub detonate_radius: Option<f32>,
+    /// `ArmDelay` (seconds), when the row has it.
+    pub arm_delay_s: Option<f32>,
+}
+
+impl TrapRow {
+    /// The distance at which the mine goes off: the row's `DetonateRadius`, else the 2009 client's default.
+    pub fn radius(&self) -> f32 {
+        self.detonate_radius
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(TRAP_DEFAULT_DETONATE_RADIUS)
+    }
+
+    /// The arming delay in milliseconds: the row's `ArmDelay`, else the 2009 client's default.
+    pub fn arm_ms(&self) -> u32 {
+        let s = self
+            .arm_delay_s
+            .filter(|s| s.is_finite() && *s >= 0.0 && *s < 600.0)
+            .unwrap_or(TRAP_DEFAULT_ARM_DELAY_S);
+        (s * 1000.0).round() as u32
+    }
+}
+
+/// The projectile rows of the FX table, by folded `Name`, and the mine class-data rows by folded `Name`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProjectileTable {
     pub rows: BTreeMap<String, ProjectileRow>,
+    pub traps: BTreeMap<String, TrapRow>,
 }
 
 /// `<x, y, z>` (the table's vector form).
@@ -1049,6 +1102,18 @@ impl ProjectileTable {
     pub fn from_doc(doc: &ButeDoc) -> Self {
         let mut t = ProjectileTable::default();
         for (name, sec) in doc.iter() {
+            if index_of(name, TRAP_SECTION).is_some() {
+                if let Some(n) = sec.get(KEY_NAME).map(|v| unquote(v).to_string()) {
+                    t.traps.insert(
+                        dc_bute::fold_latin1(&n),
+                        TrapRow {
+                            detonate_radius: num_f32(sec.get(KEY_TRAP_DETONATE_RADIUS)),
+                            arm_delay_s: num_f32(sec.get(KEY_TRAP_ARM_DELAY)),
+                        },
+                    );
+                }
+                continue;
+            }
             if index_of(name, PROJECTILE_SECTION).is_none() {
                 continue;
             }
@@ -1070,10 +1135,20 @@ impl ProjectileTable {
                     gravity_override: num_f32(sec.get(KEY_PFX_GRAVITY_OVERRIDE)),
                     lifetime_s: num_f32(sec.get(KEY_PFX_LIFETIME)),
                     velocity: num_f32(sec.get(KEY_PFX_VELOCITY)),
+                    class: text(KEY_PFX_CLASS),
+                    class_data: text(KEY_PFX_CLASS_DATA),
                 },
             );
         }
         t
+    }
+
+    /// The mine class-data row of the projectile row named `name`: `Some` when the row's `ClassData` names a
+    /// [`TRAP_SECTION`] row (the round is a mine, DSV-611).
+    // DC-DEFAULT: DSV-611 (proposed) a projectile row with mine class data is a mine
+    pub fn trap_of(&self, name: &str) -> Option<TrapRow> {
+        let cd = self.get(name)?.class_data.as_deref()?;
+        self.traps.get(&dc_bute::fold_latin1(cd)).copied()
     }
 
     /// Reads the rows from the user's ROM.
@@ -1485,6 +1560,14 @@ pub struct RomTables {
 }
 
 impl RomTables {
+    /// The item table's `ItemType` of weapon `w`; a variant (VAR-1) has its base gun's type, since a variant has no
+    /// item row of its own.
+    // DC-DEFAULT: VAR-1 (proposed) type lookups go through the base gun; DSV-610 (proposed, OWNER REPORT 2026-11-05)
+    pub fn weapon_type(&self, w: u16) -> Option<i32> {
+        let base = self.weapons.variants.get(&w).copied().unwrap_or(w);
+        self.items.weapon_types.get(&base).copied()
+    }
+
     /// The shot cone's random table: the ROM entry, else its generator (DSV-102).
     // DC-DEFAULT: DSV-102 (proposed) the generator where the ROM entry is missing
     pub fn cone_table(&self) -> &[f32] {
@@ -2027,6 +2110,54 @@ ItemName = \"I (Default)\"
             .rows
             .values()
             .any(|r| r.model.is_some() && r.velocity.is_some() && r.lifetime_s.is_some()));
+    }
+
+    /// DSV-611: the user's FX table has mine class-data rows, projectile rows that name one carry their class and
+    /// model, and a launched (`Type` 1) ammunition row of a weapon names such a row with a blast: the mine the
+    /// server lays. Values are printed, never asserted (skipped without the ROM).
+    #[test]
+    fn rom_mine_rows_load_with_their_class_and_keys() {
+        let Some(rom) = dc_rez::dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let (t, _) = RomTables::load(&rom);
+        assert!(!t.projectiles.traps.is_empty(), "mine class-data rows");
+        for (n, tr) in &t.projectiles.traps {
+            println!(
+                "class data {n}: DetonateRadius {:?} ArmDelay {:?} -> {:.0} units, {} ms",
+                tr.detonate_radius,
+                tr.arm_delay_s,
+                tr.radius(),
+                tr.arm_ms()
+            );
+        }
+        let mines: Vec<(&String, &ProjectileRow)> = t
+            .projectiles
+            .rows
+            .iter()
+            .filter(|(n, _)| t.projectiles.trap_of(n).is_some())
+            .collect();
+        assert!(!mines.is_empty(), "projectile rows with mine class data");
+        for (n, r) in &mines {
+            println!("mine row {n}: class {:?}, model {:?}", r.class, r.model);
+            assert!(r.class.is_some() && r.model.is_some(), "{n}");
+        }
+        let thrown: Vec<u16> = t
+            .weapons
+            .weapons
+            .iter()
+            .filter_map(|(&w, row)| {
+                let a = row.ammo?;
+                let fx = t.weapons.projectile_fx(w, a)?;
+                (t.projectiles.trap_of(fx).is_some()
+                    && t.weapons.fires_projectile(w, a)
+                    && t.weapons.area(w, a).is_some())
+                .then_some(w)
+            })
+            .collect();
+        println!("mine weapons (Type 1, mine class data, a blast): {thrown:?}");
+        assert!(!thrown.is_empty());
     }
 
     /// DSV-80: default attachments become mod indices by `[Mod<n>]` name (case-insensitive, lowest n first); unknown

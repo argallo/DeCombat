@@ -14,7 +14,8 @@
 //! 3. A verified zip is unpacked into `<data>/mods/unpacked/<sha256>/` (stored entries only, as `dc-modkit pack`
 //!    writes them; no absolute path, no `..`, no symlink).
 //! 4. The mods load into a fresh `ModHost` in the server's order as `ModOrigin::Server` under the server's policy;
-//!    local client-visual mods (`<data>/mods/local/*`) follow only when the policy is modded and allows them.
+//!    local client-visual mods (`<data>/mods/local/*`) follow only when the policy is modded and allows them (a
+//!    curated entry's fragment says so too, LG-426).
 //! 5. The cache is trimmed (least recently used first) to [`DEFAULT_CACHE_BYTES`].
 //!
 //! Vanilla: no host at all (every mod unloaded, local ones included) and the empty-set hash.
@@ -1646,8 +1647,11 @@ impl ClientMods {
         progress(ModState::Loading);
         self.status.state = ModState::Loading;
         let mut host = ModHost::new();
+        // LG-426: a curated entry's fragment may allow the player's local client_visual mods beside its packs
         host.set_policy(if self.curated {
-            ModPolicy::Curated
+            ModPolicy::Curated {
+                client_visual_allowed,
+            }
         } else {
             ModPolicy::Modded {
                 client_visual_allowed,

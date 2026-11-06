@@ -164,7 +164,9 @@ mods = [{{ id = "{}", version = "{}", sha256 = "{}" }}]
     );
     assert_eq!(
         r.recipe.as_ref().map(|c| c.policy),
-        Some(dc_mod_lua::ModPolicy::Curated)
+        Some(dc_mod_lua::ModPolicy::Curated {
+            client_visual_allowed: false
+        })
     );
     assert_eq!(r.recipe.unwrap().mods[0].id, "fixture_pack");
     assert!(dir
@@ -469,7 +471,12 @@ capacity = 50
         let recipe = m
             .mod_recipe()
             .expect("the entry's recipe reaches the match");
-        assert_eq!(recipe.policy, dc_mod_lua::ModPolicy::Curated);
+        assert_eq!(
+            recipe.policy,
+            dc_mod_lua::ModPolicy::Curated {
+                client_visual_allowed: false
+            }
+        );
         recipe
     };
     let recipe = on_entry(&m);

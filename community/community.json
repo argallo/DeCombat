@@ -56,7 +56,7 @@
       "sha256": "6ebce523fc0c19553a2b37c1683f92d92543e1e1a5dbaa6652d566994394235d",
       "source_repo": "https://github.com/argallo/DeCombat",
       "author": "DeCombat",
-      "description": "A cosmetic crosshair drawn by the game: shape, size, colour and recoil behaviour. Optional, and off on vanilla servers.",
+      "description": "A cosmetic crosshair drawn by the game: shape, size, colour and recoil behaviour. Optional: a vanilla server refuses it, the Vanilla++ entry lets it load.",
       "capabilities": [
         "content.hud"
       ]

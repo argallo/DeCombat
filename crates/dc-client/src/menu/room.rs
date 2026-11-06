@@ -85,6 +85,13 @@ pub const ROOM_NUMBER: i32 = 9;
 pub const ROOM_CAPTION: i32 = 10;
 pub const START_PART: i32 = 1;
 pub const FORCE_OUT_BUTTON: i32 = 3;
+/// CLI-1905: the Change password button (team window control 8, texture `ChangePwd_`, command 20): shown to the host
+/// only; it opens the lock box, whose OK sends the typed password as the room's.
+// EVIDENCE: cshell+0x15db30 (the host refresh shows (5, 1), (5, 3) and (5, 8) for the host, (5, 7) for the others),
+// cshell+0x164810 (command 0x14 -> cshell+0x15fc80, the box; command 0x53 from the box's OK, cshell+0x15baf0 -> the
+// typed text to cshell+0x18a9c0 as type 1; Cancel posts 7)
+pub const CHANGE_PASSWORD_BUTTON: i32 = 8;
+pub const CMD_CHANGE_PASSWORD: i32 = 20;
 /// The team change buttons: 5 (Team_change_, arrows to Alpha) and 6 (Team_change_Bravo_, arrows to Bravo); the team
 /// labels 0x15 (Alpha) and 0x16 (Bravo), check buttons whose "on" image marks the own team.
 // EVIDENCE: cshell+0x15d9d0 (own team 1: button 5 hidden, button 6 shown, label 0x15 on, 0x16 off; team 2: button 5
@@ -154,6 +161,62 @@ pub const CMD_GOAL: i32 = 245;
 pub const CMD_PLAYERS: i32 = 247;
 /// The weapon limit list.
 pub const CMD_ARMS: i32 = 600;
+/// CLI-1899: the Invite button (a room invite to every player of the channel lobby, 0x396).
+// EVIDENCE: cshell+0x164810 (command 0x7531 -> cshell+0x15fd30; no host test)
+pub const CMD_INVITE: i32 = 30001;
+/// CLI-1899: the invite's boxes: sent (on a clan server its own string), the room full, a clan room whose two sides
+/// are both taken, and the wait between two invites (`%1` the seconds left).
+// EVIDENCE: cshell+0x39060 (0x397 ok -> 0x509, 0x50d with shell +0x12c set), cshell+0x15fd30 (0x50b, 0x50e),
+// cshell+0x38f20 (0x50a through FormatMessage with 10 minus the seconds counted)
+pub const INVITE_SENT: i32 = 0x509;
+pub const INVITE_SENT_CLAN: i32 = 0x50d;
+pub const INVITE_ROOM_FULL: i32 = 0x50b;
+pub const INVITE_CLAN_SIDES_TAKEN: i32 = 0x50e;
+pub const INVITE_WAIT: i32 = 0x50a;
+/// CLI-1899: seconds between two invites.
+// EVIDENCE: cshell+0x38f20 (timer 0x2712 of 1000 ms armed at the send), cshell+0x42df0 (case 0x2712: the tenth tick
+// allows the next invite and stops the timer)
+pub const INVITE_GAP_SECS: u64 = 10;
+
+/// CLI-1899: what the Invite button does: `Ok(())` sends 0x396, `Err(box)` shows that string instead.
+/// `clan` = the joined server entry is clan-only (2009's shell +0x12c, set from the entry's +0xbc at the server
+/// choice), `teams` = the members on team 1 and on team 2, `others` = members on neither, `sent` = when the last
+/// invite went out (cleared by a failed reply).
+// EVIDENCE: cshell+0x15fd30 (no clan flag: both team lists together below the room's player limit +0x5590, else
+// 0x50b; clan flag: either team list empty, else 0x50e), cshell+0x38f20 (the wait flag clear -> 0x50a, else the send),
+// cshell+0x13dff0 / cshell+0x13e200 (shell +0x12c = the chosen server entry's +0xbc != 0)
+pub fn invite_check(
+    clan: bool,
+    teams: [usize; 2],
+    others: usize,
+    max_players: i32,
+    sent: Option<Instant>,
+    now: Instant,
+) -> Result<(), InviteRefusal> {
+    if clan {
+        if teams[0] != 0 && teams[1] != 0 {
+            return Err(InviteRefusal::Box(INVITE_CLAN_SIDES_TAKEN));
+        }
+    } else if (teams[0] + teams[1] + others) as i64 >= i64::from(max_players) {
+        return Err(InviteRefusal::Box(INVITE_ROOM_FULL));
+    }
+    if let Some(at) = sent {
+        let counted = now.saturating_duration_since(at).as_secs();
+        if counted < INVITE_GAP_SECS {
+            return Err(InviteRefusal::Wait((INVITE_GAP_SECS - counted) as i32));
+        }
+    }
+    Ok(())
+}
+
+/// CLI-1899: why the Invite button sent nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InviteRefusal {
+    /// A plain box of this string.
+    Box(i32),
+    /// The wait box ([`INVITE_WAIT`]) with these seconds left.
+    Wait(i32),
+}
 /// The controls the setting lists open under: map, mode, goal, players, weapon limit.
 // EVIDENCE: cshell+0x1625f0 (6, 1), cshell+0x1628e0 (6, 2), cshell+0x163550 (6, 3), cshell+0x1637a0 (6, 4),
 // cshell+0x160080 (6, 5)
@@ -688,6 +751,12 @@ impl Room {
             .show(TEAM_WINDOW, START_PART, WidgetKind::Button, host);
         self.sheet
             .show(TEAM_WINDOW, READY_BUTTON, WidgetKind::Button, !host);
+        self.sheet.show(
+            TEAM_WINDOW,
+            CHANGE_PASSWORD_BUTTON,
+            WidgetKind::Button,
+            host,
+        );
         let team = Room::own_team(data);
         // EVIDENCE: cshell+0x15d9d0 (team 1 shows the button towards Bravo, team 2 the one towards Alpha; the own
         // team's label on)
@@ -1031,6 +1100,35 @@ impl Room {
         true
     }
 
+    /// CLI-1899: the Invite button: 0x396 (header only) and the wait armed, or the box of [`invite_check`].
+    // SPEC: PROTOCOL_2009.md §3.7 (0x396 header only)
+    // EVIDENCE: cshell+0x15fd30, cshell+0x38f20 -> cshell+0x18d960 (the 6-byte 0x396)
+    fn invite(ctx: &mut Ctx) {
+        let clan = ctx.data.server.as_ref().is_some_and(|e| e.clan_only != 0);
+        let mut teams = [0usize; 2];
+        let mut others = 0;
+        for m in ctx.data.members.values() {
+            match m.team {
+                1 => teams[0] += 1,
+                2 => teams[1] += 1,
+                _ => others += 1,
+            }
+        }
+        let now = Instant::now();
+        let max = ctx.data.room.max_players;
+        match invite_check(clan, teams, others, max, ctx.data.invite_sent, now) {
+            Ok(()) => {
+                ctx.data.invite_sent = Some(now);
+                ctx.send(LinkCmd::InviteAll);
+            }
+            Err(InviteRefusal::Box(id)) => ctx.notice(id),
+            Err(InviteRefusal::Wait(secs)) => {
+                let t = roomtext::format_message(&ctx.cat.text(INVITE_WAIT), secs);
+                ctx.popups.push(super::popup::Popup::ok(t, BoxTag::None));
+            }
+        }
+    }
+
     fn limit_box(ctx: &mut Ctx, text: String) {
         ctx.popups
             .push(super::popup::Popup::ask(text, super::popup::BoxTag::LimitBox).limit_buttons());
@@ -1103,6 +1201,15 @@ impl Screen for Room {
         // CLI-1303: the kick question's Yes sends the kick
         if let (super::popup::BoxTag::Kick { id, char_no }, true) = (p.tag, yes) {
             ctx.send(LinkCmd::Kick { id, char_no });
+        }
+        // CLI-1905: the lock box's OK sends the typed password (empty: the room loses its password); Cancel nothing
+        // EVIDENCE: cshell+0x15baf0 (OK -> command 0x53 with the text), cshell+0x164810 (0x53: no length test)
+        // DC-DEFAULT: CLI-1905 (proposed) only the host's OK is sent (the lobby refuses a guest's change anyway)
+        if (p.tag, yes) == (super::popup::BoxTag::LockRoom, true) && ctx.data.host() {
+            ctx.send(LinkCmd::RoomPassword {
+                mode: ctx.data.room.mode,
+                password: p.input.clone(),
+            });
         }
     }
     fn list_follow(&self) -> Vec<(i32, i32)> {
@@ -1220,6 +1327,14 @@ impl Screen for Room {
             CMD_TEAM if !Room::is_ffa(ctx.cat, ctx.data) => {
                 let to = if Room::own_team(ctx.data) == 1 { 2 } else { 1 };
                 ctx.send(LinkCmd::Team(to));
+            }
+            // CLI-1899: Invite, for every member (the host test of the setting buttons is not on this command)
+            CMD_INVITE => Room::invite(ctx),
+            // CLI-1905: the host's Change password button opens the lock box
+            // EVIDENCE: cshell+0x15fc80
+            CMD_CHANGE_PASSWORD if host => {
+                let text = ctx.cat.text(super::popup::LOCK_ROOM_TEXT);
+                ctx.popups.push(super::popup::Popup::lock_room(text));
             }
             // the host's setting buttons open their list; any of them closes the open one
             // EVIDENCE: cshell+0x164810 (commands 0xf1 / 0xf3 through cshell+0x1639e0, 0xf5 / 0xf7 / 600: not the
@@ -1487,6 +1602,15 @@ impl Screen for Room {
                 };
                 ctx.popups.push(super::popup::Popup::ok(t, BoxTag::None));
             }
+            // CLI-1899: the invite's answer: ok -> its box; a refusal shows nothing and allows the next invite at once
+            // EVIDENCE: cshell+0x39060 (+6 != 0 -> 0x509, or 0x50d with shell +0x12c set; 0 -> the wait flag set, a log
+            // line, no box)
+            // DC-DEFAULT: CLI-1899 (proposed) the answer is read while the waiting room is open (2009: shell-wide)
+            LinkEvent::InviteAllReply { ok: true } => {
+                let clan = ctx.data.server.as_ref().is_some_and(|e| e.clan_only != 0);
+                ctx.notice(if clan { INVITE_SENT_CLAN } else { INVITE_SENT });
+            }
+            LinkEvent::InviteAllReply { ok: false } => ctx.data.invite_sent = None,
             LinkEvent::MemberRemoved { id, reason } if *id == ctx.data.profile.my_id => {
                 match reason {
                     1 => ctx.error(text_ids::KICKED_MOD, BoxTag::None),

@@ -194,7 +194,20 @@ pub struct Friends {
     pub toggle_asked: bool,
     /// lobby20: the whispers kept per other party (the 1:1 chat panel's lines), at most [`CHAT_KEEP`] parties.
     pub chats: Vec<Chat>,
+    /// The messenger window is shown (the menu keeps it in step with [`Messenger::open`]).
+    pub shown: bool,
+    /// CLI-1900: the notices (whispers of others, new friend requests) that came while the window was closed; while
+    /// any wait the bar's messenger button blinks ([`BUTTON_BLINK`]); opening the window clears them.
+    // EVIDENCE: cshell+0x13af50 / cshell+0x13afc0 (a messenger notice while the window is not shown (+0x5530 = 0):
+    // the bar button's blink on, sound 0x12, pending +0x5534 = 1), cshell+0x12b350 (opening the window clears the
+    // pending flag), cshell+0x1bb70 (every screen focus starts the blink again while pending)
+    pub unread: u32,
 }
+
+/// CLI-1900: the blink period of the bar's messenger button while [`Friends::unread`] (seconds).
+// EVIDENCE: cshell+0x13af50 (the button's period +0x1e8 set to 0x3ea8f5c3 = 0.33), cshell+0x1bf20 (command 0x136
+// sets it back to 0)
+pub const BUTTON_BLINK: f32 = 0.33;
 
 /// One 1:1 conversation: the other party and its lines (speaker, text).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -245,6 +258,8 @@ impl Friends {
                 let n = get(1).to_string();
                 if !n.is_empty() && !self.requests.contains(&n) {
                     self.requests.push(n);
+                    // DC-DEFAULT: CLI-1900 (proposed) a new friend request while the window is closed lights the button
+                    self.unread += u32::from(!self.shown);
                 }
                 None
             }
@@ -252,6 +267,11 @@ impl Friends {
                 // lobby20: the conversation with the other party keeps the line (the relay sends it to both sides)
                 let other = if get(1) == self.me { get(2) } else { get(1) };
                 self.hear(other, get(1), get(3));
+                // DC-DEFAULT: CLI-1900 (proposed) another player's whisper while the window is closed lights the
+                // button (the own line, which the relay echoes, does not)
+                if get(1) != self.me {
+                    self.unread += u32::from(!self.shown);
+                }
                 Some((
                     format!("{} >> {} : {}", get(1), get(2), get(3)),
                     WHISPER_COLOUR,
@@ -351,6 +371,38 @@ pub fn new_request(friends: &Friends, e: &LinkEvent) -> Option<String> {
 pub fn request_box(cat: &Catalog, name: &str) -> Popup {
     let t = cat.text(0x5ac).replace("%s", name);
     Popup::ask_name(t, BoxTag::FriendRequest, name)
+}
+
+/// CLI-1901: a clan leader's invitation (relay line `claninvite<TAB>clan name<TAB>clan number`, LG-420): the clan's
+/// name and number.
+pub fn clan_invite(e: &LinkEvent) -> Option<(String, u32)> {
+    match e {
+        LinkEvent::Messenger(f) if f.first().map(String::as_str) == Some("claninvite") => {
+            let name = f.get(1).filter(|n| !n.is_empty())?.clone();
+            let uid = f.get(2)?.trim().parse::<u32>().ok().filter(|u| *u != 0)?;
+            Some((name, uid))
+        }
+        _ => None,
+    }
+}
+
+/// The question of a clan invitation. The ROM string table has no clan membership invitation (its clan invitations,
+/// 0x50c, are to a clan match room), so the text is ours; the box is the friend request's (title 0x371, Yes 0x35 /
+/// No 0x36).
+// DC-DEFAULT: CLI-1901 (proposed) the clan invitation box and its text
+pub const CLAN_INVITE_TEXT: &str = "Clan %s invites you to join. Do you accept the invitation?";
+
+pub fn clan_invite_box(name: &str, uid: u32) -> Popup {
+    let t = CLAN_INVITE_TEXT.replace("%s", name);
+    Popup::ask_name(t, BoxTag::ClanInvite(uid), name)
+}
+
+/// The answers of the clan invitation box (LG-420 relay commands over the own lobby connection).
+pub fn clan_yes_command(uid: u32) -> String {
+    format!("!nm clanyes\t{uid}")
+}
+pub fn clan_no_command(uid: u32) -> String {
+    format!("!nm clanno\t{uid}")
 }
 
 /// The messenger parts of the events every screen sees: the relay's lines.
@@ -1226,6 +1278,30 @@ mod tests {
         let (line, c) = d.apply(&f(&["whisper", "Ann", "Me", "hi"])).unwrap();
         assert_eq!((line.as_str(), c), ("Ann >> Me : hi", WHISPER_COLOUR));
         assert_eq!(whisper_command("Ann", "yo"), "!nm w\tAnn\tyo");
+    }
+
+    #[test]
+    fn notices_while_closed_wait_and_none_while_shown() {
+        let mut d = Friends::default();
+        d.apply(&f(&["friends", "Me", "Ann"]));
+        assert_eq!(d.unread, 0);
+        // another player's whisper and a new request wait; the own (echoed) line and a repeated request do not
+        d.apply(&f(&["whisper", "Ann", "Me", "hi"]));
+        d.apply(&f(&["whisper", "Me", "Ann", "yo"]));
+        d.apply(&f(&["request", "Cy"]));
+        d.apply(&f(&["request", "Cy"]));
+        assert_eq!(d.unread, 2);
+        // with the window shown nothing waits
+        d.unread = 0;
+        d.shown = true;
+        d.apply(&f(&["whisper", "Ann", "Me", "again"]));
+        d.apply(&f(&["request", "Dee"]));
+        assert_eq!(d.unread, 0);
+        // the blink: on in the even periods, never without a period
+        assert!(crate::menu::sheet::blink_on(BUTTON_BLINK, 0.1));
+        assert!(!crate::menu::sheet::blink_on(BUTTON_BLINK, 0.4));
+        assert!(crate::menu::sheet::blink_on(BUTTON_BLINK, 0.7));
+        assert!(!crate::menu::sheet::blink_on(0.0, 0.1));
     }
 
     #[test]

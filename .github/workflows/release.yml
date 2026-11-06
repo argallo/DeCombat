@@ -132,7 +132,7 @@ jobs:
       - name: check for build machine paths
         shell: bash
         run: bash tools/ci_check_paths.sh target/x86_64-pc-windows-msvc/release/dc-client.exe
-      - name: package DeCombat.bat
+      - name: package the Windows zip
         if: env.DC_FRIEND_SERVER != ''
         shell: bash
         run: python tools/friend_pack_win.py --client target/x86_64-pc-windows-msvc/release/dc-client.exe --botclient target/x86_64-pc-windows-msvc/release/dc-botclient.exe --server "$DC_FRIEND_SERVER" --fingerprint "$DC_FRIEND_FINGERPRINT" --name "DeCombat-win-$LABEL" --commit "$SHORT_SHA"

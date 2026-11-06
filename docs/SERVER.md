@@ -193,7 +193,7 @@ the next start: every player who pinned or remembered the old one then sees the 
 new fingerprint, so give it to them first.
 
 **How players trust the server.** dc-client checks the certificate in this order: the fingerprint given with
-`--server-fingerprint` (or `DC_SERVER_FINGERPRINT`; the friend pack's `play.bat` carries it when built with
+`--server-fingerprint` (or `DC_SERVER_FINGERPRINT`; the Windows friend pack's `pack.json` carries it when built with
 `tools/friend_pack_win.py --fingerprint <fp>` or `--server-cert <tls_cert.pem>`); a CA-issued certificate valid for the name
 typed in `--lobby`; else the first certificate seen for that address is remembered in the player's profile
 (`%APPDATA%\DeCombat\known_servers.txt`). A later different certificate is refused with the box "The server's

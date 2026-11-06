@@ -16,6 +16,7 @@ mod botgroups;
 mod botpool;
 mod botsup;
 mod clan;
+mod clanreq;
 mod clanweb;
 mod cli;
 mod clock;

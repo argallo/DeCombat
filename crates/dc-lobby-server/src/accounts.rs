@@ -1327,9 +1327,14 @@ mod tests {
                 .disabled
         );
         assert!(cli(&p, &["disable", "nobody"]).is_err());
-        // reset-password
+        // reset-password (LG-425: it ends the account's older identity tokens)
+        lobby
+            .execute("UPDATE accounts SET tokens_valid_after = 0", [])
+            .unwrap();
+        let before = crate::clock::unix_now();
         cli(&p, &["reset-password", "Erika", "newpass1"]).unwrap();
         let a = db::account_by_login(&lobby, "Erika").unwrap().unwrap();
+        assert!(a.tokens_valid_after >= before);
         assert_eq!(
             crate::auth::pw_verify(&a, "newpass1"),
             crate::auth::PwCheck::Ok

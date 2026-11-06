@@ -1927,6 +1927,55 @@ fn every_room_option_request_leaves_no_pending_mark_on_the_hosts_client() {
     assert!(!b.has(ROOM_UPDATE_PUSH));
 }
 
+/// CLI-1905: the 0x38c password form as the client's lock box sends it (+6 mode, +0xa type 1, +0xe 0, +0x12 the
+/// length as 4 bytes, +0x16 wstr[33]; 0x58 bytes with the header).
+fn password_form(pw: &str) -> Vec<u8> {
+    let mut b = u32s(&[0, field::LOCKED, 0]);
+    b.extend((pw.encode_utf16().count() as u32).to_le_bytes());
+    b.extend(wstr(pw, 33));
+    assert_eq!(b.len() + 6, 0x58);
+    b
+}
+
+#[test]
+fn the_hosts_lock_box_sets_and_clears_the_room_password() {
+    // SPEC: PROTOCOL_2009.md §3.7 (0x38c password form); EVIDENCE: cshell+0x18a9c0
+    let mut st = state();
+    let (mut a, _) = player(&mut st, 1, 2, "pw1a", "LockHost");
+    let (mut b, _) = player(&mut st, 3, 4, "pw1b", "LockGuest");
+    let (mut c, _) = player(&mut st, 5, 6, "pw1c", "LockThird");
+    let no = open_room(&mut st, &mut a, "");
+    let key = RoomKey { channel: 1, no };
+    // a guest's form is refused and changes nothing
+    assert_eq!(enter(&mut st, &mut b, no, "").0, 1);
+    b.send(&mut st, ROOM_SETTING_CHANGE, &password_form("zz99"));
+    assert_eq!(u32_at(&b.take(ROOM_SETTING_CHANGE_REPLY), 6), 0);
+    assert!(st.rooms[&key].password.is_empty());
+    // the host locks the room: ok, the room pushes locked = 1
+    a.pump();
+    a.got.clear();
+    a.send(&mut st, ROOM_SETTING_CHANGE, &password_form("ab12"));
+    a.pump();
+    let locked: Vec<u32> = a
+        .all(ROOM_UPDATE_PUSH)
+        .iter()
+        .filter(|d| u32_at(d, 0xa) == field::LOCKED)
+        .map(|d| u32_at(d, 0xe))
+        .collect();
+    assert_eq!(locked, vec![1]);
+    assert_eq!(u32_at(&a.take(ROOM_SETTING_CHANGE_REPLY), 6), 1);
+    assert_eq!(st.rooms[&key].password, "ab12");
+    // a third player needs it
+    assert_ne!(enter(&mut st, &mut c, no, "").0, 1);
+    assert_ne!(enter(&mut st, &mut c, no, "ab13").0, 1);
+    assert_eq!(enter(&mut st, &mut c, no, "ab12").0, 1);
+    // an empty form unlocks
+    a.got.clear();
+    a.send(&mut st, ROOM_SETTING_CHANGE, &password_form(""));
+    assert_eq!(u32_at(&a.take(ROOM_SETTING_CHANGE_REPLY), 6), 1);
+    assert!(st.rooms[&key].password.is_empty());
+}
+
 // synthetic room table: an FFA row (class 6) and a TDM row (class 1)
 const FFA_TABLE: &str = r"[Map0]
 Enable=TRUE
@@ -2464,7 +2513,8 @@ fn a_sniper_only_room_puts_the_first_owned_sniper_rifle_in_the_primary_slot() {
     );
     let ch = st.character(nb).unwrap_or_default();
     let tok = game::loadout_tokens(&st, nb, &ch);
-    assert!(tok.starts_with(" loadout=0:31,1:20,2:40 "), "{tok}");
+    // LG-419: the pistol, which the game server does not grant under Sniper Only (DSV-476), is not sent either
+    assert!(tok.starts_with(" loadout=0:31,2:40 "), "{tok}");
     let stored: Vec<(i64, i64)> = crate::db::items(&st.db, nb)
         .unwrap()
         .iter()
@@ -2478,6 +2528,98 @@ fn a_sniper_only_room_puts_the_first_owned_sniper_rifle_in_the_primary_slot() {
     a.send(&mut st, ROOM_SETTING_CHANGE, &u32s(&[0, 0xe, 0]));
     let tok = game::loadout_tokens(&st, nb, &ch);
     assert!(tok.starts_with(" loadout=0:10,1:20,2:40,11:31 "), "{tok}");
+}
+
+/// LG-419: under each of the nine rows of the room's weapon list the game server's `loadout=` token names only the
+/// weapons the rule lets into the match (DSV-610's grant rule; an "only" rule's primary is first replaced by an owned
+/// passing one, LG-67), so a backpack weapon under No Backpack and the primaries under Pistols Only stay home. The
+/// stored loadout is not changed.
+#[test]
+fn every_weapon_rule_sends_only_its_weapons_to_the_game_server() {
+    let mut st = state();
+    {
+        let rom = std::sync::Arc::get_mut(&mut st.rom).unwrap();
+        // synthetic weapon rows: 10 rifle (0), 20 pistol (4), 30 sniper rifle (2), 40 knife (7), 50 grenade (6),
+        // 60 shotgun (0x1a), 70 launcher (8)
+        rom.weapon_kinds.extend([
+            (10, 0),
+            (20, 4),
+            (30, 2),
+            (40, 7),
+            (50, 6),
+            (60, 0x1a),
+            (70, 8),
+        ]);
+    }
+    let (mut a, _) = player(&mut st, 1, 2, "lg419a", "RuleHost");
+    let (mut b, nb) = player(&mut st, 3, 4, "lg419b", "RuleGuest");
+    let no = open_room(&mut st, &mut a, "");
+    assert_eq!(enter(&mut st, &mut b, no, "").0, 1);
+    for i in crate::db::items(&st.db, nb).unwrap() {
+        crate::db::set_slot(&st.db, i.uid, -1).unwrap();
+    }
+    for (item, slot) in [
+        (10, 0),
+        (20, 1),
+        (40, 2),
+        (50, 3),
+        (30, 10),
+        (60, 11),
+        (70, 12),
+    ] {
+        crate::db::add_item(
+            &st.db,
+            &crate::db::NewItem {
+                user_no: nb,
+                item_no: item,
+                start_time: 0,
+                end_time: 0,
+                slot,
+                default_type: 0,
+            },
+        )
+        .unwrap();
+    }
+    let ch = st.character(nb).unwrap_or_default();
+    for (rule, want) in [
+        (0, "0:10,1:20,2:40,3:50,10:30,11:60,12:70"),
+        (1, "1:20,2:40"),
+        (2, "2:40"),
+        (3, "0:10,1:20,2:40,3:50,11:60,12:70"),
+        (4, "0:10,1:20,2:40,10:30,11:60"),
+        (5, "0:10,1:20,2:40,3:50"),
+        (6, "0:30,2:40"),
+        (7, "0:60,2:40"),
+        (8, "0:10,1:20,2:40,3:50,10:30,12:70"),
+    ] {
+        a.send(&mut st, ROOM_SETTING_CHANGE, &u32s(&[0, 0xe, rule]));
+        a.take(ROOM_SETTING_CHANGE_REPLY);
+        assert_eq!(st.rooms[&RoomKey { channel: 1, no }].weapon_limit, rule);
+        let tok = game::loadout_tokens(&st, nb, &ch);
+        assert!(
+            tok.starts_with(&format!(" loadout={want} ")),
+            "rule {rule}: {tok}"
+        );
+    }
+    let mut stored: Vec<(i64, i64)> = crate::db::items(&st.db, nb)
+        .unwrap()
+        .iter()
+        .filter(|i| i.slot >= 0)
+        .map(|i| (i.slot, i.item_no))
+        .collect();
+    stored.sort();
+    assert_eq!(
+        stored,
+        [
+            (0, 10),
+            (1, 20),
+            (2, 40),
+            (3, 50),
+            (10, 30),
+            (11, 60),
+            (12, 70)
+        ]
+    );
 }
 
 fn bare_game(id: u64, key: RoomKey) -> game::Game {
@@ -3013,6 +3155,7 @@ fn another_lobby_entry_rides_in_our_push_before_the_unchanged_server_list() {
         channels: 3,
         features: Vec::new(),
         mods: Vec::new(),
+        client_visual_allowed: false,
         lobby: "203.0.113.7:11000".into(),
         fingerprint: "ab".repeat(32),
         policy: String::new(),
@@ -3222,6 +3365,7 @@ fn two_entries(st: &mut Core, second_features: &[&str]) {
         channels: 3,
         features: features.iter().map(|f| f.to_string()).collect(),
         mods: Vec::new(),
+        client_visual_allowed: false,
         lobby: String::new(),
         fingerprint: String::new(),
         policy: String::new(),

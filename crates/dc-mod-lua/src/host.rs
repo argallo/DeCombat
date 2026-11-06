@@ -48,8 +48,10 @@ pub enum ModPolicy {
     Vanilla,
     /// Modded server; `client_visual_allowed` says whether the player may add local visual mods.
     Modded { client_visual_allowed: bool },
-    /// LG-313: a curated server entry: only packs that pass `curated_refusal`, nothing local.
-    Curated,
+    /// LG-313: a curated server entry: only packs that pass `curated_refusal`. LG-426: with `client_visual_allowed`
+    /// the player's local mods load under the same rules as on a modded server (kind `client_visual` only).
+    // DC-DEFAULT: LG-426 (proposed) a curated entry may allow local client-visual mods
+    Curated { client_visual_allowed: bool },
 }
 
 /// Errors recorded against one mod before its hooks and listeners are switched off.
@@ -311,16 +313,19 @@ impl ModHost {
             ModPolicy::Modded {
                 client_visual_allowed,
             } => client_visual_allowed,
-            ModPolicy::Curated => {
+            ModPolicy::Curated {
+                client_visual_allowed,
+            } => {
                 if origin == ModOrigin::Local {
-                    return Err(format!(
-                        "Mod '{id}' refused: a curated server entry loads no local mods"
-                    ));
-                }
-                if let Some(why) = crate::manifest::curated_refusal(manifest) {
+                    if !client_visual_allowed {
+                        return Err(format!(
+                            "Mod '{id}' refused: a curated server entry loads no local mods"
+                        ));
+                    }
+                } else if let Some(why) = crate::manifest::curated_refusal(manifest) {
                     return Err(format!("Mod '{id}' refused: {why}"));
                 }
-                false
+                client_visual_allowed
             }
         };
         if origin == ModOrigin::Local {

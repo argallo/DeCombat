@@ -153,7 +153,9 @@ start). Counting the inline scenario as a suite and the Korean-chat line separat
 Clan web fragments the harness matches verbatim (H, lines 767-796), so the Rust pages must emit them:
 `color:#fc0">Clan <name> created.`, `Cannot` for a refused second create, `<td>Leader</td><td>Carol</td>`,
 `<td>Wolves</td><td>1</td><td>Carol</td>` (clan name, member count, master nick), `[Join]` present only for non-members,
-`clan <b>Wolves</b>` for a member with no session, `You joined Wolves.`. Query parameters the tests send: `p`
+`clan <b>Wolves</b>` for a member with no session, `You joined Wolves.`. Since LG-420 (DC_DEFAULTS) a join is an
+application the leader accepts (`Application sent to Wolves.`, link `[Apply]`); the harness's fragments hold with the
+lobby override `clan.join_approval` = false. Query parameters the tests send: `p`
 (passport/login), `name`, `emblem`, `bg`, `c`, and the legacy `strPassport` (lobby3 uses `strPassport=LOCAL:bob`). The
 login used as passport may have the `LOCAL:` prefix or not.
 

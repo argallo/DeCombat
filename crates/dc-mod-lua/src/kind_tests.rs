@@ -1206,6 +1206,76 @@ fn the_curated_policy_takes_the_allow_list_only() {
     );
 }
 
+/// LG-426: a curated entry that allows local mods loads a local client_visual one and still refuses a local shared
+/// mod, a local render hook and a server pack outside the allow list; without the flag nothing local loads.
+#[test]
+fn a_curated_entry_that_allows_local_mods_loads_only_local_client_visual_ones() {
+    let mut host = ModHost::new();
+    host.set_policy(ModPolicy::Curated {
+        client_visual_allowed: true,
+    });
+    load(
+        &mut host,
+        ModOrigin::Local,
+        manifest_id("cross", "client_visual", &["content.hud"]),
+        EMPTY_MOD,
+    )
+    .unwrap();
+    let e = load(
+        &mut host,
+        ModOrigin::Local,
+        manifest_id("loc", "shared", &["content.text"]),
+        EMPTY_MOD,
+    )
+    .unwrap_err();
+    assert!(e.contains("local mod must be kind 'client_visual'"), "{e}");
+    let e = load(
+        &mut host,
+        ModOrigin::Local,
+        manifest_id("hook", "client_visual", &["hooks.render"]),
+        EMPTY_MOD,
+    )
+    .unwrap_err();
+    assert!(e.contains("hooks.render"), "{e}");
+    let e = load(
+        &mut host,
+        ModOrigin::Server,
+        manifest_id("shop", "shared", &["content.shop"]),
+        EMPTY_MOD,
+    )
+    .unwrap_err();
+    assert!(e.contains("content.shop"), "{e}");
+    let e = load(
+        &mut host,
+        ModOrigin::Server,
+        manifest_id("srvcv", "client_visual", &["content.text"]),
+        EMPTY_MOD,
+    )
+    .unwrap_err();
+    assert!(e.contains("kind"), "{e}");
+    load(
+        &mut host,
+        ModOrigin::Server,
+        manifest_id("pack", "shared", &["content.text"]),
+        EMPTY_MOD,
+    )
+    .unwrap();
+    assert_eq!(host.load_order(), vec!["cross", "pack"]);
+
+    let mut strict = ModHost::new();
+    strict.set_policy(ModPolicy::Curated {
+        client_visual_allowed: false,
+    });
+    let e = load(
+        &mut strict,
+        ModOrigin::Local,
+        manifest_id("cross", "client_visual", &["content.hud"]),
+        EMPTY_MOD,
+    )
+    .unwrap_err();
+    assert!(e.contains("loads no local mods"), "{e}");
+}
+
 #[test]
 fn a_new_weapon_row_of_a_curated_pack_stays_in_the_reserved_numbers() {
     use dc_bute::modpatch::{PatchOp, WeaponContent, WeaponPatch};

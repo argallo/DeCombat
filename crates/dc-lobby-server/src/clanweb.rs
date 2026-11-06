@@ -11,6 +11,8 @@
 //!   `guild/create` (create form), `guild/leave` (leave form); anything else shows the home page.
 //! - `GET /clan/create?p=&name=&emblem=&bg=`, `/clan/join?p=&c=<clan number>`, `/clan/leave?p=`,
 //!   `/clan/kick?p=&m=<character number>`, `/clan/notice?p=&text=`: actions; the reply carries one message line.
+//!   LG-420: `/clan/join` applies (joins at once after an invitation); the leader's `/clan/accept?p=&a=<account>`,
+//!   `/clan/decline?p=&a=<account>` answer an application, `/clan/invite?p=&n=<name>` invites (`clanreq.rs`).
 //!
 //! - `GET /mods/<sha256>.zip`, `GET /server_list.json`: mod hosting (`hosting.rs`), no account needed.
 //!
@@ -20,7 +22,8 @@
 //! itself, it has no browser): `me<TAB>clan number<TAB>1 when leader`, `msg<TAB>1 ok / 0 refused<TAB>text` for an
 //! action, and `clan<TAB>number<TAB>name<TAB>members<TAB>leader<TAB>emblem<TAB>background` rows for the clan list
 //! (`url=guild/list`) and after a join / leave, `member<TAB>character number<TAB>1 when leader<TAB>name<TAB>exp`
-//! rows for the member page (`url=manager/guildmember`) and after a kick. `q=<text>` on the clan list keeps the
+//! rows for the member page (`url=manager/guildmember`) and after a kick, `applicant<TAB>account<TAB>name<TAB>exp`
+//! rows before them on the leader's member page and after an accept / decline / invite (LG-420). `q=<text>` on the clan list keeps the
 //! clans whose name holds the text (any case); an unknown account gets `me 0 0` and a refused `msg` line (LG-414).
 // DC-DEFAULT: LG-414 (proposed) the find page's search and the text form's unknown-account answer
 // DC-DEFAULT: CD-47 clan web pages served by our own server; a leave makes the lobby push 0x3064 to that user
@@ -194,7 +197,14 @@ pub fn passport_allowed(st: &Core, q: &Query, peer: &str) -> rusqlite::Result<bo
 fn is_action(path: &str) -> bool {
     matches!(
         path.trim_end_matches('/'),
-        "/clan/create" | "/clan/join" | "/clan/leave" | "/clan/kick" | "/clan/notice"
+        "/clan/create"
+            | "/clan/join"
+            | "/clan/leave"
+            | "/clan/kick"
+            | "/clan/notice"
+            | "/clan/accept"
+            | "/clan/decline"
+            | "/clan/invite"
     )
 }
 
@@ -384,7 +394,13 @@ fn list_page(st: &Core, v: &Viewer, msg: Option<&str>) -> rusqlite::Result<Strin
             .map(|x| x.nick.clone())
             .unwrap_or_default();
         let join = if v.clan.is_none() {
-            link("/clan/join", v, &format!("&amp;c={}", k.uid), "[Join]")
+            // LG-420: the link applies; with `clan.join_approval` off it joins as before (the harness fragment)
+            let label = if st.rules.clan.join_approval {
+                "[Apply]"
+            } else {
+                "[Join]"
+            };
+            link("/clan/join", v, &format!("&amp;c={}", k.uid), label)
         } else {
             String::new()
         };
@@ -434,6 +450,38 @@ fn members_page(st: &Core, v: &Viewer, msg: Option<&str>) -> rusqlite::Result<St
         ));
     }
     b.push_str("</table>\n");
+    if leader {
+        // LG-420: the open applications with Accept / Decline, and the invitation form
+        let apps = crate::clanreq::applicants(st, k.uid)?;
+        if !apps.is_empty() {
+            b.push_str("<p>Applications</p>\n<table><tr><th>Name</th><th>Exp</th><th></th></tr>\n");
+            for a in apps {
+                b.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{} {}</td></tr>\n",
+                    esc(&a.nick),
+                    a.exp,
+                    link(
+                        "/clan/accept",
+                        v,
+                        &format!("&amp;a={}", a.user_no),
+                        "[Accept]"
+                    ),
+                    link(
+                        "/clan/decline",
+                        v,
+                        &format!("&amp;a={}", a.user_no),
+                        "[Decline]"
+                    ),
+                ));
+            }
+            b.push_str("</table>\n");
+        }
+        b.push_str(&format!(
+            "<form action=\"/clan/invite\" method=\"get\"><input type=\"hidden\" name=\"p\" value=\"{}\">\
+             <input name=\"n\" maxlength=\"16\"> <input type=\"submit\" value=\"Invite\"></form>\n",
+            esc(&v.passport)
+        ));
+    }
     b.push_str(&format!("<p>Notice: {}</p>\n", esc(&k.notice)));
     if leader {
         b.push_str(&format!(
@@ -525,6 +573,17 @@ fn text_reply(
         b.push_str(&format!("msg\t{}\t{}\n", ok as u8, field(m)));
     }
     if let (true, Some(k)) = (members, &v.clan) {
+        // LG-420: the leader's page lists the open applications first (`applicant` lines)
+        if k.master == v.account {
+            for a in crate::clanreq::applicants(st, k.uid)? {
+                b.push_str(&format!(
+                    "applicant\t{}\t{}\t{}\n",
+                    a.user_no,
+                    field(&a.nick),
+                    a.exp
+                ));
+            }
+        }
         for m in clan::member_rows(st, k.uid)? {
             b.push_str(&format!(
                 "member\t{}\t{}\t{}\t{}\n",
@@ -562,6 +621,48 @@ fn text_reply(
     Ok(b)
 }
 
+/// The application / invitation actions (LG-420): `/clan/join?c=<clan>` applies, `/clan/accept?a=<account>` and
+/// `/clan/decline?a=<account>` answer an application (leader only), `/clan/invite?n=<name>` invites (leader only).
+// DC-DEFAULT: LG-420 (proposed) clan applications and invitations
+fn request_action(
+    st: &mut Core,
+    v: &Viewer,
+    path: &str,
+    q: &Query,
+) -> rusqlite::Result<(bool, String)> {
+    if let Some(r) = need_session(st, v) {
+        let what = match path {
+            "/clan/join" => "join",
+            "/clan/accept" => "accept",
+            "/clan/decline" => "decline",
+            _ => "invite",
+        };
+        return Ok((false, refused(what, &r)));
+    }
+    let who = num(q, "a").clamp(0, u32::MAX as i64) as u32;
+    Ok(match path {
+        "/clan/join" => match crate::clanreq::apply(st, v.account, num(q, "c"))? {
+            Ok(a) => (true, crate::clanreq::asked_text(&a)),
+            Err(e) => (false, refused("join", &e)),
+        },
+        "/clan/accept" => match crate::clanreq::accept(st, v.account, who)? {
+            Ok((_, n)) => (true, crate::clanreq::answered_text(true, &n)),
+            Err(e) => (false, refused("accept", &e)),
+        },
+        "/clan/decline" => match crate::clanreq::decline(st, v.account, who)? {
+            Ok((_, n)) => (true, crate::clanreq::answered_text(false, &n)),
+            Err(e) => (false, refused("decline", &e)),
+        },
+        _ => {
+            let name = q.get("n").map(|s| s.as_str()).unwrap_or("");
+            match crate::clanreq::invite(st, v.account, name)? {
+                Ok((a, n)) => (true, crate::clanreq::invited_text(&a, &n)),
+                Err(e) => (false, refused("invite", &e)),
+            }
+        }
+    })
+}
+
 /// Routes one request inside the caller's scope; returns (status, HTML or the `fmt=text` lines).
 pub fn route(st: &mut Core, req: &Request) -> rusqlite::Result<(u16, String)> {
     if req.method != "GET" && req.method != "HEAD" {
@@ -577,6 +678,9 @@ pub fn route(st: &mut Core, req: &Request) -> rusqlite::Result<(u16, String)> {
             | "/clan/leave"
             | "/clan/kick"
             | "/clan/notice"
+            | "/clan/accept"
+            | "/clan/decline"
+            | "/clan/invite"
     );
     if !known {
         return Ok((404, page("Clans", Some("No such page."), "")));
@@ -623,16 +727,14 @@ pub fn route(st: &mut Core, req: &Request) -> rusqlite::Result<(u16, String)> {
             (200, home_page(st, &v, Some(&msg))?)
         }
         "/clan/join" => {
-            let r = match need_session(st, &v) {
-                Some(r) => Err(r),
-                None => clan::join(st, v.account, num(q, "c"))?,
-            };
-            let msg = match &r {
-                Ok(k) => format!("You joined {}.", k.name),
-                Err(e) => refused("join", e),
-            };
+            let msg = request_action(st, &v, path, q)?.1;
             let v = viewer(st, q)?.unwrap_or(v);
             (200, list_page(st, &v, Some(&msg))?)
+        }
+        "/clan/accept" | "/clan/decline" | "/clan/invite" => {
+            let msg = request_action(st, &v, path, q)?.1;
+            let v = viewer(st, q)?.unwrap_or(v);
+            (200, members_page(st, &v, Some(&msg))?)
         }
         "/clan/leave" => {
             let r = match need_session(st, &v) {
@@ -716,14 +818,11 @@ fn route_text(st: &mut Core, path: &str, v: Viewer, q: &Query) -> rusqlite::Resu
         }
         "/clan/join" => {
             list = true;
-            let r = match need_session(st, &v) {
-                Some(r) => Err(r),
-                None => clan::join(st, v.account, num(q, "c"))?,
-            };
-            Some(match &r {
-                Ok(k) => (true, format!("You joined {}.", k.name)),
-                Err(e) => (false, refused("join", e)),
-            })
+            Some(request_action(st, &v, path, q)?)
+        }
+        "/clan/accept" | "/clan/decline" | "/clan/invite" => {
+            members = true;
+            Some(request_action(st, &v, path, q)?)
         }
         "/clan/leave" => {
             list = true;

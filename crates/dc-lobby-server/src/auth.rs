@@ -566,7 +566,7 @@ pub fn login_finish(st: &mut Core, sid: Sid, p: LoginPending, c: LoginChecked) -
         // LG-140: an old salted SHA-256 row is rewritten as Argon2id on its first good login
         PwCheck::OkUpgrade => {
             if let Some(h) = &c.new_phc {
-                db::set_password_phc(&st.db, acc.user_no, h)?;
+                db::rehash_password_phc(&st.db, acc.user_no, h)?;
             }
             st.note(&format!("password of {} upgraded to Argon2id", login));
         }

@@ -1326,7 +1326,9 @@ fn arms_ok(st: &Core, key: RoomKey, account: u32) -> bool {
     let types = items
         .iter()
         .filter(|i| WEAPON_EQUIP_SLOTS.iter().any(|r| r.contains(&i.slot)))
-        .filter_map(|i| st.rom.weapon_kinds.get(&i.item_no).copied());
+        // DC-DEFAULT: VAR-1 (proposed) a camo variant counts as its base gun (DSV-610: before, a camo sniper rifle
+        // was no sniper rifle for "Sniper Only")
+        .filter_map(|i| crate::game::weapon_type(st, i.item_no));
     dc_bute::arms::entry_ok(limit, types)
 }
 

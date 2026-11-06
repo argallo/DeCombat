@@ -441,7 +441,7 @@ pub fn alias_command(screen: &str, name: &str) -> Option<i32> {
             ("ready", room::CMD_READY),
             ("exit", room::CMD_EXIT),
             ("team", room::CMD_TEAM),
-            ("invite", 30001),
+            ("invite", room::CMD_INVITE),
             ("password", 20),
             ("map", room::CMD_MAP),
             ("mode", room::CMD_MODE),

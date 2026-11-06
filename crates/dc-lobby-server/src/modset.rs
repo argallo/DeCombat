@@ -801,9 +801,12 @@ pub fn build_entry_sets(
             log.line(&format!("mods: ERROR entry {entry}: {why}; it stays plain"));
             continue;
         }
+        // LG-426: the entry's own switch lets the player's local client_visual mods load beside the set; it is no
+        // part of the set hash or the 0x3f10 / 0x3f11 claim, and an older client refuses them under its curated policy
+        // DC-DEFAULT: LG-426 (proposed)
         let set = ModSet {
             modded: true,
-            client_visual_allowed: false,
+            client_visual_allowed: e.client_visual_allowed,
             mods,
         };
         let expected = crate::state::ExpectedMods {

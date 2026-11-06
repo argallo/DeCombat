@@ -5,7 +5,7 @@ A few bots that run on your PC and join you on a public lobby.
 ## Simple use
 
 On Windows the bots are a download of their own (`DeCombat-win-<tag>-bots.zip`): unzip it into the same place as the
-game zip. With your Combat Arms folder next to the launcher:
+game zip. With your Combat Arms folder next to `DeCombat.exe` and `bots.bat`:
 
 ```text
 Windows   bots.bat 3 YourNick          three bots that sit in whatever room YourNick sits in

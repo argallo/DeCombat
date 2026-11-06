@@ -646,7 +646,8 @@ URLs are ours. No URL from the ROM is reproduced here.
 
 **Pages served by the DeCombat lobby** (our design, not 2009 data; the launcher redirects the three URL pointers to them; the 2009 client only needs a
 page it can show): `GET /clan?url=guild/list|manager/guildmember|guild/create|guild/leave&p=<token>` (pages); `GET /clan/create?p=&name=&emblem=&bg=`,
-`/clan/join?p=&c=`, `/clan/leave?p=`, `/clan/kick?p=&m=`, `/clan/notice?p=&text=` (actions). `p` may also be `strPassport` / `passport`, with or without
+`/clan/join?p=&c=`, `/clan/leave?p=`, `/clan/kick?p=&m=`, `/clan/notice?p=&text=` (actions; LG-420: the join is an application, the leader's
+`/clan/accept?p=&a=`, `/clan/decline?p=&a=`, `/clan/invite?p=&n=` answer it or invite). `p` may also be `strPassport` / `passport`, with or without
 `LOCAL:`.
 
 **Clan chat and online flags** go through the client's messenger component (section 6.3), not the lobby protocol.
@@ -680,7 +681,8 @@ This is our own extension, not a 2009 message. A 2009-only server has no messeng
 Lines are NUL-terminated wstr, fields separated by TAB; field 1 is the kind: `status` (text), `request` (from-name), `friends` (own name, friend
 names...), `online` (name, 1/0), `whisper` (from, to, text), `invite` (from, room number). Client commands are chat lines `!nm <verb>` plus
 TAB-separated arguments; verbs `add`, `accept`, `decline`, `remove`, `list`, `w` / `whisper`, `invite`. The launcher hook that shows it must follow this
-table. HARNESS: test_persist_restart asserts the `status` / `friends` lines.
+table. LG-420 (DC_DEFAULTS): kind `claninvite` (clan name, clan number), a clan leader's invitation, re-sent at login while open; answers
+`!nm clanyes` / `!nm clanno` with the clan number. HARNESS: test_persist_restart asserts the `status` / `friends` lines.
 **CORRECTION 2026-10-26 (client-matchexit):** the `!nm sync` line that the reference stack sends after a match is **not a 2009 client message**: no `!nm` line appears in any real-client capture and CShell.dll holds no such text. A DeCombat lobby may tolerate it as a no-op (CLI-274) but must not expect it.
 
 ### 6.4 Operator commands (sent from chat with a leading `/`)

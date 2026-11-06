@@ -534,6 +534,66 @@ fn friend_requests_survive_and_are_resent_at_login() {
     assert_eq!(dave.line(), ["status", "No such player"]);
 }
 
+/// friend-accept (OWNER REPORT 2026-11-05 "I was able to friend someone without them accepting"): the requester's
+/// own lines (a repeated add, the list, a whisper, a new login of the other side) never make a friendship, a third
+/// player's open request is not touched by an add back, and a declined request cannot be accepted any more; only
+/// the other side's accept (or its own add) does it.
+// DC-DEFAULT: OPS-8 (proposed) a friendship needs the other side's acceptance
+#[test]
+fn messenger_requester_alone_never_befriends() {
+    let mut st = state();
+    let (mut dave, _) = player(&mut st, 1, "dave", "Dave");
+    let (mut erin, e) = player(&mut st, 2, "erin", "Erin");
+    let (mut finn, _) = player(&mut st, 3, "finn", "Finn");
+    let rows = |st: &Core| {
+        st.db
+            .query_row("SELECT COUNT(*) FROM friends", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    // the owner's sequence: add, add again a few seconds later, open the window (list)
+    for _ in 0..2 {
+        dave.chat(&mut st, "!nm add\tErin");
+        assert_eq!(dave.line(), ["status", "Friend request sent"]);
+        assert_eq!(erin.line(), ["request", "Dave"]);
+    }
+    dave.chat(&mut st, "!nm list");
+    assert_eq!(dave.line(), ["friends", "Dave"]);
+    dave.chat(&mut st, "!nm w\tErin\tadd me back");
+    assert_eq!(erin.line(), ["whisper", "Dave", "Erin", "add me back"]);
+    dave.clear();
+    // Erin's list and a new login show the request, not a friend
+    erin.chat(&mut st, "!nm list");
+    assert_eq!(erin.line(), ["friends", "Erin"]);
+    assert_eq!(erin.line(), ["request", "Dave"]);
+    st.scope(|st| crate::gm::on_lobby_login(st, 2, e)).unwrap();
+    assert_eq!(erin.line(), ["friends", "Erin"]);
+    assert_eq!(erin.line(), ["request", "Dave"]);
+    assert_eq!(rows(&st), 0, "no friendship before Erin answers");
+    assert!(
+        !dave.has(MESSENGER_PUSH),
+        "Dave hears nothing until Erin answers"
+    );
+    // Finn asks Erin too; Erin declines Finn, after which Finn cannot be accepted
+    finn.chat(&mut st, "!nm add\tErin");
+    assert_eq!(finn.line(), ["status", "Friend request sent"]);
+    assert_eq!(erin.line(), ["request", "Finn"]);
+    erin.chat(&mut st, "!nm decline\tFinn");
+    assert_eq!(erin.line(), ["status", "Friend request declined"]);
+    erin.chat(&mut st, "!nm accept\tFinn");
+    assert_eq!(
+        erin.line(),
+        ["status", "No friend request from that player"]
+    );
+    assert_eq!(rows(&st), 0);
+    // Erin's add back accepts Dave's request only
+    erin.chat(&mut st, "!nm add\tDave");
+    assert_eq!(dave.line(), ["friends", "Dave", "Erin"]);
+    assert_eq!(erin.line(), ["friends", "Erin", "Dave"]);
+    assert_eq!(rows(&st), 2);
+    finn.chat(&mut st, "!nm list");
+    assert_eq!(finn.line(), ["friends", "Finn"]);
+}
+
 #[test]
 fn case_announcements_and_login_notices() {
     let mut st = state();

@@ -453,6 +453,18 @@ a remote host after the agent has the pack (cached across starts). The lobby ref
 hello lacks `packs=1` and logs why. More maps: more zips and `mods` lines; 0x311 carries 30 (map, mode) pairs at most
 (MAP-35).
 
+Players' own cosmetic mods (a crosshair such as `drawn_crosshair`, kind `client_visual`) are refused on a vanilla
+server. The Vanilla++ entry lets them load with one more line in the entry, after `mods` (LG-426; `dc-config check`
+refuses it on an entry without `mods`, on another lobby's entry and on a modded lobby):
+
+```
+client_visual_allowed = true
+```
+
+The lobby must run a build that knows the key before the line goes in: an older `dc-lobby-server` refuses the unknown
+key and does not start. The set hash and the pick's claim do not change, so clients need no update; an older client
+keeps joining the entry and only its local mods stay off.
+
 A separate modded lobby still offers maps the generic way: `[mods] policy = "modded"` with the map mods in `[[mods.set]]`
 (the steps at the top of this section, MAP-35 .. MAP-39). It is not how Vanilla++ works; it has its own DB, ports and
 mod consent prompt.

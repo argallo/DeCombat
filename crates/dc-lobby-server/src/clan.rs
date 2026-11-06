@@ -85,6 +85,8 @@ pub struct ClanRules {
     pub web_requires_session: bool,
     // DC-DEFAULT: CLN-9 (proposed) `!clan ...` chat commands (create / join / leave / kick)
     pub chat_commands: bool,
+    // DC-DEFAULT: LG-420 (proposed) a join is an application the leader accepts (off: the join takes effect at once)
+    pub join_approval: bool,
     // DC-DEFAULT: CD-11 clan room scoring policy (mode weights, fallback basic / winner points)
     pub policy: ClanRoomPolicy,
     // DC-DEFAULT: LG-413 (proposed, owner decision) the value a clan room holds for an option its ROM clan mode row
@@ -102,6 +104,7 @@ impl Default for ClanRules {
             member_limits: vec![20, 40, 60, 80, 100, 120],
             web_requires_session: true,
             chat_commands: true,
+            join_approval: true,
             policy: ClanRoomPolicy::default(),
             room_mid_join: false,
             room_friendly_fire: false,
@@ -156,6 +159,7 @@ impl ClanRules {
                 .is_some(),
             "clan.web_requires_session" => b.map(|x| self.web_requires_session = x).is_some(),
             "clan.chat_commands" => b.map(|x| self.chat_commands = x).is_some(),
+            "clan.join_approval" => b.map(|x| self.join_approval = x).is_some(),
             "clan.room_mid_join" => b.map(|x| self.room_mid_join = x).is_some(),
             "clan.room_friendly_fire" => b.map(|x| self.room_friendly_fire = x).is_some(),
             "clan.basic_point_default" => n
@@ -561,6 +565,12 @@ pub enum Refusal {
     NoSuchClan,
     Full,
     NoSuchMember,
+    /// LG-420: an invitation names nobody, or a player who is already in a clan.
+    NoSuchPlayer,
+    TheyAreInClan,
+    /// LG-420: an accept / decline without an open application, an answer without an open invitation.
+    NoApplication,
+    NoInvitation,
 }
 
 impl Refusal {
@@ -577,6 +587,10 @@ impl Refusal {
             Refusal::NoSuchClan => "no such clan".into(),
             Refusal::Full => "the clan is full".into(),
             Refusal::NoSuchMember => "no such member".into(),
+            Refusal::NoSuchPlayer => "no such player".into(),
+            Refusal::TheyAreInClan => "that player is already in a clan".into(),
+            Refusal::NoApplication => "no open application from that player".into(),
+            Refusal::NoInvitation => "no open invitation from that clan".into(),
         }
     }
 }
@@ -751,6 +765,7 @@ pub fn create(
     )?;
     let clan = clan_by_uid(&st.db, uid)?.unwrap_or_default();
     set_member(st, account, &clan, ROLE_LEADER)?;
+    crate::clanreq::forget_account(st, account)?;
     // the creator's client refreshes its clan data (0x303) and, on the clan screen, the clan tabs
     push_sheet(st, account);
     send_to(st, account, &push(CLAN_INFO_STALE_PUSH));
@@ -780,6 +795,8 @@ pub fn join(st: &mut Core, account: u32, uid: i64) -> Act<ClanRow> {
         return Ok(Err(Refusal::Full));
     }
     set_member(st, account, &clan, ROLE_MEMBER)?;
+    // LG-420: a member has no open application or invitation left (any clan)
+    crate::clanreq::forget_account(st, account)?;
     push_sheet(st, account);
     send_to(st, account, &push(CLAN_INFO_STALE_PUSH));
     send_to(st, account, &push(CLAN_MEMBERS_STALE_PUSH));
@@ -893,6 +910,8 @@ fn disband_rows(st: &Core, uid: i64) -> rusqlite::Result<()> {
         .execute("DELETE FROM clan_records WHERE clan_uid = ?1", [uid])?;
     st.db
         .execute("DELETE FROM clan_colours WHERE clan_uid = ?1", [uid])?;
+    st.db
+        .execute("DELETE FROM clan_requests WHERE clan_uid = ?1", [uid])?;
     st.db
         .execute("DELETE FROM clans WHERE clan_uid = ?1", [uid])?;
     Ok(())
@@ -1092,7 +1111,8 @@ fn on_mark_check(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// chat commands (`!clan create <name> [emblem background]`, `!clan join <name>`, `!clan leave`, `!clan kick <nick>`)
+// chat commands (`!clan create <name> [emblem background]`, `!clan join <name>`, `!clan leave`, `!clan kick <nick>`,
+// LG-420: `!clan invite <nick>`, `!clan accept <nick>`, `!clan decline <nick>`)
 // ---------------------------------------------------------------------------------------------------------------
 
 /// A line from the server to one user only (0x3051 with sender 0).
@@ -1136,14 +1156,41 @@ fn bang_command(st: &mut Core, sid: Sid, p: &[u8]) -> Result<bool, Fault> {
                 Err(r) => format!("Cannot create the clan: {}.", r.text()),
             }
         }
+        // LG-420: a join is an application (joined at once when the clan invited the player)
         "join" => {
             let name = rest.join(" ");
             match clan_by_name(&st.db, &name)? {
-                Some(k) => match join(st, account, k.uid)? {
-                    Ok(k) => format!("You joined {}.", k.name),
+                Some(k) => match crate::clanreq::apply(st, account, k.uid)? {
+                    Ok(a) => crate::clanreq::asked_text(&a),
                     Err(r) => format!("Cannot join: {}.", r.text()),
                 },
                 None => format!("Cannot join: {}.", Refusal::NoSuchClan.text()),
+            }
+        }
+        "invite" => {
+            let nick = rest.join(" ");
+            match crate::clanreq::invite(st, account, &nick)? {
+                Ok((a, n)) => crate::clanreq::invited_text(&a, &n),
+                Err(r) => format!("Cannot invite: {}.", r.text()),
+            }
+        }
+        "accept" | "decline" => {
+            let nick = rest.join(" ");
+            let yes = verb == "accept";
+            let what = if yes { "accept" } else { "decline" };
+            match crate::db::character_by_nick(&st.db, &nick, st.rules.names_case_insensitive)? {
+                Some(t) => {
+                    let r = if yes {
+                        crate::clanreq::accept(st, account, t.user_no)?
+                    } else {
+                        crate::clanreq::decline(st, account, t.user_no)?
+                    };
+                    match r {
+                        Ok((_, n)) => crate::clanreq::answered_text(yes, &n),
+                        Err(r) => format!("Cannot {}: {}.", what, r.text()),
+                    }
+                }
+                None => format!("Cannot {}: {}.", what, Refusal::NoApplication.text()),
             }
         }
         "leave" => match leave(st, account)? {
@@ -1160,7 +1207,7 @@ fn bang_command(st: &mut Core, sid: Sid, p: &[u8]) -> Result<bool, Fault> {
                 None => format!("Cannot remove: {}.", Refusal::NoSuchMember.text()),
             }
         }
-        _ => "Clan commands: !clan create <name> [emblem background], !clan join <name>, !clan leave, !clan kick <name>".into(),
+        _ => "Clan commands: !clan create <name> [emblem bg], join <name>, leave, kick / invite / accept / decline <name>".into(),
     };
     tell(st, sid, &msg);
     Ok(true)

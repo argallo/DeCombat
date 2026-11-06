@@ -225,6 +225,7 @@ impl Game {
                 resting: true,
                 impact: false,
                 burst: false,
+                mine: None,
             };
             self.log(format!(
                 "co-op: AI slot {slot} blows up (weapon {weapon} ammo {ammo})"
@@ -784,6 +785,7 @@ mod tests {
             resting: true,
             impact: false,
             burst: false,
+            mine: None,
         }
     }
 

@@ -2,6 +2,7 @@
 //! arc; the server creates the object on every client, moves it with gravity, bounces or stops it on the world
 //! geometry of the trace world, and when the fuse runs out removes it, sends the blast effect and applies area
 //! damage (full in the inner quarter of the radius, then a linear falloff) through the damage path of DSV-30.
+//! A mine (DSV-611: a projectile row naming mine class data) has no fuse: it lies, arms and goes off at a foe.
 //!
 //! The client supplies only the release (`UP_THROW_HOLD` 0x4d repeats, then one `UP_FIRE` 0x82 with the throwable's
 //! ids, origin and direction); trajectory, fuse and blast are server policy (GAME_MESSAGES_2009_C2S.md §4.6). The
@@ -112,6 +113,33 @@ pub(crate) struct Flight {
     pub impact: bool,
     /// An impact flight met something: it blows up in this tick.
     pub burst: bool,
+    /// A mine (DSV-611): no fuse; it arms after it came to rest and goes off when a foe comes near.
+    pub mine: Option<Mine>,
+}
+
+/// What makes a thrown round a mine (DSV-611): the distance at which a foe sets it off, the arming delay counted
+/// from the moment it rests, the moment it is armed (set when it comes to rest) and the moment a mine still in
+/// flight counts as resting where it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Mine {
+    pub radius: f32,
+    pub arm_ms: u32,
+    pub armed_at: Option<Millis>,
+    pub settle_at: Millis,
+}
+
+/// How long a mine whose projectile row has no `Lifetime` may stay in flight before it counts as resting.
+// DC-DEFAULT: DSV-611 (proposed) 10 s
+pub const MINE_SETTLE_MS: u32 = 10_000;
+
+/// The distance from `p` to the box centred at `c` with half extents `h` (0 inside it).
+fn box_distance(p: [f32; 3], c: [f32; 3], h: [f32; 3]) -> f32 {
+    let mut q = [0.0f32; 3];
+    for i in 0..3 {
+        let d = (p[i] - c[i]).abs() - h[i];
+        q[i] = d.max(0.0);
+    }
+    len3(q)
 }
 
 /// The fraction along `a` -> `b` where the segment enters the box centred at `c` with half extents `h`, if it does.
@@ -252,13 +280,30 @@ impl Game {
             .projectile_fx(f.weapon_id, f.ammo_id)
             .and_then(|n| self.tables.projectiles.get(n))
             .cloned();
+        let row_life_ms = row
+            .as_ref()
+            .and_then(|r| r.lifetime_s)
+            .filter(|s| s.is_finite() && *s > 0.0 && *s < 600.0)
+            .map(|s| (s * 1000.0).round() as u32);
+        // DC-DEFAULT: DSV-611 (proposed) a mine still in flight the row's `Lifetime` (else MINE_SETTLE_MS) after its
+        // release counts as resting where it is (a mine sliding on a slope or falling to the world box floor)
+        let mine = self.mine_row(f.weapon_id, f.ammo_id).map(|t| Mine {
+            radius: t.radius(),
+            arm_ms: t.arm_ms(),
+            armed_at: None,
+            settle_at: now.wrapping_add(row_life_ms.unwrap_or(MINE_SETTLE_MS)),
+        });
+        // DC-DEFAULT: DSV-611 (proposed) a mine is thrown (it bounces and comes to rest), never an impact round
+        let impact = impact && mine.is_none();
         let speed = row
             .as_ref()
             .and_then(|r| r.velocity)
             .filter(|v| v.is_finite() && *v > 0.0)
             .unwrap_or(pt.speed);
         let gravity = match &row {
-            Some(r) if r.gravity == Some(false) => 0.0,
+            // DC-DEFAULT: DSV-611 (proposed) a mine always falls (a row without gravity: the default gravity), so
+            // that it lands and lies
+            Some(r) if r.gravity == Some(false) && mine.is_none() => 0.0,
             Some(r) => r
                 .gravity_override
                 .filter(|g| g.is_finite() && *g < 0.0)
@@ -290,7 +335,11 @@ impl Game {
             resting: false,
             impact,
             burst: false,
+            mine,
         });
+        if mine.is_some() {
+            self.mine_cap(pid, f.weapon_id, f.ammo_id);
+        }
         let look = self.projectile_look(f.weapon_id, f.ammo_id);
         if look.is_none() {
             self.log(format!(
@@ -316,13 +365,109 @@ impl Game {
                 crate::stream::yaw_quat(yaw)
             },
         })));
-        self.log(format!(
-            "client {pid}: {} {key} (weapon {} ammo {}), speed {speed:.0}, gravity {gravity:.0}, fuse {fuse_ms} ms",
-            if impact { "rocket" } else { "throw" },
-            f.weapon_id,
-            f.ammo_id
-        ));
+        match mine {
+            Some(m) => self.log(format!(
+                "client {pid}: mine {key} (weapon {} ammo {}), speed {speed:.0}, gravity {gravity:.0}, arms {} ms after \
+                 it rests, goes off within {:.0}",
+                f.weapon_id, f.ammo_id, m.arm_ms, m.radius
+            )),
+            None => self.log(format!(
+                "client {pid}: {} {key} (weapon {} ammo {}), speed {speed:.0}, gravity {gravity:.0}, fuse {fuse_ms} ms",
+                if impact { "rocket" } else { "throw" },
+                f.weapon_id,
+                f.ammo_id
+            )),
+        }
         true
+    }
+
+    /// The mine class-data row of `weapon` / `ammo` when it is a launched or thrown round (ammunition `Type` 1 or 2)
+    /// whose projectile row names one: the round is a mine (DSV-611).
+    // OBSERVED: ROM table key FX.TXT [ProjectileFX<k>] ClassData naming a [LandTrapClassData<n>] row (the mine and
+    // claymore rows; also the bomb row, whose ammunition is another type and stays the bomb mode's)
+    // DC-DEFAULT: DSV-611 (proposed)
+    pub(super) fn mine_row(&self, weapon: u16, ammo: u16) -> Option<crate::rom_tables::TrapRow> {
+        let w = &self.tables.weapons;
+        if !(w.fires_projectile(weapon, ammo) || w.throws_round(weapon, ammo)) {
+            return None;
+        }
+        let name = w.projectile_fx(weapon, ammo)?;
+        self.tables.projectiles.trap_of(name)
+    }
+
+    /// Keeps at most the ammunition row's `MaxAmount` live mines of `weapon` per thrower: the oldest goes (its object
+    /// removed without a blast) when a new one exceeds it. No cap without a `MaxAmount`.
+    // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] MaxAmount (the mine rows carry what one life is given)
+    // DC-DEFAULT: DSV-612 (proposed) the cap and the oldest going
+    fn mine_cap(&mut self, pid: u8, weapon: u16, ammo: u16) {
+        let ammo_row = if self.tables.weapons.max_amount(ammo).is_some() {
+            ammo
+        } else {
+            self.tables.weapons.ammo_of(weapon).unwrap_or(ammo)
+        };
+        let Some(cap) = self.tables.weapons.max_amount(ammo_row).filter(|c| *c > 0) else {
+            return;
+        };
+        let own = |fl: &Flight| fl.mine.is_some() && fl.owner == pid && fl.weapon == weapon;
+        while self.flights.iter().filter(|fl| own(fl)).count() > cap as usize {
+            let Some(i) = self.flights.iter().position(own) else {
+                break;
+            };
+            let old = self.flights.remove(i);
+            self.out.push(GameOut::ProjectileGone { key: old.key });
+            self.log(format!(
+                "client {pid}: mine {} removed (more than {cap} of weapon {weapon})",
+                old.key
+            ));
+        }
+    }
+
+    /// Removes the mines of a thrower who left the match (their objects removed without a blast).
+    // DC-DEFAULT: DSV-612 (proposed)
+    pub(super) fn drop_mines_of(&mut self, pid: u8) {
+        let (gone, keep): (Vec<Flight>, Vec<Flight>) = std::mem::take(&mut self.flights)
+            .into_iter()
+            .partition(|fl| fl.mine.is_some() && fl.owner == pid);
+        self.flights = keep;
+        for fl in gone {
+            self.out.push(GameOut::ProjectileGone { key: fl.key });
+            self.log(format!("client {pid} left: mine {} removed", fl.key));
+        }
+    }
+
+    /// Whether a foe of the mine's thrower is near the armed mine `fl`: a living, introduced player other than the
+    /// thrower whose team may be hurt by the thrower's and is not the thrower's own (Spy Hunt: as its hurt rule), not
+    /// inside his spawn window, whose hit box is within the mine's radius; or, in co-op, a living AI of a human's
+    /// mine whose box (the configured player box round its position) is. Returns a note naming who.
+    // DC-DEFAULT: DSV-611 (proposed) the foes that set a mine off
+    fn mine_trigger(&self, fl: &Flight, radius: f32) -> Option<String> {
+        let owner_team = self
+            .players
+            .get(&fl.owner)
+            .map_or(fl.owner_team, |p| p.team);
+        let foe = self.players.values().find(|v| {
+            v.life == Life::Alive
+                && v.introduced
+                && v.pid != fl.owner
+                && self.team_may_hurt(owner_team, v.team)
+                && (v.team != owner_team || self.is_spy())
+                && !self.spawn_shielded(v.pid)
+                && box_distance(fl.pos, v.pos, self.hit_dims_of(v.pid)) <= radius
+        });
+        if let Some(v) = foe {
+            return Some(format!("client {}", v.pid));
+        }
+        if fl.owner == gs::SHOT_CLIENT_NONE {
+            return None;
+        }
+        let c = self.coop.as_ref()?;
+        c.ais
+            .iter()
+            .position(|a| {
+                a.state == super::coop::AiState::Alive
+                    && box_distance(fl.pos, a.pos, self.cfg.player_dims) <= radius
+            })
+            .map(|slot| format!("AI slot {slot}"))
     }
 
     /// A throw without a thrower's release (a dead AI's dropped items, DSV-599): the flight of `weapon` (its
@@ -378,6 +523,7 @@ impl Game {
             resting: false,
             impact: false,
             burst: false,
+            mine: None,
         });
         let look = self.projectile_look(weapon, ammo);
         let yaw = vel[0].atan2(vel[2]);
@@ -558,9 +704,10 @@ impl Game {
         bounces
     }
 
-    /// Moves every flight; a flight whose fuse ran out blows up. Flights end without a blast when the round is
-    /// not running.
-    // DC-DEFAULT: DSV-39 (proposed)
+    /// Moves every flight; a flight whose fuse ran out blows up. A mine has no fuse: once it rests it is armed
+    /// after its delay and blows up when a foe comes within its radius (DSV-611). Flights end without a blast when
+    /// the round is not running.
+    // DC-DEFAULT: DSV-39 (proposed), DSV-611 (proposed)
     pub(super) fn tick_projectiles(&mut self, now: Millis) {
         if self.flights.is_empty() {
             return;
@@ -574,9 +721,33 @@ impl Game {
         }
         let mut keep = Vec::with_capacity(flights.len());
         for mut fl in flights.drain(..) {
-            let fused = !later(fl.detonate_at, now);
+            // DC-DEFAULT: DSV-611 (proposed) a mine has no fuse
+            let fused = fl.mine.is_none() && !later(fl.detonate_at, now);
             let until = if fused { fl.detonate_at } else { now };
             let bounces = self.fly(&mut fl, until);
+            if let Some(m) = fl.mine.as_mut() {
+                if !fl.resting && !later(m.settle_at, now) {
+                    fl.vel = [0.0; 3];
+                    fl.resting = true;
+                    self.log(format!(
+                        "mine {} still in flight: rests where it is",
+                        fl.key
+                    ));
+                }
+                if fl.resting && m.armed_at.is_none() {
+                    m.armed_at = Some(now.wrapping_add(m.arm_ms));
+                    self.log(format!("mine {} lies; armed in {} ms", fl.key, m.arm_ms));
+                }
+            }
+            if let Some(m) = fl
+                .mine
+                .filter(|m| m.armed_at.is_some_and(|t| !later(t, now)))
+            {
+                if let Some(who) = self.mine_trigger(&fl, m.radius) {
+                    self.log(format!("mine {} set off by {who}", fl.key));
+                    fl.burst = true;
+                }
+            }
             let due = fused || fl.burst;
             for (at, dir) in bounces {
                 // the surface word of the polygon the object hit (V-SURF-1), its grenade impact sound

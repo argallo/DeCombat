@@ -48,6 +48,7 @@ fn part(kind: WidgetKind, pos: [i32; 2], look: Look) -> Part {
         wrap_max: 0,
         colour_set: false,
         placed: false,
+        blink: 0.0,
     }
 }
 

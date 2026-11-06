@@ -690,6 +690,8 @@ fn filter_chat(st: &mut Core, sid: Sid, p: &[u8]) -> Result<bool, Fault> {
 pub fn on_lobby_login(st: &mut Core, sid: Sid, account: u32) -> HResult {
     crate::notices::on_lobby_login(st, sid, account)?;
     crate::messenger::on_lobby_login(st, sid, account)?;
+    // LG-420: open clan invitations ask again; a leader hears of waiting applications
+    crate::clanreq::on_lobby_login(st, sid, account)?;
     Ok(())
 }
 

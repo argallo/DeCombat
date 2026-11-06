@@ -125,9 +125,105 @@ pub fn match_grants(limit: u32, t: i32, backpack: bool) -> bool {
     }
 }
 
+/// The lobby's equipment slots that hold backpack weapons (the 0x323 view's slots 10..13).
+// SPEC: DSERVER_PIPE.md §12.A (slots 0..3 weapons, 10..13 backpack weapons)
+pub const BACKPACK_EQUIP_SLOTS: std::ops::RangeInclusive<i64> = 10..=13;
+
+/// The weapon slot class an equipment slot holds: slots 0..3 hold the class of their number (an item goes into the
+/// weapon slot of its type's class); a backpack slot holds any class (`None`).
+// EVIDENCE: cshell+0x259f00 (type -> slot class 0..3, which is the weapon equipment slot)
+pub fn equip_slot_class(slot: i64) -> Option<u8> {
+    u8::try_from(slot).ok().filter(|s| *s < 4)
+}
+
+/// [`match_grants`] for a weapon whose `ItemType` is not known (a pack gun without an item row, or a weapon variant
+/// whose base row is not loaded): `class` is the weapon slot class its equipment slot gives (`None` for a backpack
+/// slot). The melee slot always passes. An "only" rule needs the kind it names, which an unknown weapon cannot show,
+/// so it is not granted ("Pistols Only" grants the secondary slot as it grants every secondary); a "no" rule names a
+/// kind the weapon cannot be shown to be, so it is granted, except a thrown weapon under "No Explosives" and a backpack
+/// weapon under "No Backpack".
+// DC-DEFAULT: DSV-610 (proposed, OWNER REPORT 2026-11-05 "no backpack option for a game mode still lets you bring
+// your backpack item, same with pistols only")
+pub fn match_grants_unknown(limit: u32, class: Option<u8>, backpack: bool) -> bool {
+    if class == Some(2) {
+        return true;
+    }
+    match limit {
+        PISTOLS_ONLY => class == Some(1),
+        MELEE_ONLY | SNIPER_ONLY | SHOTGUNS_ONLY => false,
+        NO_EXPLOSIVES => class != Some(3),
+        NO_BACKPACK => !backpack,
+        _ => true,
+    }
+}
+
+/// Whether a match under `limit` grants the weapon in lobby equipment slot `slot` (`None`: no slot known) whose
+/// `ItemType` is `t` (`None`: not known; a variant must be resolved to its base row by the caller): the known type by
+/// [`match_grants`], else [`match_grants_unknown`] by the slot's class. A backpack weapon is one in slots 10..13.
+// DC-DEFAULT: DSV-180, DSV-476, DSV-610 (proposed)
+pub fn match_grants_in_slot(limit: u32, t: Option<i32>, slot: Option<i64>) -> bool {
+    if limit == 0 {
+        return true;
+    }
+    let backpack = slot.is_some_and(|s| BACKPACK_EQUIP_SLOTS.contains(&s));
+    match t {
+        Some(t) => match_grants(limit, t, backpack),
+        None => match_grants_unknown(limit, slot.and_then(equip_slot_class), backpack),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DSV-610: every rule of the room's weapon list on a full loadout (rifle 0 in slot 0, pistol 4 in slot 1, knife
+    /// 7 in slot 2, grenade 6 in slot 3, sniper rifle 2 / shotgun 0x1a / launcher 8 in the backpack): what the match
+    /// grants.
+    #[test]
+    fn every_rule_grants_its_kinds_on_a_full_loadout() {
+        let loadout: [(i64, i32); 7] =
+            [(0, 0), (1, 4), (2, 7), (3, 6), (10, 2), (11, 0x1a), (12, 8)];
+        let granted = |limit: u32| -> Vec<i64> {
+            loadout
+                .iter()
+                .filter(|(s, t)| match_grants_in_slot(limit, Some(*t), Some(*s)))
+                .map(|(s, _)| *s)
+                .collect()
+        };
+        assert_eq!(granted(0), vec![0, 1, 2, 3, 10, 11, 12]);
+        assert_eq!(granted(PISTOLS_ONLY), vec![1, 2]);
+        assert_eq!(granted(MELEE_ONLY), vec![2]);
+        assert_eq!(granted(NO_SNIPERS), vec![0, 1, 2, 3, 11, 12]);
+        assert_eq!(granted(NO_EXPLOSIVES), vec![0, 1, 2, 10, 11]);
+        assert_eq!(granted(NO_BACKPACK), vec![0, 1, 2, 3]);
+        assert_eq!(granted(SNIPER_ONLY), vec![2, 10]);
+        assert_eq!(granted(SHOTGUNS_ONLY), vec![2, 11]);
+        assert_eq!(granted(NO_SHOTGUNS), vec![0, 1, 2, 3, 10, 12]);
+    }
+
+    /// DSV-610: a weapon of unknown type goes by its slot: an "only" rule keeps it out (Pistols Only keeps the
+    /// secondary slot), a "no" rule lets it in, No Backpack keeps a backpack one out, the melee slot always passes.
+    #[test]
+    fn an_unknown_weapon_goes_by_its_slot() {
+        for limit in [PISTOLS_ONLY, MELEE_ONLY, SNIPER_ONLY, SHOTGUNS_ONLY] {
+            assert!(!match_grants_in_slot(limit, None, Some(0)), "limit {limit}");
+            assert!(
+                !match_grants_in_slot(limit, None, Some(10)),
+                "limit {limit}"
+            );
+            assert!(match_grants_in_slot(limit, None, Some(2)), "limit {limit}");
+        }
+        assert!(match_grants_in_slot(PISTOLS_ONLY, None, Some(1)));
+        assert!(!match_grants_in_slot(NO_BACKPACK, None, Some(13)));
+        assert!(match_grants_in_slot(NO_BACKPACK, None, Some(0)));
+        assert!(!match_grants_in_slot(NO_EXPLOSIVES, None, Some(3)));
+        for limit in [NO_SNIPERS, NO_SHOTGUNS, 0] {
+            assert!(match_grants_in_slot(limit, None, Some(0)), "limit {limit}");
+            assert!(match_grants_in_slot(limit, None, Some(10)), "limit {limit}");
+        }
+        assert!(!match_grants_in_slot(SNIPER_ONLY, None, None));
+        assert!(match_grants_in_slot(NO_BACKPACK, None, None));
+    }
 
     #[test]
     fn sniper_only_needs_an_equipped_sniper_rifle() {

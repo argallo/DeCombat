@@ -62,6 +62,7 @@ fn entry(name: &str, mods: Vec<dc_config::schema::ModRef>) -> dc_config::LobbySe
         channels: 3,
         features: Vec::new(),
         mods,
+        client_visual_allowed: false,
         lobby: String::new(),
         fingerprint: String::new(),
         policy: String::new(),
@@ -833,6 +834,43 @@ fn the_set_document_reads_back_as_a_set_with_the_pushed_hash() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// LG-426: an entry with `client_visual_allowed` says so in its document's fragment; the set hash and the 0x3f10 row do
+/// not change, and an entry without the key keeps saying false.
+#[test]
+fn an_entry_that_allows_local_mods_says_so_in_its_document_and_keeps_its_hash() {
+    let dir = temp("cv");
+    let pack_a = pack(&dir, "pack_a", "shared", &["content.weapons"], WEAPON_LUA);
+    let flag = |doc: &str| {
+        dc_mod_lua::JsonValue::parse(doc)
+            .unwrap()
+            .get("mod_set")
+            .and_then(|m| m.get("client_visual_allowed"))
+            .and_then(|b| b.as_bool())
+    };
+    let plain = featured(&dir, vec![pack_a.clone()]);
+    let off = &plain.entry_mods[&3];
+    assert_eq!(flag(&off.doc), Some(false));
+    let mut servers = entries(vec![pack_a]);
+    servers[2].client_visual_allowed = true;
+    let sets = build_entry_sets(
+        &servers,
+        Some(&dir),
+        &dir,
+        1 << 24,
+        12,
+        &Arc::new(Logger::none()),
+    );
+    let on = &sets[&3];
+    assert_eq!(flag(&on.doc), Some(true));
+    assert_eq!(
+        on.set.fragment().get("policy").and_then(|p| p.as_str()),
+        Some("modded"),
+        "an older client reads it as before and refuses local mods under its curated policy"
+    );
+    assert_eq!(on.hashes(), off.hashes(), "no part of the claim");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The weapon content in the start request of a remote game host, and an agent too old for it.
 #[test]
 fn a_featured_entrys_content_goes_to_its_agent_and_an_old_agent_refuses_the_start() {
@@ -1356,5 +1394,63 @@ fn pack_lines_fit_the_line_limit_and_a_changed_zip_is_refused() {
     assert!(crate::game::pack_lines(&w)
         .unwrap_err()
         .contains("no longer hashes"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A pack that registers camo variants: 500 of the SMG 101, 501 of the pistol 102 (cosmetic keys only, VAR-2).
+const VARIANT_LUA: &str = "return function(mod) \
+     mod.content.weapons:register({id = \"Weapon500\", variant_of = 101, variant_name = \"Camo SMG\"}) \
+     mod.content.weapons:register({id = \"Weapon501\", variant_of = 102, variant_name = \"Camo Pistol\"}) end";
+
+/// DSV-610 / LG-419 (OWNER REPORT 2026-11-05 "no backpack option ... still lets you bring your backpack item, same
+/// with pistols only"): a camo variant has no item row of its own, so the weapon rules once let it through; now it
+/// counts as its base gun. Under Pistols Only the camo SMG in the primary slot stays home and the camo pistol in the
+/// backpack comes along; under No Backpack the camo pistol stays home; Sniper Only keeps the knife alone.
+#[test]
+fn a_camo_variant_counts_as_its_base_gun_under_a_weapon_rule() {
+    let dir = temp("variant_rule");
+    let pack_v = pack(&dir, "pack_v", "shared", &["content.weapons"], VARIANT_LUA);
+    let mut st = featured_with_backpack(&dir, vec![pack_v]);
+    assert_eq!(crate::inventory::base_weapon(&st, 500), 101);
+    assert_eq!(crate::game::weapon_type(&st, 500), Some(1));
+    assert_eq!(crate::game::weapon_type(&st, 501), Some(4));
+    assert_eq!(crate::game::weapon_type(&st, 555), None, "no such variant");
+    let (_l, account) = on_entry(&mut st, 1, "vic", 1);
+    for i in db::items(&st.db, account).unwrap() {
+        db::set_slot(&st.db, i.uid, -1).unwrap();
+    }
+    for (item, slot) in [(500, 0), (103, 2), (501, 10)] {
+        db::add_item(
+            &st.db,
+            &NewItem {
+                user_no: account,
+                item_no: item,
+                start_time: 0,
+                end_time: 0,
+                slot,
+                default_type: 0,
+            },
+        )
+        .unwrap();
+    }
+    let items = db::items(&st.db, account).unwrap();
+    let slots = |limit: u32| -> Vec<(i64, i64)> {
+        let items = crate::game::match_items(&st, limit, &items);
+        let mut v: Vec<(i64, i64)> = crate::game::rule_items(&st, limit, items)
+            .iter()
+            .filter(|i| i.slot >= 0)
+            .map(|i| (i.slot, i.item_no))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(slots(0), [(0, 500), (2, 103), (10, 501)]);
+    assert_eq!(slots(dc_bute::arms::PISTOLS_ONLY), [(2, 103), (10, 501)]);
+    assert_eq!(slots(dc_bute::arms::NO_BACKPACK), [(0, 500), (2, 103)]);
+    assert_eq!(slots(dc_bute::arms::SNIPER_ONLY), [(2, 103)]);
+    assert_eq!(
+        slots(dc_bute::arms::NO_SNIPERS),
+        [(0, 500), (2, 103), (10, 501)]
+    );
     std::fs::remove_dir_all(&dir).ok();
 }

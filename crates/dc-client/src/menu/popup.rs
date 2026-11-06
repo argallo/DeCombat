@@ -74,6 +74,14 @@ pub const INVITE_MS: u64 = 10_000;
 /// The add-friend box: title string and name length.
 pub const ADD_FRIEND_TITLE: i32 = 0x1619;
 pub const ADD_FRIEND_MAX: usize = 16;
+/// CLI-1905: the waiting room's lock box (the Change password button): title "Lock Game Room", the text asking for a
+/// 4-character password, at most 4 characters, masked.
+// EVIDENCE: cshell+0x15fc80 (box 0x1036 of type 3 with title 0x10be, OK 0x42 / Cancel 0x43, empty start text, edit
+// limit 3 at +0x14 and mode 8 at +0x18, callback cshell+0x15baf0); cshell+0x2f5830 (a character is refused once the
+// length is past the limit, so a limit of 3 takes 4 characters)
+pub const LOCK_ROOM_TITLE: i32 = 0x10be;
+pub const LOCK_ROOM_TEXT: i32 = 0x1036;
+pub const LOCK_ROOM_MAX: usize = 4;
 
 /// Box placement: the window centred on the virtual screen.
 // EVIDENCE: cshell+0x26f3c0 (window 0x1d8 x 0x100)
@@ -142,8 +150,13 @@ pub enum BoxTag {
     RemoveFriend,
     /// lobby20: a friend request (the name sits in `input`); yes accepts it, no declines it.
     FriendRequest,
+    /// CLI-1901: a clan leader's invitation (the clan name sits in `input`, the clan number here); yes joins, no
+    /// declines, Escape leaves it open.
+    ClanInvite(u32),
     /// CLI-1132: the weapon-limit box of a room; Yes (the "Go to Shop" button) opens the shop's weapons page.
     LimitBox,
+    /// CLI-1905: the waiting room's lock box; OK sets the typed password as the room's (empty: no password).
+    LockRoom,
     /// gm-client (CLI-1303): the kick question; Yes kicks the member (in-channel id, character number).
     Kick { id: u32, char_no: u32 },
     /// use-windows: a use window's question (weapon change 0x1876, record reset); its first button sends the use of
@@ -398,6 +411,16 @@ impl Popup {
         }
     }
 
+    /// CLI-1905: the host's lock box of the waiting room (masked, [`LOCK_ROOM_MAX`] characters).
+    pub fn lock_room(text: String) -> Popup {
+        Popup {
+            kind: BoxKind::Input,
+            title: LOCK_ROOM_TITLE,
+            max_len: LOCK_ROOM_MAX,
+            ..Popup::ok(text, BoxTag::LockRoom)
+        }
+    }
+
     /// lobby20: a yes / no question with a name kept for the answer.
     pub fn ask_name(text: String, tag: BoxTag, name: &str) -> Popup {
         Popup {
@@ -500,6 +523,13 @@ impl Popup {
             MenuInput::Key(super::MenuKey::Backspace) if self.kind == BoxKind::Input => {
                 self.input.pop();
             }
+            // CLI-1898: a friend request arrives unasked, often while the player types a chat line: the Enter that
+            // sends the line must not accept it, so only a click on Yes does
+            // DC-DEFAULT: CLI-1898 (proposed; amends CLI-842, deviates from the 2009 box keys of cshell+0x271830)
+            MenuInput::Key(super::MenuKey::Enter) if self.tag == BoxTag::FriendRequest => {}
+            // CLI-1901: the clan invitation arrives unasked too: only a click answers it
+            // DC-DEFAULT: CLI-1901 (proposed; as CLI-1898)
+            MenuInput::Key(super::MenuKey::Enter) if matches!(self.tag, BoxTag::ClanInvite(_)) => {}
             MenuInput::Key(super::MenuKey::Enter) => {
                 self.chosen = Some(0);
                 return Some(true);

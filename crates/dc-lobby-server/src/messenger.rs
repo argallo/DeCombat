@@ -21,6 +21,8 @@
 //! | `whisper` | from-name, to-name, text | to both sides of a whisper |
 //! | `invite` | from-name, room number | a friend-menu invite (the room invite itself is 0x3023) |
 //! | `clan` | from-name, text | w3-clan: a clan chat line, to every online member of the sender's clan |
+//! | `claninvite` | clan name, clan number | LG-420: a clan leader's invitation (also re-sent at login while open); the
+//! answers are `!nm clanyes<TAB>clan number` / `!nm clanno<TAB>clan number` (`clanreq.rs`) |
 // SPEC: PROTOCOL_2009.md §6.3; HARNESS: lobby_harness::test_persist_restart (`!nm add` / `!nm accept` /
 // `!nm list` and the 0x3f01 `status` / `friends` lines)
 // DC-DEFAULT: OPS-8 (proposed) a friendship needs the other side's acceptance; friends are symmetric
@@ -179,6 +181,10 @@ fn on_add(st: &mut Core, sid: Sid, me: u32, name: &str) -> HResult {
     } else if request_open(st, t.user_no, me)? {
         // the other side asked first: adding back accepts
         make_friends(st, me, t.user_no)?;
+        st.note(&format!(
+            "messenger: {} added {} back: friends",
+            me, t.user_no
+        ));
     } else {
         st.db.execute(
             "INSERT OR IGNORE INTO friend_requests (from_no, to_no, created) VALUES (?1, ?2, ?3)",
@@ -402,6 +408,9 @@ fn on_chat(st: &mut Core, sid: Sid, p: &[u8]) -> Result<bool, Fault> {
         "w" | "whisper" | "msg" => on_whisper(st, sid, me, &args)?,
         "invite" => on_invite(st, sid, me, &first)?,
         "clan" => on_clan_say(st, sid, me, &args)?,
+        // LG-420: the clan invitation box's answers (the clan number of the `claninvite` line)
+        "clanyes" => crate::clanreq::on_answer(st, sid, me, &first, true)?,
+        "clanno" => crate::clanreq::on_answer(st, sid, me, &first, false)?,
         // the reference client sends `!nm sync` when it comes back from a match; the 2009 client never sends a
         // messenger line (none in the captures, no `!nm` text in its CShell.dll): taken without a reply, so no
         // status line (the reference stack shows every status line as a notice box)

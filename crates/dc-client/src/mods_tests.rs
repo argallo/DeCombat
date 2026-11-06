@@ -1336,7 +1336,9 @@ fn join_entry_reports_the_documents_maps_and_base_and_a_leave_clears_them() {
     assert_eq!(mods.status.maps[0].id, "alpha");
     assert_eq!(
         mods.status.recipe.as_ref().map(|r| r.policy),
-        Some(ModPolicy::Curated)
+        Some(ModPolicy::Curated {
+            client_visual_allowed: false
+        })
     );
 
     // what `entry_leave` does
@@ -1347,6 +1349,73 @@ fn join_entry_reports_the_documents_maps_and_base_and_a_leave_clears_them() {
     assert_eq!(mods.status.recipe, None);
     assert!(!mods.status.curated);
     let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// LG-426: a curated entry whose fragment allows local mods loads the player's client_visual one after its pack (the
+/// recipe keeps it local) and refuses a local shared one; the same entry without the flag loads no local mod.
+#[test]
+fn a_curated_entry_that_allows_local_mods_loads_them_after_its_pack() {
+    let src = temp("entry-cv-src");
+    let dir = mod_dir(&src, "tpack", "shared");
+    for allowed in [true, false] {
+        let root = temp(if allowed {
+            "entry-cv-on"
+        } else {
+            "entry-cv-off"
+        });
+        let (zip, e) = dc_modkit::pack_mod_bytes(&dir).unwrap();
+        let frag = serde_json::json!({
+            "policy": "modded", "client_visual_allowed": allowed, "mods": [entry_json(&e)],
+        });
+        let hash = ServerModSet::from_fragment(&frag).unwrap().hash();
+        let doc = serde_json::json!({
+            "entry": 7, "name": "t", "curated": true, "mod_set": frag, "mod_set_hash": hash,
+        });
+        let routes: Routes = Arc::default();
+        routes.lock().unwrap().insert(
+            "/entry_mods/7.json".into(),
+            (200, doc.to_string().into_bytes()),
+        );
+        routes
+            .lock()
+            .unwrap()
+            .insert(format!("/mods/{}.zip", e.sha256), (200, zip));
+        let web = fake_lobby(routes);
+        let paths = ModPaths::new(&root);
+        mod_dir(&paths.local(), "green", "client_visual");
+        mod_dir(&paths.local(), "sneaky", "shared");
+        let mut mods = ClientMods::new();
+        let got = mods
+            .join_entry(Some(web), 7, &hash, &cfg(&root), &mut |_| {})
+            .unwrap();
+        assert_eq!(got, hash, "the local mod is no part of the claim");
+        assert!(mods.status.curated);
+        let recipe = mods.status.recipe.clone().unwrap();
+        assert_eq!(
+            recipe.policy,
+            ModPolicy::Curated {
+                client_visual_allowed: allowed
+            }
+        );
+        if allowed {
+            assert_eq!(
+                mods.loaded(),
+                vec!["tpack".to_string(), "green".to_string()]
+            );
+            assert_eq!(recipe.mods[1].origin, ModOrigin::Local);
+            assert_eq!(mods.status.local_refused.len(), 1);
+            assert!(
+                mods.status.local_refused[0].contains("must be kind 'client_visual'"),
+                "{:?}",
+                mods.status.local_refused
+            );
+        } else {
+            assert_eq!(mods.loaded(), vec!["tpack".to_string()]);
+            assert!(mods.status.local_refused.is_empty(), "no local load at all");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
     let _ = std::fs::remove_dir_all(&src);
 }
 

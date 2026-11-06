@@ -80,7 +80,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(2);
 /// LG-313 / LG-314: loads a pack alone under the curated policy and checks the weapon rows it makes.
 fn curated_trial(dir: &Path) -> Result<(), String> {
     let mut host = ModHost::new();
-    host.set_policy(ModPolicy::Curated);
+    host.set_policy(ModPolicy::Curated {
+        client_visual_allowed: false,
+    });
     host.load_mod_dir(dir)?;
     match dc_mod_lua::curated_content_refusal(&host.weapon_patches()?) {
         Some(why) => Err(why),
@@ -124,7 +126,11 @@ impl ModClient {
         mods: Vec<crate::modset::Resolved>,
         log: Arc<Logger>,
     ) -> Result<ModClient, String> {
-        match Self::spawn(Source::Curated(mods), log, Some(ModPolicy::Curated))? {
+        // the lobby never loads a player's local mods (LG-426 is the client's side)
+        let policy = ModPolicy::Curated {
+            client_visual_allowed: false,
+        };
+        match Self::spawn(Source::Curated(mods), log, Some(policy))? {
             Some(c) => Ok(c),
             None => Err("the mod thread could not start".to_string()),
         }

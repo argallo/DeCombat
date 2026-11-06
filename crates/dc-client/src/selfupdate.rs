@@ -41,16 +41,27 @@ pub const UPDATE_DIR: &str = "dc-update";
 pub const STAGING_DIR: &str = "new";
 pub const BACKUP_DIR: &str = "old";
 pub const RESULT_FILE: &str = "result.txt";
-/// The friend pack's own file next to the exe (`tools/friend_pack_win.py`): `{"commit", "update_dir"}`.
+/// The friend pack's own file next to the exe (`tools/friend_pack_win.py`): `{"commit", "update_dir", "server",
+/// "fingerprint"}`.
 pub const PACK_FILE: &str = "pack.json";
 /// The friend packs' update folder's file: `{"commit", "zip"}`.
 pub const LATEST_FILE: &str = "latest.json";
-/// The game's exe in the zip and in the game folder.
+/// The game's exe in the zip and in the game folder: the one thing a player starts (CLI-1906).
+// DC-DEFAULT: CLI-1906 (the Windows zip holds DeCombat.exe, no batch file), see DC_DEFAULTS.md
 pub const EXE: &str = if cfg!(windows) {
+    "DeCombat.exe"
+} else {
+    "dc-client"
+};
+/// The exe's name in the packs before CLI-1906 (next to `DeCombat.bat`). An update zip may still carry it so that
+/// such a pack can take the update (`tools/friend_pack_win.py --update-dir`); it is never placed beside [`EXE`].
+pub const LEGACY_EXE: &str = if cfg!(windows) {
     "dc-client.exe"
 } else {
     "dc-client"
 };
+/// The launcher of the packs before CLI-1906.
+pub const LEGACY_LAUNCHER: &str = "DeCombat.bat";
 const HELPER: &str = if cfg!(windows) {
     "helper.exe"
 } else {
@@ -679,11 +690,16 @@ pub fn sums_url_of(url: &str) -> Option<String> {
 
 // ------------------------------------------------------------------------------------------------ friend packs
 
-/// A friend pack's `pack.json`: its build and the folder its updates appear in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A friend pack's `pack.json`: its build, the folder its updates appear in, and the server a double-click start
+/// joins (CLI-1906; packs before it name none).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pack {
     pub commit: String,
     pub update_dir: Option<PathBuf>,
+    /// The lobby, `host:port`.
+    pub server: Option<String>,
+    /// The lobby certificate's pinned SHA-256 (hex), when the packer was given one.
+    pub fingerprint: Option<String>,
 }
 
 fn read_small(path: &Path, cap: u64) -> Result<Option<String>, String> {
@@ -711,13 +727,19 @@ pub fn read_pack(dir: &Path) -> Option<Pack> {
     if !is_commit(&commit) {
         return None;
     }
-    let update_dir = v
-        .get("update_dir")
-        .and_then(|d| d.as_str())
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from);
-    Some(Pack { commit, update_dir })
+    let text_of = |k: &str| {
+        v.get(k)
+            .and_then(|d| d.as_str())
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+    };
+    Some(Pack {
+        commit,
+        update_dir: text_of("update_dir").map(PathBuf::from),
+        server: text_of("server"),
+        fingerprint: text_of("fingerprint"),
+    })
 }
 
 #[cfg(test)]
@@ -806,8 +828,16 @@ pub fn writable(dir: &Path) -> bool {
     ok
 }
 
+/// The exe a staged update starts the game with: [`EXE`], else (a zip of the layout before CLI-1906)
+/// [`LEGACY_EXE`].
+pub fn staged_exe(staging: &Path) -> Option<&'static str> {
+    [EXE, LEGACY_EXE]
+        .into_iter()
+        .find(|n| staging.join(n).is_file())
+}
+
 /// Unpacks a downloaded zip into `<install>/dc-update/new` (replacing an older staging). One folder that holds
-/// every entry (`DeCombat-win-<tag>/`) is taken off; the result must hold [`EXE`] at its top.
+/// every entry (`DeCombat-win-<tag>/`) is taken off; the result must hold [`EXE`] (or [`LEGACY_EXE`]) at its top.
 pub fn stage(zip: &[u8], install: &Path) -> Result<PathBuf, String> {
     let files = crate::mods::read_zip(zip, MAX_UNPACKED, true)
         .map_err(|e| format!("the download is damaged: {e}"))?;
@@ -839,7 +869,7 @@ pub fn stage(zip: &[u8], install: &Path) -> Result<PathBuf, String> {
             }
             std::fs::write(&path, &f.data).map_err(|e| format!("{}: {e}", path.display()))?;
         }
-        if !staging.join(EXE).is_file() {
+        if staged_exe(&staging).is_none() {
             return Err(format!("the download holds no {EXE}"));
         }
         Ok(())
@@ -850,9 +880,9 @@ pub fn stage(zip: &[u8], install: &Path) -> Result<PathBuf, String> {
     Ok(staging)
 }
 
-/// A file of the player's (or of the game's own writing) that an update never replaces: the launcher with its
-/// server preset (`DeCombat.bat`), settings, trust and log files. A new version of one goes next to it as
-/// `<name>.new`.
+/// A file of the player's (or of the game's own writing) that an update never replaces: an older pack's launcher with
+/// its server preset (`DeCombat.bat`, while the zip still carries one; CLI-1906 removes it otherwise), settings,
+/// trust and log files. A new version of one goes next to it as `<name>.new`.
 pub fn players_file(rel: &Path) -> bool {
     let name = rel
         .file_name()
@@ -900,6 +930,50 @@ pub struct Applied {
     pub placed: Vec<PathBuf>,
     /// The player's files left as they were (their new version written as `<name>.new` when it differs).
     pub kept: Vec<PathBuf>,
+    /// The older layout's starters the update took away (CLI-1906): kept in `dc-update/old` until the next start.
+    pub removed: Vec<PathBuf>,
+}
+
+fn same_name(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// The starters of an older layout that an update to `staged` (the top-level file names of the staging) takes away
+/// (CLI-1906), so the folder keeps one thing to start: [`LEGACY_EXE`] once the zip has [`EXE`] (also when the zip
+/// carries it as the bridge for older packs), [`LEGACY_LAUNCHER`] and its `.new` when the zip has no launcher, and
+/// the exe that ran the update (`running`, its own file name, whatever it is) when the zip has no file of that name.
+/// An update run by [`LEGACY_EXE`] leaves the launcher: that run may have been started by it, and cmd reads a batch
+/// file from disk line by line while the game runs; the next start of [`EXE`] removes it ([`tidy_legacy`]).
+pub fn retired_by(staged: &[String], running: Option<&str>) -> Vec<String> {
+    let has = |n: &str| staged.iter().any(|s| same_name(s, n));
+    let starter = if has(EXE) {
+        EXE
+    } else if has(LEGACY_EXE) {
+        LEGACY_EXE
+    } else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |n: &str| {
+        if !same_name(n, starter) && !out.iter().any(|o| same_name(o, n)) {
+            out.push(n.to_string());
+        }
+    };
+    if starter == EXE && EXE != LEGACY_EXE {
+        add(LEGACY_EXE);
+    }
+    if !has(LEGACY_LAUNCHER) && !running.is_some_and(|r| same_name(r, LEGACY_EXE)) {
+        add(LEGACY_LAUNCHER);
+        add(&format!("{LEGACY_LAUNCHER}.new"));
+    }
+    if let Some(r) = running.filter(|r| {
+        !has(r)
+            && !r.contains(['/', '\\'])
+            && (!cfg!(windows) || r.to_ascii_lowercase().ends_with(".exe"))
+    }) {
+        add(r);
+    }
+    out
 }
 
 /// Moves a file, a few tries for a file the OS still holds (the exe a moment after its process ended).
@@ -919,11 +993,29 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The swap: every file of `staging` goes to the same place in `install`; a file it replaces goes to
 /// `dc-update/old` first, and on any failure every replaced file comes back. Nothing is deleted; the player's files
-/// ([`players_file`]) stay; a folder that holds a 2009 client (`Engine.exe`) is never written into.
-pub fn apply_staged(staging: &Path, install: &Path) -> Result<Applied, String> {
+/// ([`players_file`]) stay; a folder that holds a 2009 client (`Engine.exe`) is never written into. Then the older
+/// layout's starters of [`retired_by`] go to `dc-update/old` too (`running`: the file name of the exe that ran the
+/// update); a staged file of such a name (the bridge [`LEGACY_EXE`]) is not placed.
+pub fn apply_staged(
+    staging: &Path,
+    install: &Path,
+    running: Option<&str>,
+) -> Result<Applied, String> {
     let mut files = Vec::new();
     files_under(staging, staging, &mut files)?;
     files.sort();
+    let top: Vec<String> = files
+        .iter()
+        .filter(|f| f.components().count() == 1)
+        .map(|f| f.to_string_lossy().into_owned())
+        .collect();
+    let retired = retired_by(&top, running);
+    let is_retired = |rel: &Path| {
+        rel.components().count() == 1
+            && retired
+                .iter()
+                .any(|r| same_name(r, &rel.to_string_lossy()))
+    };
     let backup = install.join(UPDATE_DIR).join(BACKUP_DIR);
     let _ = std::fs::remove_dir_all(&backup);
     let mut out = Applied::default();
@@ -972,7 +1064,7 @@ pub fn apply_staged(staging: &Path, install: &Path) -> Result<Applied, String> {
         out.placed.push(rel.to_path_buf());
         Ok(())
     };
-    for rel in &files {
+    for rel in files.iter().filter(|r| !is_retired(r)) {
         if let Err(e) = step(rel, &mut out, &mut done) {
             for (target, saved) in done.iter().rev() {
                 let _ = std::fs::remove_file(target);
@@ -983,7 +1075,83 @@ pub fn apply_staged(staging: &Path, install: &Path) -> Result<Applied, String> {
             return Err(e);
         }
     }
+    // the older starters go last, and a starter that cannot go (still held) leaves the update good
+    for name in &retired {
+        let target = install.join(name);
+        if !target.is_file() {
+            continue;
+        }
+        let b = backup.join(name);
+        let _ = std::fs::create_dir_all(&backup);
+        match move_file(&target, &b) {
+            Ok(()) => out.removed.push(PathBuf::from(name)),
+            Err(e) => eprintln!(
+                "dc-client update: {} stays (it cannot be moved: {e})",
+                target.display()
+            ),
+        }
+    }
     Ok(out)
+}
+
+/// The file name of the running exe (`DeCombat.exe`, an older pack's `dc-client.exe`, or whatever the player renamed
+/// it to).
+pub fn running_name() -> Option<String> {
+    std::env::current_exe()
+        .ok()?
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// Set by the double-click start (CLI-1906) for the game it starts: an update started from such a run starts the game
+/// again the same way, without arguments.
+pub const PACK_START_ENV: &str = "DC_PACK_START";
+
+/// The arguments the helper starts the game again with: this run's, or none for a run of the double-click start.
+pub fn relaunch_args() -> Vec<OsString> {
+    if std::env::var_os(PACK_START_ENV).is_some_and(|v| !v.is_empty()) {
+        return Vec::new();
+    }
+    std::env::args_os().skip(1).collect()
+}
+
+/// A pack folder of the CLI-1906 layout: its pack file and [`EXE`] are there (and the exe has another name than the
+/// older one).
+fn new_layout(install: &Path) -> bool {
+    EXE != LEGACY_EXE && install.join(PACK_FILE).is_file() && install.join(EXE).is_file()
+}
+
+/// CLI-1906, at a start: a pack folder of the new layout that still holds the older starters (an older pack's own
+/// update put the new files beside them) loses them: [`LEGACY_LAUNCHER`], its `.new` and [`LEGACY_EXE`]. A run of
+/// [`LEGACY_EXE`] (`running`: the running exe's file name) touches none of them: an older launcher may have started
+/// it and cmd still reads that batch file; it moves only its own file at its end ([`retire_running_legacy`]). The
+/// removed files.
+pub fn tidy_legacy(install: &Path, running: Option<&str>) -> Vec<PathBuf> {
+    if !new_layout(install) || running.is_some_and(|r| same_name(r, LEGACY_EXE)) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let launcher_new = format!("{LEGACY_LAUNCHER}.new");
+    for n in [LEGACY_LAUNCHER, launcher_new.as_str(), LEGACY_EXE] {
+        let p = install.join(n);
+        if p.is_file() && std::fs::remove_file(&p).is_ok() {
+            out.push(PathBuf::from(n));
+        }
+    }
+    out
+}
+
+/// CLI-1906, at the end of a run of [`LEGACY_EXE`] in a new-layout pack folder (an older pack's helper starts the game
+/// again under that name): the running file moves into `dc-update/` (a running exe can be renamed, not deleted),
+/// which the next start removes. `false`: nothing to do, or it could not move (the next start of [`EXE`] removes it).
+pub fn retire_running_legacy(install: &Path, running: Option<&str>) -> bool {
+    if !new_layout(install) || !running.is_some_and(|r| same_name(r, LEGACY_EXE)) {
+        return false;
+    }
+    let dir = install.join(UPDATE_DIR);
+    let _ = std::fs::create_dir_all(&dir);
+    let to = dir.join(format!("retired-{}-{LEGACY_EXE}", std::process::id()));
+    std::fs::rename(install.join(LEGACY_EXE), to).is_ok()
 }
 
 /// Starts the helper (a copy of this exe in `dc-update/`) that finishes the update once this process has ended;
@@ -1001,6 +1169,9 @@ pub fn start_helper(
         .arg(staging)
         .arg(install)
         .arg(std::process::id().to_string());
+    if let Some(n) = me.file_name() {
+        c.arg("--running").arg(n);
+    }
     if let Some(args) = relaunch {
         c.arg("--relaunch").args(args);
     }
@@ -1052,9 +1223,10 @@ fn write_result(install: &Path, text: &str) {
     let _ = std::fs::write(install.join(UPDATE_DIR).join(RESULT_FILE), text);
 }
 
-/// The helper's run (`--finish-update <staging> <install> <pid> [--relaunch <args>...]`): the process code.
+/// The helper's run (`--finish-update <staging> <install> <pid> [--running <exe name>] [--relaunch <args>...]`): the
+/// process code. The game starts again from the staged exe ([`staged_exe`]), not from the name that ran the update.
 pub fn finish_update(args: &[OsString]) -> i32 {
-    let usage = "--finish-update <staging> <install> <pid> [--relaunch <args>...]";
+    let usage = "--finish-update <staging> <install> <pid> [--running <exe name>] [--relaunch <args>...]";
     let (Some(staging), Some(install), Some(pid)) = (args.first(), args.get(1), args.get(2)) else {
         eprintln!("dc-client: {usage}");
         return 2;
@@ -1064,30 +1236,41 @@ pub fn finish_update(args: &[OsString]) -> i32 {
         return 2;
     };
     let (staging, install) = (PathBuf::from(staging), PathBuf::from(install));
-    let relaunch: Option<Vec<OsString>> = match args.get(3) {
-        Some(a) if a == "--relaunch" => Some(args[4..].to_vec()),
+    let mut rest = 3;
+    let running: Option<String> = match (args.get(rest), args.get(rest + 1)) {
+        (Some(a), Some(n)) if a == "--running" => {
+            rest += 2;
+            Some(n.to_string_lossy().into_owned())
+        }
+        _ => None,
+    };
+    let relaunch: Option<Vec<OsString>> = match args.get(rest) {
+        Some(a) if a == "--relaunch" => Some(args[rest + 1..].to_vec()),
         _ => None,
     };
     // only a staging of this install's own update folder is applied
-    if staging != install.join(UPDATE_DIR).join(STAGING_DIR) || !staging.join(EXE).is_file() {
+    let starter = staged_exe(&staging);
+    let Some(starter) = starter.filter(|_| staging == install.join(UPDATE_DIR).join(STAGING_DIR))
+    else {
         eprintln!(
             "dc-client update: {} is not a staged update of {}",
             staging.display(),
             install.display()
         );
         return 2;
-    }
+    };
     let outcome = if wait_for_exit(pid, EXIT_WAIT) {
-        apply_staged(&staging, &install)
+        apply_staged(&staging, &install, running.as_deref())
     } else {
         Err("the game did not close".to_string())
     };
     let code = match &outcome {
         Ok(a) => {
             eprintln!(
-                "dc-client update: {} files placed, {} of yours kept",
+                "dc-client update: {} files placed, {} of yours kept, {} older starters removed",
                 a.placed.len(),
-                a.kept.len()
+                a.kept.len(),
+                a.removed.len()
             );
             write_result(&install, "ok");
             let _ = std::fs::remove_dir_all(&staging);
@@ -1099,8 +1282,13 @@ pub fn finish_update(args: &[OsString]) -> i32 {
             1
         }
     };
+    // a failed swap put the old files back: the game starts again under the name that ran the update
+    let exe = match (&outcome, &running) {
+        (Err(_), Some(r)) if install.join(r).is_file() => install.join(r),
+        _ => install.join(starter),
+    };
     if let Some(args) = relaunch {
-        if let Err(e) = std::process::Command::new(install.join(EXE))
+        if let Err(e) = std::process::Command::new(exe)
             .args(args)
             .spawn()
         {
@@ -1418,11 +1606,7 @@ fn run(o: &Offer) -> Result<Phase, String> {
     busy("Unpacking the update");
     let staging = stage(&bytes, &install)?;
     busy("Starting the update");
-    start_helper(
-        &install,
-        &staging,
-        Some(std::env::args_os().skip(1).collect()),
-    )?;
+    start_helper(&install, &staging, Some(relaunch_args()))?;
     Ok(Phase::Staged)
 }
 

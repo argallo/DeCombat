@@ -27,6 +27,7 @@ fn entry(name: &str, host: &str) -> dc_config::LobbyServerCfg {
         channels: 3,
         features: Vec::new(),
         mods: Vec::new(),
+        client_visual_allowed: false,
         lobby: String::new(),
         fingerprint: String::new(),
         policy: String::new(),

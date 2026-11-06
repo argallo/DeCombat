@@ -53,6 +53,7 @@ pub mod hud;
 pub mod community;
 pub mod clientver;
 pub mod selfupdate;
+pub mod packstart;
 pub mod identity;
 pub mod input;
 pub mod inspect;

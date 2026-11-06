@@ -618,6 +618,7 @@ pub const DELETED_ROWS: &[&str] = &[
     "DELETE FROM coupon_uses WHERE user_no = ?1",
     "DELETE FROM megaphone WHERE user_no = ?1 AND aired = 0 AND done = 0",
     "DELETE FROM clan_joins WHERE user_no = ?1",
+    "DELETE FROM clan_requests WHERE user_no = ?1",
     "DELETE FROM op_bans WHERE user_no = ?1",
     "DELETE FROM nx_daily WHERE user_no = ?1",
     "DELETE FROM nx_clan_wins WHERE user_no = ?1",

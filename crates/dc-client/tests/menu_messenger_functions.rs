@@ -5,12 +5,17 @@
 //! ROM-gated (skipped without `CA_ROM`).
 
 use dc_client::hud::items::DrawItem;
+use dc_client::menu::frontfx::SOUND_MESSENGER_TWINKLE;
 use dc_client::menu::link::{LinkEvent, LinkOptions};
 use dc_client::menu::messenger::{
-    new_request, request_box, Friend, LIST_AT, ROW_HEIGHT, TREE_AT, WINDOW_AT,
+    new_request, request_box, Friend, CLAN_INVITE_TEXT, LIST_AT, ROW_HEIGHT, TREE_AT, WINDOW_AT,
 };
+use dc_client::menu::messenger::{BAR_FRIENDS_CMD, BUTTON_BLINK};
 use dc_client::menu::popup::BoxTag;
+use dc_client::menu::sheet::Look;
 use dc_client::menu::{Go, Menu, MenuInput, MenuKey, MenuOptions};
+use dc_client::settings::QUICK_BLOCK_WHISPERS;
+use dc_ui_data::WidgetKind;
 
 fn menu() -> Option<Menu> {
     let rom = dc_rom::resolve_rom().ok()?;
@@ -167,6 +172,114 @@ fn rom_friend_request_asks_with_the_2009_text() {
     assert_eq!(q.text, m.cat.text(0x5ac).replace("%s", "Cy"));
 }
 
+/// friend-accept (CLI-1898): the request box that pops up while the player types does not take the chat line's
+/// Enter as Yes; Escape leaves the request open, No declines it and drops its row, only a click on Yes accepts.
+#[test]
+fn rom_friend_request_box_takes_no_enter() {
+    let Some(mut m) = menu() else {
+        eprintln!("skipped: no CA_ROM");
+        return;
+    };
+    let ask = |m: &mut Menu, name: &str| {
+        m.feed_event(LinkEvent::Messenger(vec!["request".into(), name.into()]));
+        m.update();
+        let p = m.popup().expect("the request box");
+        assert_eq!(p.tag, BoxTag::FriendRequest);
+        assert_eq!(p.input, name);
+    };
+    ask(&mut m, "Cy");
+    let sent = m.link_sent();
+    m.input(MenuInput::Char('k'));
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert!(m.popup().is_some(), "Enter does not answer the box");
+    assert_eq!(m.link_sent(), sent, "nothing accepted");
+    // Escape: closed, unanswered, the request stays a row (and a repeat of it does not ask again)
+    m.input(MenuInput::Key(MenuKey::Escape));
+    assert!(m.popup().is_none());
+    assert_eq!(m.link_sent(), sent);
+    assert_eq!(m.data.friends.requests, ["Cy"]);
+    m.feed_event(LinkEvent::Messenger(vec!["request".into(), "Cy".into()]));
+    m.update();
+    assert!(m.popup().is_none());
+    // No declines and the row goes
+    ask(&mut m, "Di");
+    let no = m.popup().unwrap().buttons()[1];
+    click(&mut m, [(no[0] + 4) as f32, (no[1] + 4) as f32]);
+    assert_eq!(m.link_sent(), sent + 1);
+    assert!(
+        m.link_latest_request().contains("!nm decline\\tDi"),
+        "{}",
+        m.link_latest_request()
+    );
+    assert_eq!(m.data.friends.requests, ["Cy"]);
+    // a click on Yes accepts
+    ask(&mut m, "Ed");
+    let yes = m.popup().unwrap().buttons()[0];
+    click(&mut m, [(yes[0] + 4) as f32, (yes[1] + 4) as f32]);
+    assert!(m.popup().is_none());
+    assert_eq!(m.link_sent(), sent + 2);
+    assert!(
+        m.link_latest_request().contains("!nm accept\\tEd"),
+        "{}",
+        m.link_latest_request()
+    );
+}
+
+/// CLI-1901: a clan invitation (relay line `claninvite`, LG-420) asks with the clan's name on any screen, once per
+/// clan; Enter does not answer it, Escape leaves it open, a click on No declines and on Yes joins.
+#[test]
+fn rom_clan_invite_box_answers_by_click_only() {
+    let Some(mut m) = menu() else {
+        eprintln!("skipped: no CA_ROM");
+        return;
+    };
+    let ask = |m: &mut Menu, name: &str, uid: u32| {
+        let line = vec!["claninvite".into(), name.into(), uid.to_string()];
+        m.feed_event(LinkEvent::Messenger(line));
+        m.update();
+        let p = m.popup().expect("the clan invitation box");
+        assert_eq!(p.tag, BoxTag::ClanInvite(uid));
+        assert_eq!(p.text, CLAN_INVITE_TEXT.replace("%s", name));
+    };
+    ask(&mut m, "Wolves", 4);
+    // the same invitation again while the box is up: no second box
+    m.feed_event(LinkEvent::Messenger(vec![
+        "claninvite".into(),
+        "Wolves".into(),
+        "4".into(),
+    ]));
+    m.update();
+    let sent = m.link_sent();
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert!(m.popup().is_some(), "Enter does not answer the box");
+    m.input(MenuInput::Key(MenuKey::Escape));
+    assert!(m.popup().is_none(), "one box for the repeated line");
+    assert_eq!(
+        m.link_sent(),
+        sent,
+        "Escape sends nothing (the invitation stays open)"
+    );
+    ask(&mut m, "Ravens", 7);
+    let no = m.popup().unwrap().buttons()[1];
+    click(&mut m, [(no[0] + 4) as f32, (no[1] + 4) as f32]);
+    assert_eq!(m.link_sent(), sent + 1);
+    assert!(
+        m.link_latest_request().contains("!nm clanno\\t7"),
+        "{}",
+        m.link_latest_request()
+    );
+    ask(&mut m, "Wolves", 4);
+    let yes = m.popup().unwrap().buttons()[0];
+    click(&mut m, [(yes[0] + 4) as f32, (yes[1] + 4) as f32]);
+    assert!(m.popup().is_none());
+    assert_eq!(m.link_sent(), sent + 2);
+    assert!(
+        m.link_latest_request().contains("!nm clanyes\\t4"),
+        "{}",
+        m.link_latest_request()
+    );
+}
+
 #[test]
 fn rom_chat_panel_shows_the_whispers_and_sends_text() {
     let Some(mut m) = menu() else {
@@ -201,4 +314,102 @@ fn rom_chat_panel_shows_the_whispers_and_sends_text() {
     m.input(MenuInput::Key(MenuKey::Escape));
     assert_eq!(m.messenger().chat_with, None);
     assert!(m.messenger_open());
+}
+
+/// The bar's messenger button: its prefix and position on the current screen.
+fn bar_button(m: &Menu) -> (String, [i32; 2]) {
+    let s = m.sheet();
+    let p = s
+        .parts
+        .iter()
+        .find(|p| p.command == BAR_FRIENDS_CMD && p.kind == WidgetKind::Button)
+        .expect("bar button");
+    match &p.look {
+        Look::Button { prefix, .. } => (prefix.clone(), p.pos),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The button texture drawn at `at` at clock `secs`.
+fn button_tex(m: &mut Menu, prefix: &str, at: [i32; 2], secs: f32) -> Option<String> {
+    m.items_at(secs).into_iter().find_map(|i| match i {
+        DrawItem::Image { tex, dst, .. }
+            if tex.starts_with(prefix) && dst[0] == at[0] as f32 && dst[1] == at[1] as f32 =>
+        {
+            Some(tex)
+        }
+        _ => None,
+    })
+}
+
+fn feed(m: &mut Menu, line: &[&str]) {
+    m.feed_event(LinkEvent::Messenger(
+        line.iter().map(|s| s.to_string()).collect(),
+    ));
+    m.update();
+}
+
+#[test]
+fn rom_a_waiting_whisper_blinks_the_bar_button_until_the_window_opens() {
+    let Some(mut m) = menu() else {
+        eprintln!("skipped: no CA_ROM");
+        return;
+    };
+    // the helper opened the window: close it
+    m.toggle_messenger();
+    assert!(!m.messenger_open());
+    assert_eq!(m.data.friends.unread, 0);
+    let (prefix, at) = bar_button(&m);
+    let plain = format!("{prefix}A.dtx");
+    assert_eq!(
+        button_tex(&mut m, &prefix, at, 0.1).as_deref(),
+        Some(plain.as_str())
+    );
+    // the own (echoed) whisper does not light it
+    feed(&mut m, &["whisper", "Me", "Ann", "yo"]);
+    assert_eq!(m.data.friends.unread, 0);
+    // Ann's whisper while closed: the button blinks (C texture in the even periods) and the twinkle plays
+    let _ = m.take_sound_cues();
+    feed(&mut m, &["whisper", "Ann", "Me", "hello"]);
+    assert_eq!(m.data.friends.unread, 1);
+    assert!(
+        m.pending_sounds().contains(&SOUND_MESSENGER_TWINKLE),
+        "{:?}",
+        m.pending_sounds()
+    );
+    let lit = format!("{prefix}C.dtx");
+    assert_eq!(
+        button_tex(&mut m, &prefix, at, 0.1).as_deref(),
+        Some(lit.as_str())
+    );
+    assert_eq!(
+        button_tex(&mut m, &prefix, at, 0.1 + BUTTON_BLINK).as_deref(),
+        Some(plain.as_str())
+    );
+    // opening the window clears it
+    m.toggle_messenger();
+    assert_eq!(m.data.friends.unread, 0);
+    assert_eq!(
+        button_tex(&mut m, &prefix, at, 0.1).as_deref(),
+        Some(plain.as_str())
+    );
+    // a whisper while the window is open does not light it after closing
+    feed(&mut m, &["whisper", "Ann", "Me", "again"]);
+    m.toggle_messenger();
+    assert_eq!(m.data.friends.unread, 0);
+    // Block Whispers: another player's whisper never lights it
+    m.data.settings.inert.insert(QUICK_BLOCK_WHISPERS.into(), 1);
+    feed(&mut m, &["whisper", "Ann", "Me", "blocked"]);
+    assert_eq!(m.data.friends.unread, 0);
+    assert_eq!(
+        button_tex(&mut m, &prefix, at, 0.1).as_deref(),
+        Some(plain.as_str())
+    );
+    // a new friend request while closed lights it
+    feed(&mut m, &["request", "Cy"]);
+    assert_eq!(m.data.friends.unread, 1);
+    assert_eq!(
+        button_tex(&mut m, &prefix, at, 0.1).as_deref(),
+        Some(lit.as_str())
+    );
 }

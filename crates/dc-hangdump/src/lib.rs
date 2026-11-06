@@ -10,6 +10,7 @@
 
 pub mod crash;
 pub mod crumb;
+pub mod notice;
 pub mod process;
 pub mod sysinfo;
 

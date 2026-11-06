@@ -44,6 +44,19 @@ fn get(st: &mut Core, target: &str) -> (u16, String) {
     out
 }
 
+/// LG-420: `login` applies to clan `uid` and its leader accepts (the membership the older tests set up with a join).
+fn joined(st: &mut Core, login: &str, uid: i64) {
+    get(st, &format!("/clan/join?p={login}&c={uid}&fmt=text"));
+    let k = crate::clan::clan_by_uid(&st.db, uid).unwrap().unwrap();
+    let leader = db::account_by_no(&st.db, k.master).unwrap().unwrap().login;
+    let a = db::account_by_login(&st.db, login)
+        .unwrap()
+        .unwrap()
+        .user_no;
+    let (_, body) = get(st, &format!("/clan/accept?p={leader}&a={a}&fmt=text"));
+    assert!(body.contains("msg\t1\t"), "{login} accepted: {body}");
+}
+
 #[test]
 fn query_and_request_parsing() {
     assert_eq!(url_decode("a+b%20c%41%zz%"), "a b cA%zz%");
@@ -99,18 +112,22 @@ fn create_list_members_join_leave_pages() {
     assert!(page.contains("<td>Leader</td><td>Carol</td>"), "{page}");
     let (_, page) = get(&mut st, "/clan?url=guild/list&p=carol");
     assert!(
-        page.contains("<td>Wolves</td><td>1</td><td>Carol</td>") && !page.contains("[Join]"),
+        page.contains("<td>Wolves</td><td>1</td><td>Carol</td>") && !page.contains("[Apply]"),
         "{page}"
     );
     assert!(page.contains("clan <b>Wolves</b>"), "{page}");
     // a second account sees it and may join (legacy strPassport with the LOCAL: prefix)
     let (_, page) = get(&mut st, "/clan?url=guild/list&strPassport=LOCAL:dan");
     assert!(
-        page.contains("<td>Wolves</td><td>1</td><td>Carol</td>") && page.contains("[Join]"),
+        page.contains("<td>Wolves</td><td>1</td><td>Carol</td>") && page.contains("[Apply]"),
         "{page}"
     );
+    // LG-420: the join is an application; the leader's accept makes the member
     let (_, page) = get(&mut st, &format!("/clan/join?p=dan&c={}", k.uid));
-    assert!(page.contains("You joined Wolves."), "{page}");
+    assert!(page.contains("Application sent to Wolves."), "{page}");
+    assert_eq!(crate::clan::members(&st.db, k.uid).unwrap().len(), 1);
+    let (_, page) = get(&mut st, &format!("/clan/accept?p=carol&a={dan}"));
+    assert!(page.contains("Dan joined the clan."), "{page}");
     assert_eq!(crate::clan::members(&st.db, k.uid).unwrap().len(), 2);
     // an offline account sees pages but cannot act (CLN-8)
     let (_, page) = get(&mut st, &format!("/clan/join?p=eve&c={}", k.uid));
@@ -119,7 +136,7 @@ fn create_list_members_join_leave_pages() {
         "{page}"
     );
     let (_, page) = get(&mut st, "/clan?url=guild/list&p=eve");
-    assert!(page.contains("[Join]"));
+    assert!(page.contains("[Apply]"));
     // the leader's member page offers a remove link for Dan; Dan's does not
     let (_, page) = get(&mut st, "/clan?url=manager/guildmember&p=carol");
     assert!(
@@ -426,12 +443,14 @@ fn text_form_creates_lists_joins_and_leaves() {
         body,
         format!("me\t0\t0\nclan\t{}\tWolves\t1\tCarol\t4\t7\n", k.uid)
     );
+    // LG-420: the join is an application (the list unchanged), the leader's accept makes the member
     let (_, body) = get(&mut st, &format!("/clan/join?p=dan&c={}&fmt=text", k.uid));
     assert!(
-        body.starts_with(&format!("me\t{}\t0\nmsg\t1\tYou joined Wolves.\n", k.uid))
-            && body.contains("\tWolves\t2\tCarol\t"),
+        body.starts_with("me\t0\t0\nmsg\t1\tApplication sent to Wolves.\n")
+            && body.contains("\tWolves\t1\tCarol\t"),
         "{body}"
     );
+    joined(&mut st, "dan", k.uid);
     let c = st.character(dan).unwrap();
     assert_eq!(c.clan_uid, k.uid);
     let (_, body) = get(&mut st, "/clan/leave?p=dan&fmt=text");
@@ -453,7 +472,7 @@ fn text_form_lists_members_and_kicks() {
     let k = crate::clan::clan_by_name(&st.db, "Wolves")
         .unwrap()
         .unwrap();
-    get(&mut st, &format!("/clan/join?p=dan&c={}&fmt=text", k.uid));
+    joined(&mut st, "dan", k.uid);
     let (_, body) = get(&mut st, "/clan?url=manager/guildmember&p=carol&fmt=text");
     assert!(
         body.contains(&format!("member\t{carol}\t1\tCarol\t0\n"))
@@ -1160,7 +1179,7 @@ fn a_member_cannot_create_a_second_clan_until_he_leaves() {
     let k = crate::clan::clan_by_name(&st.db, "Wolves")
         .unwrap()
         .unwrap();
-    get(&mut st, &format!("/clan/join?p=dan&c={}&fmt=text", k.uid));
+    joined(&mut st, "dan", k.uid);
     // the founder and the plain member are both refused, the text form and the HTML form alike
     for (who, n) in [("carol", "Again"), ("dan", "Other")] {
         let (_, body) = get(
@@ -1200,7 +1219,7 @@ fn a_member_cannot_create_a_second_clan_until_he_leaves() {
     );
     assert!(body.contains("msg\t1\tClan Ravens created.\n"), "{body}");
     // the founder with a member left: hand-over, then a create of his own
-    get(&mut st, &format!("/clan/join?p=eve&c={}&fmt=text", k.uid));
+    joined(&mut st, "eve", k.uid);
     let (_, body) = get(&mut st, "/clan/leave?p=carol&fmt=text");
     assert!(body.contains("msg\t1\t"), "{body}");
     assert_eq!(

@@ -749,6 +749,12 @@ remote game host (`[[lobby.servers]]` `host`) is refused for them.
 2. Paste the printed `mods = [...]` lines into the Vanilla++ `[[lobby.servers]]` entry of `server.toml`, and restart the
    lobby. Its log names each pack that loaded or was left out.
 
+**Players' own cosmetic mods.** A plain vanilla server refuses every mod, a player's own crosshair included. The Vanilla++
+entry may let them load: `client_visual_allowed = true` in its `[[lobby.servers]]` entry (beside `mods`, LG-426). A
+player's enabled `client_visual` mods under `<profile>/mods/local/` (such as `drawn_crosshair`, with its settings) then
+load after the entry's packs; the curated limit above still applies to the packs, and a local mod keeps the local rules
+(kind `client_visual` only, no render or HUD hooks).
+
 
 ### Weapon inspect
 

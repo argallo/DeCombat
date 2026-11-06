@@ -8,7 +8,8 @@ use std::process::Command;
 include!("winres.rs");
 
 fn main() {
-    windows_resources("DeCombat game client", "dc-client.exe", Some("../../assets/icon/decombat.ico"));
+    // CLI-1906: the file name the Windows zip gives the exe
+    windows_resources("DeCombat game client", "DeCombat.exe", Some("../../assets/icon/decombat.ico"));
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
     // LG-322: a release build knows its version from the tag (tools/ci_env.sh); no other build claims one

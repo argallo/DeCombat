@@ -245,6 +245,9 @@ pub struct MenuData {
     pub users: Vec<UserRow>,
     pub room: RoomView,
     pub members: BTreeMap<u32, RoomMember>,
+    /// CLI-1899: when the waiting room's last invite (0x396) went out; the next waits [`room::INVITE_GAP_SECS`]
+    /// (kept across rooms like 2009's shell-wide flag, cshell+0x38f20; cleared by a failed 0x397).
+    pub invite_sent: Option<std::time::Instant>,
     pub chat: Vec<String>,
     /// Colours of the chat lines kept by [`MenuData::say_in`] (0 = the chat's own colour); used while it is as long
     /// as `chat`.
@@ -721,6 +724,8 @@ pub struct Menu {
     fps_text: Option<String>,
     /// The caret's blink phase of the last image (the screen is drawn again only when it flips).
     caret_shown: bool,
+    /// CLI-1900: the bar button's blink phase of the last image (drawn again when it flips).
+    bar_blink_shown: bool,
     /// The loading bar's update count of the last image ([`crate::loading::bar_updates`]).
     loading_shown: u32,
     /// The menu's textures decoded ahead ([`prefetch`]); taken into the catalogue every update.
@@ -906,6 +911,7 @@ impl Menu {
             dirty: true,
             fps_text: None,
             caret_shown: false,
+            bar_blink_shown: false,
             loading_shown: 0,
             prefetch,
             screen_state: Go::Login.state_id(),
@@ -1048,6 +1054,12 @@ impl Menu {
         let here = self.screen_go();
         let place = self.messenger.toggle(&self.cat, here);
         self.link.send(LinkCmd::Location(place));
+        // CLI-1900: opening the window takes the waiting notices (the bar button stops blinking)
+        // EVIDENCE: cshell+0x12b350 (shown -> pending +0x5534 = 0), cshell+0x1bf20 (0x136: the button's period = 0)
+        self.data.friends.shown = self.messenger.open;
+        if self.messenger.open {
+            self.data.friends.unread = 0;
+        }
         // the relay's friend list and open requests are asked for each time the window opens
         // DC-DEFAULT: CLI-565 (proposed) opening the window sends the relay's `!nm list`
         if self.messenger.open {
@@ -1060,6 +1072,29 @@ impl Menu {
             "messenger closed".into()
         });
         self.dirty = true;
+    }
+
+    /// CLI-1900: the bar's messenger button blinks on every page that carries it (the current screen and the one
+    /// under an overlay) while notices wait and the window is closed.
+    // EVIDENCE: cshell+0x1bb70 (each screen focus: pending -> the common page's window 1 control 2 gets the period),
+    // cshell+0x13af50 (the same control: the bar's messenger button, command 0x136)
+    fn sync_bar_blink(&mut self) {
+        let period = if self.data.friends.unread > 0 && !self.messenger.open {
+            messenger::BUTTON_BLINK
+        } else {
+            0.0
+        };
+        let sheets = std::iter::once(self.screen.sheet_mut())
+            .chain(self.under.iter_mut().map(|u| u.sheet_mut()));
+        for sheet in sheets {
+            for p in sheet
+                .parts
+                .iter_mut()
+                .filter(|p| p.command == messenger::BAR_FRIENDS_CMD && p.kind == WidgetKind::Button)
+            {
+                p.blink = period;
+            }
+        }
     }
 
     /// The messenger window is open.
@@ -1488,11 +1523,32 @@ impl Menu {
                     (BoxTag::RemoveFriend, true) => self
                         .link
                         .send(LinkCmd::Messenger(messenger::remove_command(&p.input))),
-                    (BoxTag::FriendRequest, yes) => self.link.send(LinkCmd::Messenger(if yes {
-                        messenger::accept_command(&p.input)
-                    } else {
-                        messenger::decline_command(&p.input)
-                    })),
+                    // CLI-1898: Yes (a click) accepts, No declines and the row goes; Escape only closes the box and
+                    // the request stays open (a row of the messenger window)
+                    // DC-DEFAULT: CLI-1898 (proposed; amends CLI-842)
+                    (BoxTag::FriendRequest, _) => match p.chosen {
+                        Some(0) => self
+                            .link
+                            .send(LinkCmd::Messenger(messenger::accept_command(&p.input))),
+                        Some(_) => {
+                            self.link
+                                .send(LinkCmd::Messenger(messenger::decline_command(&p.input)));
+                            self.data.friends.requests.retain(|r| *r != p.input);
+                        }
+                        None => {}
+                    },
+                    // CLI-1901: a click on Yes joins the inviting clan, No declines; Escape closes the box and the
+                    // invitation stays open (the lobby asks again at the next login)
+                    // DC-DEFAULT: CLI-1901 (proposed)
+                    (BoxTag::ClanInvite(uid), _) => match p.chosen {
+                        Some(0) => self
+                            .link
+                            .send(LinkCmd::Messenger(messenger::clan_yes_command(uid))),
+                        Some(_) => self
+                            .link
+                            .send(LinkCmd::Messenger(messenger::clan_no_command(uid))),
+                        None => {}
+                    },
                     (BoxTag::AddFriend | BoxTag::RemoveFriend, false) => {}
                     (BoxTag::Diag(step), _) => {
                         let three = diagbox::is_three(&p);
@@ -1949,6 +2005,13 @@ impl Menu {
                 other => {
                     // lobby20: a new friend request asks the player
                     let request = messenger::new_request(&self.data.friends, &other);
+                    // CLI-1901: a clan invitation asks on any screen (one box per clan)
+                    if let Some((name, uid)) = messenger::clan_invite(&other) {
+                        let open = self.popups.iter().any(|p| p.tag == BoxTag::ClanInvite(uid));
+                        if !open {
+                            self.popups.push(messenger::clan_invite_box(&name, uid));
+                        }
+                    }
                     // audit-function (CLI-1389): one box per expired item, named, on any screen (before the
                     // records leave the store)
                     // EVIDENCE: cshell+0x22cde0 (box 0x1786 with the item's name, title 0x371, OK 0x42)
@@ -1997,7 +2060,16 @@ impl Menu {
                     }
                     shared_event(&mut self.data, &other);
                     clan::shared_event(&mut self.data, &other);
+                    let waiting = self.data.friends.unread;
                     messenger::shared_event(&mut self.data, &other);
+                    // CLI-1900: a notice that lights the bar button plays the messenger twinkle on a page with the bar
+                    // EVIDENCE: cshell+0x13af50 (sound 0x12 with the blink, on the bar screens only: cshell+0x42df0
+                    // only marks the notice pending on the others)
+                    if self.data.friends.unread > waiting
+                        && BAR_SCREENS.contains(&self.base_screen_name())
+                    {
+                        self.sounds.push(frontfx::SOUND_MESSENGER_TWINKLE);
+                    }
                     gm::shared_event(&mut self.data, &self.cat, &other);
                     if let Some(n) = request {
                         if self.data.gm.operator {
@@ -2259,6 +2331,13 @@ impl Menu {
         (self.secs() % (2.0 * sheet::CARET_PERIOD)) < sheet::CARET_PERIOD
     }
 
+    /// CLI-1900: the blink phase of the bar's messenger button now (off while nothing waits or the window is open).
+    fn bar_blink_phase(&self) -> bool {
+        self.data.friends.unread > 0
+            && !self.messenger.open
+            && sheet::blink_on(messenger::BUTTON_BLINK, self.secs())
+    }
+
     /// Something changed since the last image (or the caret may have blinked).
     /// CLI-1596: the frame-rate text the window measured (`None`: the setting is off); a changed text redraws.
     pub fn set_fps_text(&mut self, text: Option<String>) {
@@ -2276,6 +2355,7 @@ impl Menu {
             || (self.loading_up() && self.loading_updates() != self.loading_shown)
             || ((self.screen.sheet().focused().is_some() || self.screen.caret_blinks())
                 && self.caret_phase() != self.caret_shown)
+            || self.bar_blink_phase() != self.bar_blink_shown
             || self
                 .figure
                 .as_ref()
@@ -2345,6 +2425,7 @@ impl Menu {
     pub fn items_at(&mut self, secs: f32) -> Vec<DrawItem> {
         self.sync_lists();
         self.screen.animate(secs);
+        self.sync_bar_blink();
         let mut out = Vec::new();
         self.draw_under(secs, &mut out);
         self.screen.sheet().draw(&mut self.cat, secs, &mut out);
@@ -2430,6 +2511,7 @@ impl Menu {
         let items = self.items();
         self.dirty = false;
         self.caret_shown = self.caret_phase();
+        self.bar_blink_shown = self.bar_blink_phase();
         self.loading_shown = self.loading_updates();
         items
     }

@@ -598,6 +598,9 @@ fn a_zip_is_staged_without_its_top_folder() {
     // a flat zip stays as it is; a zip without the exe, a damaged one or one with a bad name is refused
     let flat = zip_of(&[(EXE, b"x"), ("README.md", b"y")]);
     assert!(stage(&flat, &install).unwrap().join("README.md").is_file());
+    // a zip of the layout before CLI-1906 (only the older exe name) is still a game zip
+    let older = zip_of(&[(LEGACY_EXE, b"x"), ("README.md", b"y")]);
+    assert_eq!(staged_exe(&stage(&older, &install).unwrap()), Some(LEGACY_EXE));
     let e = stage(&zip_of(&[("p/README.md", b"y")]), &install).unwrap_err();
     assert!(e.contains("holds no"), "{e}");
     assert!(!staging.exists());
@@ -649,7 +652,7 @@ fn the_swap_replaces_the_game_and_keeps_the_players_files() {
             ("Combat Arms/Engine.exe", b"not ours"),
         ],
     );
-    let a = apply_staged(&s, &install).unwrap();
+    let a = apply_staged(&s, &install, Some(EXE)).unwrap();
     assert_eq!(std::fs::read(install.join(EXE)).unwrap(), b"new exe");
     assert_eq!(
         std::fs::read(install.join("README.md")).unwrap(),
@@ -697,7 +700,7 @@ fn a_failed_swap_puts_every_replaced_file_back() {
             ("zz/b.txt", b"x"),
         ],
     );
-    assert!(apply_staged(&s, &install).is_err());
+    assert!(apply_staged(&s, &install, Some(EXE)).is_err());
     assert_eq!(std::fs::read(install.join(EXE)).unwrap(), b"old exe");
     assert_eq!(
         std::fs::read(install.join("README.md")).unwrap(),
@@ -758,7 +761,8 @@ fn a_pack_file_names_its_build_and_update_folder() {
         read_pack(&d),
         Some(Pack {
             commit: "abcdef12".into(),
-            update_dir: Some(PathBuf::from("C:\\builds\\fp_latest"))
+            update_dir: Some(PathBuf::from("C:\\builds\\fp_latest")),
+            ..Default::default()
         })
     );
     std::fs::write(
@@ -767,6 +771,22 @@ fn a_pack_file_names_its_build_and_update_folder() {
     )
     .unwrap();
     assert_eq!(read_pack(&d).unwrap().update_dir, None);
+    // CLI-1906: the server and the pin of the double-click start; empty ones are none
+    std::fs::write(
+        d.join(PACK_FILE),
+        r#"{"commit":"abcdef12","update_dir":"","server":" play.example.org:10000 ","fingerprint":"0a1b"}"#,
+    )
+    .unwrap();
+    let p = read_pack(&d).unwrap();
+    assert_eq!(p.server.as_deref(), Some("play.example.org:10000"));
+    assert_eq!(p.fingerprint.as_deref(), Some("0a1b"));
+    std::fs::write(
+        d.join(PACK_FILE),
+        r#"{"commit":"abcdef12","server":"","fingerprint":""}"#,
+    )
+    .unwrap();
+    let p = read_pack(&d).unwrap();
+    assert_eq!((p.server, p.fingerprint), (None, None));
     for bad in [r#"{"commit":"xyz"}"#, r#"{"update_dir":"x"}"#, "not json"] {
         std::fs::write(d.join(PACK_FILE), bad).unwrap();
         assert_eq!(read_pack(&d), None, "{bad}");
@@ -833,7 +853,7 @@ fn a_friend_pack_updates_from_its_folder() {
     };
     assert_eq!(commit, "2222bbbb");
     let staging = stage(&read_capped(zip).unwrap(), &install).unwrap();
-    let a = apply_staged(&staging, &install).unwrap();
+    let a = apply_staged(&staging, &install, Some(EXE)).unwrap();
     assert_eq!(std::fs::read(install.join(EXE)).unwrap(), b"build 2222");
     assert_eq!(
         std::fs::read(install.join("README.md")).unwrap(),
@@ -861,6 +881,244 @@ fn a_friend_pack_updates_from_its_folder() {
     assert!(local_offer(&pack).is_err());
     let _ = std::fs::remove_dir_all(&install);
     let _ = std::fs::remove_dir_all(&updates);
+}
+
+// CLI-1906: the starters an update takes away
+#[cfg(windows)]
+#[test]
+fn an_update_keeps_one_starter() {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // the new zip into an older pack, run by its dc-client.exe: the older exe goes, the launcher stays (cmd may still
+    // read it); run by DeCombat.exe, the launcher goes too
+    assert_eq!(
+        retired_by(
+            &v(&["DeCombat.exe", "README.md", "pack.json"]),
+            Some("dc-client.exe")
+        ),
+        v(&["dc-client.exe"])
+    );
+    assert_eq!(
+        retired_by(
+            &v(&["DeCombat.exe", "README.md", "pack.json"]),
+            Some("DeCombat.exe")
+        ),
+        v(&["dc-client.exe", "DeCombat.bat", "DeCombat.bat.new"])
+    );
+    // the bridge zip (the older name inside) changes nothing; the case of a name does not matter
+    assert_eq!(
+        retired_by(
+            &v(&["decombat.EXE", "dc-client.exe", "README.md"]),
+            Some("DeCombat.exe")
+        ),
+        v(&["dc-client.exe", "DeCombat.bat", "DeCombat.bat.new"])
+    );
+    // a renamed copy of the exe that ran the update goes too; a zip that still has a launcher keeps the player's
+    assert_eq!(
+        retired_by(
+            &v(&["DeCombat.exe", "DeCombat.bat"]),
+            Some("DeCombat (1).exe")
+        ),
+        v(&["dc-client.exe", "DeCombat (1).exe"])
+    );
+    // an older zip keeps its own layout; a zip without an exe retires nothing; odd running names are ignored
+    assert_eq!(
+        retired_by(
+            &v(&["dc-client.exe", "DeCombat.bat"]),
+            Some("dc-client.exe")
+        ),
+        Vec::<String>::new()
+    );
+    assert!(retired_by(&v(&["README.md"]), Some("dc-client.exe")).is_empty());
+    assert_eq!(
+        retired_by(&v(&["DeCombat.exe", "DeCombat.bat"]), Some("notes.txt")),
+        v(&["dc-client.exe"])
+    );
+}
+
+const PLAYERS_OWN: [&str; 7] = [
+    "bots.bat",
+    "dc-botclient.exe",
+    "settings.toml",
+    "known_servers.txt",
+    "launcher-name.txt",
+    "dc-client.out",
+    "notes.txt",
+];
+
+/// A pack folder as the packs before CLI-1906 made it (dc-client.exe, DeCombat.bat, pack.json), with the player's
+/// files and the 2009 client.
+#[cfg(windows)]
+fn older_install(name: &str) -> PathBuf {
+    let d = temp(name);
+    std::fs::write(d.join(LEGACY_EXE), b"old exe").unwrap();
+    std::fs::write(d.join(LEGACY_LAUNCHER), b"rem the old launcher").unwrap();
+    std::fs::write(
+        d.join(PACK_FILE),
+        r#"{"commit":"23826bc7","update_dir":""}"#,
+    )
+    .unwrap();
+    std::fs::write(d.join("README.md"), b"old readme").unwrap();
+    for f in PLAYERS_OWN {
+        std::fs::write(d.join(f), f.as_bytes()).unwrap();
+    }
+    std::fs::create_dir_all(d.join("Combat Arms").join("Game")).unwrap();
+    std::fs::write(d.join("Combat Arms").join("Engine.exe"), b"2009").unwrap();
+    d
+}
+
+#[cfg(windows)]
+fn assert_one_starter(install: &Path) {
+    assert_eq!(std::fs::read(install.join(EXE)).unwrap(), b"new exe");
+    assert!(!install.join(LEGACY_EXE).exists());
+    assert!(!install.join(LEGACY_LAUNCHER).exists());
+    assert!(!install.join("DeCombat.bat.new").exists());
+    for f in PLAYERS_OWN {
+        assert_eq!(
+            std::fs::read(install.join(f)).unwrap(),
+            f.as_bytes(),
+            "{f}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(install.join("Combat Arms").join("Engine.exe")).unwrap(),
+        b"2009"
+    );
+    let p = read_pack(install).unwrap();
+    assert_eq!(p.server.as_deref(), Some("play.example.org:10000"));
+}
+
+// CLI-1906: an older pack updated by this build's helper (the exe that ran it is dc-client.exe): the older exe goes,
+// the launcher waits for the next start of DeCombat.exe; one starter after it
+#[cfg(windows)]
+#[test]
+fn an_older_pack_updates_to_the_one_exe_layout() {
+    let new_pack =
+        r#"{"commit":"2222bbbb","update_dir":"","server":"play.example.org:10000","fingerprint":""}"#;
+    // the zip a player downloads, and the bridge the packer writes into an update folder (the older name inside)
+    let plain = zip_of(&[
+        ("DeCombat-win-2222bbbb/", b""),
+        ("DeCombat-win-2222bbbb/DeCombat.exe", b"new exe"),
+        ("DeCombat-win-2222bbbb/README.md", b"new readme"),
+        ("DeCombat-win-2222bbbb/pack.json", new_pack.as_bytes()),
+    ]);
+    let bridge = zip_of(&[
+        ("DeCombat-win-2222bbbb/DeCombat.exe", b"new exe"),
+        ("DeCombat-win-2222bbbb/dc-client.exe", b"new exe"),
+        ("DeCombat-win-2222bbbb/README.md", b"new readme"),
+        ("DeCombat-win-2222bbbb/pack.json", new_pack.as_bytes()),
+    ]);
+    for (n, zip) in [("older_plain", &plain), ("older_bridge", &bridge)] {
+        let install = older_install(n);
+        let staging = stage(zip, &install).unwrap();
+        assert_eq!(staged_exe(&staging), Some(EXE));
+        let a = apply_staged(&staging, &install, Some(LEGACY_EXE)).unwrap();
+        assert_eq!(
+            std::fs::read(install.join("README.md")).unwrap(),
+            b"new readme"
+        );
+        assert_eq!(a.removed, [PathBuf::from(LEGACY_EXE)]);
+        assert!(
+            !a.placed.iter().any(|p| p == Path::new(LEGACY_EXE)),
+            "{a:?}"
+        );
+        // the older exe waits in old/ until the next start; the launcher is untouched
+        let old = install.join(UPDATE_DIR).join(BACKUP_DIR);
+        assert_eq!(std::fs::read(old.join(LEGACY_EXE)).unwrap(), b"old exe");
+        assert_eq!(
+            std::fs::read(install.join(LEGACY_LAUNCHER)).unwrap(),
+            b"rem the old launcher"
+        );
+        // the restarted DeCombat.exe sweeps it
+        assert_eq!(
+            tidy_legacy(&install, Some(EXE)),
+            [PathBuf::from(LEGACY_LAUNCHER)]
+        );
+        assert_one_starter(&install);
+        let _ = std::fs::remove_dir_all(&install);
+    }
+}
+
+// CLI-1906: an older pack's own helper (it knows only dc-client.exe) took the bridge zip: the new files stand beside
+// the older starters and the new build starts as dc-client.exe from the old DeCombat.bat; that run touches no
+// launcher, moves its own file at its end, and the next start of DeCombat.exe removes the rest
+#[cfg(windows)]
+#[test]
+fn an_older_helpers_swap_is_tidied_by_the_new_build() {
+    let install = older_install("older_helper");
+    // what that helper leaves: dc-client.exe replaced by the new build, DeCombat.exe beside it, the launcher kept
+    std::fs::write(install.join(LEGACY_EXE), b"new exe").unwrap();
+    std::fs::write(install.join(EXE), b"new exe").unwrap();
+    std::fs::write(
+        install.join(PACK_FILE),
+        r#"{"commit":"2222bbbb","server":"play.example.org:10000"}"#,
+    )
+    .unwrap();
+    // the start under the older name: nothing goes (cmd still reads the launcher), the running file stays
+    assert!(tidy_legacy(&install, Some(LEGACY_EXE)).is_empty());
+    assert!(install.join(LEGACY_LAUNCHER).is_file());
+    assert!(install.join(LEGACY_EXE).is_file());
+    // the run's end moves the running file into dc-update/ (the launcher still untouched)
+    assert!(retire_running_legacy(&install, Some(LEGACY_EXE)));
+    assert!(!install.join(LEGACY_EXE).exists());
+    assert!(install.join(LEGACY_LAUNCHER).is_file());
+    assert!(install.join(UPDATE_DIR).is_dir());
+    // the next start of DeCombat.exe: its leftover clean-up removes dc-update/, the sweep the launcher
+    std::fs::remove_dir_all(install.join(UPDATE_DIR)).unwrap();
+    assert_eq!(
+        tidy_legacy(&install, Some(EXE)),
+        [PathBuf::from(LEGACY_LAUNCHER)]
+    );
+    assert_one_starter(&install);
+    // had that move failed, the next start of DeCombat.exe removes the older exe
+    std::fs::write(install.join(LEGACY_EXE), b"new exe").unwrap();
+    assert!(!retire_running_legacy(&install, Some(EXE)));
+    assert_eq!(
+        tidy_legacy(&install, Some(EXE)),
+        [PathBuf::from(LEGACY_EXE)]
+    );
+    assert_one_starter(&install);
+    // a folder without the new exe or without a pack file is left alone
+    let older = older_install("older_alone");
+    assert!(tidy_legacy(&older, Some(LEGACY_EXE)).is_empty());
+    assert!(!retire_running_legacy(&older, Some(LEGACY_EXE)));
+    std::fs::write(older.join(EXE), b"x").unwrap();
+    std::fs::remove_file(older.join(PACK_FILE)).unwrap();
+    assert!(tidy_legacy(&older, Some(EXE)).is_empty());
+    assert!(older.join(LEGACY_LAUNCHER).is_file());
+    let _ = std::fs::remove_dir_all(&install);
+    let _ = std::fs::remove_dir_all(&older);
+}
+
+// CLI-1906: a new-layout pack updating to a later build: the same swap as before, nothing taken away
+#[test]
+fn a_new_pack_updates_as_before() {
+    let install = temp("new_layout");
+    std::fs::write(install.join(EXE), b"old exe").unwrap();
+    std::fs::write(install.join(PACK_FILE), r#"{"commit":"2222bbbb"}"#).unwrap();
+    for f in PLAYERS_OWN {
+        std::fs::write(install.join(f), f.as_bytes()).unwrap();
+    }
+    let s = staged(
+        &install,
+        &[
+            (EXE, b"new exe"),
+            ("README.md", b"new readme"),
+            ("pack.json", br#"{"commit":"3333cccc","server":"h:10000"}"#),
+        ],
+    );
+    let a = apply_staged(&s, &install, Some(EXE)).unwrap();
+    assert_eq!(std::fs::read(install.join(EXE)).unwrap(), b"new exe");
+    assert_eq!(read_pack(&install).unwrap().commit, "3333cccc");
+    for f in PLAYERS_OWN {
+        assert_eq!(
+            std::fs::read(install.join(f)).unwrap(),
+            f.as_bytes(),
+            "{f}"
+        );
+    }
+    assert_eq!(a.placed.len(), 3, "{a:?}");
+    assert!(a.removed.is_empty(), "{a:?}");
+    let _ = std::fs::remove_dir_all(&install);
 }
 
 #[test]

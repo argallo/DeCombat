@@ -29,8 +29,8 @@ pub const FADER: Pin = Pin {
 
 /// Interface sound ids of the dispatcher (the id picks a key of the interface sound section).
 // EVIDENCE: cshell+0x1b3960 (id -> key: 1 navigation change, 2 navigation select, 3 select item, 4 shop item equip,
-// 0xc start count, 0xd level up, 0xe notice error, 0xf result win, 0x10 result lose, 0x13 select change (cshell+0x1bf0c0),
-// 0x14 select (cshell+0x1bf040), 0x1b map loading, 0x1c game start, 0x1d game over), cshell+0x1b6470 (a request
+// 0xc start count, 0xd level up, 0xe notice error, 0xf result win, 0x10 result lose, 0x12 messenger twinkle, 0x13
+// select change (cshell+0x1bf0c0), 0x14 select (cshell+0x1bf040), 0x1b map loading, 0x1c game start, 0x1d game over), cshell+0x1b6470 (a request
 // with an id not below the pending one plays it at once and clears it)
 pub const SOUND_NAV_CHANGE: i32 = 1;
 pub const SOUND_NAV_SELECT: i32 = 2;
@@ -41,6 +41,7 @@ pub const SOUND_LEVEL_UP: i32 = 0xd;
 pub const SOUND_NOTICE_ERROR: i32 = 0xe;
 pub const SOUND_RESULT_WIN: i32 = 0xf;
 pub const SOUND_RESULT_LOSE: i32 = 0x10;
+pub const SOUND_MESSENGER_TWINKLE: i32 = 0x12;
 pub const SOUND_SELECT_CHANGE: i32 = 0x13;
 pub const SOUND_SELECT: i32 = 0x14;
 pub const SOUND_MAP_LOADING: i32 = 0x1b;
@@ -68,7 +69,7 @@ const fn key_pin(what: &'static str, rva: u32, sha16: &'static str, len: usize) 
 /// The interface sound keys by dispatcher id, with the name the sound log gives the cue (`what`).
 // EVIDENCE: cshell+0x1b3960 (each case pushes its key literal before the lookup cshell+0x1b2c00; cases 0x13 / 0x14
 // read theirs through cshell+0x1bf0c0 / cshell+0x1bf040, which cache the file under the same section)
-pub const SOUND_KEYS: [(i32, &str, Pin); 14] = [
+pub const SOUND_KEYS: [(i32, &str, Pin); 15] = [
     (
         SOUND_NAV_CHANGE,
         "nav_change",
@@ -119,6 +120,16 @@ pub const SOUND_KEYS: [(i32, &str, Pin); 14] = [
         SOUND_RESULT_LOSE,
         "match_lost",
         key_pin("result lose sound key", 0x3eba94, "2c323f789d3cc79d", 15),
+    ),
+    (
+        SOUND_MESSENGER_TWINKLE,
+        "messenger_twinkle",
+        key_pin(
+            "messenger twinkle sound key",
+            0x3eba68,
+            "df2cc531e83ba4d1",
+            21,
+        ),
     ),
     (
         SOUND_SELECT_CHANGE,

@@ -2962,6 +2962,8 @@ impl Game {
         }
         // DC-DEFAULT: HS-3 (amendment, proposed) a reservation ends when its player leaves
         self.hisec_release_owner(pid);
+        // DC-DEFAULT: DSV-612 (proposed) the mines of a player who left go with him
+        self.drop_mines_of(pid);
         for q in self.players.values_mut() {
             q.stream_seen.remove(&p.obj);
         }
@@ -3967,11 +3969,26 @@ impl Game {
         if self.rules.arms == 0 {
             return false;
         }
-        let carried = self
-            .players
-            .get(&pid)
-            .is_some_and(|p| p.weapons.iter().any(|x| x.weapon == w));
-        if carried || self.arms_grants(None, w) {
+        let Some(p) = self.players.get(&pid) else {
+            return false;
+        };
+        if p.weapons.iter().any(|x| x.weapon == w) {
+            return false;
+        }
+        // DC-DEFAULT: DSV-610 (proposed) a weapon of the player's own lobby loadout is judged in its equipment slot
+        // (a weapon slot before a backpack slot), so "No Backpack" refuses the backpack weapon a client names
+        let slot = p
+            .roster
+            .as_ref()
+            .and_then(|r| r.loadout_items())
+            .and_then(|items| {
+                items
+                    .into_iter()
+                    .filter(|(_, item)| *item == u32::from(w))
+                    .filter_map(|(s, _)| s)
+                    .min()
+            });
+        if self.arms_grants(slot, w) {
             return false;
         }
         if self.barred_logged.insert((pid, w)) {
@@ -3984,19 +4001,20 @@ impl Game {
     }
 
     /// Whether the room's weapon limit lets the lobby's equipped weapon `w` (equipment slot `slot`) into the match. A
-    /// weapon whose type the item table does not give passes (the lobby checked the loadout before the start).
+    /// variant has its base gun's type; a weapon whose type stays unknown goes by its slot's class
+    /// (`dc_bute::arms::match_grants_unknown`). Without the item table (no weapon type known at all) every weapon
+    /// passes.
     // DC-DEFAULT: DSV-180 (proposed), DSV-476 (proposed) the grant rule of `dc_bute::arms::match_grants`; backpack =
     // equipment slots 10..13
+    // DC-DEFAULT: DSV-610 (proposed, OWNER REPORT 2026-11-05 "no backpack option for a game mode still lets you bring
+    // your backpack item, same with pistols only") before, a weapon without an item row (every Vanilla++ camo
+    // variant, 500..899) passed every limit
     fn arms_grants(&self, slot: Option<u8>, w: u16) -> bool {
         let limit = self.rules.arms;
-        if limit == 0 {
+        if limit == 0 || self.tables.items.weapon_types.is_empty() {
             return true;
         }
-        let Some(&t) = self.tables.items.weapon_types.get(&w) else {
-            return true;
-        };
-        let backpack = slot.is_some_and(|s| (10..=13).contains(&s));
-        dc_bute::arms::match_grants(limit, t, backpack)
+        dc_bute::arms::match_grants_in_slot(limit, self.tables.weapon_type(w), slot.map(i64::from))
     }
 
     /// The mod index per socket (muzzle, sight, magazine) the lobby attached to the weapon granted in `granted_slot`:
@@ -4077,12 +4095,11 @@ impl Game {
     // switch prefers the class-1 entry, then class 2, then class 3: rifles before pistols before the knife)
     // DC-DEFAULT: DSV-568 (proposed, USER REPORT 2026-11-04 "I respawned with my knife instead of my primary gun")
     pub(crate) fn draw_index(&self, weapons: &[WeaponState]) -> Option<usize> {
+        // DC-DEFAULT: VAR-1 (proposed) a variant draws as its base gun's class
         let class = |w: u16| {
             self.tables
-                .items
-                .weapon_types
-                .get(&w)
-                .and_then(|t| dc_bute::arms::slot_class(*t))
+                .weapon_type(w)
+                .and_then(dc_bute::arms::slot_class)
                 .unwrap_or(u8::MAX)
         };
         (0..weapons.len()).min_by_key(|&i| {
@@ -7474,6 +7491,7 @@ mod tests {
             resting: true,
             impact: false,
             burst: false,
+            mine: None,
         });
         // the thrower took a case before it landed; player 1 is a spy, player 2 a hunter
         g.players.get_mut(&0).unwrap().team = SPIES;
@@ -9422,6 +9440,7 @@ mod tests {
                 resting: true,
                 impact: false,
                 burst: false,
+                mine: None,
             });
             g.tick_projectiles(100);
             let o = g.take_out();
@@ -9471,6 +9490,7 @@ mod tests {
                 resting: true,
                 impact: false,
                 burst: false,
+                mine: None,
             });
             g.tick_projectiles(100);
             100.0 - g.players[&1].health
@@ -9560,6 +9580,7 @@ mod tests {
                 resting: true,
                 impact: false,
                 burst: false,
+                mine: None,
             });
             g.tick_projectiles(at);
             g.take_out()
@@ -9649,6 +9670,283 @@ mod tests {
         );
     }
 
+    /// A game with a synthetic mine: weapon 3 with its ammunition row 0 (`Type` 1, a blast, `MaxAmount` 2) whose
+    /// projectile row names a mine class-data row (made-up numbers in the ROM key shape: detonate radius 50, armed
+    /// 2 s after it rests, a 5 s lifetime that is no fuse). Players 0 (the thrower) and 2 are team 0, player 1 is
+    /// team 1; all alive, out of their spawn windows.
+    fn mine_game(ff: bool) -> Game {
+        let mut t = tables();
+        let doc = dc_bute::ButeDoc::parse(concat!(
+            "[Weapon3]\nName = \"Mine\"\nAmmoName0 = \"M\"\n",
+            "[Ammo0]\nName = \"M\"\nType = 1\nMaxAmount = 2\nAreaDamage = 40\nAreaDamageType = 7\n",
+            "AreaDamageRadius = 300\nProjectileFXName = \"TestMine\"\n",
+            "[WeaponOrder]\nClass0 = \"P\"\nP0 = \"Mine\"\n",
+        ));
+        t.weapons = crate::rom_tables::WeaponTable::from_doc(&doc);
+        t.projectiles = crate::rom_tables::ProjectileTable::from_doc(&dc_bute::ButeDoc::parse(concat!(
+            "[ProjectileFX0]\nName = \"TestMine\"\nClass = \"CTestTrap\"\nClassData = \"TestTrapData\"\n",
+            "Gravity = 1\nGravityOverride = -1000.0\nLifetime = 5.0\nVelocity = 300\n",
+            "[LandTrapClassData0]\nName = \"TestTrapData\"\nDetonateRadius = 50\nArmDelay = 2.0\n",
+        )));
+        assert!(t.weapons.fires_projectile(3, 0), "a Type 1 round");
+        let mut g = Game::new(
+            GameTuning {
+                move_check: false,
+                ..GameTuning::default()
+            },
+            &world(),
+            t,
+        );
+        g.rules.team_damage = ff;
+        for (pid, uid, team, obj) in [(0u8, 7u32, 0u8, 1u16), (1, 8, 1, 3), (2, 9, 0, 5)] {
+            let e = entry(uid, team, "P");
+            g.note_identified(&e);
+            g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+            g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+            g.on_up(pid, Up::WorldReady, 20);
+        }
+        for (pid, x) in [(0u8, 0.0f32), (1, 2000.0), (2, -2000.0)] {
+            let p = g.players.get_mut(&pid).unwrap();
+            p.pos = [x, 0.0, 0.0];
+            p.life = Life::Alive;
+        }
+        g.spawn_notes.clear();
+        g.take_out();
+        g
+    }
+
+    /// Player 0 throws the synthetic mine at his feet (no hold: the release alone) at `now`.
+    fn throw_mine(g: &mut Game, now: Millis) {
+        let f = crate::up::UpFire {
+            weapon_id: 3,
+            ammo_id: 0,
+            origin: [0.0, 33.0, 0.0],
+            dir: [0.0, -1.0, 0.0],
+            last: true,
+            hit: None,
+            complete: true,
+            ..crate::up::UpFire::default()
+        };
+        g.on_up(0, Up::Fire(Box::new(f)), now);
+    }
+
+    /// DSV-611: a mine (ammunition `Type` 1 whose projectile row names mine class data) is thrown, not flown as a
+    /// rocket: it lands and lies past the grenade fuse and its row's lifetime, is armed the delay after it rests, is
+    /// not set off by its thrower or a team mate (friendly fire on or off), and blows up when an enemy comes within
+    /// its radius: the enemy takes the ammunition row's blast, credited to the thrower.
+    #[test]
+    fn a_mine_lies_armed_and_goes_off_when_an_enemy_comes_near() {
+        for ff in [false, true] {
+            let mut g = mine_game(ff);
+            assert!(g.mine_row(3, 0).is_some());
+            throw_mine(&mut g, 4000);
+            assert_eq!(g.flights_in_air(), 1, "ff {ff}: the mine is thrown");
+            assert!(g.flights[0].mine.is_some() && !g.flights[0].impact);
+            let o = g.take_out();
+            assert!(
+                o.iter().any(|x| matches!(x, GameOut::Projectile(_))),
+                "ff {ff}: the object is created"
+            );
+            // it falls and lies; no fuse (grenade default 3 s, the row's 5 s)
+            let mut now = 4000;
+            let mut rest = None;
+            while now < 20_000 {
+                now += 100;
+                g.tick_projectiles(now);
+                if rest.is_none() && g.flights[0].resting {
+                    rest = Some(now);
+                }
+            }
+            assert_eq!(g.flights_in_air(), 1, "ff {ff}: no fuse");
+            let rest = rest.expect("it comes to rest");
+            assert_eq!(g.flights[0].mine.unwrap().armed_at, Some(rest + 2000));
+            assert!(!g
+                .take_out()
+                .iter()
+                .any(|x| matches!(x, GameOut::ProjectileGone { .. })));
+            let at = g.flight_pos(g.flights[0].key).unwrap();
+            let on_it = [at[0], at[1] + 30.0, at[2]];
+            // the thrower and his team mate step on it: nothing
+            for pid in [0u8, 2] {
+                g.players.get_mut(&pid).unwrap().pos = on_it;
+                now += 100;
+                g.tick_projectiles(now);
+                assert_eq!(
+                    g.flights_in_air(),
+                    1,
+                    "ff {ff}: client {pid} does not set it off"
+                );
+                g.players.get_mut(&pid).unwrap().pos = [-2000.0, 0.0, 0.0];
+            }
+            // the enemy outside the radius: nothing; on it: the blast
+            g.players.get_mut(&1).unwrap().pos = [at[0] + 120.0, at[1] + 30.0, at[2]];
+            now += 100;
+            g.tick_projectiles(now);
+            assert_eq!(g.flights_in_air(), 1, "ff {ff}: outside the radius");
+            g.players.get_mut(&1).unwrap().pos = on_it;
+            now += 100;
+            g.tick_projectiles(now);
+            assert_eq!(g.flights_in_air(), 0, "ff {ff}: the enemy set it off");
+            let lost = 100.0 - g.players[&1].health;
+            assert!(
+                lost > 0.0 || g.players[&1].life != Life::Alive,
+                "ff {ff}: hurt"
+            );
+            assert_eq!(
+                g.players[&0].health, 100.0,
+                "ff {ff}: the thrower is far away"
+            );
+        }
+    }
+
+    /// DSV-611: a mine is not armed before its delay: an enemy on it at once does not set it off, after the delay
+    /// he does.
+    #[test]
+    fn a_mine_is_not_armed_before_its_delay() {
+        let mut g = mine_game(false);
+        throw_mine(&mut g, 4000);
+        let mut now = 4000;
+        while !g.flights[0].resting {
+            now += 50;
+            g.tick_projectiles(now);
+            assert!(now < 10_000, "it comes to rest");
+        }
+        let at = g.flight_pos(g.flights[0].key).unwrap();
+        g.players.get_mut(&1).unwrap().pos = [at[0], at[1] + 30.0, at[2]];
+        for _ in 0..19 {
+            now += 100;
+            g.tick_projectiles(now);
+        }
+        assert_eq!(g.flights_in_air(), 1, "not armed yet 1.9 s after it rests");
+        now += 200;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 0, "armed: the enemy on it sets it off");
+    }
+
+    /// DSV-612: a thrower keeps at most the ammunition row's `MaxAmount` live mines (the oldest goes without a
+    /// blast); his mines go when he leaves; all go without a blast when the round stops running.
+    #[test]
+    fn mines_are_capped_and_go_with_their_thrower_and_the_round() {
+        let mut g = mine_game(false);
+        for k in 0..3 {
+            throw_mine(&mut g, 4000 + k * 300);
+        }
+        assert_eq!(g.flights_in_air(), 2, "MaxAmount 2");
+        let first = g
+            .take_out()
+            .iter()
+            .filter(|x| matches!(x, GameOut::ProjectileGone { .. }))
+            .count();
+        assert_eq!(first, 1, "the oldest is removed");
+        g.tick_projectiles(9000);
+        g.remove_player(0, false);
+        assert_eq!(g.flights_in_air(), 0, "the thrower left");
+        let gone = g
+            .take_out()
+            .iter()
+            .filter(|x| matches!(x, GameOut::ProjectileGone { .. }))
+            .count();
+        assert_eq!(gone, 2);
+        assert_eq!(g.players[&1].health, 100.0, "no blast");
+        // round end
+        let mut g = mine_game(false);
+        throw_mine(&mut g, 4000);
+        g.tick_projectiles(9000);
+        assert_eq!(g.flights_in_air(), 1);
+        g.phase = RoundPhase::Waiting;
+        g.tick_projectiles(9100);
+        assert_eq!(g.flights_in_air(), 0, "the round stopped");
+    }
+
+    /// DSV-611: a `Type` 1 round whose projectile row's `ClassData` names no mine class-data row is no mine: it
+    /// flies as a rocket (DSV-181).
+    #[test]
+    fn a_round_whose_class_data_names_no_trap_row_flies_as_a_rocket() {
+        let mut g = mine_game(false);
+        g.tables.projectiles.traps.clear();
+        assert!(g.mine_row(3, 0).is_none());
+        throw_mine(&mut g, 4000);
+        assert_eq!(g.flights_in_air(), 1);
+        assert!(
+            g.flights[0].impact && g.flights[0].mine.is_none(),
+            "a rocket"
+        );
+    }
+
+    /// Player 0's mine thrown at 4000, ticked until it is armed; returns the time and the mine's position.
+    fn armed_mine(g: &mut Game) -> (Millis, [f32; 3]) {
+        throw_mine(g, 4000);
+        let mut now = 4000;
+        while !g.flights[0]
+            .mine
+            .unwrap()
+            .armed_at
+            .is_some_and(|t| !dc_net_engine::time::later(t, now))
+        {
+            now += 100;
+            g.tick_projectiles(now);
+            assert!(now < 20_000, "it arms");
+        }
+        (now, g.flight_pos(g.flights[0].key).unwrap())
+    }
+
+    /// DSV-611: a dead enemy and an enemy inside his spawn window on an armed mine do not set it off; the living
+    /// enemy out of his window does.
+    #[test]
+    fn a_dead_or_spawn_shielded_enemy_does_not_set_a_mine_off() {
+        let mut g = mine_game(false);
+        let (mut now, at) = armed_mine(&mut g);
+        let on_it = [at[0], at[1] + 30.0, at[2]];
+        g.players.get_mut(&1).unwrap().pos = on_it;
+        g.players.get_mut(&1).unwrap().life = Life::Dying { died: now };
+        now += 100;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 1, "dead");
+        g.players.get_mut(&1).unwrap().life = Life::Alive;
+        let obj = g.players[&1].obj;
+        g.spawn_notes.push(SpawnNote {
+            pid: 1,
+            obj,
+            due: now + 60_000,
+            to: vec![0, 1, 2],
+        });
+        assert!(g.spawn_shielded(1));
+        now += 100;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 1, "spawn-shielded");
+        g.spawn_notes.clear();
+        now += 100;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 0, "the living enemy sets it off");
+    }
+
+    /// DSV-611: an enemy on a mine still in flight does not set it off; a mine that never comes to rest (here kept
+    /// in the air with no gravity) counts as resting the row's `Lifetime` after its release, is armed after the
+    /// delay, and then the enemy on it sets it off.
+    #[test]
+    fn a_mine_in_flight_is_not_set_off_and_settles_after_its_lifetime() {
+        let mut g = mine_game(false);
+        throw_mine(&mut g, 4000);
+        g.flights[0].gravity = 0.0;
+        g.flights[0].vel = [10.0, 0.0, 0.0];
+        let mut now = 4000;
+        while now < 4000 + 5000 + 2000 - 100 {
+            let at = g.flight_pos(g.flights[0].key).unwrap();
+            g.players.get_mut(&1).unwrap().pos = [at[0], at[1] + 30.0, at[2]];
+            now += 100;
+            g.tick_projectiles(now);
+            assert_eq!(g.flights_in_air(), 1, "{now}: not armed yet");
+            if now < 9000 {
+                assert!(!g.flights[0].resting, "{now}: still in flight");
+            }
+        }
+        assert!(g.flights[0].resting, "rests after the row's lifetime");
+        assert_eq!(g.flights[0].mine.unwrap().armed_at, Some(9000 + 2000));
+        now += 100;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 0, "armed: the enemy on it sets it off");
+    }
+
     /// DSV-260: the throw relay's team byte is the thrower's team (the 2009 client plays the callout only for its own
     /// team), for a thrower of either team.
     #[test]
@@ -9717,6 +10015,7 @@ mod tests {
                 resting: true,
                 impact: false,
                 burst: false,
+                mine: None,
             });
             g.tick_projectiles(10_000);
             let o = g.take_out();
@@ -10039,6 +10338,7 @@ mod tests {
                 resting: true,
                 impact: false,
                 burst: false,
+                mine: None,
             });
             g.tick_projectiles(now);
         };
@@ -10716,6 +11016,160 @@ mod tests {
         f.weapon_id = 30;
         g.on_up(0, Up::Fire(Box::new(f)), 300);
         assert!(g.players[&1].health < 100.0, "the sniper rifle's hit hurts");
+    }
+
+    /// Synthetic types for the weapon-rule tests: 145 rifle (0), 164 pistol (4), 0 knife (7), 7 grenade (6), 30 sniper
+    /// rifle (2), 40 shotgun (0x1a); camo variants 500 of the rifle and 501 of the sniper rifle (no item rows of their
+    /// own, VAR-1); 900 a pack gun without an item row.
+    fn rule_tables() -> RomTables {
+        let mut t = tables();
+        t.items.weapon_types = [(145, 0), (164, 4), (0, 7), (7, 6), (30, 2), (40, 0x1a)].into();
+        t.weapons.variants = [(500, 145), (501, 30)].into();
+        t
+    }
+
+    /// DSV-610: every rule of the room's weapon list on one full loadout (a rifle variant in the primary slot, the
+    /// pistol, knife, grenade, and in the backpack the sniper rifle, the shotgun, a sniper rifle variant and a pack
+    /// gun): each rule grants only its kinds, a variant counts as its base gun.
+    #[test]
+    fn every_weapon_rule_grants_its_kinds_and_a_variant_as_its_base_gun() {
+        let mut g = Game::new(spec_order(), &world(), rule_tables());
+        let mut e = entry(7, 0, "Dave");
+        e.extra = vec![(
+            "loadout".into(),
+            "0:500,1:164,2:0,3:7,10:30,11:40,12:501,13:900".into(),
+        )];
+        let all = vec![
+            (0, 500),
+            (1, 164),
+            (2, 0),
+            (3, 7),
+            (4, 30),
+            (5, 40),
+            (6, 501),
+            (7, 900),
+        ];
+        let rows: [(u32, Vec<(u8, u16)>); 9] = [
+            (0, all.clone()),
+            (1, vec![(1, 164), (2, 0)]),
+            (2, vec![(2, 0)]),
+            (
+                3,
+                vec![(0, 500), (1, 164), (2, 0), (3, 7), (5, 40), (7, 900)],
+            ),
+            (
+                4,
+                vec![
+                    (0, 500),
+                    (1, 164),
+                    (2, 0),
+                    (4, 30),
+                    (5, 40),
+                    (6, 501),
+                    (7, 900),
+                ],
+            ),
+            (5, vec![(0, 500), (1, 164), (2, 0), (3, 7)]),
+            (6, vec![(2, 0), (4, 30), (6, 501)]),
+            (7, vec![(2, 0), (5, 40)]),
+            (
+                8,
+                vec![
+                    (0, 500),
+                    (1, 164),
+                    (2, 0),
+                    (3, 7),
+                    (4, 30),
+                    (6, 501),
+                    (7, 900),
+                ],
+            ),
+        ];
+        for (arms, want) in rows {
+            let mut room = RoomSettings::default();
+            room.pairs.insert("arms".into(), arms.to_string());
+            g.set_room(&room);
+            assert_eq!(g.rules().arms, arms);
+            assert_eq!(g.loadout_weapons(Some(&e)), want, "weapon rule {arms}");
+        }
+        // without the item table nothing is known, so nothing is held back (as before)
+        let mut g = Game::new(spec_order(), &world(), tables());
+        let mut room = RoomSettings::default();
+        room.pairs.insert("arms".into(), "1".into());
+        g.set_room(&room);
+        assert_eq!(g.loadout_weapons(Some(&e)), all);
+    }
+
+    /// DSV-610: a client that names a weapon the rule kept out of its spawn set (No Backpack: its backpack sniper
+    /// rifle; Pistols Only: its camo rifle) gets nothing: the change is not taken, the shot does no damage and counts
+    /// as `weapon_limit`.
+    #[test]
+    fn a_weapon_the_rule_kept_out_cannot_be_drawn_or_fired() {
+        for (arms, loadout, barred, slot) in [
+            ("5", "0:145,1:164,2:0,10:30", 30u16, 4u8),
+            ("1", "0:500,1:164,2:0", 500, 0),
+            ("6", "0:500,2:0,10:501", 500, 0),
+        ] {
+            let mut g = Game::new(
+                GameTuning {
+                    move_check: false,
+                    ..GameTuning::default()
+                },
+                &world(),
+                rule_tables(),
+            );
+            let mut room = RoomSettings::default();
+            room.pairs.insert("arms".into(), arms.into());
+            g.set_room(&room);
+            for (pid, uid, team, obj) in [(0u8, 7u32, 0u8, 1u16), (1, 8, 1, 3)] {
+                let mut e = entry(uid, team, "P");
+                e.extra = vec![("loadout".into(), loadout.into())];
+                g.note_identified(&e);
+                g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+                g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+                g.on_up(pid, Up::WorldReady, 20);
+            }
+            g.players.get_mut(&1).unwrap().pos = [300.0, 0.0, 0.0];
+            g.take_out();
+            let carried =
+                |g: &Game| -> Vec<u16> { g.players[&0].weapons.iter().map(|w| w.weapon).collect() };
+            assert!(
+                !carried(&g).contains(&barred),
+                "rule {arms}: {:?}",
+                carried(&g)
+            );
+            let drawn = g.players[&0].current;
+            g.on_up(
+                0,
+                Up::WeaponChange {
+                    slot,
+                    weapon_id: barred,
+                    aux: 0,
+                },
+                100,
+            );
+            assert!(!carried(&g).contains(&barred), "rule {arms}: not adopted");
+            assert_eq!(
+                g.players[&0].current, drawn,
+                "rule {arms}: the drawn weapon stays"
+            );
+            let mut f = hit_report(&g, 0, 1, 0.0, None);
+            f.weapon_id = barred;
+            g.on_up(0, Up::Fire(Box::new(f)), 200);
+            assert_eq!(g.players[&1].health, 100.0, "rule {arms}: no damage");
+            let o = g.take_out();
+            let refused = format!("weapon {barred} refused (room weapon limit {arms})");
+            assert!(
+                o.iter()
+                    .any(|x| matches!(x, GameOut::Log(l) if l.contains(&refused))),
+                "rule {arms}"
+            );
+            assert_eq!(
+                g.hit_counts.get(hits::HitVerdict::WeaponLimit),
+                1,
+                "rule {arms}"
+            );
+        }
     }
 
     /// DSV-38: weapons by slot from the lobby's `loadout=slot:item,...` (ROM item numbers; gear items are not

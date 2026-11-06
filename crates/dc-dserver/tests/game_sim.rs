@@ -1532,6 +1532,7 @@ fn throw_tables_with(pack: u32) -> RomTables {
             gravity_override: Some(-900.0),
             lifetime_s: Some(1.8),
             velocity: Some(100.0),
+            ..ProjectileRow::default()
         },
     );
     RomTables {

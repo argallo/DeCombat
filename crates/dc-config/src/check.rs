@@ -1150,6 +1150,16 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
 /// each id once.
 // DC-DEFAULT: LG-313 (proposed)
 fn check_entry_mods(cfg: &Config, i: usize, c: &LobbyServerCfg, out: &mut Vec<Issue>) {
+    // DC-DEFAULT: LG-426 (proposed) the entry's local-mod switch belongs to a curated set of a vanilla lobby
+    if c.client_visual_allowed
+        && (c.mods.is_empty() || c.is_remote() || cfg.mods.policy == "modded")
+    {
+        out.push(Issue::error(
+            format!("lobby.servers[{i}].client_visual_allowed"),
+            "is for an entry of this vanilla lobby with a curated set (mods = [...]) only; \
+             a modded lobby says it in mods.client_visual_allowed",
+        ));
+    }
     if c.mods.is_empty() {
         return;
     }
@@ -1341,6 +1351,7 @@ mod feature_tests {
                 channels: 3,
                 features: Vec::new(),
                 mods: vec![r("a", &sha)],
+                client_visual_allowed: false,
                 lobby: String::new(),
                 fingerprint: String::new(),
                 policy: String::new(),
@@ -1360,6 +1371,42 @@ mod feature_tests {
         assert!(errors(&|e, _| e.mods = vec![r("a", "zz")])[0].contains("hex"));
         assert!(errors(&|e, _| e.mods = vec![r("a", &sha), r("a", &sha)])[0].contains("twice"));
         assert!(errors(&|e, _| e.lobby = "h:1".into())[0].contains("this lobby"));
+        // LG-426: the entry's local-mod switch: fine beside a curated set, refused without one, on a modded lobby and
+        // on another lobby's entry
+        let cv = |f: &dyn Fn(&mut LobbyServerCfg, &mut Config)| {
+            let mut cfg = Config::default();
+            let mut e = LobbyServerCfg {
+                name: "V".into(),
+                capacity: 5,
+                host: String::new(),
+                channels: 3,
+                features: Vec::new(),
+                mods: vec![r("a", &sha)],
+                client_visual_allowed: true,
+                lobby: String::new(),
+                fingerprint: String::new(),
+                policy: String::new(),
+                region: String::new(),
+            };
+            f(&mut e, &mut cfg);
+            cfg.lobby.servers = vec![e];
+            crate::check(&cfg, CheckOptions::default())
+                .into_iter()
+                .filter(|i| i.path.ends_with(".client_visual_allowed"))
+                .map(|i| i.message)
+                .collect::<Vec<_>>()
+        };
+        assert!(cv(&|_, _| {}).is_empty());
+        assert!(cv(&|e, _| e.mods.clear())[0].contains("curated set"));
+        assert_eq!(cv(&|_, c| c.mods.policy = "modded".into()).len(), 1);
+        assert_eq!(cv(&|e, _| e.lobby = "h:1".into()).len(), 1);
+        let toml_entry: LobbyServerCfg = toml::from_str(
+            "name = \"Vanilla++\"\ncapacity = 5\nmods = []\nclient_visual_allowed = true",
+        )
+        .unwrap();
+        assert!(toml_entry.client_visual_allowed);
+        let plain: LobbyServerCfg = toml::from_str("name = \"V\"\ncapacity = 5").unwrap();
+        assert!(!plain.client_visual_allowed, "off by default");
     }
 
     /// LG-388: the managed bots' total cap.
@@ -1391,6 +1438,7 @@ mod feature_tests {
             channels: 3,
             features,
             mods: Vec::new(),
+            client_visual_allowed: false,
             lobby: lobby.into(),
             fingerprint: String::new(),
             policy: String::new(),

@@ -142,7 +142,10 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   threads, private bytes, voices_looping, corpses) for an external watchdog.
        dc-client --update-from ZIP   (CLI-1867) swaps this install's files for those of a game zip once this run ends:
   the zip is unpacked into dc-update/new next to the exe and a helper copy of the exe finishes the swap
-  (dc-update/result.txt says how it went; the player's own files stay).";
+  (dc-update/result.txt says how it went; the player's own files stay).
+  Started with no arguments next to a pack.json that names a server (CLI-1906, the friend pack's DeCombat.exe), the
+  exe runs the game with that lobby and the first folder beside it holding Engine.exe and Game, its output in
+  dc-client.out of the logs folder; a missing folder or a failed end opens a message box.";
 
 struct Args {
     stress: Option<String>,
@@ -1696,8 +1699,22 @@ fn main() -> ExitCode {
             }
         };
     }
+    // CLI-1906: a double-click (no arguments) of a friend pack's exe whose pack.json names a server: the pack start
+    // runs the game as its child (before the leftovers below, which the child's own start handles)
+    if std::env::args_os().len() == 1 {
+        if let Some(code) = dc_client::packstart::run_if_pack() {
+            return ExitCode::from(if code == 0 { 0 } else { code.clamp(1, 255) as u8 });
+        }
+    }
     // CLI-1865: what an earlier update left in the game folder goes (its failure is told once in the menu)
     dc_client::selfupdate::cleanup_leftovers();
+    // CLI-1906: an older pack's starters beside the new exe go
+    let running = dc_client::selfupdate::running_name();
+    if let Some(install) = dc_client::selfupdate::install_dir() {
+        for f in dc_client::selfupdate::tidy_legacy(&install, running.as_deref()) {
+            eprintln!("dc-client: removed the older starter {}", f.display());
+        }
+    }
     let a = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -1727,6 +1744,10 @@ fn main() -> ExitCode {
     end_scenario(&r);
     // gate T1: a normal end removes the empty crash folder made at start-up
     dc_hangdump::crash::cleanup();
+    // CLI-1906: an older pack's helper started the new build under the older name: that file goes now
+    if let Some(install) = dc_client::selfupdate::install_dir() {
+        dc_client::selfupdate::retire_running_legacy(&install, running.as_deref());
+    }
     match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

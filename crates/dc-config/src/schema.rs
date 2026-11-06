@@ -357,6 +357,11 @@ pub struct LobbyServerCfg {
     /// whose `mods.policy` is `vanilla`. DC-DEFAULT: LG-313 (proposed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mods: Vec<ModRef>,
+    /// LG-426: the player's local `client_visual` mods (a crosshair, a HUD look) load on this entry, beside its curated
+    /// set; the entry's counterpart of the lobby-level `mods.client_visual_allowed`. Only on an entry with `mods`.
+    /// Default false. DC-DEFAULT: LG-426 (proposed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub client_visual_allowed: bool,
     /// LG-272: `host:port` of ANOTHER lobby instance (its auth port), e.g. the modded instance on the same machine.
     /// Such an entry is no server of this lobby (no id, no channels, no host): our clients list it after this lobby's
     /// entries (push 0x3f02, `dc_wire::moddedlist`); the 2009 client never sees it. "" = an entry of this lobby.

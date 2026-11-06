@@ -498,10 +498,24 @@ pub const SEARCH_COLUMNS: [(i32, &str); 3] = [(247, "Clan"), (447, "Members"), (
 pub const MANAGE_COLUMNS: [(i32, &str); 3] = [(247, "Class"), (337, "Name"), (537, "Experience")];
 pub const T_RELOAD: &str = "Refresh";
 pub const T_CREATE_A_CLAN: &str = "Create a clan";
-pub const T_JOIN: &str = "Join";
+/// CLI-1901: the find page's row button applies (the lobby's join is an application the leader answers, LG-420).
+pub const T_APPLY: &str = "Apply";
 pub const T_REMOVE: &str = "Remove";
 pub const T_LEADER: &str = "Leader";
 pub const T_MEMBER: &str = "Member";
+
+/// The leader's manage page (CLI-1901): the open applications first (class "Applicant", Accept and Decline on the
+/// row), then the members; an invitation field and its Invite button on the button row, where the find page has its
+/// search. Ours: the 2009 manage page was the publisher's HTML (cshell+0x1103d0 opens window 5 for 10009).
+// DC-DEFAULT: CLI-1901 (proposed) the applicant rows and the invitation entry
+pub const ACCEPT_BUTTON: [i32; 4] = [627, 0, 70, 20];
+pub const INVITE_FIELD: [i32; 4] = SEARCH_FIELD;
+pub const INVITE_BUTTON: [i32; 4] = SEARCH_BUTTON;
+pub const T_APPLICANT: &str = "Applicant";
+pub const T_ACCEPT: &str = "Accept";
+pub const T_DECLINE: &str = "Decline";
+pub const T_INVITE: &str = "Invite";
+pub const T_INVITE_HINT: &str = "Player name";
 
 /// The find page's search: a clan name field and its Search button on the button row (after Create a clan), the
 /// rows the clans whose name holds the typed text (any case); an empty field lists every clan.
@@ -540,6 +554,34 @@ pub struct MemberLine {
     pub exp: u32,
 }
 
+/// One open application of the leader's manage page (`applicant` lines of the text form, LG-420).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ApplicantLine {
+    pub account: u32,
+    pub name: String,
+    pub exp: u32,
+}
+
+pub fn parse_applicants(body: &str) -> Vec<ApplicantLine> {
+    body.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.first() == Some(&"applicant")).then(|| {
+                let n = |i: usize| {
+                    f.get(i)
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .unwrap_or(0)
+                };
+                ApplicantLine {
+                    account: n(1).min(u32::MAX as u64) as u32,
+                    name: f.get(2).map_or(String::new(), |v| v.to_string()),
+                    exp: n(3).min(u32::MAX as u64) as u32,
+                }
+            })
+        })
+        .collect()
+}
+
 pub fn parse_members(body: &str) -> Vec<MemberLine> {
     body.lines()
         .filter_map(|l| {
@@ -565,6 +607,10 @@ pub fn parse_members(body: &str) -> Vec<MemberLine> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageHit {
     Row(usize),
+    /// CLI-1901: the Accept / Decline buttons of applicant row `i` and the manage page's Invite button.
+    Accept(usize),
+    Decline(usize),
+    Invite,
     Refresh,
     Second,
     /// The find page's search field and its Search button (CLI-1896).
@@ -576,13 +622,13 @@ pub enum PageHit {
 }
 
 fn row_button(i: usize) -> [i32; 4] {
+    at_row(ROW_BUTTON, i)
+}
+
+/// A row button's rectangle on row `i` (centred on the row's line).
+pub fn at_row(b: [i32; 4], i: usize) -> [i32; 4] {
     let y = ROW_Y + i as i32 * ROW_STEP;
-    [
-        ROW_BUTTON[0],
-        y - ROW_BUTTON[3] / 2,
-        ROW_BUTTON[2],
-        ROW_BUTTON[3],
-    ]
+    [b[0], y - b[3] / 2, b[2], b[3]]
 }
 
 /// Which list page.
@@ -600,6 +646,8 @@ pub struct ListPage {
     pub kind: ListKind,
     pub reply: WebReply,
     pub members: Vec<MemberLine>,
+    /// CLI-1901: the open applications (the leader's manage page; the lobby sends them to the leader only).
+    pub applicants: Vec<ApplicantLine>,
     pub message: Option<String>,
     pub busy: bool,
     pub hover: Option<PageHit>,
@@ -618,6 +666,7 @@ impl ListPage {
             kind,
             reply: WebReply::default(),
             members: Vec::new(),
+            applicants: Vec::new(),
             message: None,
             busy: false,
             hover: None,
@@ -685,21 +734,34 @@ impl ListPage {
     pub fn rows(&self) -> usize {
         match self.kind {
             ListKind::Search => self.shown_clans().len(),
-            ListKind::Manage => self.members.len(),
+            ListKind::Manage => self.applicants.len() + self.members.len(),
         }
         .min(ROW_MAX)
+    }
+
+    /// The applicant of manage page row `i` (the applications come first, CLI-1901).
+    pub fn applicant(&self, i: usize) -> Option<&ApplicantLine> {
+        (self.kind == ListKind::Manage)
+            .then(|| self.applicants.get(i))
+            .flatten()
+    }
+
+    /// The member of manage page row `i` (after the applications).
+    pub fn member_at(&self, i: usize) -> Option<&MemberLine> {
+        i.checked_sub(self.applicants.len())
+            .and_then(|m| self.members.get(m))
     }
 
     pub fn row_action(&self, i: usize, me: u32) -> bool {
         match self.kind {
             ListKind::Search => self.reply.clan == 0 && i < self.shown_clans().len(),
             ListKind::Manage => {
-                self.reply.leader && self.members.get(i).is_some_and(|m| m.char_no != me)
+                self.reply.leader && self.member_at(i).is_some_and(|m| m.char_no != me)
             }
         }
     }
 
-    /// The row action's request (join the row's clan, remove the row's member).
+    /// The row action's request (apply to the row's clan, remove the row's member).
     pub fn row_request(&self, i: usize, user: &str) -> Option<String> {
         let p = url_encode(user);
         match self.kind {
@@ -708,10 +770,40 @@ impl ListPage {
                 .get(i)
                 .map(|k| format!("/clan/join?p={p}&c={}&fmt=text", k.uid)),
             ListKind::Manage => self
-                .members
-                .get(i)
+                .member_at(i)
                 .map(|m| format!("/clan/kick?p={p}&m={}&fmt=text", m.char_no)),
         }
+    }
+
+    /// CLI-1901: the answer to applicant row `i` (`yes` accepts, else declines; LG-420's leader-only actions).
+    pub fn answer_request(&self, i: usize, yes: bool, user: &str) -> Option<String> {
+        let a = self.applicant(i)?;
+        let verb = if yes { "accept" } else { "decline" };
+        Some(format!(
+            "/clan/{verb}?p={}&a={}&fmt=text",
+            url_encode(user),
+            a.account
+        ))
+    }
+
+    /// CLI-1901: whether the page carries the invitation entry (the leader's manage page).
+    pub fn offers_invite(&self) -> bool {
+        self.kind == ListKind::Manage && self.reply.leader
+    }
+
+    /// The invitation request for the field's name (None while it is empty).
+    pub fn invite_request(&self, sheet: &Sheet, user: &str) -> Option<String> {
+        let name = self
+            .field
+            .map_or("", |i| sheet.parts[i].text.as_str())
+            .trim();
+        (!name.is_empty()).then(|| {
+            format!(
+                "/clan/invite?p={}&n={}&fmt=text",
+                url_encode(user),
+                url_encode(name)
+            )
+        })
     }
 
     pub fn hit(&self, p: [f32; 2], me: u32) -> Option<PageHit> {
@@ -719,6 +811,14 @@ impl ListPage {
             return None;
         }
         for i in 0..self.rows() {
+            if self.applicant(i).is_some() {
+                if inside(at_row(ACCEPT_BUTTON, i), p) {
+                    return Some(PageHit::Accept(i));
+                }
+                if inside(row_button(i), p) {
+                    return Some(PageHit::Decline(i));
+                }
+            }
             if self.row_action(i, me) && inside(row_button(i), p) {
                 return Some(PageHit::Row(i));
             }
@@ -734,6 +834,12 @@ impl ListPage {
         }
         if self.kind == ListKind::Search && inside(SEARCH_BUTTON, p) {
             return Some(PageHit::Search);
+        }
+        if self.offers_invite() && inside(INVITE_FIELD, p) {
+            return Some(PageHit::Field);
+        }
+        if self.offers_invite() && inside(INVITE_BUTTON, p) {
+            return Some(PageHit::Invite);
         }
         Some(PageHit::Page)
     }
@@ -754,6 +860,7 @@ impl ListPage {
         let members = parse_members(body);
         if self.kind == ListKind::Manage && (!members.is_empty() || r.msg.is_none()) {
             self.members = members;
+            self.applicants = parse_applicants(body);
         }
         if self.kind == ListKind::Search && r.clans.is_empty() && r.msg.is_some() {
             // an action answer without rows keeps the shown list
@@ -777,16 +884,19 @@ impl ListPage {
     /// The find page's search field (with the caret while it has the keyboard, the hint while it is empty) and its
     /// Search button.
     pub fn draw_search(&self, sheet: &Sheet, secs: f32, out: &mut Vec<DrawItem>) {
-        if self.kind != ListKind::Search {
-            return;
-        }
+        // CLI-1901: the leader's manage page draws its invitation entry in the same place
+        let (hint, caption, hit) = match self.kind {
+            ListKind::Search => (T_SEARCH_HINT, T_SEARCH, PageHit::Search),
+            ListKind::Manage if self.offers_invite() => (T_INVITE_HINT, T_INVITE, PageHit::Invite),
+            ListKind::Manage => return,
+        };
         let part = self.field.map(|i| &sheet.parts[i]);
         let typed = part.map_or("", |p| p.text.as_str());
         let focused = part.is_some_and(|p| p.focus);
         framed(SEARCH_FIELD, BOX_EDGE, [0, 0, 0, 255], out);
         let at = [SEARCH_FIELD[0] + 7, SEARCH_FIELD[1] + SEARCH_FIELD[3] / 2];
         if typed.is_empty() && !focused {
-            text(T_SEARCH_HINT, at, left_mid(), HINT_COLOUR, out);
+            text(hint, at, left_mid(), HINT_COLOUR, out);
         } else {
             let mut shown = typed.to_string();
             if focused && super::sheet::caret_on(secs, 0.333) {
@@ -796,9 +906,9 @@ impl ListPage {
         }
         button(
             SEARCH_BUTTON,
-            T_SEARCH,
-            true,
-            self.hover == Some(PageHit::Search),
+            caption,
+            !(self.busy && hit == PageHit::Invite),
+            self.hover == Some(hit),
             out,
         );
     }
@@ -824,22 +934,45 @@ impl ListPage {
                         (k.leader.clone(), ROW_COLOUR),
                     ]
                 }
-                ListKind::Manage => {
-                    let m = &self.members[i];
-                    let class = if m.leader { T_LEADER } else { T_MEMBER };
-                    vec![
-                        (class.to_string(), HINT_COLOUR),
-                        (m.name.clone(), ROW_COLOUR),
-                        (m.exp.to_string(), ROW_COLOUR),
-                    ]
-                }
+                ListKind::Manage => match (self.applicant(i), self.member_at(i)) {
+                    (Some(a), _) => vec![
+                        (T_APPLICANT.to_string(), LABEL_COLOUR),
+                        (a.name.clone(), ROW_COLOUR),
+                        (a.exp.to_string(), ROW_COLOUR),
+                    ],
+                    (None, Some(m)) => {
+                        let class = if m.leader { T_LEADER } else { T_MEMBER };
+                        vec![
+                            (class.to_string(), HINT_COLOUR),
+                            (m.name.clone(), ROW_COLOUR),
+                            (m.exp.to_string(), ROW_COLOUR),
+                        ]
+                    }
+                    (None, None) => Vec::new(),
+                },
             };
             for ((x, _), (t, c)) in cols.iter().zip(cells) {
                 text(&t, [*x, y], left_mid(), c, out);
             }
+            if self.applicant(i).is_some() {
+                button(
+                    at_row(ACCEPT_BUTTON, i),
+                    T_ACCEPT,
+                    !self.busy,
+                    self.hover == Some(PageHit::Accept(i)),
+                    out,
+                );
+                button(
+                    row_button(i),
+                    T_DECLINE,
+                    !self.busy,
+                    self.hover == Some(PageHit::Decline(i)),
+                    out,
+                );
+            }
             if self.row_action(i, me) {
                 let cap = match self.kind {
-                    ListKind::Search => T_JOIN,
+                    ListKind::Search => T_APPLY,
                     ListKind::Manage => T_REMOVE,
                 };
                 button(
@@ -1002,6 +1135,7 @@ fn add_field(
         wrap_max: 0,
         colour_set: false,
         placed: true,
+        blink: 0.0,
     });
     Some(sheet.parts.len() - 1)
 }
@@ -1077,6 +1211,68 @@ mod tests {
         l.answer("me\t0\t0\nclan\t4\tWolves\t1\tCarol\t1\t1\n");
         assert!(l.offers_create(), "after a leave the page offers it again");
         assert!(!ListPage::new(ListKind::Manage).offers_create());
+    }
+
+    /// CLI-1901: the leader's manage page puts the applications first with Accept / Decline, the members after them
+    /// (Remove on the others), and an invitation entry; a member's page has neither.
+    #[test]
+    fn manage_page_lists_applicants_with_accept_and_decline() {
+        let mut l = ListPage::new(ListKind::Manage);
+        l.answer(
+            "me\t4\t1\napplicant\t9\tEve\t120\nmember\t1\t1\tCarol\t50\nmember\t2\t0\tDan\t7\n",
+        );
+        assert_eq!(l.rows(), 3);
+        assert_eq!(l.applicant(0).map(|a| a.account), Some(9));
+        assert_eq!(l.member_at(1).map(|m| m.name.as_str()), Some("Carol"));
+        let mid = |r: [i32; 4]| [(r[0] + r[2] / 2) as f32, (r[1] + r[3] / 2) as f32];
+        assert_eq!(
+            l.hit(mid(at_row(ACCEPT_BUTTON, 0)), 1),
+            Some(PageHit::Accept(0))
+        );
+        assert_eq!(
+            l.hit(mid(at_row(ROW_BUTTON, 0)), 1),
+            Some(PageHit::Decline(0))
+        );
+        assert_eq!(
+            l.hit(mid(at_row(ROW_BUTTON, 1)), 1),
+            Some(PageHit::Page),
+            "no Remove on the own row"
+        );
+        assert_eq!(l.hit(mid(at_row(ROW_BUTTON, 2)), 1), Some(PageHit::Row(2)));
+        assert_eq!(l.hit(mid(INVITE_BUTTON), 1), Some(PageHit::Invite));
+        assert_eq!(l.hit(mid(INVITE_FIELD), 1), Some(PageHit::Field));
+        assert_eq!(
+            l.answer_request(0, true, "Carol").as_deref(),
+            Some("/clan/accept?p=Carol&a=9&fmt=text")
+        );
+        assert_eq!(
+            l.answer_request(0, false, "Carol").as_deref(),
+            Some("/clan/decline?p=Carol&a=9&fmt=text")
+        );
+        assert_eq!(
+            l.row_request(2, "Carol").as_deref(),
+            Some("/clan/kick?p=Carol&m=2&fmt=text")
+        );
+        let mut out = Vec::new();
+        l.draw(1, &mut out);
+        let t: Vec<String> = out
+            .into_iter()
+            .filter_map(|i| match i {
+                DrawItem::Text { text, .. } | DrawItem::Label { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        for want in [T_APPLICANT, "Eve", T_ACCEPT, T_DECLINE, "Dan", T_REMOVE] {
+            assert!(t.iter().any(|x| x == want), "{want}: {t:?}");
+        }
+        // an action answer with the list again; then a member's page
+        l.answer("me\t4\t1\nmsg\t1\tEve joined the clan.\nmember\t1\t1\tCarol\t50\nmember\t9\t0\tEve\t120\n");
+        assert!(l.applicants.is_empty());
+        assert_eq!(l.message.as_deref(), Some("Eve joined the clan."));
+        let mut m = ListPage::new(ListKind::Manage);
+        m.answer("me\t4\t0\nmember\t1\t1\tCarol\t50\nmember\t2\t0\tDan\t7\n");
+        assert!(!m.offers_invite());
+        assert_eq!(m.hit(mid(INVITE_BUTTON), 2), Some(PageHit::Page));
     }
 
     /// CLI-1896: the search keeps the matching rows (any case, an older lobby's whole list too), asks with `q`,

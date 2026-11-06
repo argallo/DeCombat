@@ -201,6 +201,16 @@ CREATE TABLE IF NOT EXISTS friend_requests (
     created  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (from_no, to_no)
 );
+-- LG-420: open clan applications ('apply', the player asked) and invitations ('invite', the leader asked); one row
+-- per player and clan. A new table: an older DB gets it empty at the next start (nothing to migrate); a join, a
+-- create, a disband or an account delete removes the rows.
+CREATE TABLE IF NOT EXISTS clan_requests (
+    clan_uid  INTEGER NOT NULL,
+    user_no   INTEGER NOT NULL,
+    kind      TEXT NOT NULL,
+    created   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (clan_uid, user_no)
+);
 "#;
 
 /// Opens (creating if needed) the DB file with its schema.
@@ -323,6 +333,19 @@ pub fn prepare(conn: &Connection) -> DbResult<()> {
     })?;
     if !has {
         conn.execute_batch("ALTER TABLE op_bans ADD COLUMN by_name TEXT NOT NULL DEFAULT '';")?;
+    }
+    // LG-425 (security audit M5): identity tokens issued before an account's last password write are refused;
+    // existing rows start at 0 (every token stays valid until the next password change)
+    let mut has = false;
+    conn.pragma(None, "table_info", "accounts", |r| {
+        let name: String = r.get(1)?;
+        has |= name == "tokens_valid_after";
+        Ok(())
+    })?;
+    if !has {
+        conn.execute_batch(
+            "ALTER TABLE accounts ADD COLUMN tokens_valid_after INTEGER NOT NULL DEFAULT 0;",
+        )?;
     }
     // LG-69: the local accounts of identity tokens (a new table: older DBs get it empty)
     conn.execute_batch(IDENTITY_LINKS)?;
@@ -530,6 +553,8 @@ pub struct Account {
     pub gm: i64,
     /// Refused at login (LG-142; `dc-lobby-server account disable`).
     pub disabled: bool,
+    /// LG-425: unix seconds of the last password write; an identity token issued before it is refused.
+    pub tokens_valid_after: i64,
 }
 
 /// Row mirror of `characters` (plus clan mark and GM flag); not every column is used by the core server yet.
@@ -581,7 +606,7 @@ pub struct Item {
 
 pub fn account_by_login(c: &Connection, login: &str) -> DbResult<Option<Account>> {
     c.query_row(
-        "SELECT user_no, login, pw_hash, pw_salt, gm, disabled FROM accounts WHERE login = ?1",
+        "SELECT user_no, login, pw_hash, pw_salt, gm, disabled, tokens_valid_after FROM accounts WHERE login = ?1",
         params![login],
         |r| {
             Ok(Account {
@@ -591,6 +616,7 @@ pub fn account_by_login(c: &Connection, login: &str) -> DbResult<Option<Account>
                 pw_salt: r.get(3)?,
                 gm: r.get(4)?,
                 disabled: r.get::<_, i64>(5)? != 0,
+                tokens_valid_after: r.get(6)?,
             })
         },
     )
@@ -599,7 +625,7 @@ pub fn account_by_login(c: &Connection, login: &str) -> DbResult<Option<Account>
 
 pub fn account_by_no(c: &Connection, user_no: u32) -> DbResult<Option<Account>> {
     c.query_row(
-        "SELECT user_no, login, pw_hash, pw_salt, gm, disabled FROM accounts WHERE user_no = ?1",
+        "SELECT user_no, login, pw_hash, pw_salt, gm, disabled, tokens_valid_after FROM accounts WHERE user_no = ?1",
         params![user_no as i64],
         |r| {
             Ok(Account {
@@ -609,6 +635,7 @@ pub fn account_by_no(c: &Connection, user_no: u32) -> DbResult<Option<Account>> 
                 pw_salt: r.get(3)?,
                 gm: r.get(4)?,
                 disabled: r.get::<_, i64>(5)? != 0,
+                tokens_valid_after: r.get(6)?,
             })
         },
     )
@@ -660,8 +687,25 @@ pub fn set_password(c: &Connection, user_no: u32, hash: &str, salt: &str) -> DbR
     Ok(())
 }
 
-/// Stores an Argon2id PHC string; the salt column is cleared (it marks the old SHA-256 rows, LG-140).
+/// Stores a new password as an Argon2id PHC string; the salt column is cleared (it marks the old SHA-256 rows,
+/// LG-140). Every identity token of the account issued before now stops logging in (LG-425).
 pub fn set_password_phc(c: &Connection, user_no: u32, phc: &str) -> DbResult<()> {
+    set_password_phc_at(c, user_no, phc, crate::clock::unix_now())
+}
+
+/// [`set_password_phc`] at the unix time `now` (tests move the clock). The mark never moves back.
+// DC-DEFAULT: LG-425 (proposed) tokens_valid_after = the time of the last password write
+pub fn set_password_phc_at(c: &Connection, user_no: u32, phc: &str, now: i64) -> DbResult<()> {
+    c.execute(
+        "UPDATE accounts SET pw_hash = ?2, pw_salt = NULL, tokens_valid_after = MAX(tokens_valid_after, ?3)          WHERE user_no = ?1",
+        params![user_no as i64, phc, now],
+    )?;
+    Ok(())
+}
+
+/// LG-140: rewrites the SAME password in the Argon2id form (an old salted SHA-256 row after a good login). The
+/// password did not change, so the account's identity tokens stay valid (LG-425).
+pub fn rehash_password_phc(c: &Connection, user_no: u32, phc: &str) -> DbResult<()> {
     c.execute(
         "UPDATE accounts SET pw_hash = ?2, pw_salt = NULL WHERE user_no = ?1",
         params![user_no as i64, phc],

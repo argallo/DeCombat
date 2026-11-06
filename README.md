@@ -26,8 +26,10 @@ unchanged.
 
 **Windows** (64-bit, Windows 10 or later)
 1. Download the Windows zip from the [latest release](https://github.com/argallo/DeCombat/releases/latest) and unzip it.
-2. Put your client folder inside the unzipped folder, next to `DeCombat.bat`.
-3. Double-click `DeCombat.bat`. If SmartScreen objects, choose "More info", then "Run anyway".
+2. Put your client folder inside the unzipped folder, next to `DeCombat.exe`.
+3. Double-click `DeCombat.exe`. If SmartScreen objects, choose "More info", then "Run anyway". If Windows Defender flags
+   it, that is a known false positive for new unsigned programs: you can report the file to Microsoft at
+   https://www.microsoft.com/en-us/wdsi/filesubmission, and the release's `SHA256SUMS` tells you whether the zip is ours.
 
 **macOS** (12 or later)
 1. Download the macOS zip from the [latest release](https://github.com/argallo/DeCombat/releases/latest) and unzip it.

@@ -1229,6 +1229,7 @@ pub fn loadout_tokens(st: &Core, account: u32, c: &crate::db::Character) -> Stri
             .find(|r| r.member(account).is_some())
             .map_or(0, |r| r.weapon_limit);
         let items = match_items(st, limit, &items);
+        let items = rule_items(st, limit, items);
         let mut w: Vec<(i64, i64)> = items
             .iter()
             .filter(|i| (0..=LOADOUT_LAST_SLOT).contains(&i.slot))
@@ -1259,17 +1260,7 @@ pub fn match_items(st: &Core, limit: u32, items: &[db::Item]) -> Vec<db::Item> {
     if limit == 0 || st.rom.weapon_kinds.is_empty() {
         return out;
     }
-    let kind = |i: &db::Item| {
-        (0..1000)
-            .contains(&i.item_no)
-            .then(|| {
-                st.rom
-                    .weapon_kinds
-                    .get(&crate::inventory::base_weapon(st, i.item_no))
-                    .copied()
-            })
-            .flatten()
-    };
+    let kind = |i: &db::Item| weapon_type(st, i.item_no);
     let passes = |t: i32| {
         dc_bute::arms::slot_class(t) == Some(0) && dc_bute::arms::match_grants(limit, t, false)
     };
@@ -1298,6 +1289,49 @@ pub fn match_items(st: &Core, limit: u32, items: &[db::Item]) -> Vec<db::Item> {
     }
     out[sub].slot = 0;
     out
+}
+
+/// The item table's `ItemType` of weapon item `item_no` (below 1000); a camo variant (VAR-1) has its base gun's type,
+/// since it has no item row of its own. `None` for a number the table does not know and for other items.
+// DC-DEFAULT: VAR-1 (proposed) type lookups go through the base gun
+pub fn weapon_type(st: &Core, item_no: i64) -> Option<i32> {
+    if !(0..1000).contains(&item_no) {
+        return None;
+    }
+    st.rom
+        .weapon_kinds
+        .get(&crate::inventory::base_weapon(st, item_no))
+        .copied()
+}
+
+/// Whether equipment slot `slot` holds a weapon: a weapon slot 0..3 or a backpack weapon slot 10..13.
+// SPEC: DSERVER_PIPE.md §12.A (slots 0..3 weapons, 10..13 backpack weapons)
+pub fn is_weapon_equip_slot(slot: i64) -> bool {
+    (0..=3).contains(&slot) || dc_bute::arms::BACKPACK_EQUIP_SLOTS.contains(&slot)
+}
+
+/// The match's items (after [`match_items`]) with every equipped weapon that the room's weapon rule `limit` keeps
+/// out of the match taken out of its slot (its attached options go with it, they are filed under an equipped weapon
+/// only), so the game server's `loadout=` / `parts=` tokens name only what the rule allows: the game server's own
+/// rule (`dc_bute::arms::match_grants_in_slot`, DSV-610) then has nothing left to drop, and a game server of an older
+/// build, which let a weapon without an item row through, gets no such weapon either. A variant counts as its base
+/// gun. Without a rule or without the ROM item table the items are returned as they are. The stored loadout is not
+/// changed.
+// DC-DEFAULT: LG-419 (proposed, OWNER REPORT 2026-11-05 "no backpack option for a game mode still lets you bring your
+// backpack item, same with pistols only")
+pub fn rule_items(st: &Core, limit: u32, mut items: Vec<db::Item>) -> Vec<db::Item> {
+    if limit == 0 || st.rom.weapon_kinds.is_empty() {
+        return items;
+    }
+    for i in items.iter_mut() {
+        if is_weapon_equip_slot(i.slot)
+            && (0..1000).contains(&i.item_no)
+            && !dc_bute::arms::match_grants_in_slot(limit, weapon_type(st, i.item_no), Some(i.slot))
+        {
+            i.slot = -1;
+        }
+    }
+    items
 }
 
 /// The options attached to one equipped weapon, by option kind in the order of `loadout::OPTION_KINDS` (muzzle,
