@@ -398,7 +398,8 @@ jobs:
           done
           [ "$ipas" -le 1 ] || { echo "::error::expected at most one .ipa, found $ipas; nothing is published"; exit 1; }
           [ "$ipas" -eq 1 ] || echo "::warning::no .ipa (the iOS job failed): the release goes out without it"
-          [ "$(ls | wc -l)" -eq $((6 + ipas)) ] || { echo "::error::expected $((6 + ipas)) assets; nothing is published"; exit 1; }
+          # the 8 packages checked above (SHA256SUMS is written after this), plus the .ipa when it built
+          [ "$(ls | wc -l)" -eq $((8 + ipas)) ] || { echo "::error::expected $((8 + ipas)) assets; nothing is published"; exit 1; }
           sha256sum -- * > ../SHA256SUMS
           mv ../SHA256SUMS SHA256SUMS
           cat SHA256SUMS

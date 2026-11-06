@@ -241,6 +241,11 @@ fn start(
             music_volume: 100,
             ..Default::default()
         },
+        // the match fills these from the joined room (menu/window/ipad.rs), as the desktop path does
+        mods: None,
+        room_hacks: None,
+        gun_ladder: Vec::new(),
+        reticle: None,
     };
     // w3-options: the profile's look settings and volumes, as the Mac's run without flags takes them (CLI-554)
     if menu.data.profile_doc.is_some() {

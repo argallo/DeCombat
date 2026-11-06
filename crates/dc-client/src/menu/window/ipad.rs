@@ -292,7 +292,17 @@ impl Shell {
                 println!("dc-client menu: server announced {w:?}");
                 // the match takes the window over and hands it back (no window swap); the painter stays
                 let (host, painter) = lend_live(t.live);
-                let mopts = match_options(p.wopts, p.changed, p.menu.mod_recipe());
+                let reticle = crate::menu::colorbox::match_reticle(
+                    p.menu.cat.rom.as_deref(),
+                    &p.menu.data.store,
+                );
+                let mopts = match_options(
+                    p.wopts,
+                    p.changed,
+                    p.menu.mod_recipe(),
+                    &p.menu.data.room,
+                    reticle,
+                );
                 let mut turn = Box::new(MatchTurn::new(Box::new(net), mopts, p.sound.take(), host));
                 turn.handler().resumed(el);
                 return Stage::Match {
