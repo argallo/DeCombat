@@ -244,7 +244,15 @@ fn canned_github(
 #[test]
 fn a_foreign_lobby_link_falls_back_to_the_github_release() {
     let zip: &'static [u8] = b"the official zip";
-    let name = "DeCombat-win-v0.4.0.zip";
+    // the release's zip of THIS computer (the fetch picks it by platform): the test ran on every CI lane
+    let name = match platform() {
+        Platform::Windows => "DeCombat-win-v0.4.0.zip",
+        Platform::MacOs => "DeCombat-mac-v0.4.0.zip",
+        Platform::Other => {
+            println!("skipped: no release download for this platform");
+            return;
+        }
+    };
     let sums = format!("{}  {name}\n", sha256_hex(zip));
     let hosts = std::sync::Arc::new(Mutex::new(Vec::new()));
     let mut gh = canned_github("v0.4.0", zip, Some(sums.clone()), hosts.clone());
