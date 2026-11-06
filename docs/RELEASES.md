@@ -169,7 +169,10 @@ when a newer release exists or the lobby needs one, shows a box with **Update no
 - **Update now** (Windows): the zip comes from the lobby's `[client.download] windows` link or, without one, from the
   newest release on GitHub (`DeCombat-win-<tag>.zip`; the API's latest release, or the newest pre-release when there is
   none). HTTPS only, with the operating system's trusted certificates. The zip is checked against the release's
-  `SHA256SUMS`: a different sum, or a sums file that does not list the zip, stops the update. The zip is unpacked into
+  `SHA256SUMS`: a different sum, a sums file that does not list the zip, or no readable sums file at all stops the
+  update ("it could not be verified"), so every release must carry `SHA256SUMS`. The zip and its sums are taken only
+  from `https://github.com/argallo/DeCombat/releases/download/<tag>/` (and GitHub's asset storage it redirects to): a
+  lobby link anywhere else is ignored and the newest release is looked up instead. The zip is unpacked into
   `dc-update\new` of the game folder, a copy of `dc-client.exe` (the helper) waits for the game to close, moves the new
   files in (the old ones go to `dc-update\old` and come back if anything fails) and starts the game again with the
   same arguments. `DeCombat.bat`, settings, trust and log files in the folder are never replaced: a changed one arrives

@@ -45,7 +45,8 @@ pub enum Verdict {
 }
 
 /// Reads the document (a broken one is no verdict: `Fine`). The page and the direct links are the lobby's, so only
-/// plain `https://` addresses are kept ([`selfupdate::page_url`], [`selfupdate::Downloads`]).
+/// plain `https://` pages are kept ([`selfupdate::page_url`]: the page only opens the browser) and only official
+/// release downloads ([`selfupdate::Downloads`], CLI-1864: any other link is ignored, the GitHub release is taken).
 // DC-DEFAULT: CLI-1863 (proposed, USER REQUEST 2026-11-04) short texts; the box's buttons open the page or update
 pub fn judge(doc: &str, have: [u32; 3]) -> Verdict {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(doc) else {
@@ -195,19 +196,21 @@ mod tests {
         assert_eq!(judge(DOC, [1, 0, 0]), Verdict::Fine);
     }
 
-    // CLI-1863 / LG-404: the page and the direct zip of this platform come from the document, https:// only
+    // CLI-1863 / LG-404: the page and the direct zip of this platform come from the document; the page is any
+    // https:// address, the zip only an official release download (CLI-1864)
     #[test]
     fn the_document_names_the_page_and_the_platform_zips() {
         let doc = r#"{"latest":"0.4.0","update_url":"https://example.org/get",
-            "download":{"windows":"https://example.org/DeCombat-win-v0.4.0.zip","macos":"https://example.org/DeCombat-mac-v0.4.0.zip"}}"#;
+            "download":{"windows":"https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-win-v0.4.0.zip","macos":"https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-mac-v0.4.0.zip"}}"#;
         let Verdict::Newer(o) = judge(doc, [0, 3, 0]) else {
             panic!()
         };
         assert_eq!(o.page, "https://example.org/get");
+        let dl = selfupdate::OFFICIAL_DOWNLOAD;
         let want = if cfg!(windows) {
-            Some("https://example.org/DeCombat-win-v0.4.0.zip".to_string())
+            Some(format!("{dl}v0.4.0/DeCombat-win-v0.4.0.zip"))
         } else if cfg!(target_os = "macos") {
-            Some("https://example.org/DeCombat-mac-v0.4.0.zip".to_string())
+            Some(format!("{dl}v0.4.0/DeCombat-mac-v0.4.0.zip"))
         } else {
             None
         };
@@ -224,6 +227,20 @@ mod tests {
             panic!()
         };
         assert_eq!(o.page, selfupdate::DEFAULT_PAGE);
+        assert_eq!(
+            o.source,
+            Source::Release {
+                have: [0, 3, 0],
+                zip: None
+            }
+        );
+        // a community lobby's own zip host is ignored: the update looks the GitHub release up (CLI-1864)
+        let foreign = r#"{"latest":"0.4.0","update_url":"https://example.org/get",
+            "download":{"windows":"https://example.org/DeCombat-win-v0.4.0.zip","macos":"https://example.org/DeCombat-mac-v0.4.0.zip"}}"#;
+        let Verdict::Newer(o) = judge(foreign, [0, 3, 0]) else {
+            panic!()
+        };
+        assert_eq!(o.page, "https://example.org/get");
         assert_eq!(
             o.source,
             Source::Release {

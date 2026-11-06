@@ -18,16 +18,39 @@ pub(crate) const PAGE: &str = include_str!("ops_dashboard.html");
 pub const HTML: &str = "text/html; charset=utf-8";
 pub const JSON: &str = "application/json; charset=utf-8";
 
-/// True when the `Host` header names a loopback address (any port), or is absent (HTTP/1.0 tools).
-fn host_is_loopback(head: &str) -> bool {
-    let Some(v) = head.lines().skip(1).find_map(|l| {
+/// The value of header `name` (any case), trimmed and lower case.
+fn header_lower(head: &str, name: &str) -> Option<String> {
+    head.lines().skip(1).find_map(|l| {
         let (k, v) = l.split_once(':')?;
         k.trim()
-            .eq_ignore_ascii_case("host")
+            .eq_ignore_ascii_case(name)
             .then(|| v.trim().to_ascii_lowercase())
-    }) else {
+    })
+}
+
+/// True when the `Host` header names a loopback address (any port), or is absent (HTTP/1.0 tools).
+pub(crate) fn host_is_loopback(head: &str) -> bool {
+    match header_lower(head, "host") {
+        Some(v) => loopback_name(&v),
+        None => true,
+    }
+}
+
+/// LG-415: true when the request carries no `Origin` (curl, the tools, a same-origin GET) or one whose host is a
+/// loopback name (`http://localhost:10090`, `http://127.0.0.1:10090`); `null` and every other site are refused.
+// DC-DEFAULT: LG-415 (proposed) the loopback admin port's own paths refuse another site's browser requests
+pub(crate) fn origin_is_loopback(head: &str) -> bool {
+    let Some(o) = header_lower(head, "origin") else {
         return true;
     };
+    o.strip_prefix("http://")
+        .or_else(|| o.strip_prefix("https://"))
+        .is_some_and(|rest| !rest.contains('/') && loopback_name(rest))
+}
+
+/// `name[:port]` / `[v6][:port]`: a loopback name or address.
+fn loopback_name(v: &str) -> bool {
+    let v = v.to_string();
     let name = if let Some(rest) = v.strip_prefix('[') {
         rest.split(']').next().unwrap_or("").to_string()
     } else {

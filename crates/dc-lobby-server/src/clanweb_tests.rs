@@ -1227,3 +1227,59 @@ fn a_member_cannot_create_a_second_clan_until_he_leaves() {
     assert!(body.contains("msg\t1\tClan Hawks created.\n"), "{body}");
     assert_eq!(crate::clan::all_clans(&st.db).unwrap().len(), 3);
 }
+
+/// LG-416: the player's address is the clan pages' only proof (LG-321), and a web page the player has open in a browser
+/// shares it: another site's forged GET of an action is refused, the game's own requests and same-site links are not.
+#[test]
+fn another_sites_page_cannot_send_a_clan_action_from_the_players_address() {
+    let mut st = state();
+    st.opts.public = true;
+    let erin = player(&mut st, 1, "erin", "Erin", true);
+    st.sessions.get_mut(&1).unwrap().peer = "203.0.113.9:5000".into();
+    let ask = |st: &mut Core, target: &str, extra: &str| {
+        let head = format!("GET {target} HTTP/1.1\r\nHost: play.example:19080\r\n{extra}\r\n");
+        let req = parse_request(&head).unwrap();
+        let mut out = (0, String::new());
+        st.scope(|st| {
+            out = route_checked(st, &req, &head, "203.0.113.9:6000")?;
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let create = "/clan/create?p=erin&name=Forged&emblem=1&bg=1";
+    // an <img> or a link on another site: the browser says so in Sec-Fetch-Site or Origin
+    for extra in [
+        "Sec-Fetch-Site: cross-site\r\n",
+        "Sec-Fetch-Site: same-site\r\n",
+        "Origin: https://evil.example\r\n",
+        "Origin: null\r\n",
+    ] {
+        assert_eq!(ask(&mut st, create, extra).0, 403, "{extra}");
+    }
+    assert!(crate::clan::clan_of(&st, erin).unwrap().is_none());
+    // a read is not an action: another site's link to the find page still opens it
+    assert_eq!(
+        ask(
+            &mut st,
+            "/clan?url=guild/list&p=erin",
+            "Sec-Fetch-Site: cross-site\r\n"
+        )
+        .0,
+        200
+    );
+    // the game (no such headers) and a link inside the pages themselves
+    let (code, page) = ask(&mut st, create, "Sec-Fetch-Site: same-origin\r\n");
+    assert_eq!(code, 200);
+    assert!(page.contains("Clan Forged created."), "{page}");
+    assert_eq!(
+        ask(
+            &mut st,
+            "/clan/notice?p=erin&text=hi",
+            "Origin: https://play.example:19080\r\n"
+        )
+        .0,
+        200
+    );
+    assert_eq!(ask(&mut st, "/clan/leave?p=erin", "").0, 200);
+}

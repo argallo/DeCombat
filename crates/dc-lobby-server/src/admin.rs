@@ -152,6 +152,17 @@ pub fn handle(
             if !peer.map(|p| p.is_loopback()).unwrap_or(false) {
                 return (403, msg(false, "loopback only"));
             }
+            // LG-415: without a token a web page in the operator's browser must not reach these paths: a name that
+            // rebinds to 127.0.0.1 is refused by its Host, a cross-site form or fetch by its Origin
+            if !crate::opsweb::host_is_loopback(head) {
+                return (403, msg(false, "Host must be a loopback name"));
+            }
+            if !crate::opsweb::origin_is_loopback(head) {
+                return (
+                    403,
+                    msg(false, "the request comes from another site (Origin)"),
+                );
+            }
         }
     }
     let path = req.path.trim_end_matches('/');
@@ -310,6 +321,29 @@ mod tests {
             handle(&sh, "POST /rooms/x/close HTTP/1.1\r\n\r\n", LO, None).0,
             400
         );
+    }
+
+    #[test]
+    fn another_sites_browser_request_cannot_stop_the_lobby_or_read_its_status() {
+        let sh = shared();
+        // a page of another site: a cross-site POST carries its Origin, a rebound name its Host
+        let csrf = "POST /rooms/1-9/close HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nOrigin: https://evil.example\r\n\r\n";
+        assert_eq!(handle(&sh, csrf, LO, None).0, 403);
+        let null = "POST /stop HTTP/1.1\r\nHost: localhost:10090\r\nOrigin: null\r\n\r\n";
+        assert_eq!(handle(&sh, null, LO, None).0, 403);
+        let rebound = "GET /status HTTP/1.1\r\nHost: evil.example:10090\r\n\r\n";
+        assert_eq!(handle(&sh, rebound, LO, None).0, 403);
+        // the tools (no Origin) and the operator's own loopback page still work
+        let tool = "GET /status HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n";
+        assert_eq!(handle(&sh, tool, LO, None).0, 200);
+        let own = "POST /rooms/1-9/close HTTP/1.1\r\nHost: localhost:10090\r\nOrigin: http://localhost:10090\r\n\r\n";
+        assert_eq!(
+            handle(&sh, own, LO, None).0,
+            404,
+            "passes the guard; no such room"
+        );
+        let v6 = "GET /net HTTP/1.1\r\nHost: [::1]:10090\r\nOrigin: http://[::1]:10090\r\n\r\n";
+        assert_eq!(handle(&sh, v6, LO, None).0, 200);
     }
 
     #[test]

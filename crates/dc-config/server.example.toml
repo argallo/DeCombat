@@ -275,7 +275,7 @@ no_key_reason = 153             # HS-7: 0x32f reason (0x99) when no usable key i
 latest = ""                     # newest release, "0.3.0"; an older client shows a notice and goes on; "" = no notice
 min_version = ""                # oldest client this lobby takes; an older one shows why and does not log in; "" = no refusal
 update_url = "https://github.com/argallo/DeCombat/releases/latest"  # the page the notice's button opens
-[client.download]               # LG-404 (proposed): direct https:// zip links for "Update now"; "" = the newest GitHub release
+[client.download]               # LG-404 (proposed): direct zip links for "Update now"; "" = the newest GitHub release; clients take only https://github.com/argallo/DeCombat/releases/download/<tag>/<file> (CLI-1864)
 windows = ""                    # e.g. https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-win-v0.4.0.zip
 macos = ""                      # e.g. .../DeCombat-mac-v0.4.0.zip
 

@@ -225,6 +225,16 @@ pub const MOVE_WINDOW_MS: u32 = 60_000;
 // DC-DEFAULT: NET-25 (proposed, project decision) 1000 ms
 pub const BYE_AFTER_MOVE_MS: u32 = 1_000;
 
+/// NET-27: the largest reliable message the receiver joins from split entries, in bits (8 MiB). A peer that keeps a
+/// message open past it is closed: the assembly buffer would otherwise grow with everything it sends.
+// DC-DEFAULT: NET-27 (proposed) a bound on the reliable assembly buffer
+pub const MAX_ASSEMBLY_BITS: usize = 8 * 1024 * 1024 * 8;
+
+/// NET-28: the most reliable messages a link keeps queued. A peer that makes this side queue more (it never acks
+/// while its requests keep asking for answers) is closed instead of growing the queue without end.
+// DC-DEFAULT: NET-28 (proposed) a bound on the reliable send queue
+pub const MAX_QUEUED_RELIABLE: usize = 65_536;
+
 /// The sender's copy of one reliable block.
 // SPEC: UDP_TRANSPORT_2009.md §11.2 (sent record: seq, block bits, entries, first_send, next_check, acked, count)
 #[derive(Debug, Clone)]
@@ -272,6 +282,10 @@ pub struct Link {
     rel_highest: u16,
     stored: Vec<RelBlock>,
     assembly: Option<BitWriter>,
+    /// NET-27: the assembly went past [`MAX_ASSEMBLY_BITS`]; the link closes after this datagram.
+    assembly_overflow: bool,
+    /// NET-28: a reliable message found the queue full; the link closes at its next update.
+    queue_overflow: bool,
     ack_due: bool,
     last_ack_sent: Millis,
     // timing
@@ -315,6 +329,8 @@ impl Link {
             rel_highest: 0,
             stored: Vec::new(),
             assembly: None,
+            assembly_overflow: false,
+            queue_overflow: false,
             ack_due: false,
             last_ack_sent: now,
             latency: Latency::default(),
@@ -523,6 +539,10 @@ impl Link {
             // quiet: accepted and discarded (nothing may leave)
             return true;
         }
+        if self.rel_queue.len() >= MAX_QUEUED_RELIABLE {
+            self.queue_overflow = true;
+            return false;
+        }
         if !msg.is_empty() {
             self.rel_queue.push_back(QueuedRel { msg, offset: 0 });
         }
@@ -669,6 +689,10 @@ impl Link {
         if let Some(block) = rx.rel {
             self.on_rel_block(block);
         }
+        if self.assembly_overflow {
+            self.close(now, Bye::Plain);
+            return;
+        }
         for bits in rx.unrel {
             self.stats.delivered_unrel += 1;
             self.events.push_back(LinkEvent::Message {
@@ -793,12 +817,20 @@ impl Link {
     /// Delivers a block's entries in order, joining split messages through the assembly buffer.
     // SPEC: UDP_TRANSPORT_2009.md §8.2 (receiver PLAUSIBLE)
     fn deliver_block(&mut self, block: &RelBlock) {
+        if self.assembly_overflow {
+            return;
+        }
         let n = block.entries.len();
         for (i, e) in block.entries.iter().enumerate() {
             let last = i + 1 == n;
             if i == 0 {
                 if let Some(acc) = self.assembly.as_mut() {
                     acc.append(e);
+                    if acc.bit_len() > MAX_ASSEMBLY_BITS {
+                        self.assembly = None;
+                        self.assembly_overflow = true;
+                        return;
+                    }
                     if last && block.tail_cont {
                         continue;
                     }
@@ -855,6 +887,10 @@ impl Link {
                 return;
             }
             LinkState::Open => {}
+        }
+        if self.queue_overflow {
+            self.close(now, Bye::Plain);
+            return;
         }
         self.flow.tick(now);
         self.latency.refresh(now);
@@ -1339,6 +1375,62 @@ mod tests {
         a.send_reliable(msg(41, 2));
         let d = transmits(&a.poll(1));
         assert_eq!(decode_link_datagram(&d[0]).unwrap().rel.unwrap().rel_seq, 2);
+    }
+
+    /// NET-27: a peer that keeps one reliable message open forever is closed once it passes the cap; the buffer
+    /// never holds more than the cap.
+    #[test]
+    fn an_endless_split_message_closes_the_link() {
+        let mut a = Link::new(0, LinkConfig::default());
+        let mut b = Link::new(0, LinkConfig::default());
+        let part = MAX_ASSEMBLY_BITS / 4;
+        for seq in 1..=6u16 {
+            b.on_rel_block(RelBlock {
+                rel_seq: seq,
+                tail_cont: true,
+                entries: vec![msg(part, seq as u8)],
+            });
+            assert!(b.assembly.as_ref().map_or(0, |x| x.bit_len()) <= MAX_ASSEMBLY_BITS);
+        }
+        assert!(b.assembly_overflow && b.assembly.is_none());
+        assert!(
+            messages(&b.poll(10)).is_empty(),
+            "nothing half-joined is delivered"
+        );
+        // the next good datagram from the peer closes the link
+        a.send_reliable(msg(40, 1));
+        let d = transmits(&a.poll(20));
+        b.handle_datagram(30, &d[0]);
+        assert!(!b.is_open());
+        assert!(b.poll(40).iter().any(|e| matches!(
+            e,
+            LinkEvent::Closed {
+                cause: CloseCause::Local,
+                ..
+            }
+        )));
+    }
+
+    /// NET-28: a peer that never acks while it keeps asking cannot grow this side's reliable queue without end.
+    #[test]
+    fn a_full_reliable_queue_closes_the_link() {
+        let mut a = Link::new(0, LinkConfig::default());
+        // nothing is acked and nothing is pumped: every message stays queued
+        for i in 0..MAX_QUEUED_RELIABLE {
+            assert!(a.send_reliable(msg(8, i as u8)));
+        }
+        assert!(!a.send_reliable(msg(8, 0)), "refused once full");
+        assert_eq!(a.queued_reliable(), MAX_QUEUED_RELIABLE);
+        let ev = a.poll(10);
+        assert!(!a.is_open());
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            LinkEvent::Closed {
+                cause: CloseCause::Local,
+                ..
+            }
+        )));
+        assert_eq!(a.queued_reliable(), 0, "the queue is let go");
     }
 
     #[test]

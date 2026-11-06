@@ -88,7 +88,9 @@ impl Default for ClientSection {
     }
 }
 
-/// `[client.download]`: the release zip of each platform, `https://` only; empty = the client finds the newest release.
+/// `[client.download]`: the release zip of each platform; empty = the client finds the newest release. Clients take
+/// only an official release download (`https://github.com/argallo/DeCombat/releases/download/<tag>/<file>`, CLI-1864)
+/// and ignore any other link; `dc-config check` warns about one.
 // DC-DEFAULT: LG-404 (proposed, USER REQUEST 2026-11-04)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]

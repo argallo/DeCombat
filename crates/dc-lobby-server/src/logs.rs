@@ -96,7 +96,35 @@ fn masked(frame_id: i32, to_client: bool, payload: &[u8]) -> std::borrow::Cow<'_
             *u = [b'*', 0];
         }
     }
+    mask_identity_token(&mut v[LOGIN_NAME_AT..LOGIN_PASSWORD_AT]);
     std::borrow::Cow::Owned(v)
+}
+
+/// Where the login-name field of a login request starts (wstr[4096] at +6, wire.rs).
+const LOGIN_NAME_AT: usize = 6;
+
+/// LG-417: an identity token in the login-name field (`tok:<token>`, LG-68) is a password for its lifetime: every
+/// UTF-16 unit after the prefix up to the field's end is written as `*`, the prefix and the length stay.
+// DC-DEFAULT: LG-417 (proposed) the packet log never holds an identity token
+fn mask_identity_token(field: &mut [u8]) {
+    let units: Vec<u16> = field
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|u| u16::from_le_bytes(*u))
+        .take_while(|&u| u != 0)
+        .collect();
+    let prefix: Vec<u16> = crate::identity::LOGIN_PREFIX.encode_utf16().collect();
+    let lower = |u: u16| if (65..=90).contains(&u) { u + 32 } else { u };
+    let Some(at) = units
+        .windows(prefix.len())
+        .position(|w| w.iter().zip(&prefix).all(|(a, b)| lower(*a) == *b))
+    else {
+        return;
+    };
+    for u in &mut field.as_chunks_mut::<2>().0[at + prefix.len()..units.len()] {
+        *u = [b'*', 0];
+    }
 }
 
 /// One packet-log line: `<time> <kind>#<sid> <dir> <fid> <hex>`.
@@ -230,6 +258,33 @@ mod tests {
         // other frames are untouched
         let l = pkt_line("t", Listener::Auth, 1, false, 0x206, &p);
         assert!(l.contains(&enc("hunter2pass")));
+    }
+
+    #[test]
+    fn a_login_packet_log_line_never_holds_an_identity_token() {
+        let enc = |s: &str| -> String {
+            s.encode_utf16()
+                .flat_map(|u| u.to_le_bytes())
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let frame = |name: &str| {
+            let mut p = vec![0u8; 0x2054];
+            for (i, u) in name.encode_utf16().enumerate() {
+                p[6 + i * 2..6 + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+            }
+            p
+        };
+        let field = "tok:eyJhbGciOi.c2lnbmF0dXJl";
+        let l = pkt_line("t", Listener::Auth, 1, false, 0x200, &frame(field));
+        assert!(
+            !l.contains(&enc("eyJhbGciOi")) && !l.contains(&enc("c2lnbmF0dXJl")),
+            "{l}"
+        );
+        assert!(l.contains(&enc(&format!("tok:{}", "*".repeat(field.len() - 4)))));
+        // a plain login name stays readable
+        let l = pkt_line("t", Listener::Auth, 1, false, 0x200, &frame("LOCAL:erika"));
+        assert!(l.contains(&enc("LOCAL:erika")));
     }
 
     #[test]

@@ -1462,6 +1462,36 @@ fn client_versions_are_checked() {
         &check(&bad, CheckOptions::default()),
         "client.download.macos"
     ));
+    // CLI-1864: a link outside the official release download is a warning (clients ignore it), not an error
+    let warned = |issues: &[Issue], path: &str| {
+        issues.iter().any(|i| {
+            !i.is_error() && i.path == path && i.message.contains("clients ignore this link")
+        })
+    };
+    assert!(warned(&good, "client.download.windows"), "{good:?}");
+    let mut official = parsed.clone();
+    official.client.download.windows =
+        "https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-win-v0.4.0.zip"
+            .into();
+    official.client.download.macos =
+        "https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-mac-v0.4.0.zip"
+            .into();
+    let fine = check(&official, CheckOptions::default());
+    assert!(
+        !fine.iter().any(|i| i.path.starts_with("client.download")),
+        "{fine:?}"
+    );
+    for other in [
+        "https://github.com/someone/DeCombat/releases/download/v0.4.0/DeCombat-win-v0.4.0.zip",
+        "https://github.com/argallo/DeCombat/releases/download/../x.zip",
+        "https://github.com/argallo/DeCombat/releases/download/v0.4.0/a/x.zip",
+    ] {
+        let mut c = official.clone();
+        c.client.download.windows = other.into();
+        let issues = check(&c, CheckOptions::default());
+        assert!(warned(&issues, "client.download.windows"), "{other}");
+        assert!(!has_err(&issues, "client.download.windows"), "{other}");
+    }
 }
 
 // LG-370: the beta section is off by default and, when on, needs plain origins and one reply address

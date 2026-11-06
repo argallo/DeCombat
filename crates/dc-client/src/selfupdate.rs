@@ -3,8 +3,9 @@
 //!
 //! 1. What is offered: a release build hears of a newer release from its lobby ([`crate::clientver`], LG-322 /
 //!    LG-404); a friend pack (a development build) reads `latest.json` in the folder its `pack.json` names.
-//! 2. The download: the lobby's direct zip link, else the newest GitHub release's `DeCombat-win-<tag>.zip`, over
-//!    HTTPS only, checked against the release's `SHA256SUMS` when it has one. A friend pack's zip is a local file.
+//! 2. The download: the lobby's direct zip link when it is an official release download ([`OFFICIAL_DOWNLOAD`]),
+//!    else the newest GitHub release's `DeCombat-win-<tag>.zip`, over HTTPS to GitHub's hosts only, and installed
+//!    only when the same release's `SHA256SUMS` lists its sum. A friend pack's zip is a local file.
 //! 3. The zip is unpacked (every name checked, every entry's CRC) into `dc-update/new` of the game folder; a copy of
 //!    this exe in `dc-update/` is started as the helper (`--finish-update`) and this client quits.
 //! 4. The helper waits for the client to end, moves the staged files over the game folder (the replaced ones go to
@@ -24,6 +25,17 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_PAGE: &str = "https://github.com/argallo/DeCombat/releases/latest";
 /// The public releases of the game (GitHub's REST API, public documentation).
 pub const RELEASES_API: &str = "https://api.github.com/repos/argallo/DeCombat/releases";
+/// The only place an update zip and its `SHA256SUMS` are taken from: `<this><tag>/<file>` (CLI-1864, LG-404).
+// DC-DEFAULT: CLI-1864 (security rule: a lobby cannot name the client's code), see DC_DEFAULTS.md
+pub const OFFICIAL_DOWNLOAD: &str = "https://github.com/argallo/DeCombat/releases/download/";
+/// The hosts an update may talk to (port 443): the release API, the release download, and the asset storage GitHub
+/// redirects a download to (`release-assets.` today, `objects.` before 2025).
+pub const UPDATE_HOSTS: [&str; 4] = [
+    "api.github.com",
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+];
 /// The folder of an update inside the game folder: `new/` (staged), `old/` (replaced), the helper, the result.
 pub const UPDATE_DIR: &str = "dc-update";
 pub const STAGING_DIR: &str = "new";
@@ -90,6 +102,32 @@ pub fn download_url(raw: &str) -> Option<String> {
     (raw.starts_with("https://") && safe_url(raw)).then(|| raw.to_string())
 }
 
+/// `(tag, file)` of an official release download `<OFFICIAL_DOWNLOAD><tag>/<file>`: no query, no further folder,
+/// each part 1..=100 of `A-Z a-z 0-9 . _ + -` and not starting with a dot (so no `..`, no escapes).
+pub fn official_release(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix(OFFICIAL_DOWNLOAD)?;
+    let (tag, file) = rest.split_once('/')?;
+    let part = |s: &str| {
+        (1..=100).contains(&s.len())
+            && !s.starts_with('.')
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+    };
+    (part(tag) && part(file)).then_some((tag, file))
+}
+
+/// The lobby's direct link when it is an official release download; another one is dropped with a log line and the
+/// update looks the release up on GitHub instead.
+pub fn official_link(url: &str) -> Option<&str> {
+    if official_release(url).is_some() {
+        return Some(url);
+    }
+    eprintln!(
+        "dc-client update: the lobby's download link {url} is not under {OFFICIAL_DOWNLOAD}; ignored, the GitHub release is looked up instead"
+    );
+    None
+}
+
 #[cfg(test)]
 pub(crate) static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -148,7 +186,7 @@ pub fn reveal(file: &Path) {
 
 // ------------------------------------------------------------------------------------------------ the offer
 
-/// The lobby document's `download` map (LG-404): a direct `https://` zip per platform.
+/// The lobby document's `download` map (LG-404): a direct zip per platform, kept only when [`official_release`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Downloads {
     pub windows: Option<String>,
@@ -162,6 +200,7 @@ impl Downloads {
                 .and_then(|d| d.get(k))
                 .and_then(|x| x.as_str())
                 .and_then(download_url)
+                .filter(|u| official_link(u).is_some())
         };
         Downloads {
             windows: at("windows"),
@@ -272,16 +311,21 @@ pub fn sum_for(sums: &str, name: &str) -> Option<String> {
     })
 }
 
-/// The download checked against the release's sums: `Ok(true)` verified, `Ok(false)` no sums to check against,
-/// `Err` when the sums do not list the file or name another sum.
-pub fn check_sum(sums: Option<&str>, name: &str, bytes: &[u8]) -> Result<bool, String> {
+/// The download checked against the release's sums: `Ok` only when they list this file's sum. No sums (missing,
+/// unreadable), no line for the file or another sum all refuse the install (CLI-1864; no unverified install).
+pub fn check_sum(sums: Option<&str>, name: &str, bytes: &[u8]) -> Result<(), String> {
+    const NOT: &str = "it could not be verified";
     let Some(sums) = sums else {
-        return Ok(false);
+        return Err(format!("{NOT} (the release has no SHA256SUMS)."));
     };
     match sum_for(sums, name) {
-        Some(want) if want == sha256_hex(bytes) => Ok(true),
-        Some(_) => Err(format!("{name} does not match the release's SHA256SUMS")),
-        None => Err(format!("the release's SHA256SUMS does not list {name}")),
+        Some(want) if want == sha256_hex(bytes) => Ok(()),
+        Some(_) => Err(format!(
+            "{NOT} ({name} does not match the release's SHA256SUMS)."
+        )),
+        None => Err(format!(
+            "{NOT} (the release's SHA256SUMS does not list {name})."
+        )),
     }
 }
 
@@ -331,7 +375,8 @@ pub fn pick_release(doc: &serde_json::Value, p: Platform) -> Option<Release> {
             .filter_map(|a| {
                 Some(Asset {
                     name: a.get("name")?.as_str()?.to_string(),
-                    url: download_url(a.get("browser_download_url")?.as_str()?)?,
+                    url: download_url(a.get("browser_download_url")?.as_str()?)
+                        .filter(|u| official_release(u).is_some())?,
                 })
             })
             .collect();
@@ -623,22 +668,13 @@ pub fn get(
     })
 }
 
-/// The last part of an address's path (the asset's file name).
-pub fn file_name_of(url: &str) -> Option<String> {
-    let path = url.split(['?', '#']).next()?;
-    let name = path.rsplit('/').next()?;
-    (!name.is_empty() && mods_safe(name)).then(|| name.to_string())
-}
-
 fn mods_safe(name: &str) -> bool {
     !name.contains('/') && crate::mods::safe_entry_name(name)
 }
 
-/// The `SHA256SUMS` next to a release asset (`.../download/<tag>/<file>` -> `.../download/<tag>/SHA256SUMS`).
-pub fn sums_url_next_to(url: &str) -> Option<String> {
-    let path = url.split(['?', '#']).next()?;
-    let (dir, _) = path.rsplit_once('/')?;
-    (dir.len() > "https://".len()).then(|| format!("{dir}/SHA256SUMS"))
+/// The `SHA256SUMS` of the same official release as `url` (`<OFFICIAL_DOWNLOAD><tag>/SHA256SUMS`).
+pub fn sums_url_of(url: &str) -> Option<String> {
+    official_release(url).map(|(tag, _)| format!("{OFFICIAL_DOWNLOAD}{tag}/SHA256SUMS"))
 }
 
 // ------------------------------------------------------------------------------------------------ friend packs
@@ -1249,30 +1285,65 @@ fn progress_of(what: &'static str) -> impl FnMut(u64, u64) {
     }
 }
 
-/// The zip of a release: (file name, bytes, verified against SHA256SUMS).
-fn fetch_release(have: [u32; 3], direct: Option<&str>) -> Result<(String, Vec<u8>, bool), String> {
-    let (name, zip_url, sums_url) = match direct {
-        Some(u) => (
-            file_name_of(u).ok_or("the lobby's download link names no file")?,
-            u.to_string(),
-            sums_url_next_to(u),
-        ),
+/// The zip of a release (file name, bytes), checked against the same release's SHA256SUMS.
+fn fetch_release(have: [u32; 3], direct: Option<&str>) -> Result<(String, Vec<u8>), String> {
+    fetch_release_with(
+        have,
+        direct,
+        &mut |u| {
+            dc_botclient::tls::connect_public(&u.host, u.port, NET_TIMEOUT)
+                .map(|c| Box::new(c) as Box<dyn Conn>)
+        },
+        &mut busy,
+        &mut progress_of("Downloading the update"),
+    )
+}
+
+/// `Ok` for a request an update may make: one of [`UPDATE_HOSTS`] on port 443.
+pub fn on_github(u: &HttpsUrl) -> Result<(), String> {
+    if u.port == 443 && UPDATE_HOSTS.contains(&u.host.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "the download was sent to {}, which is not GitHub's release download",
+        u.host
+    ))
+}
+
+/// [`fetch_release`] through `connect`: every request (redirects too) goes only to [`UPDATE_HOSTS`] on port 443; a
+/// `direct` link that is not an [`official_release`] is ignored (the GitHub release is looked up as if none was
+/// named); the zip is returned only when the same release's SHA256SUMS lists its sum.
+pub(crate) fn fetch_release_with(
+    have: [u32; 3],
+    direct: Option<&str>,
+    connect: &mut Connector<'_>,
+    stage: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<(String, Vec<u8>), String> {
+    let mut github = |u: &HttpsUrl| -> Result<Box<dyn Conn>, String> {
+        on_github(u)?;
+        connect(u)
+    };
+    let zip_url = match direct.and_then(official_link) {
+        Some(u) => u.to_string(),
         None => {
-            busy("Looking for the new version");
+            stage("Looking for the new version");
             let json = "application/vnd.github+json";
-            let mut r = get(
+            let mut r = get_with(
                 &format!("{RELEASES_API}/latest"),
                 MAX_API,
                 json,
                 &mut |_, _| {},
+                &mut github,
             )?;
             if r.status == 404 {
                 // only pre-releases so far: the newest of the list
-                r = get(
+                r = get_with(
                     &format!("{RELEASES_API}?per_page=10"),
                     MAX_API,
                     json,
                     &mut |_, _| {},
+                    &mut github,
                 )?;
             }
             if r.status != 200 {
@@ -1288,28 +1359,28 @@ fn fetch_release(have: [u32; 3], direct: Option<&str>) -> Result<(String, Vec<u8
                     rel.tag
                 ));
             }
-            (rel.zip.name, rel.zip.url, rel.sums.map(|s| s.url))
+            rel.zip.url
         }
     };
-    let r = get(
+    let (_, name) = official_release(&zip_url).ok_or("the release's download is not official")?;
+    let sums_url = sums_url_of(&zip_url).ok_or("the release's download is not official")?;
+    let r = get_with(
         &zip_url,
         MAX_ZIP,
         "application/octet-stream",
-        &mut progress_of("Downloading the update"),
+        progress,
+        &mut github,
     )?;
     if r.status != 200 {
         return Err(format!("the download answered {}", r.status));
     }
-    busy("Checking the download");
-    let sums = sums_url
-        .and_then(|u| get(&u, MAX_SUMS, "*/*", &mut |_, _| {}).ok())
-        .filter(|s| s.status == 200);
-    let sums = sums.map(|s| String::from_utf8_lossy(&s.body).into_owned());
-    let verified = check_sum(sums.as_deref(), &name, &r.body)?;
-    if !verified {
-        eprintln!("dc-client update: {name} has no SHA256SUMS to check against");
-    }
-    Ok((name, r.body, verified))
+    stage("Checking the download");
+    let sums = get_with(&sums_url, MAX_SUMS, "*/*", &mut |_, _| {}, &mut github)
+        .ok()
+        .filter(|s| s.status == 200)
+        .map(|s| String::from_utf8_lossy(&s.body).into_owned());
+    check_sum(sums.as_deref(), name, &r.body)?;
+    Ok((name.to_string(), r.body))
 }
 
 fn run(o: &Offer) -> Result<Phase, String> {
@@ -1325,10 +1396,7 @@ fn run(o: &Offer) -> Result<Phase, String> {
         ));
     }
     let (name, bytes) = match &o.source {
-        Source::Release { have, zip } => {
-            let (name, bytes, _) = fetch_release(*have, zip.as_deref())?;
-            (name, bytes)
-        }
+        Source::Release { have, zip } => fetch_release(*have, zip.as_deref())?,
         Source::Local { zip, .. } => {
             busy("Reading the update");
             let name = zip

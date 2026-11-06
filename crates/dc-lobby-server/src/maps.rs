@@ -49,7 +49,7 @@ pub fn radar_field(r: &RadarInfo) -> Option<String> {
     };
     Some(format!(
         "radar={}|{}|{}|{}|{}|{}|{}",
-        picture.replace(' ', "_"),
+        one_token(picture),
         vec(scale),
         vec(origin),
         float_text(0.0),
@@ -57,6 +57,21 @@ pub fn radar_field(r: &RadarInfo) -> Option<String> {
         RADAR_PICTURE_SIZE,
         RADAR_PICTURE_SIZE
     ))
+}
+
+/// LG-418: a mod's text as one token of the room line, which reaches the game server's stdin: every space, line break
+/// or other control character becomes `_`, so a map record cannot end the line and start a pipe command of its own.
+// DC-DEFAULT: LG-418 (proposed) the room line's mod-supplied fields hold no whitespace or control characters
+fn one_token(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_whitespace() || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// A real with a decimal point (`1.0`, not `1`), the spelling dc_bute's room line uses.
@@ -101,7 +116,7 @@ impl CommunityMap {
             .then_some(())?;
         let world = self.record.world.trim();
         let (pack, _) = world.rsplit_once("/assets/")?;
-        Some(format!("{pack}/assets/pictures/{file}").replace(' ', "_"))
+        Some(one_token(&format!("{pack}/assets/pictures/{file}")))
     }
 
     /// The map key (`record.id`).
@@ -770,6 +785,18 @@ DefaultGoal=5
                 max: [10.0, 10.0]
             }),
             None
+        );
+        // LG-418: a picture name with a line break cannot start a pipe command of its own
+        let f = radar_field(&RadarInfo {
+            picture: "p.dtx\nquit\r\u{2028}x y".into(),
+            min: [0.0, 0.0],
+            max: [10.0, 10.0],
+        })
+        .unwrap();
+        assert!(f.starts_with("radar=p.dtx_quit__x_y|"), "{f}");
+        assert!(
+            !f.chars().any(|c| c.is_whitespace() || c.is_control()),
+            "{f:?}"
         );
         // a ROM line's own radar token is dropped before ours is appended
         assert_eq!(

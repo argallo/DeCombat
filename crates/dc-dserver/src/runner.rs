@@ -34,6 +34,18 @@ pub const EXIT_NO_SOCKET: i32 = 3;
 /// Exit code: the `-content` document is malformed or its patches do not fit the weapon table (DSV-478).
 pub const EXIT_BAD_CONTENT: i32 = 4;
 
+/// DSV-609: the most source addresses the per-peer datagram counts keep; later ones are not counted.
+// DC-DEFAULT: DSV-609 (proposed) a bound on the per-peer statistics (junk from spoofed sources)
+pub const PER_PEER_MAX: usize = 1024;
+
+/// Counts one datagram (column `i`) for `a`, unless the table is full and `a` is not in it (DSV-609).
+fn count_peer(m: &mut std::collections::BTreeMap<SocketAddr, [u64; 3]>, a: SocketAddr, i: usize) {
+    if m.len() >= PER_PEER_MAX && !m.contains_key(&a) {
+        return;
+    }
+    m.entry(a).or_default()[i] += 1;
+}
+
 struct Sink {
     file: Option<File>,
     start: Instant,
@@ -298,7 +310,7 @@ pub fn run(args: Args) -> i32 {
             match got {
                 Some(Ok((data, from))) => {
                     received += 1;
-                    per_peer.entry(from).or_default()[0] += 1;
+                    count_peer(&mut per_peer, from, 0);
                     server.handle_datagram(now(), from, &data)
                 }
                 // an oversized datagram fails recvfrom and is dropped (spec §4); anything else: logged (the first few)
@@ -327,10 +339,10 @@ pub fn run(args: Args) -> i32 {
                 Output::Transmit { to, bytes } => {
                     // a failed send is logged (the first few): a datagram that never left is otherwise invisible
                     sent += 1;
-                    per_peer.entry(to).or_default()[1] += 1;
+                    count_peer(&mut per_peer, to, 1);
                     if let Err(e) = sock.send_to(&bytes, to) {
                         send_errors += 1;
-                        per_peer.entry(to).or_default()[2] += 1;
+                        count_peer(&mut per_peer, to, 2);
                         if send_errors <= 5 {
                             sink.log(&format!(
                                 "dc-dserver: send to {to} failed ({} bytes): {e} [failure {send_errors}]",
@@ -368,5 +380,23 @@ pub fn run(args: Args) -> i32 {
                 return 0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod per_peer_tests {
+    use super::*;
+
+    #[test]
+    fn the_per_peer_counts_stop_growing_at_their_cap() {
+        let mut m = std::collections::BTreeMap::new();
+        for p in 0..(PER_PEER_MAX as u32 + 500) {
+            let a = SocketAddr::from(([10, (p >> 16) as u8, (p >> 8) as u8, p as u8], 5000));
+            count_peer(&mut m, a, 0);
+        }
+        assert_eq!(m.len(), PER_PEER_MAX);
+        let known = SocketAddr::from(([10, 0, 0, 0], 5000));
+        count_peer(&mut m, known, 1);
+        assert_eq!(m[&known], [1, 1, 0], "a known address is still counted");
     }
 }

@@ -82,7 +82,9 @@ macos = "https://github.com/argallo/DeCombat/releases/download/v0.3.0/DeCombat-m
 ```
 
 `sudo -u decombat /opt/decombat/bin/dc-config check /opt/decombat/config/server.toml` checks the numbers and that the
-links are `https://`. A client asks `GET /client_version.json` on the web port before its login. Only a build from a `v*`
+links are `https://`. Clients take a `[client.download]` zip only from the official release download
+(`https://github.com/argallo/DeCombat/releases/download/<tag>/<file>`): any other link is ignored (the client looks the
+release up on GitHub instead), and `dc-config check` and the lobby's start log warn about it. A client asks `GET /client_version.json` on the web port before its login. Only a build from a `v*`
 tag knows its version: other builds (a friend zip from master, a local build) and clients older than this feature never
 ask. So `min_version` cannot turn away a modified or old client: it is a courtesy that replaces a strange failure with a
 clear message, not access control. Raise it only after the release is out, or nobody can log in until they can download it.

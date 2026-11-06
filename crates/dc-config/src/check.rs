@@ -97,6 +97,24 @@ pub fn public_loopback_advertise(public: bool, bind: &str, advertise: &str) -> O
     })
 }
 
+/// The one place a client takes an update zip from (the client's own rule, CLI-1864): `<this><tag>/<file>`.
+pub const OFFICIAL_DOWNLOAD: &str = "https://github.com/argallo/DeCombat/releases/download/";
+
+/// True for `<OFFICIAL_DOWNLOAD><tag>/<file>` with no query or further folder, each part 1..=100 of
+/// `A-Z a-z 0-9 . _ + -` not starting with a dot: the links a client's "Update now" accepts.
+// DC-DEFAULT: CLI-1864 / LG-404, see DC_DEFAULTS.md
+pub fn official_release_download(url: &str) -> bool {
+    let part = |s: &str| {
+        (1..=100).contains(&s.len())
+            && !s.starts_with('.')
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+    };
+    url.strip_prefix(OFFICIAL_DOWNLOAD)
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(tag, file)| part(tag) && part(file))
+}
+
 /// Validate `cfg`. Returns all issues (errors and warnings); the config is usable when none is an error.
 pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     let mut out = Vec::new();
@@ -791,6 +809,14 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             out.push(Issue::error(
                 key,
                 "an https:// address of at most 300 characters, no spaces or quotes",
+            ));
+        } else if !v.is_empty() && !official_release_download(v) {
+            // DC-DEFAULT: CLI-1864 / LG-404 clients take a zip only from the official release download
+            out.push(Issue::warning(
+                key,
+                format!(
+                    "is not under {OFFICIAL_DOWNLOAD}<tag>/<file>: clients ignore this link and look up the newest GitHub release instead"
+                ),
             ));
         }
     }

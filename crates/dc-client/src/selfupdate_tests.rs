@@ -101,15 +101,23 @@ fn only_plain_web_addresses_reach_the_browser() {
 #[test]
 fn the_download_map_takes_https_links_per_platform() {
     let v: serde_json::Value = serde_json::from_str(
-        r#"{"download":{"windows":"https://a.org/DeCombat-win-v1.0.0.zip","macos":"http://a.org/m.zip","linux":"https://x"}}"#,
+        r#"{"download":{"windows":"https://github.com/argallo/DeCombat/releases/download/v1.0.0/DeCombat-win-v1.0.0.zip","macos":"http://a.org/m.zip","linux":"https://x"}}"#,
     )
     .unwrap();
     let d = Downloads::from_doc(&v);
     assert_eq!(
         d.windows.as_deref(),
-        Some("https://a.org/DeCombat-win-v1.0.0.zip")
+        Some(
+            "https://github.com/argallo/DeCombat/releases/download/v1.0.0/DeCombat-win-v1.0.0.zip"
+        )
     );
     assert_eq!(d.macos, None);
+    // CLI-1864: a link outside the official release download is dropped (the GitHub release is looked up instead)
+    let other: serde_json::Value = serde_json::from_str(
+        r#"{"download":{"windows":"https://a.org/DeCombat-win-v1.0.0.zip","macos":"https://github.com/someone/DeCombat/releases/download/v1.0.0/DeCombat-mac-v1.0.0.zip"}}"#,
+    )
+    .unwrap();
+    assert_eq!(Downloads::from_doc(&other), Downloads::default());
     assert_eq!(
         Downloads::from_doc(&serde_json::json!({})),
         Downloads::default()
@@ -142,11 +150,184 @@ fn sha256sums_are_looked_up_by_file_name() {
     assert_eq!(sum_for("zz  x.zip", "x.zip"), None);
     assert_eq!(
         check_sum(Some(&sums), "DeCombat-win-v1.0.0.zip", zip),
-        Ok(true)
+        Ok(())
     );
     assert!(check_sum(Some(&sums), "DeCombat-win-v1.0.0.zip", b"another zip").is_err());
     assert!(check_sum(Some(&sums), "DeCombat-win-v9.zip", zip).is_err());
-    assert_eq!(check_sum(None, "DeCombat-win-v1.0.0.zip", zip), Ok(false));
+    // CLI-1864: no sums, or sums that list nothing readable, refuse the install
+    for sums in [None, Some(""), Some("not a sums file")] {
+        let e = check_sum(sums, "DeCombat-win-v1.0.0.zip", zip).unwrap_err();
+        assert!(e.contains("could not be verified"), "{e}");
+    }
+}
+
+// CLI-1864: only `<OFFICIAL_DOWNLOAD><tag>/<file>` is a download the client takes
+#[test]
+fn only_the_official_release_download_is_taken() {
+    let ok = "https://github.com/argallo/DeCombat/releases/download/v0.2.0-beta3/DeCombat-win-v0.2.0-beta3.zip";
+    assert_eq!(
+        official_release(ok),
+        Some(("v0.2.0-beta3", "DeCombat-win-v0.2.0-beta3.zip"))
+    );
+    assert_eq!(
+        sums_url_of(ok).as_deref(),
+        Some("https://github.com/argallo/DeCombat/releases/download/v0.2.0-beta3/SHA256SUMS")
+    );
+    assert_eq!(official_link(ok), Some(ok));
+    for bad in [
+        "https://example.org/argallo/DeCombat/releases/download/v1/DeCombat-win-v1.zip",
+        "https://github.com.evil.org/argallo/DeCombat/releases/download/v1/DeCombat-win-v1.zip",
+        "https://evil.org/https://github.com/argallo/DeCombat/releases/download/v1/x.zip",
+        "http://github.com/argallo/DeCombat/releases/download/v1/DeCombat-win-v1.zip",
+        "https://github.com/someone/DeCombat/releases/download/v1/DeCombat-win-v1.zip",
+        "https://github.com/argallo/Other/releases/download/v1/DeCombat-win-v1.zip",
+        "https://github.com/argallo/decombat/releases/download/v1/DeCombat-win-v1.zip",
+        "https://github.com/argallo/DeCombat/releases/download/../../../someone/x/releases/download/v1/a.zip",
+        "https://github.com/argallo/DeCombat/releases/download/../x.zip",
+        "https://github.com/argallo/DeCombat/releases/download/%2e%2e/x.zip",
+        "https://github.com/argallo/DeCombat/releases/download/v1/../x.zip",
+        "https://github.com/argallo/DeCombat/releases/download/v1/a/x.zip",
+        "https://github.com/argallo/DeCombat/releases/download/v1/x.zip?redirect=https://evil.org",
+        "https://github.com/argallo/DeCombat/releases/download/v1/",
+        "https://github.com/argallo/DeCombat/releases/download//x.zip",
+        "https://github.com/argallo/DeCombat/releases/download/v1",
+    ] {
+        assert_eq!(official_release(bad), None, "{bad}");
+        assert_eq!(official_link(bad), None, "{bad}");
+        assert_eq!(sums_url_of(bad), None, "{bad}");
+    }
+}
+
+/// A canned GitHub for [`fetch_release_with`]: the release API names `tag`'s zip, the download redirects to the
+/// asset storage, the storage answers `zip` and (when `sums` is set) the SHA256SUMS. Records every host and path.
+fn canned_github(
+    tag: &'static str,
+    zip: &'static [u8],
+    sums: Option<String>,
+    hosts: std::sync::Arc<Mutex<Vec<String>>>,
+) -> impl FnMut(&HttpsUrl) -> Result<Box<dyn Conn>, String> {
+    move |u: &HttpsUrl| {
+        lock(&hosts).push(format!("{}{}", u.host, u.path));
+        let ok = |body: &[u8]| {
+            let mut a =
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+            a.extend_from_slice(body);
+            a
+        };
+        let dl = format!("/argallo/DeCombat/releases/download/{tag}/");
+        let answer = match (u.host.as_str(), u.path.as_str()) {
+            ("api.github.com", p) if p.ends_with("/latest") => {
+                ok(release_json(tag, false).to_string().as_bytes())
+            }
+            ("github.com", p) if p.starts_with(&dl) => format!(
+                "HTTP/1.1 302 Found\r\nLocation: https://release-assets.githubusercontent.com/asset/{}?sig=1\r\n\r\n",
+                &p[dl.len()..]
+            )
+            .into_bytes(),
+            ("release-assets.githubusercontent.com", p) if p.starts_with("/asset/SHA256SUMS") => {
+                match &sums {
+                    Some(s) => ok(s.as_bytes()),
+                    None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                }
+            }
+            ("release-assets.githubusercontent.com", _) => ok(zip),
+            _ => b"HTTP/1.1 302 Found\r\nLocation: https://evil.example.org/x.zip\r\n\r\n".to_vec(),
+        };
+        Ok(Box::new(Canned {
+            answer: Cursor::new(answer),
+            asked: std::sync::Arc::new(Mutex::new(Vec::new())),
+        }) as Box<dyn Conn>)
+    }
+}
+
+// CLI-1864: a lobby link outside the official download is ignored and the GitHub release is taken; its sums decide
+#[test]
+fn a_foreign_lobby_link_falls_back_to_the_github_release() {
+    let zip: &'static [u8] = b"the official zip";
+    let name = "DeCombat-win-v0.4.0.zip";
+    let sums = format!("{}  {name}\n", sha256_hex(zip));
+    let hosts = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let mut gh = canned_github("v0.4.0", zip, Some(sums.clone()), hosts.clone());
+    let (got, bytes) = fetch_release_with(
+        [0, 3, 0],
+        Some("https://evil.example.org/DeCombat-win-v0.4.0.zip"),
+        &mut gh,
+        &mut |_| {},
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!((got.as_str(), bytes.as_slice()), (name, zip));
+    let asked = lock(&hosts).clone();
+    assert!(asked[0].starts_with("api.github.com/"), "{asked:?}");
+    assert!(!asked.iter().any(|h| h.contains("evil")), "{asked:?}");
+    assert!(
+        asked
+            .iter()
+            .any(|h| h.ends_with("/download/v0.4.0/SHA256SUMS")),
+        "{asked:?}"
+    );
+    // the official direct link is taken without the API
+    let hosts = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let mut gh = canned_github("v0.4.0", zip, Some(sums), hosts.clone());
+    let direct = format!("{OFFICIAL_DOWNLOAD}v0.4.0/{name}");
+    let (got, _) = fetch_release_with(
+        [0, 3, 0],
+        Some(&direct),
+        &mut gh,
+        &mut |_| {},
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(got, name);
+    let asked = lock(&hosts).clone();
+    assert!(asked.iter().all(|h| !h.starts_with("api.")), "{asked:?}");
+}
+
+// CLI-1864: no SHA256SUMS, or one that does not list the zip, refuses the install
+#[test]
+fn an_update_without_its_sums_is_refused() {
+    let zip: &'static [u8] = b"the official zip";
+    let direct = format!("{OFFICIAL_DOWNLOAD}v0.4.0/DeCombat-win-v0.4.0.zip");
+    for sums in [
+        None,
+        Some("garbage".to_string()),
+        Some(format!("{}  other.zip\n", sha256_hex(zip))),
+    ] {
+        let hosts = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut gh = canned_github("v0.4.0", zip, sums, hosts);
+        let e = fetch_release_with(
+            [0, 3, 0],
+            Some(&direct),
+            &mut gh,
+            &mut |_| {},
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(e.contains("could not be verified"), "{e}");
+    }
+}
+
+// CLI-1864: a redirect away from GitHub's hosts ends the download before that host is reached
+#[test]
+fn an_update_redirected_off_github_is_refused() {
+    let hosts = std::sync::Arc::new(Mutex::new(Vec::new()));
+    // the canned GitHub sends a path it does not know (another tag) to evil.example.org
+    let mut gh = canned_github("v0.4.0", b"zip", None, hosts.clone());
+    let direct = format!("{OFFICIAL_DOWNLOAD}v0.9.9/DeCombat-win-v0.9.9.zip");
+    let e = fetch_release_with(
+        [0, 3, 0],
+        Some(&direct),
+        &mut gh,
+        &mut |_| {},
+        &mut |_, _| {},
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("evil.example.org") && e.contains("not GitHub"),
+        "{e}"
+    );
+    let asked = lock(&hosts).clone();
+    assert!(!asked.iter().any(|h| h.contains("evil")), "{asked:?}");
 }
 
 fn release_json(tag: &str, draft: bool) -> serde_json::Value {
@@ -237,14 +418,6 @@ fn addresses_split_into_host_port_and_path() {
     ] {
         assert!(parse_https(bad).is_err(), "{bad}");
     }
-    let u = "https://github.com/argallo/DeCombat/releases/download/v0.4.0/DeCombat-win-v0.4.0.zip";
-    assert_eq!(file_name_of(u).as_deref(), Some("DeCombat-win-v0.4.0.zip"));
-    assert_eq!(
-        sums_url_next_to(u).as_deref(),
-        Some("https://github.com/argallo/DeCombat/releases/download/v0.4.0/SHA256SUMS")
-    );
-    assert_eq!(file_name_of("https://h/"), None);
-    assert_eq!(file_name_of("https://h/..").as_deref(), None);
 }
 
 fn read(reply: &str, cap: u64) -> Result<Reply, String> {
@@ -735,12 +908,15 @@ fn live_github_release_lookup() {
     let doc: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
     let rel = pick_release(&doc, Platform::Windows).expect("a release with the Windows zip");
     eprintln!("{} {:?} {}", rel.tag, rel.version, rel.zip.url);
-    let sums = get(
-        &rel.sums.expect("SHA256SUMS").url,
-        MAX_SUMS,
-        "*/*",
-        &mut |_, _| {},
-    )
+    // the official form and GitHub's real redirect chain pass the update's host rule (CLI-1864)
+    assert!(official_release(&rel.zip.url).is_some(), "{}", rel.zip.url);
+    let sums_url = sums_url_of(&rel.zip.url).unwrap();
+    assert_eq!(rel.sums.expect("SHA256SUMS").url, sums_url);
+    let sums = get_with(&sums_url, MAX_SUMS, "*/*", &mut |_, _| {}, &mut |u| {
+        on_github(u)?;
+        dc_botclient::tls::connect_public(&u.host, u.port, NET_TIMEOUT)
+            .map(|c| Box::new(c) as Box<dyn Conn>)
+    })
     .unwrap();
     assert_eq!(sums.status, 200);
     let text = String::from_utf8_lossy(&sums.body);

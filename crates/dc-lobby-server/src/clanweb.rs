@@ -190,6 +190,59 @@ pub fn passport_allowed(st: &Core, q: &Query, peer: &str) -> rusqlite::Result<bo
         .any(|s| s.account == Some(acc.user_no) && crate::limits::peer_ip(&s.peer) == ip))
 }
 
+/// The clan action paths: they change a clan with a GET (the 2009 page links), so another site must not send them.
+fn is_action(path: &str) -> bool {
+    matches!(
+        path.trim_end_matches('/'),
+        "/clan/create" | "/clan/join" | "/clan/leave" | "/clan/kick" | "/clan/notice"
+    )
+}
+
+/// LG-416: true for a browser request that another site started: `Sec-Fetch-Site` other than `same-origin` / `none`,
+/// or an `Origin` whose host is not the request's `Host`. The 2009 embedded browser and the DeCombat client send
+/// neither header, and a link followed inside these pages is same-origin, so only a forged request is caught. The
+/// account check of LG-321 trusts the player's address, which a page the player has open in a browser shares.
+// DC-DEFAULT: LG-416 (proposed) clan actions refuse another site's browser requests
+pub fn cross_site(head: &str) -> bool {
+    use crate::betaweb::header;
+    if let Some(s) = header(head, "sec-fetch-site") {
+        if !s.eq_ignore_ascii_case("same-origin") && !s.eq_ignore_ascii_case("none") {
+            return true;
+        }
+    }
+    let Some(origin) = header(head, "origin") else {
+        return false;
+    };
+    let host = header(head, "host").unwrap_or("").to_ascii_lowercase();
+    let o = origin.to_ascii_lowercase();
+    let o_host = o
+        .strip_prefix("http://")
+        .or_else(|| o.strip_prefix("https://"))
+        .unwrap_or("");
+    host.is_empty() || o_host != host
+}
+
+/// [`route_from`] behind the cross-site check of the action paths (LG-416).
+pub fn route_checked(
+    st: &mut Core,
+    req: &Request,
+    head: &str,
+    peer: &str,
+) -> rusqlite::Result<(u16, String)> {
+    if is_action(&req.path) && cross_site(head) {
+        st.note(&format!(
+            "clan web {}: refused, the request comes from another site (from {})",
+            req.path,
+            crate::limits::peer_ip(peer)
+        ));
+        return Ok((
+            403,
+            page("Clans", Some("Open the clan pages from the game."), ""),
+        ));
+    }
+    route_from(st, req, peer)
+}
+
 /// [`route`] of a request from `peer` (LG-321).
 pub fn route_from(st: &mut Core, req: &Request, peer: &str) -> rusqlite::Result<(u16, String)> {
     if !passport_allowed(st, &req.query, peer)? {
@@ -1042,7 +1095,7 @@ fn serve(
                             json,
                         )?
                     } else {
-                        route_from(st, &req, &peer)?
+                        route_checked(st, &req, &head, &peer)?
                     };
                     Ok(())
                 })
