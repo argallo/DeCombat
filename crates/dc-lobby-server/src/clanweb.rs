@@ -20,7 +20,9 @@
 //! itself, it has no browser): `me<TAB>clan number<TAB>1 when leader`, `msg<TAB>1 ok / 0 refused<TAB>text` for an
 //! action, and `clan<TAB>number<TAB>name<TAB>members<TAB>leader<TAB>emblem<TAB>background` rows for the clan list
 //! (`url=guild/list`) and after a join / leave, `member<TAB>character number<TAB>1 when leader<TAB>name<TAB>exp`
-//! rows for the member page (`url=manager/guildmember`) and after a kick.
+//! rows for the member page (`url=manager/guildmember`) and after a kick. `q=<text>` on the clan list keeps the
+//! clans whose name holds the text (any case); an unknown account gets `me 0 0` and a refused `msg` line (LG-414).
+// DC-DEFAULT: LG-414 (proposed) the find page's search and the text form's unknown-account answer
 // DC-DEFAULT: CD-47 clan web pages served by our own server; a leave makes the lobby push 0x3064 to that user
 // SPEC: LOBBY_HARNESS.md §5 (query parameters and the page fragments the harness matches)
 
@@ -458,6 +460,7 @@ fn text_reply(
     msg: Option<(bool, &str)>,
     list: bool,
     members: bool,
+    search: &str,
 ) -> rusqlite::Result<String> {
     let mut b = String::new();
     let (uid, lead) = match &v.clan {
@@ -480,7 +483,12 @@ fn text_reply(
         }
     }
     if list {
+        // LG-414: `q` keeps the clans whose name holds it (any case); without it every clan
+        let q = search.trim().to_lowercase();
         for k in clan::all_clans(&st.db)? {
+            if !q.is_empty() && !k.name.to_lowercase().contains(&q) {
+                continue;
+            }
             let m = clan::members(&st.db, k.uid)?;
             let leader = m
                 .iter()
@@ -521,6 +529,14 @@ pub fn route(st: &mut Core, req: &Request) -> rusqlite::Result<(u16, String)> {
         return Ok((404, page("Clans", Some("No such page."), "")));
     }
     let Some(v) = viewer(st, &req.query)? else {
+        // LG-414: the text form answers an unknown account in its own lines (the client shows the line; an HTML
+        // page in its place showed an empty list)
+        if req.query.get("fmt").is_some_and(|f| f == "text") {
+            return Ok((
+                200,
+                "me\t0\t0\nmsg\t0\tCannot open the clan pages: unknown account.\n".to_string(),
+            ));
+        }
         return Ok((
             200,
             page(
@@ -712,6 +728,7 @@ fn route_text(st: &mut Core, path: &str, v: Viewer, q: &Query) -> rusqlite::Resu
         msg.as_ref().map(|(ok, m)| (*ok, m.as_str())),
         list,
         members,
+        q.get("q").map_or("", |s| s.as_str()),
     )?;
     Ok((200, body))
 }

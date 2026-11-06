@@ -2719,7 +2719,11 @@ impl ShopScreen {
     fn open_megaphone(&mut self, uid: u32, uses: u32, ctx: &mut Ctx) {
         let name = ctx.data.profile.nick.clone();
         let swatches = self.colour_tables.names.clone();
-        self.mega_box = Some(megabox::MegaBox::open(ctx.cat, uid, uses, &name, swatches));
+        let mut b = megabox::MegaBox::open(ctx.cat, uid, uses, &name, swatches);
+        // EVIDENCE: cshell+0x3f2c0 (0x303 +0xe0 -> the own name colour word shell +0x434 the preview reads)
+        b.name_colour =
+            super::lobby::own_name_colours(ctx.cat.rom.as_deref(), &ctx.data.char_extras).0;
+        self.mega_box = Some(b);
     }
 
     /// use-items: what the country window asked for.
@@ -2989,6 +2993,8 @@ impl ShopScreen {
                 if let Some(b) = self.country_box.take() {
                     ctx.data.char_extras.nation = b.picked;
                     ctx.data.profile.nation = b.picked;
+                    // CLI-1892: the link's profile copy takes it too
+                    ctx.send(LinkCmd::OwnNation(b.picked));
                 }
                 ctx.data.store.remove(u.uid);
                 self.selected = None;
@@ -3059,6 +3065,9 @@ impl ShopScreen {
             UseAction::Face { .. } => {
                 if let Some(face) = self.face_box.take().and_then(|b| b.picked_face()) {
                     ctx.data.profile.face = face + facebox::FACE_BASE;
+                    // CLI-1892: the link's profile copy takes it too (a later purchase's profile event kept the old
+                    // face: the figure and the next gender window went back to the first gender)
+                    ctx.send(LinkCmd::OwnFace(face + facebox::FACE_BASE));
                 }
                 ctx.data.store.remove(u.uid);
                 self.selected = None;
@@ -4591,6 +4600,8 @@ mod crate_title_tests {
             (ctx.data.char_extras.nation, ctx.data.profile.nation),
             (5, 5)
         );
+        // CLI-1892: the link's profile copy takes the nation too
+        assert_eq!(sent(&link), vec!["OwnNation(5)".to_string()]);
         assert!(ctx.data.store.items.iter().all(|i| i.uid != 50));
         // the megaphone: the first use, then the composer, the queue question, the confirmation and the send
         s.use_function(60, mega, &mut ctx);
@@ -4916,10 +4927,32 @@ mod crate_title_tests {
         assert!(s.face_box.is_none());
         assert_eq!(ctx.data.profile.face, 6000 + want);
         assert!(ctx.data.store.items.iter().all(|i| i.uid != 72));
+        // CLI-1892: the link's profile copy takes the face too
+        assert_eq!(sent(&link), vec![format!("OwnFace({})", 6000 + want)]);
         s.use_function(73, gender, &mut ctx);
         let b = s.face_box.as_mut().expect("the gender window opens");
         let man = rows.iter().find(|r| r.face == want).unwrap().man;
         assert!(!b.choices.is_empty() && b.choices.iter().all(|r| r.man != man));
+        // CLI-1892 (OWNER REPORT 2026-11-05): the gender change done, a second gender item bought (its profile event
+        // carries the link's copy, now the changed face): the window offers the first gender again
+        let other = b.choices[0].face;
+        b.pick(0);
+        b.ok();
+        let step = b.ok();
+        s.face_step(step, &mut ctx);
+        used(&mut s, 73, &mut ctx);
+        assert_eq!(
+            sent(&link).last(),
+            Some(&format!("OwnFace({})", 6000 + other))
+        );
+        let mut p = ctx.data.profile.clone();
+        p.gp = 1;
+        super::super::shared_event(ctx.data, &LinkEvent::Profile(p));
+        ctx.data.store.items.push(rec(74, gender));
+        s.use_function(74, gender, &mut ctx);
+        let b = s.face_box.as_mut().expect("the second gender window opens");
+        assert_eq!(b.own, other);
+        assert!(!b.choices.is_empty() && b.choices.iter().all(|r| r.man == man));
         // Cancel closes it with the cancelled box
         let n = ctx.popups.len();
         let step = b.escape();

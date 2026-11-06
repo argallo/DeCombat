@@ -11,7 +11,7 @@
 // and 10; 241 / 243 / 245 / 247 / 600 open the map / mode / goal / players / weapon lists of the host), cshell+0x1657e0
 // (member row textures and sizes), cshell+0x163d00 (state strings 0x368 / 0x445 / 0x161c)
 
-use super::catalog::{int, key, pair, Catalog, KeyPin};
+use super::catalog::{int, key, pair, Catalog, KeyPin, RoomOption};
 use super::drawlist::{anchor_of, DynNotes, DynWant};
 use super::dropdown::{self, Dropdown};
 use super::link::{LinkCmd, LinkEvent};
@@ -48,6 +48,11 @@ pub mod row_keys {
     pub const MASTER_AT: KeyPin = key("0be00a179db322b5", 12);
     pub const NAME_AT: KeyPin = key("d5698f80e06d3478", 7);
     pub const STATE_AT: KeyPin = key("d81c20d304555303", 8);
+    /// CLI-1895: the clan name text (+0x11c) and the clan mark (+0x114) of the row.
+    // DISASM: cshell+0x15c83d (+0x11c placed at the row plus the clan name key, VA 0x374e591c),
+    // cshell+0x15c894 (+0x114 at the row plus the clan mark key, VA 0x374e5928)
+    pub const CLAN_NAME_AT: KeyPin = key("75c076cfb5a247c4", 11);
+    pub const CLAN_MARK_AT: KeyPin = key("187fff8f806656b4", 11);
 }
 
 /// Member state strings: ready, starting, in game; with state 0 the sub-states shopping and away.
@@ -109,6 +114,19 @@ pub fn member_name_colour(own: bool, row: u32, item: Option<u32>) -> u32 {
         None => row,
     }
 }
+
+/// CLI-1895: the clan name's colour on a member row without a clan colour number.
+// EVIDENCE: cshell+0x1657e0 (the row's clan text +0x11c: its own colour +0x138 is 0xff9898ff when the clan colour
+// argument is < 1), DISASM cshell+0x165d0a..0x165d11
+pub const CLAN_NAME_COLOUR: u32 = 0xff98_98ff;
+
+/// CLI-1895: the colour of a member row's clan name: the clan colour number's colour when it has one, else
+/// [`CLAN_NAME_COLOUR`].
+// EVIDENCE: cshell+0x166310 (record +0xb0 >= 1 -> the colour table's entry through cshell+0x1dcda0 onto the clan
+// text +0x11c, else the row's +0x138), DISASM cshell+0x16656b..0x16659c
+pub fn member_clan_colour(item: Option<u32>) -> u32 {
+    item.unwrap_or(CLAN_NAME_COLOUR)
+}
 pub const READY_BUTTON: i32 = 7;
 pub const TEAM_A_ROWS: i32 = 19;
 pub const TEAM_B_ROWS: i32 = 20;
@@ -148,6 +166,23 @@ pub const LIST_ANCHORS: [(&str, i32); 5] = [
 ];
 /// Option commands (on, off) and their 0x38c field types.
 pub const OPTION_COMMANDS: [(i32, i32, u32); 3] = [(234, 235, 9), (236, 237, 0xa), (601, 602, 0xd)];
+/// The mode row flag of each option pair (mid-match join, friendly fire, kill cam).
+pub const OPTION_KINDS: [RoomOption; 3] = [
+    RoomOption::MidJoin,
+    RoomOption::FriendlyFire,
+    RoomOption::KillCam,
+];
+/// The ON / OFF texts beside each option's check buttons (they carry the option commands too).
+pub const OPTION_TEXTS: [(i32, i32); 3] = [(23, 24), (26, 27), (29, 30)];
+/// The weapon limit's list button.
+pub const ARMS_BUTTON: i32 = 10;
+
+/// CLI-1897: the host may change room option `opt` in the room's mode (the mode row's flag of the joined server's
+/// mode table: the clan rows on a clan server).
+// EVIDENCE: cshell+0x1677f0 (each option's controls enabled = the row's flag and the host flag +0x56b0)
+pub fn option_open(cat: &Catalog, data: &MenuData, opt: RoomOption) -> bool {
+    data.host() && cat.mode_option_open(data.room.mode, opt)
+}
 /// 0x38c field types of the settings.
 pub const SET_MAP: u32 = 3;
 pub const SET_MODE: u32 = 4;
@@ -238,6 +273,9 @@ pub struct MemberStyle {
     pub master_at: [i32; 2],
     pub name_at: [i32; 2],
     pub state_at: [i32; 2],
+    /// CLI-1895: the clan name and clan mark places (none without the layout key: not drawn).
+    pub clan_name_at: Option<[i32; 2]>,
+    pub clan_mark_at: Option<[i32; 2]>,
 }
 
 impl MemberStyle {
@@ -263,6 +301,8 @@ impl MemberStyle {
             master_at: p(&k::MASTER_AT, [0, -5]),
             name_at: p(&k::NAME_AT, [44, 9]),
             state_at: p(&k::STATE_AT, [299, 9]),
+            clan_name_at: pair(s(&k::CLAN_NAME_AT)),
+            clan_mark_at: pair(s(&k::CLAN_MARK_AT)),
         }
     }
 }
@@ -738,6 +778,7 @@ impl Room {
             }
         }
         self.sync_hacks(data);
+        self.sync_option_locks(cat, data);
         for (k, (on, off)) in OPTION_CHECKS.iter().enumerate() {
             let set = room.options[k] != 0;
             if let Some(p) = self
@@ -752,6 +793,37 @@ impl Room {
             {
                 p.checked = !set;
             }
+        }
+    }
+
+    /// CLI-1897: the option controls are enabled for the host where the room's mode row lets the option change:
+    /// the check buttons and their ON / OFF texts per option, the weapon limit's list button.
+    // EVIDENCE: cshell+0x1677f0 (the mode row's weapon flag (cshell+0x264ad0) and the host flag enable (6, 10); the
+    // mid-match join flag (cshell+0x264c30) (6, 31), (6, 32), (6, 23), (6, 24); friendly fire (cshell+0x264d90)
+    // (6, 33), (6, 34), (6, 26), (6, 27); kill cam (cshell+0x264ef0) (6, 35), (6, 36), (6, 29), (6, 30); vtable
+    // +0x98 = the enabled field)
+    fn sync_option_locks(&mut self, cat: &Catalog, data: &MenuData) {
+        for (k, opt) in OPTION_KINDS.iter().enumerate() {
+            let open = option_open(cat, data, *opt);
+            let (on, off) = OPTION_CHECKS[k];
+            let (on_text, off_text) = OPTION_TEXTS[k];
+            for (id, kind) in [
+                (on, WidgetKind::CheckButton),
+                (off, WidgetKind::CheckButton),
+                (on_text, WidgetKind::Text),
+                (off_text, WidgetKind::Text),
+            ] {
+                if let Some(p) = self.sheet.part_mut(SETTINGS_WINDOW, id, kind) {
+                    p.enabled = open;
+                }
+            }
+        }
+        let arms = option_open(cat, data, RoomOption::Weapons);
+        if let Some(p) = self
+            .sheet
+            .part_mut(SETTINGS_WINDOW, ARMS_BUTTON, WidgetKind::Button)
+        {
+            p.enabled = arms;
         }
     }
 
@@ -1152,6 +1224,12 @@ impl Screen for Room {
             // the host's setting buttons open their list; any of them closes the open one
             // EVIDENCE: cshell+0x164810 (commands 0xf1 / 0xf3 through cshell+0x1639e0, 0xf5 / 0xf7 / 600: not the
             // host -> nothing; the list shown -> hidden; else the list of kind 6..10 is built and shown)
+            // CLI-1897: a mode row that locks the weapon limit opens no list
+            // EVIDENCE: cshell+0x15e970 (the Arms field's click sends 600 only with the row's weapon flag)
+            CMD_ARMS
+                if !ctx
+                    .cat
+                    .mode_option_open(ctx.data.room.mode, RoomOption::Weapons) => {}
             CMD_MAP | CMD_MODE | CMD_GOAL | CMD_PLAYERS | CMD_ARMS if host => {
                 let was_open = self.drop.take().is_some();
                 if !was_open {
@@ -1327,11 +1405,13 @@ impl Screen for Room {
     }
 
     fn check(&mut self, command: i32, _part: usize, _on: bool, ctx: &mut Ctx) {
-        if let Some((on, _, kind)) = OPTION_COMMANDS
+        if let Some((k, (on, _, kind))) = OPTION_COMMANDS
             .iter()
-            .find(|(a, b, _)| *a == command || *b == command)
+            .enumerate()
+            .find(|(_, (a, b, _))| *a == command || *b == command)
         {
-            if ctx.data.host() {
+            // CLI-1897: a locked option sends nothing (its checks are disabled, the click only shows the value again)
+            if option_open(ctx.cat, ctx.data, OPTION_KINDS[k]) {
                 ctx.send(LinkCmd::Setting {
                     mode: ctx.data.room.mode,
                     kind: *kind,
@@ -1623,6 +1703,14 @@ impl Room {
             left_rows,
             data.room.host_id,
         );
+        // the clan mark table, read only when a member's mark is shown (both ids set, cshell+0x15beb0)
+        let marks = data
+            .member_clan
+            .values()
+            .any(|k| k.id != 0 && k.mark != 0 && k.ground != 0)
+            .then(|| cat.rom.clone())
+            .flatten()
+            .map(|r| super::clan::ClanLits::cached(&r).marks);
         for (id, team, i) in slots {
             let Some(m) = data.members.get(&id) else {
                 continue;
@@ -1687,6 +1775,39 @@ impl Room {
                     name_colour,
                 ));
                 note(out, 0);
+                // CLI-1895: the clan's mark and name after the member's name, for a member in a clan
+                // EVIDENCE: cshell+0x166310 (clan name -> cshell+0x15bc00 text +0x11c; clan number, emblem and
+                // background -> cshell+0x15beb0: mark +0x114 hidden for clan 0, its layers shown when both ids are
+                // set), cshell+0x1657e0 (the mark control 26 x 26 at scale 0x3ed2d2d3; the clan text font 0xe size
+                // 0xc, flags 0x41 like the name)
+                if let Some(k) = data.member_clan.get(id).filter(|k| k.id != 0) {
+                    if let (Some(p), Some(m)) = (st.clan_mark_at, marks.as_ref()) {
+                        if let Some((e, b)) = m.textures(k.mark, k.ground) {
+                            let pos = add(at, p);
+                            let r = super::clan::MARK_PANEL_DRAWN;
+                            super::clanpage::mark_cropped(
+                                Some(b),
+                                Some(e),
+                                [pos[0], pos[1], r[0], r[1]],
+                                out,
+                            );
+                        }
+                    }
+                    if let Some(p) = st.clan_name_at.filter(|_| !k.name.is_empty()) {
+                        let item = data.member_colour.get(id).and_then(|&(_, n)| {
+                            super::charinfo::table_colour(cat.rom.as_deref(), n)
+                        });
+                        out.push(place_text(
+                            &k.name,
+                            add(at, p),
+                            [0, 0],
+                            MEMBER_NAME_ALIGN,
+                            MEMBER_FONT,
+                            MEMBER_TEXT_SIZE,
+                            member_clan_colour(item),
+                        ));
+                    }
+                }
                 let sub = data.member_sub.get(id).copied().unwrap_or(0);
                 if let Some(s) = member_state_text(m.state, sub) {
                     let t = cat.text(s);
@@ -1713,6 +1834,12 @@ mod tests {
     use super::*;
 
     /// CLI-1887: a member's colour number's colour beats the own cyan and the row colour.
+    #[test]
+    fn member_clan_name_takes_the_clan_colour_or_the_rows_own() {
+        assert_eq!(member_clan_colour(Some(0xff12_3456)), 0xff12_3456);
+        assert_eq!(member_clan_colour(None), CLAN_NAME_COLOUR);
+    }
+
     #[test]
     fn member_rows_take_the_name_colour_items_colour() {
         let (row, c) = (0xffdd_dddd, 0xff12_3456);
@@ -1923,6 +2050,8 @@ mod tests {
             bar_at: [0, -5],
             name_at: [44, 9],
             state_at: [299, 9],
+            clan_name_at: None,
+            clan_mark_at: None,
         };
         let [name, state] = member_row_wants(&st, 2, 3, [100, 200]);
         assert_eq!(

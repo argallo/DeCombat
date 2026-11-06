@@ -1007,6 +1007,11 @@ pub enum LinkCmd {
     NameCheck(String),
     /// name-change: the own character's name changed (a name window's ok answer): the link's profile takes it.
     OwnName(String),
+    /// CLI-1892: the own face value (6000 + the face row) changed (a face window's ok answer): the link's profile
+    /// takes it, so a later profile event (a purchase, a channel entry) carries it.
+    OwnFace(i32),
+    /// CLI-1892: the own nation changed (a country window's ok answer): the link's profile takes it.
+    OwnNation(u32),
     /// w3-clan: the clan info request 0x3c2 (clan screen entry; the answer 0x3c3).
     ClanInfo,
     /// w3-clan: the clan member list request 0x3c4.
@@ -1233,6 +1238,8 @@ impl std::fmt::Debug for LinkCmd {
             LinkCmd::MegaphoneSend { uid, text, .. } => write!(f, "MegaphoneSend({uid}, {text:?})"),
             LinkCmd::NameCheck(name) => write!(f, "NameCheck({name:?})"),
             LinkCmd::OwnName(name) => write!(f, "OwnName({name:?})"),
+            LinkCmd::OwnFace(face) => write!(f, "OwnFace({face})"),
+            LinkCmd::OwnNation(nation) => write!(f, "OwnNation({nation})"),
             LinkCmd::ClanInfo => write!(f, "ClanInfo"),
             LinkCmd::ClanMembers => write!(f, "ClanMembers"),
             LinkCmd::ClanNotice => write!(f, "ClanNotice"),
@@ -1365,6 +1372,12 @@ pub enum LinkEvent {
         name: u32,
         clan: u32,
     },
+    /// CLI-1895: a room member record's clan (+0x32 clan number, +0x5e clan name, +0xa4 / +0xa8 emblem /
+    /// background); sent for every record, clan number 0 = no clan.
+    MemberClan {
+        id: u32,
+        clan: MemberClan,
+    },
     RoomSetting {
         kind: u32,
         value: u32,
@@ -1413,11 +1426,14 @@ pub enum LinkEvent {
     /// w2-lobbychat: a notice for its box (0x367).
     Notice(String),
     /// w2-lobbychat: a text for the lobby's notice bar: 0x3052 (`repeat` passes of `show_ms` each) or a broadcast
-    /// 0x3065 (one pass).
+    /// 0x3065 (one pass). `colour` is the text's own colour; `runs` paint it from its first character on:
+    /// {name colour number, characters} one after the other (a number outside the table keeps `colour`).
     Ticker {
         text: String,
         show_ms: u32,
         repeat: u32,
+        colour: u32,
+        runs: Vec<(u32, u16)>,
     },
     /// w2-lobbychat: an invitation to room `number` (0x3023: the host's name and the room's password).
     Invite {
@@ -1641,6 +1657,7 @@ fn event_label(e: &LinkEvent) -> &'static str {
         LinkEvent::MemberTeam { .. } => "MemberTeam",
         LinkEvent::MemberState { .. } => "MemberState",
         LinkEvent::MemberColour { .. } => "MemberColour",
+        LinkEvent::MemberClan { .. } => "MemberClan",
         LinkEvent::RoomSetting { .. } => "RoomSetting",
         LinkEvent::RoomHacks { .. } => "RoomHacks",
         LinkEvent::RoomHardcore(_) => "RoomHardcore",
@@ -1949,6 +1966,33 @@ fn member_colour(d: &[u8], o: usize, id: u32) -> LinkEvent {
     }
 }
 
+/// The clan of a room member: what the 2009 member row shows next to the name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemberClan {
+    /// The clan number (0 = no clan).
+    pub id: u32,
+    pub name: String,
+    pub mark: u32,
+    pub ground: u32,
+}
+
+/// CLI-1895: the [`LinkEvent::MemberClan`] of a member record (sent for every record, so a clan that went away
+/// clears).
+// SPEC: PROTOCOL_2009.md §3.7 table 3.7b (+0x32 clan id, +0x5e wstr[17] clan name, +0xa4 / +0xa8 emblem / background)
+// EVIDENCE: cshell+0x166310 (the member refresh copies the record's clan number, clan name and mark pair into the
+// row: the name through cshell+0x15bc00, the mark through cshell+0x15beb0)
+fn member_clan(d: &[u8], o: usize, id: u32) -> LinkEvent {
+    LinkEvent::MemberClan {
+        id,
+        clan: MemberClan {
+            id: u32_at(d, o + 0x32),
+            name: wstr_at(d, o + 0x5e, 17),
+            mark: u32_at(d, o + 0xa4),
+            ground: u32_at(d, o + 0xa8),
+        },
+    }
+}
+
 /// A chat line 0x3051 (`None` without text).
 // SPEC: PROTOCOL_2009.md §3.6 (0x3051: +0xa u32 name length, +0xe u32 name colour id, +0x12 wstr[17] name, +0x34 u32
 // text length, +0x38 wstr text)
@@ -1976,25 +2020,65 @@ pub fn ticker_notice(d: &[u8]) -> Option<LinkEvent> {
         text,
         show_ms: u32_at(d, 6).saturating_mul(1000),
         repeat: u32_at(d, 0xa).max(1),
+        colour: super::textbox::TICKER_COLOUR,
+        runs: Vec::new(),
     })
 }
 
+/// The message colour runs a broadcast carries at +0x110 the receiver reads: {colour index, characters} u16 pairs,
+/// a pair without characters skipped.
+// EVIDENCE: cshell+0x1202d0 (0x82 bytes of +0x110 copied into a zeroed buffer), cshell+0x1dcfb0 (pairs read from it,
+// a zero length skipped; the 33rd pair's length lies past the copied bytes, so at most 32 pairs count)
+pub const BROADCAST_RUNS: usize = 32;
+/// The message characters a broadcast shows.
+// EVIDENCE: cshell+0x1202d0 (0x82 bytes of the +0x48 message copied into a zeroed buffer: 65 characters)
+pub const BROADCAST_TEXT: usize = 65;
+/// The colour of a broadcast's text where no run paints it: the bar's own text colour.
+// EVIDENCE: cshell+0x6c550 (the bar object's +0x110 = 0xffffffff), cshell+0x6c740 (each text item gets +0x110 as its
+// colours through vtable +0xb0; DISASM cshell+0x18668: +0x44..+0x50), cshell+0x2ebfa0 (a run of the item's own colour
+// +0x48 or of no characters paints nothing)
+pub const BROADCAST_COLOUR: u32 = 0xffff_ffff;
+
+/// The runs of a player broadcast: the sender's name and the separator in the sender's name colour (+0x22), then the
+/// message's runs (+0x110), each a name colour table index.
+// EVIDENCE: cshell+0x1202d0 (the line = name + " : " + message; cshell+0x1dcfb0 with the line's length before the
+// message was added, DISASM cshell+0x1203f0: the first pair {0, name + separator}; then pair 0's colour = the name
+// colour of +0x22 through cshell+0x1dcda0), cshell+0x1dcfb0 (each message pair's index through cshell+0x1dcf00: 1..n
+// entry n - 1, else 0 = the text's own colour)
+pub fn broadcast_runs(d: &[u8], prefix: usize) -> Vec<(u32, u16)> {
+    let mut runs = vec![(u32_at(d, 0x22), prefix.min(usize::from(u16::MAX)) as u16)];
+    for k in 0..BROADCAST_RUNS {
+        let o = 0x110 + 4 * k;
+        if o + 4 > d.len() {
+            break;
+        }
+        let len = u16_at(d, o + 2);
+        if len != 0 {
+            runs.push((u32::from(u16_at(d, o)), len));
+        }
+    }
+    runs
+}
+
 /// A broadcast 0x3065 for the lobby's notice bar: the system form (type 0) its text, the player form (type 1) the
-/// sender's name, the chat separator and the message; both on the air for their seconds.
-// SPEC: PROTOCOL_2009.md §3.6 (0x3065: type 0 +0xa seconds, +0x12 wstr[101] text; type 1 +0xa seconds, +0x26
-// wstr[17] name, +0x48 wstr[100] message)
-// EVIDENCE: cshell+0x1202d0 (type 0: the text with seconds x 1000 to cshell+0x6ce30; type 1: name + the separator
-// literal + message with seconds x 1000 to cshell+0x6cd20)
+/// sender's name, the chat separator and the message painted by [`broadcast_runs`]; both on the air for their
+/// seconds in the bar's own colour [`BROADCAST_COLOUR`].
+// SPEC: PROTOCOL_2009.md §3.6 (0x3065: type 0 +0xa seconds, +0x12 wstr[101] text; type 1 +0xa seconds, +0x22 sender
+// colour, +0x26 wstr[17] name, +0x48 wstr[100] message, +0x110 colour runs)
+// EVIDENCE: cshell+0x1202d0 (type 0: the text with seconds x 1000 to cshell+0x6ce30, no runs (cshell+0x6aee0 zeroes
+// them); type 1: name + the separator literal + message with seconds x 1000 and the runs to cshell+0x6cd20)
 pub fn broadcast(d: &[u8]) -> Option<LinkEvent> {
     let show_ms = u32_at(d, 0xa).saturating_mul(1000);
-    let text = match u32_at(d, 6) {
-        0 => wstr_at(d, 0x12, 101),
+    let (text, runs) = match u32_at(d, 6) {
+        0 => (wstr_at(d, 0x12, 101), Vec::new()),
         1 => {
-            let msg = wstr_at(d, 0x48, 100);
+            let msg: String = wstr_at(d, 0x48, 100).chars().take(BROADCAST_TEXT).collect();
             if msg.is_empty() {
                 return None;
             }
-            format!("{} : {msg}", wstr_at(d, 0x26, 17))
+            let head = format!("{} : ", wstr_at(d, 0x26, 17));
+            let runs = broadcast_runs(d, head.chars().count());
+            (format!("{head}{msg}"), runs)
         }
         _ => return None,
     };
@@ -2002,6 +2086,8 @@ pub fn broadcast(d: &[u8]) -> Option<LinkEvent> {
         text,
         show_ms,
         repeat: 1,
+        colour: BROADCAST_COLOUR,
+        runs,
     })
 }
 
@@ -3333,9 +3419,23 @@ impl Worker {
     fn lobby_command(&mut self, c: LinkCmd) {
         // name-change: the own name after a name window's ok answer; the screens get the profile again
         // EVIDENCE: cshell+0x249d80 (kind 4 ok: the client sets its own name, cshell+0x131fd0)
-        if let LinkCmd::OwnName(name) = &c {
+        // CLI-1892: likewise the own face and nation after a face or country window's ok answer. The 2009 client keeps
+        // ONE character record: the 0x331 face answer writes its face (shell character +0x158), the country answer its
+        // nation (shell +0x444), and the purchase answer touches neither (it sets the GP only), so a later purchase
+        // keeps the new face; ours keeps the link's profile copy in step, as every profile event is that copy.
+        // DISASM: cshell+0x24a1d0 (face answer), EVIDENCE: cshell+0x2a94b0 (country answer), cshell+0x150c40 (0x329:
+        // GP via cshell+0x2485b0, the item added; no face or nation write)
+        if matches!(
+            c,
+            LinkCmd::OwnName(_) | LinkCmd::OwnFace(_) | LinkCmd::OwnNation(_)
+        ) {
             if let Some(s) = self.session.as_mut() {
-                s.profile.nick = name.clone();
+                match c {
+                    LinkCmd::OwnName(name) => s.profile.nick = name,
+                    LinkCmd::OwnFace(face) => s.profile.face = face,
+                    LinkCmd::OwnNation(nation) => s.profile.nation = nation,
+                    _ => {}
+                }
                 let p = s.profile.clone();
                 self.emit(LinkEvent::Profile(p));
             }
@@ -3616,7 +3716,7 @@ impl Worker {
                 s.link.send(&w)
             }
             // taken before the match (it answers with an event)
-            LinkCmd::OwnName(_) => Ok(()),
+            LinkCmd::OwnName(_) | LinkCmd::OwnFace(_) | LinkCmd::OwnNation(_) => Ok(()),
             LinkCmd::Report {
                 name,
                 text,
@@ -3899,6 +3999,7 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
                     let (uid, m) = member_row(d, o);
                     subs.extend(member_sub(d, o, uid, m.state));
                     subs.push(member_colour(d, o, uid));
+                    subs.push(member_clan(d, o, uid));
                     members.insert(uid, m);
                 }
             }
@@ -3917,6 +4018,7 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
             ev.push(LinkEvent::MemberAdded(uid, m));
             ev.extend(sub);
             ev.push(member_colour(d, 6, uid));
+            ev.push(member_clan(d, 6, uid));
         }
         ROOM_USER_REMOVE_PUSH => {
             let (uid, reason) = (u32_at(d, 6), u32_at(d, 0xa));
@@ -4151,6 +4253,11 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
         // SPEC: PROTOCOL_2009.md §3.3 table 3.3a; §5.2 (create / join / leave push 0x303 to the user)
         CHARACTER_INFO_REPLY => {
             s.profile.clan_id = u32_at(d, 0x86);
+            // CLI-1892: a later record's face and nation are the own ones too (the next profile event carries them)
+            // EVIDENCE: cshell+0x3f2c0 (the 0x303 reader: shell character +0x158 := +0x56 less 6000, shell +0x444 :=
+            // +0x100)
+            s.profile.face = i32_at(d, 0x56);
+            s.profile.nation = u32_at(d, 0x100);
             ev.push(LinkEvent::CharInfo(char_extras(d)));
         }
         // the clan login and notice-set answers and the info push: the client asks for the clan record itself
@@ -4655,6 +4762,49 @@ mod tests {
         }
     }
 
+    /// CLI-1892 (OWNER REPORT 2026-11-05: a gender change, then buying a second gender item, showed the first gender
+    /// again): every profile event is the link's copy, so the face and nation of a use window's ok answer go into it
+    /// and a purchase's profile event keeps them; a later own record (0x303) sets them as the lobby stores them.
+    #[test]
+    fn a_purchase_after_a_face_or_country_change_keeps_the_new_ones() {
+        let (mut w, rx, _peer) = held_worker(None);
+        w.session.as_mut().unwrap().profile.face = 6002;
+        let looks = |rx: &Receiver<LinkEvent>| {
+            rx.try_iter()
+                .filter_map(|e| match e {
+                    LinkEvent::Profile(p) => Some((p.face, p.nation)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        w.lobby_command(LinkCmd::OwnFace(6004));
+        w.lobby_command(LinkCmd::OwnNation(64));
+        assert_eq!(looks(&rx), vec![(6004, 0), (6004, 64)]);
+        // the second gender item bought: the purchase answer's profile event still has the new face
+        let s = w.session.as_mut().unwrap();
+        let mut buy = vec![0u8; 0x22];
+        buy[6] = 1;
+        buy[0xe] = 77;
+        buy[0x1a..0x1e].copy_from_slice(&9000u32.to_le_bytes());
+        buy[0x1e..0x22].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut ev = Vec::new();
+        dispatch(s, SHOP_BUY_REPLY, &buy, &mut ev);
+        let p = ev
+            .iter()
+            .find_map(|e| match e {
+                LinkEvent::Profile(p) => Some(p.clone()),
+                _ => None,
+            })
+            .expect("the purchase sends the profile");
+        assert_eq!((p.face, p.nation, p.gp), (6004, 64, 9000));
+        // a later own record: its face and nation
+        let mut rec = vec![0u8; 0x108];
+        rec[0x56..0x5a].copy_from_slice(&6011i32.to_le_bytes());
+        rec[0x100..0x104].copy_from_slice(&7u32.to_le_bytes());
+        dispatch(s, CHARACTER_INFO_REPLY, &rec, &mut ev);
+        assert_eq!((s.profile.face, s.profile.nation), (6011, 7));
+    }
+
     // use-items: the country window's nation at +0x44; the megaphone send and both megaphone answers
     #[test]
     fn country_and_megaphone_requests_and_answers_follow_the_spec() {
@@ -4792,12 +4942,13 @@ mod tests {
         ));
         assert!(matches!(it.next(), Some(LinkEvent::Notice(t)) if t == "Server notice"));
         assert!(
-            matches!(it.next(), Some(LinkEvent::Ticker { text, show_ms: 12_000, repeat: 3 })
-            if text == "News")
+            matches!(it.next(), Some(LinkEvent::Ticker { text, show_ms: 12_000, repeat: 3, colour, runs })
+            if text == "News" && colour == super::super::textbox::TICKER_COLOUR && runs.is_empty())
         );
+        // a record cut before +0x110: the name and separator in the sender's colour 0, no message runs
         assert!(
-            matches!(it.next(), Some(LinkEvent::Ticker { text, show_ms: 7_000, repeat: 1 })
-            if text == "Bob : sale")
+            matches!(it.next(), Some(LinkEvent::Ticker { text, show_ms: 7_000, repeat: 1, colour, runs })
+            if text == "Bob : sale" && colour == BROADCAST_COLOUR && runs == [(0, 6)])
         );
         assert!(
             matches!(it.next(), Some(LinkEvent::Invite { number: 41, host, password })
@@ -4869,9 +5020,61 @@ mod tests {
         }
         assert_eq!(data.member_colour.get(&12), Some(&(4, 7)));
         assert_eq!(data.member_colour.get(&11), Some(&(0, 0)));
+        assert_eq!(data.member_clan.get(&11), Some(&MemberClan::default()));
         let mut u = vec![0u8; 0x42];
         u[0x3a..0x3e].copy_from_slice(&5u32.to_le_bytes());
         assert_eq!(user_row(&u, 0).name_colour, 5);
+    }
+
+    /// CLI-1895: a member record's clan number, clan name and mark pair reach the room data (a 0x38b list and a
+    /// 0x3033 arrival); a later record without a clan clears them.
+    #[test]
+    fn member_records_carry_their_clan() {
+        let (mut w, _rx, _peer) = held_worker(None);
+        let s = w.session.as_mut().unwrap();
+        let record = |d: &mut [u8], o: usize, id: u32, clan: u32, name: &str| {
+            d[o + 4..o + 8].copy_from_slice(&id.to_le_bytes());
+            d[o + 0x32..o + 0x36].copy_from_slice(&clan.to_le_bytes());
+            for (k, u) in name.encode_utf16().enumerate() {
+                d[o + 0x5e + 2 * k..o + 0x60 + 2 * k].copy_from_slice(&u.to_le_bytes());
+            }
+            d[o + 0xa4..o + 0xa8].copy_from_slice(&3u32.to_le_bytes());
+            d[o + 0xa8..o + 0xac].copy_from_slice(&5u32.to_le_bytes());
+        };
+        let mut d = vec![0u8; 0x12 + ROOM_USER_RECORD_SIZE];
+        d[0xe..0x12].copy_from_slice(&1u32.to_le_bytes());
+        record(&mut d, 0x12, 21, 9, "Wolves");
+        let mut ev = Vec::new();
+        dispatch(s, ROOM_USERS_REPLY, &d, &mut ev);
+        let mut add = vec![0u8; 6 + ROOM_USER_RECORD_SIZE];
+        record(&mut add, 6, 22, 0, "");
+        dispatch(s, ROOM_USER_ADD_PUSH, &add, &mut ev);
+        let mut data = super::super::MenuData::default();
+        for e in &ev {
+            super::super::shared_event(&mut data, e);
+        }
+        let want = MemberClan {
+            id: 9,
+            name: "Wolves".into(),
+            mark: 3,
+            ground: 5,
+        };
+        assert_eq!(data.member_clan.get(&21), Some(&want));
+        assert_eq!(data.member_clan.get(&22).map(|c| c.id), Some(0));
+        // the member's next record without a clan clears it
+        let mut again = vec![0u8; 0x12 + ROOM_USER_RECORD_SIZE];
+        again[0xe..0x12].copy_from_slice(&1u32.to_le_bytes());
+        record(&mut again, 0x12, 21, 0, "");
+        let mut ev = Vec::new();
+        dispatch(s, ROOM_USERS_REPLY, &again, &mut ev);
+        for e in &ev {
+            super::super::shared_event(&mut data, e);
+        }
+        assert_eq!(data.member_clan.get(&21).map(|c| c.id), Some(0));
+        assert!(
+            !data.member_clan.contains_key(&22),
+            "the list replaces the members"
+        );
     }
 
     #[test]
@@ -5141,6 +5344,75 @@ mod tests {
         assert!(login.try_recv().is_err(), "no lobby login after a refusal");
         assert!(!dir.join(crate::identity::CACHE_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A player broadcast paints the name and separator in the sender's colour number and the message by its runs
+    /// (at most 32, empty ones skipped); a system broadcast has no runs; both in the bar's white.
+    #[test]
+    fn a_broadcast_carries_the_sender_colour_and_the_message_runs() {
+        let mut b = PktWriter::new(BROADCAST_PUSH);
+        b.u32(1).u32(9).u32(2).u32(3).u32(5);
+        b.at(0x22).u32(4).wstr("Ann", 17).wstr("red green", 100);
+        // runs: 4 characters of index 2, an empty pair, 1 uncoloured, 4 of index 7
+        b.at(0x110)
+            .u16(2)
+            .u16(4)
+            .u16(5)
+            .u16(0)
+            .u16(super::super::megabox::NO_COLOUR)
+            .u16(1)
+            .u16(7)
+            .u16(4);
+        b.at(0x2a0).u16(0);
+        let d = payload(&b);
+        assert_eq!(d.len(), 0x2a2);
+        let Some(LinkEvent::Ticker {
+            text,
+            show_ms,
+            colour,
+            runs,
+            ..
+        }) = broadcast(&d)
+        else {
+            panic!("no ticker");
+        };
+        assert_eq!((text.as_str(), show_ms), ("Ann : red green", 9_000));
+        assert_eq!(colour, BROADCAST_COLOUR);
+        assert_eq!(
+            runs,
+            [
+                (4, 6),
+                (2, 4),
+                (u32::from(super::super::megabox::NO_COLOUR), 1),
+                (7, 4)
+            ]
+        );
+        // a 33rd pair is past what the receiver reads
+        let mut many = PktWriter::new(BROADCAST_PUSH);
+        many.u32(1).u32(9);
+        many.at(0x26).wstr("A", 17).wstr("x", 100);
+        many.at(0x110);
+        for _ in 0..40 {
+            many.u16(1).u16(1);
+        }
+        let d = payload(&many);
+        let Some(LinkEvent::Ticker { runs, .. }) = broadcast(&d) else {
+            panic!("no ticker");
+        };
+        assert_eq!(runs.len(), 1 + BROADCAST_RUNS);
+        // type 0: the text alone, unpainted
+        let mut sys = PktWriter::new(BROADCAST_PUSH);
+        sys.u32(0).u32(5).u32(0).wstr("Maintenance", 101);
+        let Some(LinkEvent::Ticker {
+            text, colour, runs, ..
+        }) = broadcast(&payload(&sys))
+        else {
+            panic!("no ticker");
+        };
+        assert_eq!(
+            (text.as_str(), colour, runs.len()),
+            ("Maintenance", BROADCAST_COLOUR, 0)
+        );
     }
 
     /// The server entry pushes reach `dispatch` only through the list `poll` takes from the socket.

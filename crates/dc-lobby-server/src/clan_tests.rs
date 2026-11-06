@@ -983,3 +983,113 @@ fn rom_clan_tables_when_available() {
     assert_eq!(pts.weight, 1.0);
     assert!(pts.exp_basic >= 0 && pts.money_basic >= 0, "{pts:?}");
 }
+
+/// 0x38c from the room's host: (field, value) -> the 0x38d ok flag.
+fn set_room(st: &mut Core, c: &mut Client, f: u32, v: u32) -> bool {
+    c.clear();
+    let b: Vec<u8> = [0u32, f, v].iter().flat_map(|x| x.to_le_bytes()).collect();
+    c.send(st, ROOM_SETTING_CHANGE, &b);
+    u32_at(&c.take(ROOM_SETTING_CHANGE_REPLY), 6) == 1
+}
+
+#[test]
+fn locked_clan_options_follow_the_config_keys() {
+    let mut r = ClanRules::default();
+    assert!(!r.room_mid_join && !r.room_friendly_fire);
+    let j = |s: &str| JsonValue::parse(s).unwrap();
+    assert!(r.apply("clan.room_mid_join", &j("true")) && r.room_mid_join);
+    assert!(r.apply("clan.room_friendly_fire", &j("true")) && r.room_friendly_fire);
+    assert!(!r.apply("clan.room_friendly_fire", &j("1")), "a bool key");
+    // without a ROM no clan row locks anything: a clan room takes every option as before
+    let mut st = state();
+    let (mut h1, _) = clan_player(&mut st, 1, "h1", "Hana", None, Some("Home"));
+    let (no, ok) = open_room_as(&mut st, &mut h1);
+    assert!(ok);
+    let key = RoomKey {
+        channel: CLAN_CHANNEL_BASE + 1,
+        no,
+    };
+    assert!(locked_values(&st, 0).is_empty());
+    assert!(set_room(&mut st, &mut h1, field::OPT_FRIENDLY_FIRE, 1));
+    assert_eq!(st.rooms[&key].ff_on, 1);
+    assert!(set_room(&mut st, &mut h1, field::GOAL, 50));
+}
+
+/// LG-412 / LG-413: with the ROM, a clan room holds the options its clan mode row locks (friendly fire and
+/// mid-match join on every 2009 clan row) and refuses other values, a goal outside the row's range and a room size
+/// outside its player range; the open options (kill cam, weapon limit) change as in any room; a mode change takes
+/// the clan row's goal.
+#[test]
+fn rom_clan_room_refuses_what_the_clan_row_locks() {
+    let Some(rom) = dc_rom::test_rom() else {
+        println!("skipped: CA_ROM unset");
+        return;
+    };
+    let mut st = state();
+    st.rom = std::sync::Arc::new(crate::rom::RomData::load(&rom));
+    let g = &st.rom.game_room;
+    let flag = |m: usize, k: &str| g.mode_flag(m, true, k);
+    assert_eq!(
+        flag(0, "EnableTeamKillSetting"),
+        Some(false),
+        "ROM clan row 0"
+    );
+    assert_eq!(flag(0, "EnableJoinCombatSetting"), Some(false));
+    assert_eq!(flag(0, "EnableWeaponUseSetting"), Some(true));
+    assert_eq!(flag(0, "EnableViewEnemyCameraSetting"), Some(true));
+    let goal0 = g.default_goal(0, true) as u32;
+    let goal1 = g.default_goal(1, true) as u32;
+    let (gmin, gmax) = (
+        g.mode_int(0, true, "GoalMin").unwrap(),
+        g.mode_int(0, true, "GoalMax").unwrap(),
+    );
+    let pmin = g.mode_int(0, true, "MinPlayers").unwrap() as u32;
+    let pmax = g.mode_int(0, true, "MaxPlayers").unwrap() as u32;
+    let (mut h1, _) = clan_player(&mut st, 1, "h1", "Hana", None, Some("Home"));
+    let (no, ok) = open_room_as(&mut st, &mut h1);
+    assert!(ok);
+    let key = RoomKey {
+        channel: CLAN_CHANNEL_BASE + 1,
+        no,
+    };
+    // created on the held values (clan.room_* off) and the clan row's goal
+    let r = &st.rooms[&key];
+    assert_eq!((r.mode, r.ff_on, r.mid_join, r.goal), (0, 0, 0, goal0));
+    assert_eq!(
+        locked_values(&st, 0),
+        vec![(field::OPT_MID_JOIN, 0), (field::OPT_FRIENDLY_FIRE, 0)]
+    );
+    // locked: another value refused, the held one accepted
+    assert!(!set_room(&mut st, &mut h1, field::OPT_FRIENDLY_FIRE, 1));
+    assert!(!set_room(&mut st, &mut h1, field::OPT_MID_JOIN, 1));
+    assert_eq!((st.rooms[&key].ff_on, st.rooms[&key].mid_join), (0, 0));
+    assert!(set_room(&mut st, &mut h1, field::OPT_FRIENDLY_FIRE, 0));
+    // open: kill cam and the weapon limit
+    assert!(set_room(&mut st, &mut h1, field::OPT_KILL_CAM, 1));
+    assert!(set_room(&mut st, &mut h1, field::WEAPON_LIMIT, 3));
+    assert_eq!(st.rooms[&key].weapon_limit, 3);
+    // the goal and the room size stay inside the clan row's ranges
+    assert!(!set_room(&mut st, &mut h1, field::GOAL, gmax as u32 + 1));
+    if gmin > 1 {
+        assert!(!set_room(&mut st, &mut h1, field::GOAL, gmin as u32 - 1));
+    }
+    assert!(set_room(&mut st, &mut h1, field::GOAL, gmin as u32));
+    if pmin > 1 {
+        assert!(!set_room(&mut st, &mut h1, field::MAX_PLAYERS, pmin - 1));
+    }
+    assert!(set_room(&mut st, &mut h1, field::MAX_PLAYERS, pmax));
+    // a mode change takes the clan row's default goal
+    assert!(set_room(&mut st, &mut h1, field::MODE, 1));
+    assert_eq!(st.rooms[&key].goal, goal1);
+    // an operator who wants friendly fire in clan matches holds it on; then "off" is the refused value
+    st.rules.clan.room_friendly_fire = true;
+    let (mut h2, _) = clan_player(&mut st, 2, "h2", "Hugo", None, Some("Other"));
+    let (no2, ok) = open_room_as(&mut st, &mut h2);
+    assert!(ok);
+    let key2 = RoomKey {
+        channel: CLAN_CHANNEL_BASE + 1,
+        no: no2,
+    };
+    assert_eq!(st.rooms[&key2].ff_on, 1);
+    assert!(!set_room(&mut st, &mut h2, field::OPT_FRIENDLY_FIRE, 0));
+}

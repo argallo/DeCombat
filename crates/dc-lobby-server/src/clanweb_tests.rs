@@ -351,6 +351,49 @@ fn no_hosting_means_404_for_both_routes() {
     }
 }
 
+/// LG-414 (owner report "I can't search for other clans"): the find page's `q` keeps the clans whose name holds it
+/// (any case), an empty `q` lists every clan, and an unknown account gets text lines (not an HTML page) in the text
+/// form.
+#[test]
+fn text_form_searches_clans_by_name_and_answers_an_unknown_account_in_lines() {
+    let mut st = state();
+    player(&mut st, 1, "carol", "Carol", true);
+    player(&mut st, 2, "erin", "Erin", true);
+    player(&mut st, 3, "dan", "Dan", true);
+    get(
+        &mut st,
+        "/clan/create?p=carol&name=Red%20Wolves&emblem=1&bg=1&fmt=text",
+    );
+    get(
+        &mut st,
+        "/clan/create?p=erin&name=Blue%20Fox&emblem=2&bg=2&fmt=text",
+    );
+    let names = |body: &str| {
+        body.lines()
+            .filter(|l| l.starts_with("clan\t"))
+            .map(|l| l.split('\t').nth(2).unwrap_or("").to_string())
+            .collect::<Vec<_>>()
+    };
+    let (_, all) = get(&mut st, "/clan?url=guild/list&p=dan&fmt=text");
+    assert_eq!(names(&all).len(), 2, "{all}");
+    let (_, one) = get(&mut st, "/clan?url=guild/list&p=dan&q=wOLV&fmt=text");
+    assert!(one.starts_with("me\t0\t0\n"), "{one}");
+    assert_eq!(names(&one), vec!["Red Wolves".to_string()]);
+    let (_, spaced) = get(&mut st, "/clan?url=guild/list&p=dan&q=blue%20f&fmt=text");
+    assert_eq!(names(&spaced), vec!["Blue Fox".to_string()]);
+    let (_, none) = get(&mut st, "/clan?url=guild/list&p=dan&q=zebra&fmt=text");
+    assert_eq!(none, "me\t0\t0\n");
+    let (code, unknown) = get(&mut st, "/clan?url=guild/list&p=nobody&fmt=text");
+    assert_eq!(code, 200);
+    assert_eq!(
+        unknown,
+        "me\t0\t0\nmsg\t0\tCannot open the clan pages: unknown account.\n"
+    );
+    // the HTML pages stay as they were
+    let (_, page) = get(&mut st, "/clan?url=guild/list&p=nobody");
+    assert!(page.contains("unknown account") && page.starts_with("<!DOCTYPE html>"));
+}
+
 /// CLI-790: the text form of the create / list / join / leave actions writes the same DB rows as the pages and
 /// answers in tab-separated lines the DeCombat client reads.
 #[test]

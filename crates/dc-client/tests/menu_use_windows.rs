@@ -8,21 +8,26 @@
 // EVIDENCE: cshell+0x2450e0 / 0x2452f0 (weapon change), cshell+0x2427e0 / 0x244c00 / 0x244cf0 (record window)
 
 use dc_client::hud::items::DrawItem;
+use dc_client::menu::charinfo;
 use dc_client::menu::clan::ClanLits;
 use dc_client::menu::colorbox::{self, ColourLayout, ColourTables, ColourTexts};
 use dc_client::menu::countrybox::{CountryLayout, ROW_HEIGHT};
 use dc_client::menu::facebox::{self, FaceLayout, FaceTexts};
 use dc_client::menu::link::QueueReply;
 use dc_client::menu::link::{
-    ClanInfoView, InboxRow, InvRecord, LinkEvent, LinkOptions, OpenReply, UseReply,
+    ClanInfoView, InboxRow, InvRecord, LinkEvent, LinkOptions, OpenReply, ProfileView, UseReply,
+    UserRow,
 };
+use dc_client::menu::lobby::{LobbyScreen, RowStyle};
 use dc_client::menu::markbox::{self, MarkLayout};
 use dc_client::menu::megabox::{self, MegaBox};
+use dc_client::menu::ownflag;
 use dc_client::menu::shop::CMD_WEAR;
 use dc_client::menu::storage::Wares;
 use dc_client::menu::usebox;
 use dc_client::menu::usebox::{NOTICE_TITLE, WEAPON_CHANGE_ASK};
 use dc_client::menu::{Go, Menu, MenuInput, MenuKey, MenuOptions};
+use dc_client::menu::{MenuData, Screen};
 use dc_client::steps::{resolve, Resolved};
 
 fn menu() -> Option<Menu> {
@@ -730,12 +735,102 @@ fn rom_country_window_offers_the_united_states() {
         &mut m,
         [abs(l.list_at)[0], abs(l.list_at)[1] + last * ROW_HEIGHT],
     );
+    // CLI-1893: the preview draws our own flag for the picked row
+    assert!(
+        has_image(&mut m, ownflag::USA),
+        "the preview draws our United States flag"
+    );
     m.input(MenuInput::Key(MenuKey::Enter));
     m.input(MenuInput::Key(MenuKey::Enter));
     assert_eq!(
         m.link_latest_request(),
         format!("ItemUse(705, \"\", 0, {usa})")
     );
+}
+
+fn has_image(m: &mut Menu, tex: &str) -> bool {
+    m.items()
+        .iter()
+        .any(|i| matches!(i, DrawItem::Image { tex: t, .. } if t == tex))
+}
+
+/// CLI-1893 (owner report 2026-11-05 "switching country to usa doesn't have the flag show"): our United States row has
+/// our own flag picture in the shape of the ROM's flag pictures (a texture as big as theirs, the flag at FlagSize in
+/// its top left corner), and the Character Info box and the lobby's user rows draw it as they draw a ROM flag (ROM
+/// only; the country window's preview: `rom_country_window_offers_the_united_states`).
+#[test]
+fn rom_our_united_states_flag_shows_where_the_rom_flags_show() {
+    let Some(mut m) = menu() else {
+        eprintln!("skipped: CA_ROM unset");
+        return;
+    };
+    m.detach_link();
+    let rom = m.cat.rom.clone().unwrap();
+    let rows = charinfo::Tables::cached(&rom).countries;
+    let usa = rows
+        .iter()
+        .position(|r| r.1 == "USA")
+        .expect("our United States row");
+    assert_eq!(rows[usa].2, ownflag::USA);
+    let rom_size = m.cat.tex_size(&rows[1].2).expect("a ROM flag picture");
+    assert_eq!(m.cat.tex_size(ownflag::USA), Some(rom_size));
+    let style = RowStyle::load(&m.cat);
+    let [fw, fh] = [style.flag_size[0] as u32, style.flag_size[1] as u32];
+    assert!(fw > 0 && fh > 0, "FlagSize");
+    let t = m.cat.assets.texture(ownflag::USA).unwrap();
+    let alpha = |x: u32, y: u32| t.rgba[((y * t.width + x) * 4 + 3) as usize];
+    assert_eq!((alpha(0, 0), alpha(fw - 1, fh - 1)), (255, 255));
+    if fw < t.width {
+        assert_eq!(alpha(fw, 0), 0, "clear right of the flag");
+    }
+    if fh < t.height {
+        assert_eq!(alpha(0, fh), 0, "clear under the flag");
+    }
+    // the Character Info box: our flag after the name, at the texture's size as a ROM flag
+    m.open(Go::Lobby);
+    m.feed_event(LinkEvent::ProfileInfo(ProfileView {
+        name: "Bot1".into(),
+        exp: 1000,
+        nation: usa as u32,
+        ..ProfileView::default()
+    }));
+    m.update();
+    let drawn = m.items().into_iter().find_map(|i| match i {
+        DrawItem::Image { tex, dst, .. } if tex == ownflag::USA => Some([dst[2], dst[3]]),
+        _ => None,
+    });
+    assert_eq!(drawn, Some([rom_size.0 as f32, rom_size.1 as f32]));
+    // the lobby's user rows: our flag at FlagSize, as the row of a ROM country
+    let data = MenuData {
+        users: vec![
+            UserRow {
+                account: 1,
+                id: 1,
+                name: "A".into(),
+                nation: usa as u32,
+                ..Default::default()
+            },
+            UserRow {
+                account: 2,
+                id: 2,
+                name: "B".into(),
+                nation: 1,
+                ..Default::default()
+            },
+        ],
+        ..MenuData::default()
+    };
+    let screen = LobbyScreen::new(&m.cat, &data);
+    let mut items = Vec::new();
+    screen.draw_extra(&mut m.cat, &data, 0.0, &mut items);
+    let size_of = |tex: &str| {
+        items.iter().find_map(|i| match i {
+            DrawItem::Image { tex: t, dst, .. } if t == tex => Some([dst[2], dst[3]]),
+            _ => None,
+        })
+    };
+    assert_eq!(size_of(ownflag::USA), Some([fw as f32, fh as f32]));
+    assert_eq!(size_of(ownflag::USA), size_of(&rows[1].2));
 }
 
 /// megaphone-country (CLI-1874, owner report 2026-11-05 "missing the cursor ... can't type spaces or give it colors"):

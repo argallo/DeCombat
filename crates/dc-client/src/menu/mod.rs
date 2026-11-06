@@ -51,6 +51,7 @@ pub mod modpanel;
 pub mod nickname;
 pub mod nine;
 pub mod options;
+pub mod ownflag;
 pub mod paint;
 pub mod pane;
 pub mod pilot;
@@ -294,6 +295,8 @@ pub struct MenuData {
     pub member_sub: BTreeMap<u32, i32>,
     /// CLI-1887: the members' name and clan-name colour numbers (room record +0xac / +0xb0) by in-channel id.
     pub member_colour: BTreeMap<u32, (u32, u32)>,
+    /// CLI-1895: the members' clans (room record +0x32 / +0x5e / +0xa4 / +0xa8) by in-channel id.
+    pub member_clan: BTreeMap<u32, link::MemberClan>,
     /// w2-lobbychat: the chat mute end (local FILETIME ticks; 0x303 +0xec, 0x3053).
     pub muted_until: u64,
     /// w2-lobbychat: the chat's repeat rule ([`textbox::ChatGuard`]).
@@ -1002,7 +1005,14 @@ impl Menu {
         &self.cat.source
     }
 
+    /// CLI-1897: the catalog's mode lookups follow the joined server entry (clan-only: the clan mode rows).
+    fn sync_clan_table(&mut self) {
+        let clan = self.data.server.as_ref().is_some_and(|e| e.clan_only != 0);
+        self.cat.set_clan_table(clan);
+    }
+
     fn with_ctx<R>(&mut self, f: impl FnOnce(&mut dyn Screen, &mut Ctx) -> R) -> R {
+        self.sync_clan_table();
         let mut go = None;
         let mut quit = false;
         let r = {
@@ -1298,6 +1308,7 @@ impl Menu {
         self.under.clear();
         self.hover_part = None;
         self.drop_pressed = None;
+        self.sync_clan_table();
         // MAP-32: the room list opens on the joined server's community maps and its mod files
         if g == Go::Lobby {
             self.sync_mods();
@@ -2518,19 +2529,25 @@ fn shared_event(d: &mut MenuData, e: &LinkEvent) {
             d.members = m.clone();
             d.member_sub.clear();
             d.member_colour.clear();
+            d.member_clan.clear();
         }
         LinkEvent::MemberAdded(id, m) => {
             d.members.insert(*id, m.clone());
             d.member_sub.remove(id);
             d.member_colour.remove(id);
+            d.member_clan.remove(id);
         }
         LinkEvent::MemberRemoved { id, .. } => {
             d.members.remove(id);
             d.member_sub.remove(id);
             d.member_colour.remove(id);
+            d.member_clan.remove(id);
         }
         LinkEvent::MemberColour { id, name, clan } => {
             d.member_colour.insert(*id, (*name, *clan));
+        }
+        LinkEvent::MemberClan { id, clan } => {
+            d.member_clan.insert(*id, clan.clone());
         }
         LinkEvent::MemberTeam { id, team } => {
             if let Some(m) = d.members.get_mut(id) {
@@ -2577,9 +2594,16 @@ fn shared_event(d: &mut MenuData, e: &LinkEvent) {
             text,
             show_ms,
             repeat,
-        } => d
-            .ticker
-            .push(text.clone(), *show_ms, *repeat, Instant::now()),
+            colour,
+            runs,
+        } => d.ticker.push(
+            text.clone(),
+            *show_ms,
+            *repeat,
+            *colour,
+            runs.clone(),
+            Instant::now(),
+        ),
         LinkEvent::CharInfo(x) => {
             d.char_extras = x.clone();
             d.muted_until = x.muted_until;

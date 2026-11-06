@@ -446,3 +446,87 @@ fn rom_a_repeated_line_is_refused_and_the_field_cleared() {
         "the refused line leaves the field"
     );
 }
+
+/// CLI-1891: a player broadcast 0x3065 on the notice bar: the sender's name and the separator in the sender's name
+/// colour (+0x22), the message in the colours of its runs (+0x110), uncoloured characters in the bar's white; one
+/// text item per stretch of one colour. With `DC_USEBOX_PNG` set the screen is written to `megaphone_notice.png`.
+// EVIDENCE: cshell+0x1202d0 (the line and its runs), cshell+0x2ebfa0 (the runs painted one after the other)
+#[test]
+fn rom_a_megaphone_broadcast_shows_the_sender_colour_and_the_picked_colours() {
+    use dc_client::menu::charinfo::table_colour;
+    use dc_client::menu::link::BROADCAST_COLOUR;
+    use dc_client::menu::megabox::NO_COLOUR;
+    use dc_client::menu::textbox::{paint, TICKER_COLOUR, TICKER_TOP};
+    use dc_wire::BROADCAST_PUSH;
+    let Some(rom) = dc_rom::test_rom() else {
+        println!("skipped: CA_ROM unset");
+        return;
+    };
+    let table = |n: u32| table_colour(Some(&rom), n);
+    if (1..=3).any(|n| table(n).is_none()) {
+        println!("skipped: the ROM name colour table has fewer than 3 entries");
+        return;
+    }
+    let (mut menu, mut peer) = menu_with_peer(rom.clone());
+    menu.open(Go::Lobby);
+    let _ = peer.frames(Duration::from_millis(200));
+    // sender colour 1; "Hello" in index 2, the space uncoloured, "world" in index 3
+    let mut b = PktWriter::new(BROADCAST_PUSH);
+    b.u32(1).u32(4).u32(1).u32(1).u32(99);
+    b.at(0x22).u32(1).wstr("Owner", 17).wstr("Hello world", 100);
+    b.at(0x110)
+        .u16(2)
+        .u16(5)
+        .u16(NO_COLOUR)
+        .u16(1)
+        .u16(3)
+        .u16(5);
+    b.at(0x2a0).u16(0);
+    peer.send(&b);
+    assert!(pump_until(&mut menu, |m| m
+        .data
+        .ticker
+        .active(Instant::now())));
+    // well inside the span after a second of a four-second pass
+    std::thread::sleep(Duration::from_millis(1_100));
+    let items = menu.items_at(0.0);
+    let bar: Vec<(String, [u8; 4])> = items
+        .iter()
+        .filter_map(|i| match i {
+            DrawItem::Label {
+                text, pos, style, ..
+            } if pos[1] == TICKER_TOP => Some((text.clone(), style.colour)),
+            _ => None,
+        })
+        .collect();
+    let line = "Owner : Hello world";
+    let colours = paint(
+        line,
+        BROADCAST_COLOUR,
+        &[(1, 8), (2, 5), (u32::from(NO_COLOUR), 1), (3, 5)],
+        &table,
+    );
+    let mut want: Vec<(String, [u8; 4])> = Vec::new();
+    for (ch, c) in line.chars().zip(colours) {
+        let c = dc_client::menu::catalog::argb(c);
+        match want.last_mut() {
+            Some((s, k)) if *k == c => s.push(ch),
+            _ => want.push((ch.to_string(), c)),
+        }
+    }
+    assert_eq!(bar, want, "one text per coloured stretch");
+    let red = dc_client::menu::catalog::argb(TICKER_COLOUR);
+    assert!(
+        table(2) == Some(TICKER_COLOUR) || bar.iter().any(|(_, c)| *c != red),
+        "the line is not one red text"
+    );
+    if let Ok(dir) = std::env::var("DC_USEBOX_PNG") {
+        let i = menu.image();
+        let f = dc_render::FrameImage {
+            width: i.width,
+            height: i.height,
+            rgba: i.rgba,
+        };
+        let _ = f.save_png(&std::path::Path::new(&dir).join("megaphone_notice.png"));
+    }
+}

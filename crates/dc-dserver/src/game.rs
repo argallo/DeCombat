@@ -1040,6 +1040,10 @@ pub struct GameTuning {
     /// `combat.mod_damage = on|off`: a hit is scaled by the shooter's granted mods' `Instdamage` (DSV-440).
     // DC-DEFAULT: DSV-440 (proposed)
     pub mod_damage: bool,
+    /// `combat.infected_head_scale = <x>`: Quarantine's head factor on an infected victim (DSV-608): a head hit's
+    /// zone factor above 1 is scaled by `x`, never below 1 (1 = the human factor).
+    // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05) 0.5
+    pub infected_head_scale: f32,
 }
 
 /// Default corpse lifetime.
@@ -1071,7 +1075,7 @@ struct SpawnNote {
 /// The `combat.*` keys an operator may set (`-combat key=value[,key=value...]`, later a `[combat]` table of
 /// `server.toml`); every damage multiplier of DSV-30 is one of them.
 // DC-DEFAULT: DSV-30 (proposed) the multipliers are config keys; DSV-34 (proposed) the trace keys
-pub const COMBAT_KEYS: [&str; 34] = [
+pub const COMBAT_KEYS: [&str; 35] = [
     "health_scale",
     "head_factor",
     "body_factor",
@@ -1106,6 +1110,7 @@ pub const COMBAT_KEYS: [&str; 34] = [
     "hit_clip",
     "mod_damage",
     "warmup_damage",
+    "infected_head_scale",
 ];
 
 impl GameTuning {
@@ -1208,6 +1213,8 @@ impl GameTuning {
             "mod_damage" => self.mod_damage = switch("on", "off")?,
             // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04)
             "warmup_damage" => self.warmup_damage = switch("on", "off")?,
+            // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05)
+            "infected_head_scale" => self.infected_head_scale = num()?,
             // DC-DEFAULT: DSV-482 (proposed) Hardcore
             "health_scale" => {
                 let s = num()?;
@@ -1321,6 +1328,8 @@ impl Default for GameTuning {
             // DC-DEFAULT: DSV-127 (proposed; project decision: on)
             hit_clip: true,
             mod_damage: true,
+            // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05)
+            infected_head_scale: infect::INFECTED_HEAD_SCALE,
             hisec: hisec::HisecTuning::default(),
             health_scale: 1.0,
             gun_game: None,
@@ -3826,6 +3835,13 @@ impl Game {
     // SPEC: UNPROVEN that `extra_kind` is the node index (PLAUSIBLE by the two observations above)
     // DC-DEFAULT: DSV-30 (proposed)
     pub fn hit_zone(&self, vpid: u8, f: &crate::up::UpFire, head: bool) -> (f32, u8) {
+        let (factor, zone) = self.victim_zone(vpid, f, head);
+        // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05) an infected victim's head factor is reduced
+        (self.infected_zone_factor(vpid, factor, zone), zone)
+    }
+
+    /// [`Game::hit_zone`] before the Quarantine rule: the victim's own node factor or the box factor.
+    fn victim_zone(&self, vpid: u8, f: &crate::up::UpFire, head: bool) -> (f32, u8) {
         let geometry = if head {
             (self.cfg.head_factor, gs::KILL_ZONE_HEAD)
         } else {
@@ -8037,6 +8053,95 @@ mod tests {
         );
         assert_eq!(g.infected_health(0), 225.0 * INFECTED_HEALTH_SCALE);
         assert_eq!(INFECTED_HEALTH_SCALE, 2.0);
+    }
+
+    /// DSV-608: in Quarantine a head hit on an infected player takes half the head node's factor (never below 1);
+    /// his body hits, a head node of factor 1 and every hit on a human keep their factor; `combat.infected_head_scale
+    /// = 1` gives the infected the human factor again. The fire path applies it (health loss = damage x factor with
+    /// no armour).
+    #[test]
+    fn quarantine_head_hits_on_the_infected_take_half_the_head_factor() {
+        use super::infect::{COUNTDOWN_SECS, INFECTED_HEAD_SCALE};
+        use crate::chars::HitNode;
+        let mut t = character_tables();
+        t.chars.bodies.get_mut(&0).unwrap().skeleton = Some(1);
+        // node 0 torso 1.0, node 1 head 6.0, node 2 head 1.0
+        let node = |factor: f32, location: u8| HitNode { factor, location };
+        t.chars
+            .skeletons
+            .insert(1, vec![node(1.0, 2), node(6.0, 1), node(1.0, 1)]);
+        let mut g = Game::new(
+            GameTuning {
+                move_check: false,
+                trace: false,
+                spawn_shield: false,
+                armor_gear: ArmorGear::Off,
+                ..GameTuning::default()
+            },
+            &world(),
+            t,
+        );
+        g.insert_rig("BODY\\b.ltb", rig());
+        let mut room = RoomSettings::default();
+        room.pairs.insert("type".into(), "11".into());
+        room.pairs.insert("goal".into(), "2".into());
+        g.set_room(&room);
+        for (pid, uid, obj) in [(0u8, 7u32, 1u16), (1, 8, 3), (2, 9, 5)] {
+            let e = entry(uid, 0, "P");
+            g.note_identified(&e);
+            g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+            g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+            g.on_up(pid, Up::WorldReady, 20);
+        }
+        g.tick(100);
+        g.tick(100 + COUNTDOWN_SECS * 1000 + 50);
+        let host = *g.infect().infected.iter().next().expect("outbreak");
+        let humans: Vec<u8> = (0..3u8).filter(|p| *p != host).collect();
+        let (a, b) = (humans[0], humans[1]);
+        assert_eq!(INFECTED_HEAD_SCALE, 0.5);
+        let zone = |g: &Game, shooter: u8, victim: u8, part: u8| {
+            g.hit_zone(
+                victim,
+                &hit_report(g, shooter, victim, 0.0, Some(part)),
+                false,
+            )
+        };
+        assert_eq!(
+            zone(&g, a, host, 1),
+            (3.0, gs::KILL_ZONE_HEAD),
+            "infected head"
+        );
+        assert_eq!(zone(&g, a, host, 0), (1.0, 2), "infected body");
+        assert_eq!(
+            zone(&g, a, host, 2),
+            (1.0, gs::KILL_ZONE_HEAD),
+            "head node 1.0"
+        );
+        assert_eq!(zone(&g, a, b, 1), (6.0, gs::KILL_ZONE_HEAD), "human head");
+        assert_eq!(zone(&g, a, b, 0), (1.0, 2), "human body");
+        // the box geometry (no node named): the infected head takes half the operator's head factor, at least 1
+        let f = hit_report(&g, a, host, 0.0, None);
+        assert_eq!(
+            g.hit_zone(host, &f, true),
+            ((g.cfg.head_factor * 0.5).max(1.0), gs::KILL_ZONE_HEAD)
+        );
+        // the fire path: a body hit, then a head hit on the infected; the head loses three times as much
+        let mut now = 30_000;
+        let mut loss = |g: &mut Game, part: u8| {
+            let before = g.players[&host].health;
+            let f = hit_report(g, a, host, 0.0, Some(part));
+            g.on_up(a, Up::Fire(Box::new(f)), now);
+            now += 500;
+            before - g.players[&host].health
+        };
+        let body = loss(&mut g, 0);
+        let head = loss(&mut g, 1);
+        assert!(body > 0.0, "the body hit is accepted");
+        assert!((head - 3.0 * body).abs() < 1e-3, "head {head} body {body}");
+        // the switch: the human factor for the infected too
+        g.cfg.set_combat("infected_head_scale", "1").unwrap();
+        assert_eq!(zone(&g, a, host, 1), (6.0, gs::KILL_ZONE_HEAD));
+        assert!(g.cfg.set_combat("infected_head_scale", "-1").is_err());
     }
 
     /// DSV-511: a player who enters the world after the round start gets the running outbreak countdown with the

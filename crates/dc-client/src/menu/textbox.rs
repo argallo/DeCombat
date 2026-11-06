@@ -373,8 +373,9 @@ pub const TICKER_COLOUR: u32 = 0xffeb_191e;
 pub const TICKER_QUEUE: usize = 2;
 /// A pass's show time when the push gives none.
 // DC-DEFAULT: CLI-488 (proposed) 0x3052 period = one pass's show time, repeated `count` times; a broadcast one pass
-// of its seconds on the air; a zero time takes 10 s; every text in the 0x3052 colour; the bar shows on the room list
-// only and keeps its queue across screens; texts are cut at whole characters at the span's ends
+// of its seconds on the air; a zero time takes 10 s; a 0x3052 text in the 0x3052 colour, a broadcast in its own
+// colours (CLI-1891); the bar shows on the room list only and keeps its queue across screens; texts are cut at whole
+// characters at the span's ends
 pub const TICKER_DEFAULT_MS: u32 = 10_000;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -383,6 +384,8 @@ struct TickerItem {
     pass_ms: u32,
     passes: u32,
     start: Instant,
+    colour: u32,
+    runs: Vec<(u32, u16)>,
 }
 
 impl TickerItem {
@@ -398,8 +401,16 @@ pub struct Ticker {
 }
 
 impl Ticker {
-    /// Queues `text` at `now`.
-    pub fn push(&mut self, text: String, show_ms: u32, repeat: u32, now: Instant) {
+    /// Queues `text` at `now` in `colour`, painted by `runs` (see [`paint`]).
+    pub fn push(
+        &mut self,
+        text: String,
+        show_ms: u32,
+        repeat: u32,
+        colour: u32,
+        runs: Vec<(u32, u16)>,
+        now: Instant,
+    ) {
         self.items.retain(|t| t.end() > now);
         let pass_ms = if show_ms == 0 {
             TICKER_DEFAULT_MS
@@ -412,6 +423,8 @@ impl Ticker {
             pass_ms,
             passes: repeat.max(1),
             start,
+            colour,
+            runs,
         });
         // waiting texts beyond the limit: the oldest waiting one goes and the rest move up
         let waiting = self.items.iter().filter(|t| t.start > now).count();
@@ -441,40 +454,95 @@ impl Ticker {
 
     /// The text on the bar at `now` and how far its pass has run (0..1).
     pub fn current(&self, now: Instant) -> Option<(&str, f32)> {
-        let t = self
-            .items
-            .iter()
-            .find(|t| t.start <= now && t.end() > now)?;
+        let t = self.current_item(now)?;
         let ms = now.saturating_duration_since(t.start).as_millis() as u64;
         let pass = u64::from(t.pass_ms.max(1));
         Some((&t.text, (ms % pass) as f32 / pass as f32))
     }
+
+    fn current_item(&self, now: Instant) -> Option<&TickerItem> {
+        self.items.iter().find(|t| t.start <= now && t.end() > now)
+    }
+}
+
+/// The colour of each character of `text`: `colour`, painted by `runs` one after the other from the first character
+/// ({colour number, characters}; `table` gives a number's colour, none keeps `colour`); runs past the text's end are
+/// cut there.
+// EVIDENCE: cshell+0x2ebfa0 (each pair {colour, length} colours characters [at, at + length) cut at the text's end, the
+// next pair starts where it ended; a pair of the text's own colour or of no characters paints nothing), cshell+0x1dcf00
+// / cshell+0x1dcda0 (a number 1..n: entry n - 1 of the name colour table, else 0), cshell+0x2ee860 (a range of colour 0
+// is not drawn over: the text keeps its own colour there)
+// DC-DEFAULT: CLI-1891 (proposed) the pairs count characters, not UTF-16 units
+pub fn paint(
+    text: &str,
+    colour: u32,
+    runs: &[(u32, u16)],
+    table: &dyn Fn(u32) -> Option<u32>,
+) -> Vec<u32> {
+    let n = text.chars().count();
+    let mut out = vec![colour; n];
+    let mut at = 0usize;
+    for &(number, len) in runs {
+        if at >= n {
+            break;
+        }
+        let end = (at + usize::from(len)).min(n);
+        if let Some(c) = table(number).filter(|&c| c != 0) {
+            out[at..end].fill(c);
+        }
+        at = end;
+    }
+    out
 }
 
 /// The bar's text at `now`: the characters inside the span at the pass's place (the text enters at the right end
-/// and has left the span when the pass ends).
+/// and has left the span when the pass ends), one text item per stretch of one colour ([`paint`] with the user's
+/// name colour table).
 pub fn draw_ticker(cat: &mut Catalog, ticker: &Ticker, now: Instant, out: &mut Vec<DrawItem>) {
-    let Some((text, f)) = ticker.current(now) else {
+    let rom = cat.rom.clone();
+    draw_ticker_with(
+        cat,
+        ticker,
+        now,
+        &|n| super::charinfo::table_colour(rom.as_deref(), n),
+        out,
+    );
+}
+
+/// [`draw_ticker`] with the colour table `table`.
+pub fn draw_ticker_with(
+    cat: &mut Catalog,
+    ticker: &Ticker,
+    now: Instant,
+    table: &dyn Fn(u32) -> Option<u32>,
+    out: &mut Vec<DrawItem>,
+) {
+    let (Some(item), Some((text, f))) = (ticker.current_item(now), ticker.current(now)) else {
         return;
     };
+    let colours = paint(text, item.colour, &item.runs, table);
     let mut m = |t: &str| {
         cat.measure_text(TICKER_FONT, TICKER_SIZE, t)
             .map_or(0.0, |m| m.0)
     };
     let width = m(text);
     let x0 = TICKER_RIGHT - f * (TICKER_RIGHT - TICKER_LEFT + width);
-    // characters whose box lies inside the span
-    let (mut first, mut last) = (None, None);
+    // the characters whose box lies inside the span, gathered into stretches of one colour
+    let mut parts: Vec<(usize, usize, f32, u32)> = Vec::new();
     let mut x = x0;
-    for (k, ch) in text.char_indices() {
-        let w = m(&text[k..k + ch.len_utf8()]);
+    for (i, (k, ch)) in text.char_indices().enumerate() {
+        let end = k + ch.len_utf8();
+        let w = m(&text[k..end]);
         if x >= TICKER_LEFT && x + w <= TICKER_RIGHT {
-            first.get_or_insert((k, x));
-            last = Some(k + ch.len_utf8());
+            let c = colours[i];
+            match parts.last_mut() {
+                Some((_, b, _, pc)) if *pc == c && *b == k => *b = end,
+                _ => parts.push((k, end, x, c)),
+            }
         }
         x += w;
     }
-    if let (Some((a, xa)), Some(b)) = (first, last) {
+    for (a, b, xa, c) in parts {
         out.push(place_text(
             &text[a..b],
             [xa.round() as i32, TICKER_TOP as i32],
@@ -482,7 +550,7 @@ pub fn draw_ticker(cat: &mut Catalog, ticker: &Ticker, now: Instant, out: &mut V
             Align::default(),
             TICKER_FONT,
             TICKER_SIZE,
-            TICKER_COLOUR,
+            c,
         ));
     }
 }
@@ -495,6 +563,7 @@ pub fn say_chat(data: &mut MenuData, name: &str, text: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::catalog::argb;
     use super::*;
 
     #[test]
@@ -558,8 +627,8 @@ mod tests {
     fn the_ticker_runs_its_passes_by_the_clock_and_queues_at_most_two() {
         let t0 = Instant::now();
         let mut k = Ticker::default();
-        k.push("a".into(), 4_000, 2, t0);
-        k.push("b".into(), 1_000, 1, t0);
+        k.push("a".into(), 4_000, 2, TICKER_COLOUR, Vec::new(), t0);
+        k.push("b".into(), 1_000, 1, TICKER_COLOUR, Vec::new(), t0);
         assert_eq!(
             k.current(t0 + Duration::from_millis(1_000)),
             Some(("a", 0.25))
@@ -580,6 +649,8 @@ mod tests {
                 s.to_string(),
                 1_000,
                 1,
+                TICKER_COLOUR,
+                Vec::new(),
                 t0 + Duration::from_millis(i as u64),
             );
         }
@@ -587,6 +658,81 @@ mod tests {
         let texts: Vec<&str> = q.items.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts, ["1", "4", "5"], "one on the bar, two waiting");
         assert_eq!(q.current(now).map(|c| c.0), Some("1"));
+    }
+
+    /// Three table colours of our own: index 1 red, 2 green, 3 blue.
+    fn table(n: u32) -> Option<u32> {
+        [0xffff_0000, 0xff00_ff00, 0xff00_00ff]
+            .get((n as usize).checked_sub(1)?)
+            .copied()
+    }
+
+    #[test]
+    fn runs_paint_the_text_one_after_the_other_and_unknown_numbers_keep_its_colour() {
+        let w = 0xffff_ffff;
+        let (r, g, b) = (0xffff_0000, 0xff00_ff00, 0xff00_00ff);
+        // "Al : hey you": name + separator in colour 1, "hey" uncoloured (0x6363), " " in 0 (no colour), "you" blue
+        let runs = [(1, 5), (0x6363, 3), (0, 1), (3, 3)];
+        assert_eq!(
+            paint("Al : hey you", w, &runs, &table),
+            [r, r, r, r, r, w, w, w, w, b, b, b]
+        );
+        // a sender without a name colour: the head keeps the text's colour; a run past the end is cut
+        assert_eq!(
+            paint("A : xy", w, &[(0, 4), (2, 9)], &table),
+            [w, w, w, w, g, g]
+        );
+        // no runs: the text's colour
+        assert_eq!(paint("ab", TICKER_COLOUR, &[], &table), [TICKER_COLOUR; 2]);
+    }
+
+    #[test]
+    fn the_bar_draws_one_text_per_coloured_stretch() {
+        let mut cat = Catalog::fallback(None, 1024, 768);
+        let mut k = Ticker::default();
+        let t0 = Instant::now();
+        // a long pass: the text is well inside the span at 60 %
+        k.push(
+            "Al : hey you".into(),
+            100_000,
+            1,
+            0xffff_ffff,
+            vec![(1, 5), (0x6363, 4), (3, 3)],
+            t0,
+        );
+        let mut out = Vec::new();
+        draw_ticker_with(
+            &mut cat,
+            &k,
+            t0 + Duration::from_millis(60_000),
+            &table,
+            &mut out,
+        );
+        let labels: Vec<(String, [u8; 4], f32)> = out
+            .iter()
+            .filter_map(|d| match d {
+                DrawItem::Label {
+                    text, style, pos, ..
+                } => Some((text.clone(), style.colour, pos[0])),
+                _ => None,
+            })
+            .collect();
+        let texts: Vec<(&str, [u8; 4])> = labels.iter().map(|(t, c, _)| (t.as_str(), *c)).collect();
+        assert_eq!(
+            texts,
+            [
+                ("Al : ", argb(0xffff_0000)),
+                ("hey ", argb(0xffff_ffff)),
+                ("you", argb(0xff00_00ff)),
+            ]
+        );
+        // each stretch starts where the one before ended
+        let mut width = |t: &str| {
+            cat.measure_text(TICKER_FONT, TICKER_SIZE, t)
+                .map_or(0.0, |m| m.0)
+        };
+        assert!((labels[1].2 - labels[0].2 - width("Al : ")).abs() <= 1.0);
+        assert!((labels[2].2 - labels[1].2 - width("hey ")).abs() <= 1.0);
     }
 
     #[test]

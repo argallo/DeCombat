@@ -87,6 +87,10 @@ pub struct ClanRules {
     pub chat_commands: bool,
     // DC-DEFAULT: CD-11 clan room scoring policy (mode weights, fallback basic / winner points)
     pub policy: ClanRoomPolicy,
+    // DC-DEFAULT: LG-413 (proposed, owner decision) the value a clan room holds for an option its ROM clan mode row
+    // locks: mid-match join, friendly fire (the 2009 client only greys the controls; the value is the server's)
+    pub room_mid_join: bool,
+    pub room_friendly_fire: bool,
 }
 
 impl Default for ClanRules {
@@ -99,6 +103,8 @@ impl Default for ClanRules {
             web_requires_session: true,
             chat_commands: true,
             policy: ClanRoomPolicy::default(),
+            room_mid_join: false,
+            room_friendly_fire: false,
         }
     }
 }
@@ -150,6 +156,8 @@ impl ClanRules {
                 .is_some(),
             "clan.web_requires_session" => b.map(|x| self.web_requires_session = x).is_some(),
             "clan.chat_commands" => b.map(|x| self.chat_commands = x).is_some(),
+            "clan.room_mid_join" => b.map(|x| self.room_mid_join = x).is_some(),
+            "clan.room_friendly_fire" => b.map(|x| self.room_friendly_fire = x).is_some(),
             "clan.basic_point_default" => n
                 .map(|x| self.policy.basic_point_default = x as i32)
                 .is_some(),
@@ -1404,6 +1412,19 @@ fn on_clan_room_create(st: &mut Core, sid: Sid, p: &[u8]) -> Result<bool, Fault>
                 r.goal = goal;
             }
         }
+        // DC-DEFAULT: LG-412 / LG-413 (proposed) the options the clan row locks start at their held values
+        let held = locked_values(st, mode as u32);
+        if let Some(r) = st.rooms.get_mut(&key) {
+            for (f, v) in held {
+                match f {
+                    field::OPT_MID_JOIN => r.mid_join = v,
+                    field::OPT_FRIENDLY_FIRE => r.ff_on = v,
+                    field::OPT_KILL_CAM => r.killcam = v,
+                    field::WEAPON_LIMIT => r.weapon_limit = v,
+                    _ => {}
+                }
+            }
+        }
     }
     let s = Sides {
         home: home.uid,
@@ -1478,6 +1499,106 @@ fn on_clan_room_enter(st: &mut Core, sid: Sid, p: &[u8]) -> Result<bool, Fault> 
         retitle(st, key, new);
     }
     Ok(true)
+}
+
+/// LG-412: the ROM clan mode row key of a room option field (0x38c type), `None` for other fields.
+// EVIDENCE: cshell+0x265780 (the mode row's flags: weapon limit +0x168, mid-match join +0x169, friendly fire +0x16a,
+// kill cam +0x16b), cshell+0x1677f0 (the waiting room greys an option whose flag is off)
+fn option_key(f: u32) -> Option<&'static str> {
+    // OBSERVED: ROM table keys GAMEROOM.TXT [ClanMode<n>] EnableJoinCombatSetting / EnableTeamKillSetting /
+    // EnableViewEnemyCameraSetting / EnableWeaponUseSetting
+    match f {
+        field::OPT_MID_JOIN => Some("EnableJoinCombatSetting"),
+        field::OPT_FRIENDLY_FIRE => Some("EnableTeamKillSetting"),
+        field::OPT_KILL_CAM => Some("EnableViewEnemyCameraSetting"),
+        field::WEAPON_LIMIT => Some("EnableWeaponUseSetting"),
+        _ => None,
+    }
+}
+
+/// LG-412: true when the ROM clan mode row `mode` locks option field `f` (its flag is `FALSE`); false without a ROM,
+/// a row or the key.
+pub fn option_locked(st: &Core, mode: u32, f: u32) -> bool {
+    option_key(f).and_then(|k| st.rom.game_room.mode_flag(mode as usize, true, k)) == Some(false)
+}
+
+/// LG-413: the value a clan room holds for a locked option field: the configured mid-match join and friendly fire
+/// values, off (0) for kill cam and no weapon limit (0) for the weapon limit.
+// DC-DEFAULT: LG-413 (proposed, owner decision)
+pub fn held_value(st: &Core, f: u32) -> u32 {
+    match f {
+        field::OPT_MID_JOIN => st.rules.clan.room_mid_join as u32,
+        field::OPT_FRIENDLY_FIRE => st.rules.clan.room_friendly_fire as u32,
+        _ => 0,
+    }
+}
+
+/// LG-412 / LG-413: the option fields clan mode row `mode` locks and the values the room holds for them.
+pub fn locked_values(st: &Core, mode: u32) -> Vec<(u32, u32)> {
+    [
+        field::OPT_MID_JOIN,
+        field::OPT_FRIENDLY_FIRE,
+        field::OPT_KILL_CAM,
+        field::WEAPON_LIMIT,
+    ]
+    .into_iter()
+    .filter(|&f| option_locked(st, mode, f))
+    .map(|f| (f, held_value(st, f)))
+    .collect()
+}
+
+/// LG-412: true when a clan room's host may not set field `f` to `v` in mode row `mode`: a locked option to
+/// another value than the held one, a goal outside the clan row's `GoalMin` .. `GoalMax`, a room size outside its
+/// `MinPlayers` .. `MaxPlayers`. The client gets the 0x38d refusal (ok = 0), which every client already handles.
+// EVIDENCE: cshell+0x1677f0 (locked options greyed), cshell+0x163550 (the goal list from the clan row's smallest to
+// its largest goal, cshell+0x2646e0 / cshell+0x264830), cshell+0x1637a0 (the player list from the clan row's
+// smallest to its largest count, cshell+0x265310 / cshell+0x265470)
+// DC-DEFAULT: LG-412 (proposed) the lobby refuses what the 2009 clan waiting room cannot ask for
+pub fn setting_refused(st: &Core, mode: u32, f: u32, v: u32) -> bool {
+    let row = |k: &str| st.rom.game_room.mode_int(mode as usize, true, k);
+    // OBSERVED: ROM table keys GAMEROOM.TXT [ClanMode<n>] GoalMin / GoalMax / MinPlayers / MaxPlayers
+    let outside = |lo: &str, hi: &str| match (row(lo), row(hi)) {
+        (Some(lo), Some(hi)) => (v as i64) < lo as i64 || (v as i64) > hi as i64,
+        _ => false,
+    };
+    match f {
+        field::GOAL => outside("GoalMin", "GoalMax"),
+        field::MAX_PLAYERS => outside("MinPlayers", "MaxPlayers"),
+        _ if option_locked(st, mode, f) => {
+            let v = if f == field::WEAPON_LIMIT {
+                v
+            } else {
+                (v != 0) as u32
+            };
+            v != held_value(st, f)
+        }
+        _ => false,
+    }
+}
+
+/// LG-412: the default map and goal of clan mode row `mode` (its `DefaultMapID` / `DefaultGoal`); `None` without
+/// the row.
+// DC-DEFAULT: CLN-2 (proposed) map / goal from the ROM clan mode table
+pub fn mode_defaults(st: &Core, mode: u32) -> Option<(u32, u32)> {
+    if (mode as usize) >= st.rom.mode_count(true) {
+        return None;
+    }
+    let g = &st.rom.game_room;
+    Some((
+        g.default_map(mode as usize, true).max(0) as u32,
+        g.default_goal(mode as usize, true).max(0) as u32,
+    ))
+}
+
+/// True when clan map `map` has a GMS for clan mode row `mode` (the clan 0x311 mask bit).
+pub fn map_plays_mode(st: &Core, map: u32, mode: u32) -> bool {
+    mode < 32
+        && st
+            .rom
+            .game_room
+            .map_mode_masks(true)
+            .iter()
+            .any(|&(m, mask)| m as u32 == map && mask & (1u32 << mode) != 0)
 }
 
 /// Members per side of a clan room.

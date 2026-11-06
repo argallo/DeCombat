@@ -33,6 +33,16 @@ pub const INFECTED_HEALTH: f32 = 1000.0;
 /// once the infected stopped coming back, user playtest 2026-11-03 "infected need more health").
 // DC-DEFAULT: DSV-510 (proposed) 2.0
 pub const INFECTED_HEALTH_SCALE: f32 = 2.0;
+/// The default of `combat.infected_head_scale`: the share of a head hit's zone factor an infected victim takes
+/// (never below the body's 1). The infected keep the player skeleton, whose head nodes carry the large human
+/// factor, so without this a head shot on an infected hit as hard as on a human (owner report 2026-11-05 "the
+/// headshots should do less damage to infected").
+// OBSERVED: ROM table keys MODELBUTES.TXT [Model<n>] Skeleton (the GMS infected model rows and every player body name
+// the player skeleton rows), [AIModel<n>] Skeleton (the co-op infected bodies name their own rows with a much smaller
+// head factor), [Overidable_Model<n>] GearID (the infected rows name gear rows that cover the head; not applied here,
+// see DSV-608); read at run time, no value copied
+// DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05) 0.5
+pub const INFECTED_HEAD_SCALE: f32 = 0.5;
 /// The look byte of the infected look: override row 0 of the character's overridable model.
 // OBSERVED: capture 20261025_125432_rust6 (a look with override row 0 made the real client draw
 // the infected face with its looping eye FX on the bot; ae-triage-reddot2-blast §1.3)
@@ -375,6 +385,21 @@ impl Game {
             c.assets.face = face;
         }
         self.out.push(super::GameOut::CharacterLook { pid });
+    }
+
+    /// The zone factor a hit at `zone` with factor `factor` deals to `vpid`: on an infected player of a Quarantine
+    /// room a head factor above 1 is scaled by `combat.infected_head_scale`, at least 1; every other hit, and every
+    /// human, keeps the factor.
+    // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05)
+    pub(super) fn infected_zone_factor(&self, vpid: u8, factor: f32, zone: u8) -> f32 {
+        if zone != gs::KILL_ZONE_HEAD
+            || factor <= 1.0
+            || !self.is_infect()
+            || !self.infect.infected.contains(&vpid)
+        {
+            return factor;
+        }
+        (factor * self.cfg.infected_head_scale).max(1.0)
     }
 
     /// The claws of an infected player (`None` for a human or without the ROM row): the host's for the outbreak's

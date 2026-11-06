@@ -68,6 +68,31 @@ pub fn subtype(st: &Core, item_no: i64) -> Option<i64> {
         .ok()
 }
 
+/// LG-410: may a base character item (kind 6) or a gender item (`gender`, kind 7) set face row `picked` on a
+/// character whose stored face row is `own`? The choice sets of the 2009 face window: kind 6 another row of the own
+/// gender, kind 7 a row of the other gender; the own gender is the own row's (a man without one). Without the ROM's
+/// creation table there is nothing to check against (any face value is taken, as before).
+// DISASM: cshell+0x24a010 (the window's own gender: the creation table record of the character's face, a man without
+// one), EVIDENCE: cshell+0x248360 (kind 6: records of that gender whose face is not the own; kind 7: records of the
+// other gender)
+// DC-DEFAULT: LG-410 (proposed) the lobby refuses (reason 0) a face outside the kind's set, and a face with no row
+pub fn face_choice_ok(
+    men: &std::collections::HashMap<i64, bool>,
+    gender: bool,
+    own: i64,
+    picked: i64,
+) -> bool {
+    if men.is_empty() {
+        return true;
+    }
+    let man = men.get(&own).copied().unwrap_or(true);
+    match men.get(&picked) {
+        None => false,
+        Some(&m) if gender => m != man,
+        Some(&m) => m == man && picked != own,
+    }
+}
+
 /// A key of the item's ROM `[UseItem<n>]` section.
 pub fn use_key(st: &Core, item_no: i64, key: &str) -> Option<String> {
     st.rom
@@ -271,7 +296,14 @@ fn use_kind(
         }
         Some(SUB_FACE) | Some(SUB_FACE_OTHER) => {
             let v = req.face as i32;
-            if !(6000..7000).contains(&v) {
+            if !(6000..7000).contains(&v)
+                || !face_choice_ok(
+                    &st.rom.face_men,
+                    kind == Some(SUB_FACE_OTHER),
+                    me.face,
+                    views::face_index(v),
+                )
+            {
                 return Ok(refuse(reason::GENERIC));
             }
             st.db.execute(
@@ -562,5 +594,26 @@ mod tests {
             ),
             (5, "Alicia", 6002, 10, 144, 16)
         );
+    }
+
+    /// LG-410: kind 6 takes another face of the own gender, kind 7 a face of the other gender, from the stored face
+    /// (after a gender change the next gender item goes back); a face with no row is refused; no table, no check.
+    #[test]
+    fn the_face_items_take_only_their_own_choice_sets() {
+        let men: std::collections::HashMap<i64, bool> =
+            [(0, true), (1, true), (2, true), (4, false), (5, false)]
+                .into_iter()
+                .collect();
+        let ok = |gender: bool, own: i64, picked: i64| face_choice_ok(&men, gender, own, picked);
+        // a man: kind 6 another man, kind 7 a woman
+        assert!(ok(false, 2, 1) && !ok(false, 2, 2) && !ok(false, 2, 4));
+        assert!(ok(true, 2, 4) && !ok(true, 2, 0));
+        // after the change to a woman: kind 7 offers the men again, kind 6 the other woman
+        assert!(ok(true, 4, 0) && !ok(true, 4, 5));
+        assert!(ok(false, 4, 5) && !ok(false, 4, 1));
+        // unknown faces; a stored face without a row counts as a man
+        assert!(!ok(false, 2, 9) && !ok(true, 2, 9));
+        assert!(ok(true, 77, 4) && ok(false, 77, 1));
+        assert!(face_choice_ok(&Default::default(), true, 2, 2));
     }
 }

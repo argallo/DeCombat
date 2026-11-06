@@ -166,7 +166,36 @@ pub struct RomData {
     /// LG-260: the faces the 2009 creation screen offers (`FacePieceId` of the `CREATEMODEL.TXT` rows with
     /// ViewType 0, in row order), for the bots' random faces.
     pub faces: Vec<i64>,
+    /// LG-410: the gender of every face of the creation table (`FacePieceId` -> `IsMan`, every row whatever its
+    /// ViewType), for the base character and gender items' checks (itemuse.rs).
+    pub face_men: std::collections::HashMap<i64, bool>,
     pub notes: Vec<String>,
+}
+
+/// LG-410: `FacePieceId` -> `IsMan` of every `[Create_Model<n>]` row of `CREATEMODEL.TXT` (the hidden rows too: the
+/// 2009 face window lists them all).
+// OBSERVED: ROM table CREATEMODEL.TXT [Create_Model<n>] FacePieceId, IsMan (dc-client facebox::rows_from_doc reads the
+// same)
+// EVIDENCE: cshell+0x284670 (a record: FacePieceId +8, IsMan +0xd8), cshell+0x248360 (the window's list takes every
+// record)
+pub fn face_men_from_doc(doc: &ButeDoc) -> std::collections::HashMap<i64, bool> {
+    let num = |v: &str| -> Option<i64> {
+        v.split("//")
+            .next()?
+            .trim()
+            .trim_matches('"')
+            .trim()
+            .parse()
+            .ok()
+    };
+    doc.iter()
+        .filter_map(|(name, sec)| {
+            name.strip_prefix("Create_Model")?.parse::<i32>().ok()?;
+            let face = sec.get("FacePieceId").and_then(|v| num(v)).unwrap_or(0);
+            let man = sec.get("IsMan").and_then(|v| num(v)).unwrap_or(0) != 0;
+            Some((face, man))
+        })
+        .collect()
 }
 
 /// LG-260: the faces of `CREATEMODEL.TXT` (`[Create_Model<n>]` with ViewType 0), in row order.
@@ -366,6 +395,7 @@ impl RomData {
             shop: Default::default(),
             hisec_rows: Default::default(),
             faces: Vec::new(),
+            face_men: Default::default(),
             notes: vec![
                 "CA_ROM not set: room, item and rank tables are empty (DeCombat fallbacks in use)"
                     .into(),
@@ -426,9 +456,9 @@ impl RomData {
                 );
                 Default::default()
             });
-        let faces = ButeDoc::from_vfs(&vfs, "ATTRIBUTES.rez", "ATTRIBUTES\\CREATEMODEL.TXT")
-            .map(|d| faces_from_doc(&d))
-            .unwrap_or_default();
+        let create = ButeDoc::from_vfs(&vfs, "ATTRIBUTES.rez", "ATTRIBUTES\\CREATEMODEL.TXT");
+        let faces = create.as_ref().map(faces_from_doc).unwrap_or_default();
+        let face_men = create.as_ref().map(face_men_from_doc).unwrap_or_default();
         Self {
             dir: Some(dir.to_path_buf()),
             vfs: Some(vfs),
@@ -441,6 +471,7 @@ impl RomData {
             shop,
             hisec_rows,
             faces,
+            face_men,
             notes,
         }
     }
@@ -919,6 +950,12 @@ GMS_COOP=c.gms
     fn faces_follow_the_creation_table_and_the_random_pick_is_stable() {
         let d = doc("[Create_Model2]\nFacePieceId = 5\nViewType = 0\n[Create_Model0]\nFacePieceId = 0\nViewType = 0\n[Create_Model1]\nFacePieceId = 1\nViewType = 1\n");
         assert_eq!(faces_from_doc(&d), vec![0, 5]);
+        // LG-410: every row's gender, the hidden rows too
+        let g = doc("[Create_Model0]\nFacePieceId = 3\nIsMan = 1 // note\n[Create_Model1]\nFacePieceId = 7\nIsMan = 0\nViewType = 1\n[Other]\nFacePieceId = 9\nIsMan = 1\n");
+        assert_eq!(
+            face_men_from_doc(&g),
+            [(3, true), (7, false)].into_iter().collect()
+        );
         let mut r = RomData::empty();
         assert_eq!(r.random_face(3), None);
         r.faces = vec![0, 2, 5, 7];

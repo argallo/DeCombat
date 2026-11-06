@@ -632,6 +632,8 @@ pub struct ClanScreen {
     /// clan-functions: the page the web window shows (our own pages, CLI-791) and the create page's name field.
     pub web: WebPage,
     create_field: Option<usize>,
+    /// CLI-1896: the find page's search field.
+    search_field: Option<usize>,
     back: Go,
 }
 
@@ -642,6 +644,7 @@ impl ClanScreen {
         sheet.modal_free = Some(pages::LOBBY_COMMON);
         let notice_field = add_notice_edit(&mut sheet);
         let create_field = clanpage::add_name_field(&mut sheet, WEB_WINDOW, pages::CLAN);
+        let search_field = clanpage::add_search_field(&mut sheet, WEB_WINDOW, pages::CLAN);
         let mut s = ClanScreen {
             sheet,
             lits: cat.rom.as_deref().map(ClanLits::cached).unwrap_or_default(),
@@ -651,6 +654,7 @@ impl ClanScreen {
             invite_off: false,
             web: WebPage::None,
             create_field,
+            search_field,
             back: Go::Lobby,
         };
         s.sheet.set_wrap(INFO_WINDOW, NOTICE_LABEL, NOTICE_WRAP);
@@ -926,7 +930,17 @@ impl Screen for ClanScreen {
                 self.click(CMD_NOTICE_OK, usize::MAX, ctx)
             }
             MenuKey::Enter if matches!(self.web, WebPage::Create(_)) => self.send_create(ctx),
+            // CLI-1896: Enter on the find page searches for the field's text
+            MenuKey::Enter if self.window_shown(WEB_WINDOW) && self.web_field_focused() => {
+                self.search(ctx)
+            }
             MenuKey::Enter => self.send_chat(ctx),
+            // the menu window delivers Space as a key (CLI-483): a space in the focused field of the screen (the
+            // chat line, the notice box, the create page's name, the find page's search)
+            // DC-DEFAULT: CLI-1895 (proposed; OWNER REPORT 2026-11-05 "clan announcements don't allow for spaces")
+            MenuKey::Space => {
+                self.sheet.type_char(' ');
+            }
             // DC-DEFAULT: CLI-567 (proposed) Escape closes the open notice / web / war window, else leaves the screen
             // as its exit button does
             MenuKey::Escape => {
@@ -1013,7 +1027,15 @@ impl Screen for ClanScreen {
                 };
                 let user = ctx.data.user.clone();
                 let target = match h {
-                    PageHit::Refresh => Some(l.request(&user)),
+                    PageHit::Field => {
+                        self.sheet.focus(self.search_field);
+                        return true;
+                    }
+                    PageHit::Search => {
+                        self.search(ctx);
+                        return true;
+                    }
+                    PageHit::Refresh => Some(l.ask(&user)),
                     PageHit::Row(i) if !l.busy => l.row_request(i, &user),
                     PageHit::Second => {
                         self.open_page(CMD_CREATE, ctx);
@@ -1134,7 +1156,10 @@ impl Screen for ClanScreen {
             self.sheet.draw_layer(WEB_WINDOW, cat, secs, out);
             match &self.web {
                 WebPage::Create(c) => c.draw(cat, &self.sheet, &self.lits.marks, secs, out),
-                WebPage::List(l) => l.draw(data.profile.char_no, out),
+                WebPage::List(l) => {
+                    l.draw(data.profile.char_no, out);
+                    l.draw_search(&self.sheet, secs, out);
+                }
                 WebPage::Leave(l) => l.draw(out),
                 WebPage::None => {}
             }
@@ -1261,7 +1286,7 @@ impl ClanScreen {
         self.sheet.set_text(WEB_WINDOW, WEB_TITLE, &t);
         self.sheet.show_window(WEB_WINDOW, true);
         self.sheet.modal = Some(WEB_WINDOW);
-        if self.create_field.is_some() && self.sheet.focused() == self.create_field {
+        if self.web_field_focused() {
             self.sheet.focus(None);
         }
         self.web = match command {
@@ -1280,8 +1305,16 @@ impl ClanScreen {
                 };
                 let mut l = ListPage::new(kind);
                 l.member = in_clan(ctx.data);
+                if kind == ListKind::Search {
+                    // CLI-1896: the search field starts empty and takes the keyboard
+                    if let Some(i) = self.search_field {
+                        self.sheet.parts[i].text.clear();
+                    }
+                    l.field = self.search_field;
+                    self.sheet.focus(self.search_field);
+                }
                 l.busy = true;
-                if !web_get(ctx, l.request(&ctx.data.user)) {
+                if !web_get(ctx, l.ask(&ctx.data.user)) {
                     l.busy = false;
                     l.message = Some(clanpage::T_UNREACHABLE.into());
                 }
@@ -1308,6 +1341,9 @@ impl ClanScreen {
             .filter(|(ok, _)| *ok);
         let closes = target.starts_with("/clan/join") || target.starts_with("/clan/leave");
         match &mut self.web {
+            // CLI-1896: the answer of a list request that a newer one replaced is dropped (the requests run on their
+            // own threads: an older search's answer may come last)
+            WebPage::List(l) if l.stale(target) => {}
             WebPage::List(l) if !target.starts_with("/clan/leave") => match body {
                 Some(b) => {
                     if let (true, Some((_, m))) = (closes, &done) {
@@ -1347,8 +1383,34 @@ impl ClanScreen {
         self.sheet.show_window(WEB_WINDOW, false);
         self.sheet.modal = None;
         self.web = WebPage::None;
-        if self.create_field.is_some() && self.sheet.focused() == self.create_field {
+        if self.web_field_focused() {
             self.sheet.focus(None);
+        }
+    }
+
+    /// Whether the keyboard is in one of the web window's own fields (the create page's name, the find page's
+    /// search).
+    fn web_field_focused(&self) -> bool {
+        let f = self.sheet.focused();
+        f.is_some() && (f == self.create_field || f == self.search_field)
+    }
+
+    /// CLI-1896: the find page's search: the field's text becomes the page's search and the list is asked again
+    /// with it (the lobby filters by `q`; the page keeps the same match for an older lobby's whole list).
+    fn search(&mut self, ctx: &mut Ctx) {
+        let WebPage::List(l) = &mut self.web else {
+            return;
+        };
+        // a search while the list is still coming asks again: the later answer is the one shown
+        if l.kind != ListKind::Search {
+            return;
+        }
+        l.take_query(&self.sheet);
+        l.busy = true;
+        l.message = None;
+        if !web_get(ctx, l.ask(&ctx.data.user)) {
+            l.busy = false;
+            l.message = Some(clanpage::T_UNREACHABLE.into());
         }
     }
 
@@ -1592,5 +1654,76 @@ mod tests {
         );
         assert_eq!(d.clan.chat, vec![("Ann".to_string(), "hi".to_string())]);
         assert_eq!(clan_chat_command("yo"), "!nm clan\tyo");
+    }
+
+    /// CLI-1895 (owner report "clan announcements don't allow for spaces"): the window delivers Space as a key; the
+    /// clan screen types it into its focused field: the notice box, the chat line, the create page's name and the
+    /// find page's search (CLI-1896), whose Enter asks the list with the search. ROM-gated (the screen's sheet).
+    #[test]
+    fn rom_space_types_a_space_in_every_clan_field() {
+        let Ok(rom) = dc_rom::resolve_rom() else {
+            return;
+        };
+        let cat = Catalog::from_rom(&rom, 1024, 768).unwrap();
+        let mut data = MenuData::default();
+        data.char_extras.clan_id = 7;
+        data.char_extras.clan_role = CLAN_ROLE_LEADER;
+        data.auth = Some("127.0.0.1:9".parse().unwrap());
+        data.user = "Alice".into();
+        let mut s = ClanScreen::new(&cat, &data);
+        let link = super::super::link::Link::detached();
+        let (mut popups, mut go, mut quit, mut sounds) = (Vec::new(), None, false, Vec::new());
+        let mut ctx = Ctx {
+            cat: &cat,
+            data: &mut data,
+            link: &link,
+            popups: &mut popups,
+            go: &mut go,
+            quit: &mut quit,
+            sounds: &mut sounds,
+        };
+        let typed = |s: &mut ClanScreen, ctx: &mut Ctx, t: &str| {
+            for c in t.chars() {
+                if c == ' ' {
+                    s.key(MenuKey::Space, ctx);
+                } else {
+                    s.sheet.type_char(c);
+                }
+            }
+        };
+        // the notice box
+        s.click(CMD_NOTICE, usize::MAX, &mut ctx);
+        typed(&mut s, &mut ctx, "war at nine");
+        assert_eq!(s.notice_input(), Some("war at nine"));
+        s.click(CMD_NOTICE_OK, usize::MAX, &mut ctx);
+        let sent = link.take_sent();
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, LinkCmd::ClanNoticeSet(t) if t == "war at nine")),
+            "{sent:?}"
+        );
+        // the chat line
+        let chat = s.sheet.parts.iter().position(|p| {
+            p.layer == TALK_WINDOW && p.id == TALK_FIELD && p.kind == WidgetKind::EditBox
+        });
+        s.sheet.focus(chat);
+        typed(&mut s, &mut ctx, "hi all");
+        assert_eq!(s.typed_talk(), "hi all");
+        // the find page: the search field has the keyboard, Enter searches with the typed name
+        s.click(CMD_FIND, usize::MAX, &mut ctx);
+        let _ = link.take_sent();
+        typed(&mut s, &mut ctx, "red fox");
+        s.key(MenuKey::Enter, &mut ctx);
+        let sent = link.take_sent();
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, LinkCmd::ClanWeb { target, .. }
+                if target.contains("url=guild/list") && target.ends_with("&q=red%20fox"))),
+            "{sent:?}"
+        );
+        let WebPage::List(l) = &s.web else {
+            panic!("the find page");
+        };
+        assert_eq!(l.query, "red fox");
     }
 }

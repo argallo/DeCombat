@@ -975,6 +975,48 @@ fn the_face_windows_set_the_face_the_match_shows() {
     assert_eq!(col(&st, a, "face"), 4);
 }
 
+/// LG-410 (OWNER REPORT 2026-11-05): with the creation table's genders the base character item takes only another
+/// face of the stored gender and the gender item only a face of the other one; a gender change, then a second gender
+/// item bought (not used) keeps the changed face in the record; its use goes back to the first gender.
+#[test]
+fn the_face_items_check_their_choice_sets_against_the_stored_face() {
+    let mut st = rom_state();
+    Arc::get_mut(&mut st.rom).unwrap().face_men = [(1, true), (2, true), (4, false), (5, false)]
+        .into_iter()
+        .collect();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let ok = |c: &mut Client, st: &mut Core, item: i64, face: u32| -> bool {
+        let u = give(st, a, item, 1, 0);
+        u32_at(&use_window(c, st, u, "", face, 0, 0, 0), 6) == 1
+    };
+    // the man of face 2: kind 6 refuses the own face and a woman, kind 7 refuses a man and an unknown face
+    assert!(!ok(&mut c, &mut st, 9106, 6002));
+    assert!(!ok(&mut c, &mut st, 9106, 6004));
+    assert!(!ok(&mut c, &mut st, 9107, 6001));
+    assert!(!ok(&mut c, &mut st, 9107, 6009));
+    assert_eq!(col(&st, a, "face"), 2);
+    // the gender change to face 4; a second gender item bought keeps it
+    assert!(ok(&mut c, &mut st, 9107, 6004));
+    assert_eq!(col(&st, a, "face"), 4);
+    let second = give(&st, a, 9107, 1, 0);
+    c.send(&mut st, crate::msg::CHAR_SHEET_FETCH, &[]);
+    assert_eq!(u32_at(&c.take(crate::msg::CHAR_SHEET_REPLY), 0x56), 6004);
+    // its use: only a man now
+    assert_eq!(
+        u32_at(&use_window(&mut c, &mut st, second, "", 6005, 0, 0, 0), 6),
+        0
+    );
+    assert_eq!(
+        u32_at(&use_window(&mut c, &mut st, second, "", 6001, 0, 0, 0), 6),
+        1
+    );
+    assert_eq!(col(&st, a, "face"), 1);
+    // kind 6 on the man: another man only
+    assert!(!ok(&mut c, &mut st, 9106, 6005));
+    assert!(ok(&mut c, &mut st, 9106, 6002));
+    assert_eq!(col(&st, a, "face"), 2);
+}
+
 /// use-items-sweep (CD-100): a colour item's use with the item it replaces at +0x3c.
 fn use_colour(c: &mut Client, st: &mut Core, uid: i64, colour: u32, used: i64) -> Vec<u8> {
     let mut v = u32s(&[uid as u32]);

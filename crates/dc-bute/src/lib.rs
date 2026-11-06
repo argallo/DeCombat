@@ -467,6 +467,20 @@ impl GameRoomData {
         self.doc.get_int(&tag, "DefaultGoal", 100)
     }
 
+    /// An integer key of mode row `mode` (`None`: no row, no key or no number).
+    pub fn mode_int(&self, mode: usize, clan: bool, key: &str) -> Option<i32> {
+        let tag = format!("{}{}", if clan { "ClanMode" } else { "Mode" }, mode);
+        self.doc.get_str(&tag, key)?.trim().parse().ok()
+    }
+
+    /// A `TRUE` / `FALSE` key of mode row `mode` (`None`: no row or no key; any other text is `false`).
+    // EVIDENCE: cshell+0x265780 (the mode row's flags +0x168 .. +0x16b are read as booleans)
+    pub fn mode_flag(&self, mode: usize, clan: bool, key: &str) -> Option<bool> {
+        let tag = format!("{}{}", if clan { "ClanMode" } else { "Mode" }, mode);
+        let v = self.doc.get_str(&tag, key)?.trim().trim_matches('"').trim();
+        Some(eq_fold(v, "TRUE") || v == "1")
+    }
+
     /// Returns `[(map_id, mode_bit_mask)]` (at most 30 pairs). Only the first 32 modes get a mask bit.
     pub fn map_mode_masks(&self, clan: bool) -> Vec<(usize, u32)> {
         let modes = self.modes(clan);

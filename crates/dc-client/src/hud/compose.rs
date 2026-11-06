@@ -291,6 +291,11 @@ impl HudAssets {
                 None if path == super::fallborder::TEXTURE => {
                     Some(Arc::new(super::fallborder::texture()))
                 }
+                // CLI-1893: our own flag pictures (the ROM catalogue puts them in the ROM flags' shape at load)
+                None if path.starts_with("@dc:flag_") => {
+                    crate::menu::ownflag::texture(path, crate::menu::ownflag::OWN_SHAPE)
+                        .map(Arc::new)
+                }
                 Some((base, r)) => self.texture(base).map(|b| Arc::new(crop(&b, r))),
                 None => self.textures.load(path).map(Arc::new),
             };

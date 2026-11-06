@@ -846,13 +846,25 @@ fn on_setting(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
             } else {
                 st.maps_of_channel(key.channel).map_count()
             },
-            st.rom.mode_count(false),
+            st.rom.mode_count(clan),
         )
     };
     // only the host changes settings, and only while the room waits (0 -> `res 0x4e2`); handing the host role
     // over is allowed in any state (CD-28 has no state condition, and the host role only matters for Start)
     // DC-DEFAULT: CD-57 (proposed) room.handover_any_state
     let mut ok = is_host && (waiting || (req.field == field::HOST && st.rules.handover_any_state));
+    // DC-DEFAULT: LG-412 (proposed) a clan room refuses a locked option's other value, a goal or room size outside
+    // the ROM clan mode row's range
+    if ok && clan {
+        let mode = st.rooms[&key].mode;
+        if crate::clan::setting_refused(st, mode, req.field, req.value) {
+            ok = false;
+            st.note(&format!(
+                "clan room {}-{}: setting {} = {} refused by the clan mode row {}",
+                key.channel, key.no, req.field, req.value, mode
+            ));
+        }
+    }
     if ok {
         let v = req.value;
         ok = match req.field {
@@ -894,7 +906,11 @@ fn on_setting(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
                     if !class.is_some_and(dc_wire::possession::class_allows) {
                         drop_possession(st, key);
                     }
-                    reset_for_mode(st, key, v, mode_count);
+                    if clan {
+                        clan_reset_for_mode(st, key, v);
+                    } else {
+                        reset_for_mode(st, key, v, mode_count);
+                    }
                     echo_linked_fields(st, key, req.field);
                     true
                 }
@@ -1005,6 +1021,37 @@ fn reset_for_mode(st: &mut Core, key: RoomKey, mode: u32, mode_count: usize) {
         r.goal = record_goal.unwrap_or(goal);
         if !keep_map {
             r.map = default_map;
+        }
+    }
+}
+
+/// LG-412: a clan room's mode change: the goal becomes the clan row's `DefaultGoal`, the map stays when it has a GMS
+/// for the clan mode (else the clan row's default map), and the options the new row locks take their held values
+/// (pushed when they change).
+// DC-DEFAULT: LG-412 (proposed) the LG-65 / LG-100 reset with the ROM clan mode table; LG-413 held values
+fn clan_reset_for_mode(st: &mut Core, key: RoomKey, mode: u32) {
+    let Some((default_map, goal)) = crate::clan::mode_defaults(st, mode) else {
+        return;
+    };
+    let keep_map = st
+        .rooms
+        .get(&key)
+        .is_some_and(|r| crate::clan::map_plays_mode(st, r.map, mode));
+    if let Some(r) = st.rooms.get_mut(&key) {
+        r.goal = goal;
+        if !keep_map {
+            r.map = default_map;
+        }
+    }
+    for (f, v) in crate::clan::locked_values(st, mode) {
+        let now = st.rooms.get(&key).map(|r| match f {
+            field::OPT_MID_JOIN => r.mid_join,
+            field::OPT_FRIENDLY_FIRE => r.ff_on,
+            field::OPT_KILL_CAM => r.killcam,
+            _ => r.weapon_limit,
+        });
+        if now.is_some_and(|n| n != v) {
+            set_field(st, key, f, v);
         }
     }
 }

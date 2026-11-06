@@ -102,6 +102,8 @@ pub struct WebReply {
     /// The action's result and message.
     pub msg: Option<(bool, String)>,
     pub clans: Vec<ClanListRow>,
+    /// Whether the answer had its `me` line (every text-form answer has one; HTML has none).
+    pub me: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -126,6 +128,7 @@ pub fn parse_reply(body: &str) -> WebReply {
         let s = |i: usize| f.get(i).map_or(String::new(), |v| v.to_string());
         match f.first().copied() {
             Some("me") => {
+                r.me = true;
                 r.clan = num(1);
                 r.leader = num(2) != 0;
             }
@@ -500,6 +503,22 @@ pub const T_REMOVE: &str = "Remove";
 pub const T_LEADER: &str = "Leader";
 pub const T_MEMBER: &str = "Member";
 
+/// The find page's search: a clan name field and its Search button on the button row (after Create a clan), the
+/// rows the clans whose name holds the typed text (any case); an empty field lists every clan.
+// DC-DEFAULT: CLI-1896 (proposed; OWNER REPORT 2026-11-05 "I can't search for other clans with the clan search
+// button") the field, the button, their places and the match rule are ours: the 2009 find page was the publisher's
+// HTML (cshell+0x1103d0 opens window 5 for 10001); the ROM's war window (window 6) has a find field and a find
+// button of its own, the hint for a search on the find page
+pub const SEARCH_FIELD: [i32; 4] = [457, 528, 200, 24];
+pub const SEARCH_BUTTON: [i32; 4] = [665, 528, 80, 24];
+pub const SEARCH_MAX: usize = NAME_MAX;
+pub const T_SEARCH: &str = "Search";
+pub const T_SEARCH_HINT: &str = "Clan name";
+pub const T_NO_MATCH: &str = "No clan matches the search.";
+pub const T_NO_CLANS: &str = "No clans yet.";
+/// The answer of a page that is not the text form (an older lobby's HTML for an unknown account).
+pub const T_NOT_A_PAGE: &str = "The clan server did not answer with a clan list.";
+
 /// The leave page: a question, the clan's name, the rule, two buttons.
 pub const LEAVE_QUESTION_AT: [i32; 2] = [511, 247];
 pub const LEAVE_NAME_AT: [i32; 2] = [511, 277];
@@ -548,6 +567,9 @@ pub enum PageHit {
     Row(usize),
     Refresh,
     Second,
+    /// The find page's search field and its Search button (CLI-1896).
+    Field,
+    Search,
     Leave,
     Cancel,
     Page,
@@ -583,6 +605,11 @@ pub struct ListPage {
     pub hover: Option<PageHit>,
     /// The screen's own clan state (0x303 clan number or a leader role) when the page opened or the state changed.
     pub member: bool,
+    /// The find page's search field (a sheet edit part the page draws) and the text of the last search.
+    pub field: Option<usize>,
+    pub query: String,
+    /// The last list request sent (the page's own list, a refresh or a search).
+    pub asked: String,
 }
 
 impl ListPage {
@@ -595,7 +622,41 @@ impl ListPage {
             busy: false,
             hover: None,
             member: false,
+            field: None,
+            query: String::new(),
+            asked: String::new(),
         }
+    }
+
+    /// The page's list request, kept as the one whose answer the page waits for.
+    pub fn ask(&mut self, user: &str) -> String {
+        self.asked = self.request(user);
+        self.asked.clone()
+    }
+
+    /// Whether `target` is a list request that a later one replaced (its answer is dropped).
+    // DC-DEFAULT: CLI-1896 (proposed) the last asked list wins
+    pub fn stale(&self, target: &str) -> bool {
+        target.starts_with("/clan?") && !self.asked.is_empty() && target != self.asked
+    }
+
+    /// The clan rows the page shows: every row of the answer whose name holds the last search's text (any case);
+    /// the lobby filters by the same rule (`q`), an older lobby sends every clan and this keeps the match.
+    // DC-DEFAULT: CLI-1896 (proposed) the match rule
+    pub fn shown_clans(&self) -> Vec<&ClanListRow> {
+        let q = self.query.trim().to_lowercase();
+        self.reply
+            .clans
+            .iter()
+            .filter(|k| q.is_empty() || k.name.to_lowercase().contains(&q))
+            .collect()
+    }
+
+    /// Takes the field's text as the search (the Search button or Enter on the find page).
+    pub fn take_query(&mut self, sheet: &Sheet) {
+        self.query = self
+            .field
+            .map_or(String::new(), |i| sheet.parts[i].text.trim().to_string());
     }
 
     /// Whether the page offers Create a clan: the find page, for a viewer in no clan by the screen's own state and
@@ -613,13 +674,17 @@ impl ListPage {
             ListKind::Search => "guild/list",
             ListKind::Manage => "manager/guildmember",
         };
-        format!("/clan?url={url}&p={}&fmt=text", url_encode(user))
+        let mut t = format!("/clan?url={url}&p={}&fmt=text", url_encode(user));
+        if self.kind == ListKind::Search && !self.query.trim().is_empty() {
+            t.push_str(&format!("&q={}", url_encode(self.query.trim())));
+        }
+        t
     }
 
     /// The rows' count and whether row `i` has its action button.
     pub fn rows(&self) -> usize {
         match self.kind {
-            ListKind::Search => self.reply.clans.len(),
+            ListKind::Search => self.shown_clans().len(),
             ListKind::Manage => self.members.len(),
         }
         .min(ROW_MAX)
@@ -627,7 +692,7 @@ impl ListPage {
 
     pub fn row_action(&self, i: usize, me: u32) -> bool {
         match self.kind {
-            ListKind::Search => self.reply.clan == 0 && i < self.reply.clans.len(),
+            ListKind::Search => self.reply.clan == 0 && i < self.shown_clans().len(),
             ListKind::Manage => {
                 self.reply.leader && self.members.get(i).is_some_and(|m| m.char_no != me)
             }
@@ -639,8 +704,7 @@ impl ListPage {
         let p = url_encode(user);
         match self.kind {
             ListKind::Search => self
-                .reply
-                .clans
+                .shown_clans()
                 .get(i)
                 .map(|k| format!("/clan/join?p={p}&c={}&fmt=text", k.uid)),
             ListKind::Manage => self
@@ -665,6 +729,12 @@ impl ListPage {
         if self.offers_create() && inside(SECOND_BUTTON, p) {
             return Some(PageHit::Second);
         }
+        if self.kind == ListKind::Search && inside(SEARCH_FIELD, p) {
+            return Some(PageHit::Field);
+        }
+        if self.kind == ListKind::Search && inside(SEARCH_BUTTON, p) {
+            return Some(PageHit::Search);
+        }
         Some(PageHit::Page)
     }
 
@@ -673,6 +743,13 @@ impl ListPage {
         let r = parse_reply(body);
         if let Some((_, m)) = &r.msg {
             self.message = Some(m.clone());
+        } else if !r.me {
+            // an answer that is not the text form (an older lobby answers an unknown account with HTML): say so
+            // instead of an empty page
+            // DC-DEFAULT: CLI-1896 (proposed)
+            self.message = Some(T_NOT_A_PAGE.into());
+            self.busy = false;
+            return;
         }
         let members = parse_members(body);
         if self.kind == ListKind::Manage && (!members.is_empty() || r.msg.is_none()) {
@@ -685,7 +762,45 @@ impl ListPage {
         } else {
             self.reply = WebReply { msg: None, ..r };
         }
+        if self.kind == ListKind::Search && self.message.is_none() && self.shown_clans().is_empty()
+        {
+            let t = if self.query.trim().is_empty() {
+                T_NO_CLANS
+            } else {
+                T_NO_MATCH
+            };
+            self.message = Some(t.into());
+        }
         self.busy = false;
+    }
+
+    /// The find page's search field (with the caret while it has the keyboard, the hint while it is empty) and its
+    /// Search button.
+    pub fn draw_search(&self, sheet: &Sheet, secs: f32, out: &mut Vec<DrawItem>) {
+        if self.kind != ListKind::Search {
+            return;
+        }
+        let part = self.field.map(|i| &sheet.parts[i]);
+        let typed = part.map_or("", |p| p.text.as_str());
+        let focused = part.is_some_and(|p| p.focus);
+        framed(SEARCH_FIELD, BOX_EDGE, [0, 0, 0, 255], out);
+        let at = [SEARCH_FIELD[0] + 7, SEARCH_FIELD[1] + SEARCH_FIELD[3] / 2];
+        if typed.is_empty() && !focused {
+            text(T_SEARCH_HINT, at, left_mid(), HINT_COLOUR, out);
+        } else {
+            let mut shown = typed.to_string();
+            if focused && super::sheet::caret_on(secs, 0.333) {
+                shown.push('|');
+            }
+            text(&shown, at, left_mid(), TEXT_COLOUR, out);
+        }
+        button(
+            SEARCH_BUTTON,
+            T_SEARCH,
+            true,
+            self.hover == Some(PageHit::Search),
+            out,
+        );
     }
 
     pub fn draw(&self, me: u32, out: &mut Vec<DrawItem>) {
@@ -702,7 +817,7 @@ impl ListPage {
             let y = ROW_Y + i as i32 * ROW_STEP;
             let cells: Vec<(String, u32)> = match self.kind {
                 ListKind::Search => {
-                    let k = &self.reply.clans[i];
+                    let k = self.shown_clans()[i];
                     vec![
                         (k.name.clone(), ROW_COLOUR),
                         (k.members.to_string(), ROW_COLOUR),
@@ -828,23 +943,42 @@ impl LeavePage {
 /// Adds the name field of the create page to the sheet: an edit part under window 5 that is never drawn by the
 /// sheet (the page draws it) but keeps the focus and the typing.
 pub fn add_name_field(sheet: &mut Sheet, window: i32, page: dc_ui_data::PageTag) -> Option<usize> {
+    add_field(sheet, window, page, NAME_FIELD, -2, NAME_MAX)
+}
+
+/// Adds the find page's search field (CLI-1896) to the sheet, as [`add_name_field`] does.
+pub fn add_search_field(
+    sheet: &mut Sheet,
+    window: i32,
+    page: dc_ui_data::PageTag,
+) -> Option<usize> {
+    add_field(sheet, window, page, SEARCH_FIELD, -3, SEARCH_MAX)
+}
+
+fn add_field(
+    sheet: &mut Sheet,
+    window: i32,
+    page: dc_ui_data::PageTag,
+    r: [i32; 4],
+    id: i32,
+    max_len: usize,
+) -> Option<usize> {
     let w = sheet
         .parts
         .iter()
         .position(|p| p.kind == WidgetKind::Window && p.id == window && p.page == page)?;
-    let r = NAME_FIELD;
     sheet.parts.push(Part {
         page,
         kind: WidgetKind::EditBox,
         layer: window,
-        id: -2,
+        id,
         command: 0,
         pos: [r[0], r[1]],
         size: [r[2], r[3]],
         look: Look::Edit {
             font: 14,
             size: 14,
-            max_len: NAME_MAX,
+            max_len,
             caret_colour: 0xffff_ffff,
             caret_period: 0.333,
             clip: r[2],
@@ -943,5 +1077,44 @@ mod tests {
         l.answer("me\t0\t0\nclan\t4\tWolves\t1\tCarol\t1\t1\n");
         assert!(l.offers_create(), "after a leave the page offers it again");
         assert!(!ListPage::new(ListKind::Manage).offers_create());
+    }
+
+    /// CLI-1896: the search keeps the matching rows (any case, an older lobby's whole list too), asks with `q`,
+    /// says when nothing matches, drops an older request's answer and names an answer that is not the text form.
+    #[test]
+    fn find_page_search_filters_asks_and_drops_stale_answers() {
+        let mut l = ListPage::new(ListKind::Search);
+        let first = l.ask("Ann");
+        assert_eq!(first, "/clan?url=guild/list&p=Ann&fmt=text");
+        l.answer(
+            "me\t0\t0\nclan\t1\tRed Wolves\t2\tCarol\t1\t1\nclan\t2\tBlue Fox\t1\tDan\t2\t2\n",
+        );
+        assert_eq!(l.rows(), 2);
+        l.query = "WOL".into();
+        assert_eq!(l.ask("Ann"), "/clan?url=guild/list&p=Ann&fmt=text&q=WOL");
+        assert_eq!(l.rows(), 1, "the shown list follows the search at once");
+        assert_eq!(l.shown_clans()[0].name, "Red Wolves");
+        assert_eq!(
+            l.row_request(0, "Ann").as_deref(),
+            Some("/clan/join?p=Ann&c=1&fmt=text"),
+            "Join acts on the shown row"
+        );
+        assert!(l.stale(&first), "the first list's answer is now stale");
+        assert!(!l.stale("/clan?url=guild/list&p=Ann&fmt=text&q=WOL"));
+        assert!(
+            !l.stale("/clan/join?p=Ann&c=1&fmt=text"),
+            "actions are never stale"
+        );
+        l.query = "zebra".into();
+        l.answer("me\t0\t0\n");
+        assert_eq!(l.message.as_deref(), Some(T_NO_MATCH));
+        l.query.clear();
+        l.message = None;
+        l.answer("me\t0\t0\n");
+        assert_eq!(l.message.as_deref(), Some(T_NO_CLANS));
+        l.message = None;
+        l.answer("<!DOCTYPE html>\n<html>unknown account</html>\n");
+        assert_eq!(l.message.as_deref(), Some(T_NOT_A_PAGE));
+        assert!(!l.busy);
     }
 }

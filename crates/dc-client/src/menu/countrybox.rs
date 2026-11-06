@@ -665,8 +665,29 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(
             rows[2],
-            ("United States".into(), "USA".into(), String::new())
+            (
+                "United States".into(),
+                "USA".into(),
+                crate::menu::ownflag::USA.to_string()
+            )
         );
+        // CLI-1893: the window draws our flag for the row as it draws a ROM flag
+        let c = Catalog::fallback(None, 1024, 768);
+        let countries = rows
+            .iter()
+            .map(|r| Country {
+                full: r.0.clone(),
+                short: r.1.clone(),
+                flag: r.2.clone(),
+            })
+            .collect();
+        let b = CountryBox::open(&c, 9, 1, countries);
+        let mut out = Vec::new();
+        b.flag(2, [0, 0], &mut out);
+        assert!(
+            matches!(&out[..], [DrawItem::Image { tex, .. }] if tex == crate::menu::ownflag::USA)
+        );
+        assert_eq!(b.short(2), "USA");
         add_own_countries(&mut rows);
         assert_eq!(rows.len(), 3, "added once");
         let mut none = Vec::new();

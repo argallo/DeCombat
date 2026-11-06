@@ -547,6 +547,33 @@ pub mod room_keys {
     /// The mode row's mode class (GAME_MODES_2009.md section 2).
     // SPEC: GAME_MODES_2009.md section 2 (the class of each mode row)
     pub const MODE_CLASS: KeyPin = key("e5792f5953852926", 8);
+    /// The mode row's four room option flags (CLI-1897).
+    // EVIDENCE: cshell+0x265780 (mode row bytes +0x168 .. +0x16b read from these keys)
+    pub const MODE_WEAPONS_OPEN: KeyPin = key("72435634f14713e7", 22);
+    pub const MODE_MID_JOIN_OPEN: KeyPin = key("e04bb3a649087c2c", 23);
+    pub const MODE_FRIENDLY_FIRE_OPEN: KeyPin = key("e43ea74ee821e6ca", 21);
+    pub const MODE_KILL_CAM_OPEN: KeyPin = key("ef03c829d033e311", 28);
+}
+
+/// A room option a mode row may lock (CLI-1897).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomOption {
+    /// The weapon limit list.
+    Weapons,
+    MidJoin,
+    FriendlyFire,
+    KillCam,
+}
+
+impl RoomOption {
+    fn key(self) -> KeyPin {
+        match self {
+            RoomOption::Weapons => room_keys::MODE_WEAPONS_OPEN,
+            RoomOption::MidJoin => room_keys::MODE_MID_JOIN_OPEN,
+            RoomOption::FriendlyFire => room_keys::MODE_FRIENDLY_FIRE_OPEN,
+            RoomOption::KillCam => room_keys::MODE_KILL_CAM_OPEN,
+        }
+    }
 }
 
 /// Font cell height used when a font record gives none.
@@ -564,6 +591,10 @@ pub struct Catalog {
     /// The room table's map and mode rows, read once (the screens look names up on every frame they draw).
     map_rows: Vec<dc_bute::SectionMap>,
     mode_rows: Vec<dc_bute::SectionMap>,
+    /// CLI-1897: the clan mode rows (`[ClanMode<n>]`) and whether the mode lookups read them (the joined server
+    /// entry is a clan-only one).
+    clan_mode_rows: Vec<dc_bute::SectionMap>,
+    clan_table: bool,
     /// MAP-32: the community maps of the joined server's mod set, the rows after the ROM's map rows (map index
     /// `first_community_index() + i`), in mod-set load order then map key order (`JoinReport::maps`).
     community: Vec<dc_mod_lua::MapRecord>,
@@ -607,6 +638,7 @@ impl Catalog {
             .as_ref()
             .map(|g| (g.maps(), g.modes(false)))
             .unwrap_or_default();
+        let clan_mode_rows = rooms.as_ref().map(|g| g.modes(true)).unwrap_or_default();
         let mut cat = Catalog {
             rom: Some(rom.to_path_buf()),
             pages,
@@ -616,6 +648,8 @@ impl Catalog {
             rooms,
             map_rows,
             mode_rows,
+            clan_mode_rows,
+            clan_table: false,
             community_base: None,
             community: Vec::new(),
             paths,
@@ -629,6 +663,8 @@ impl Catalog {
         };
         // L1: the front end's cursor image, read once at menu start (CLI-480)
         cat.load_cursor(&vfs);
+        // CLI-1893: our own flag pictures, in the shape of the ROM's flags
+        cat.load_own_flags();
         Ok(cat)
     }
 
@@ -644,6 +680,8 @@ impl Catalog {
             rooms: None,
             map_rows: Vec::new(),
             mode_rows: Vec::new(),
+            clan_mode_rows: Vec::new(),
+            clan_table: false,
             community_base: None,
             community: Vec::new(),
             paths: CodePaths::default(),
@@ -701,11 +739,34 @@ impl Catalog {
 
     fn room_row(&self, mode: bool, index: i32) -> Option<&dc_bute::SectionMap> {
         let rows = if mode {
-            &self.mode_rows
+            self.active_mode_rows()
         } else {
-            &self.map_rows
+            &self.map_rows[..]
         };
         rows.get(usize::try_from(index).ok()?)
+    }
+
+    /// The mode rows the lookups read: the clan rows on a clan-only server entry, else the plain rows.
+    fn active_mode_rows(&self) -> &[dc_bute::SectionMap] {
+        if self.clan_table {
+            &self.clan_mode_rows
+        } else {
+            &self.mode_rows
+        }
+    }
+
+    /// CLI-1897: every mode lookup reads the clan mode rows (`on`, a clan-only server entry) or the plain ones.
+    // EVIDENCE: cshell+0x265780 (the plain and the clan mode lists, table +0x15e0 / +0x15f0), cshell+0x1630a0 and
+    // cshell+0x264d90 (the list picked by the session's clan flag +0x12c, copied from the server entry +0xbc at
+    // cshell+0x13dff0), cshell+0x138e90 / cshell+0x1391e0 (room creation: players and names of the clan list),
+    // cshell+0x163550 / cshell+0x1637a0 (the waiting room's goal and player lists of the clan list)
+    pub fn set_clan_table(&mut self, on: bool) {
+        self.clan_table = on;
+    }
+
+    /// True when the mode lookups read the clan mode rows.
+    pub fn clan_table(&self) -> bool {
+        self.clan_table
     }
 
     /// Map row `index` of the room table.
@@ -713,9 +774,24 @@ impl Catalog {
         self.room_row(false, index)
     }
 
-    /// Mode row `index` of the room table (non-clan modes).
+    /// Mode row `index` of the room table (the clan rows on a clan-only server entry, CLI-1897).
     pub fn mode_row(&self, index: i32) -> Option<&dc_bute::SectionMap> {
         self.room_row(true, index)
+    }
+
+    /// CLI-1897: whether mode row `index` lets the host change room option `opt` (the row's flag; a row without
+    /// the key, or no row at all, lets it).
+    // EVIDENCE: cshell+0x265780 (the four flags of a mode row: weapon limit +0x168, mid-match join +0x169, friendly
+    // fire +0x16a, kill cam +0x16b), cshell+0x264ad0 / cshell+0x264c30 / cshell+0x264d90 / cshell+0x264ef0 (their
+    // getters)
+    // DC-DEFAULT: CLI-1897 (proposed) a row without the key keeps the option open
+    pub fn mode_option_open(&self, index: i32, opt: RoomOption) -> bool {
+        self.room_row(true, index)
+            .and_then(|r| find_key(r.iter(), &opt.key()))
+            .is_none_or(|v| {
+                let v = v.trim().trim_matches('"').trim();
+                v.eq_ignore_ascii_case("true") || v == "1"
+            })
     }
 
     /// The mode class of mode row `index` (None without a ROM or a class key).
@@ -882,14 +958,14 @@ impl Catalog {
         &self.map_rows
     }
 
-    /// The room table's (non-clan) mode rows (empty without a ROM).
+    /// The room table's mode rows (the clan rows on a clan-only server entry, CLI-1897; empty without a ROM).
     pub fn mode_rows(&self) -> &[dc_bute::SectionMap] {
-        &self.mode_rows
+        self.active_mode_rows()
     }
 
     /// Number of mode rows (0 without a ROM).
     pub fn mode_count(&self) -> usize {
-        self.mode_rows.len()
+        self.active_mode_rows().len()
     }
 
     /// The screen's real size in pixels.

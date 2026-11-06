@@ -300,6 +300,8 @@ pub struct MegaBox {
     pub uses: u32,
     /// The own name (the preview line).
     pub name: String,
+    /// The own name colour (the preview line's name part; none: white).
+    pub name_colour: Option<u32>,
     pub text: String,
     /// The colour index of each character of `text` (a missing entry: [`NO_COLOUR`]).
     pub colours: Vec<u16>,
@@ -332,6 +334,7 @@ impl MegaBox {
             uid,
             uses,
             name: name.to_string(),
+            name_colour: None,
             text: String::new(),
             colours: Vec::new(),
             pen: NO_COLOUR,
@@ -574,11 +577,13 @@ impl MegaBox {
         x
     }
 
-    /// The preview line's stretches: the own name and " : " in white, then the message in its colours.
-    // DC-DEFAULT: CLI-1874 (proposed) the name part is white (the 2009 confirmation gives it the own name colour of
-    // shell +0x434, cshell+0x2a6560; not ported)
+    /// The preview line's stretches: the own name and " : " in the own name colour (white without one), then the
+    /// message in its colours.
+    // EVIDENCE: cshell+0x2a6560 / cshell+0x2a71e0 (the runs with a first pair over the name and separator whose colour
+    // is the own name colour word shell +0x434 when it is set), cshell+0x2a85b0 (the confirmation's line)
     fn preview_parts(&self) -> Vec<(String, u32)> {
-        let mut parts = vec![(format!("{} : ", self.name), WHITE)];
+        let head = self.name_colour.filter(|&c| c != 0).unwrap_or(WHITE);
+        let mut parts = vec![(format!("{} : ", self.name), head)];
         parts.extend(self.coloured(0));
         parts
     }
@@ -989,5 +994,23 @@ mod tests {
         );
         assert!(has(&out, "Alice : "));
         assert!(!has(&out, "5/65"));
+    }
+
+    #[test]
+    fn the_preview_name_takes_the_own_name_colour() {
+        let mut c = Catalog::fallback(None, 1024, 768);
+        let head = |b: &MegaBox, c: &mut Catalog| {
+            let mut out = Vec::new();
+            b.draw(c, &MegaArt::default(), &NameArt::default(), 0.0, &mut out);
+            out.iter().find_map(|d| match d {
+                DrawItem::Label { text, style, .. } if text == "Alice : " => Some(style.colour),
+                _ => None,
+            })
+        };
+        let mut b = boxed();
+        b.type_char('x');
+        assert_eq!(head(&b, &mut c), Some(argb(WHITE)));
+        b.name_colour = Some(0xffff_0000);
+        assert_eq!(head(&b, &mut c), Some(argb(0xffff_0000)));
     }
 }

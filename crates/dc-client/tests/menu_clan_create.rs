@@ -598,3 +598,101 @@ fn rom_a_member_is_not_offered_a_second_create() {
     assert_eq!(log.matches("created by account").count(), 2, "{log}");
     assert!(log.contains("'Echo' (Disbanded"), "{log}");
 }
+
+/// CLI-1895 / CLI-1896 (owner reports 2026-11-05 "clan announcements don't allow for spaces", "I can't search for
+/// other clans with the clan search button"): a clan name typed with the Space key keeps its space; a member presses
+/// the screen's Clan Search button (a real click on the ROM button), the find page lists both clans, a search typed
+/// in the page's field (Space key included) and Enter shows only the matching clan, a search without a match says
+/// so, and the Search button with an empty field lists every clan again.
+#[test]
+fn rom_the_clan_search_button_finds_clans_by_name() {
+    use dc_client::menu::clan::FIND_BUTTON;
+    use dc_client::menu::clanpage::{SEARCH_BUTTON, SEARCH_FIELD, T_NO_MATCH};
+    use dc_client::menu::MenuKey;
+    let Some(rom) = rom() else {
+        eprintln!("CA_ROM not set: skipped");
+        return;
+    };
+    let watchdog = Watchdog::arm("menu-clan-search", Duration::from_secs(240));
+    let stack = Stack::start("menu-clan-search", &watchdog);
+    let mut a = login(rom.clone(), &stack, "Wolfboss");
+    let mut b = login(rom.clone(), &stack, "Foxboss");
+    let mut c = login(rom, &stack, "Seeker");
+    let typed = |m: &mut Menu, t: &str| {
+        for ch in t.chars() {
+            if ch == ' ' {
+                m.input(MenuInput::Key(MenuKey::Space));
+            } else {
+                m.input(MenuInput::Char(ch));
+            }
+        }
+    };
+    // one mark pair per clan (CD-32): each clan its own cells
+    for (m, name, k) in [(&mut a, "Red Wolves", 0), (&mut b, "Blue Fox", 1)] {
+        to_clan(m);
+        m.input(MenuInput::Command(CMD_CREATE));
+        click(m, NAME_FIELD);
+        typed(m, name);
+        click(m, cell(0, k));
+        click(m, cell(1, k));
+        click(m, CREATE_BUTTON);
+        let want = format!("Clan {name} created.");
+        assert!(
+            until(m, 10, |m| m.popup().map(|p| p.text.as_str())
+                == Some(want.as_str())),
+            "created {name} (the space typed)"
+        );
+        m.input(MenuInput::Key(MenuKey::Enter));
+    }
+    // the member presses the screen's Clan Search button itself
+    to_clan(&mut c);
+    let find = c
+        .sheet()
+        .part(INFO_WINDOW, FIND_BUTTON, WidgetKind::Button)
+        .map(|p| [p.pos[0], p.pos[1], p.size[0], p.size[1]])
+        .expect("the Clan Search button");
+    click(&mut c, find);
+    assert!(
+        until(&mut c, 10, |m| {
+            let t = texts(m);
+            t.iter().any(|x| x == "Red Wolves") && t.iter().any(|x| x == "Blue Fox")
+        }),
+        "the find page lists both clans: {:?}",
+        texts(&mut c)
+    );
+    click(&mut c, SEARCH_FIELD);
+    typed(&mut c, "red wo");
+    c.input(MenuInput::Key(MenuKey::Enter));
+    assert!(
+        until(&mut c, 10, |m| {
+            let t = texts(m);
+            t.iter().any(|x| x == "Red Wolves") && !t.iter().any(|x| x == "Blue Fox")
+        }),
+        "the search keeps the matching clan: {:?}",
+        texts(&mut c)
+    );
+    for _ in 0..6 {
+        c.input(MenuInput::Key(MenuKey::Backspace));
+    }
+    typed(&mut c, "zebra");
+    click(&mut c, SEARCH_BUTTON);
+    assert!(
+        until(&mut c, 10, |m| texts(m).iter().any(|x| x == T_NO_MATCH)),
+        "no match is said: {:?}",
+        texts(&mut c)
+    );
+    for _ in 0..5 {
+        c.input(MenuInput::Key(MenuKey::Backspace));
+    }
+    click(&mut c, SEARCH_BUTTON);
+    assert!(
+        until(&mut c, 10, |m| {
+            let t = texts(m);
+            t.iter().any(|x| x == "Red Wolves") && t.iter().any(|x| x == "Blue Fox")
+        }),
+        "an empty search lists every clan: {:?}",
+        texts(&mut c)
+    );
+    let log = stack.stop();
+    assert_eq!(log.matches("created by account").count(), 2, "{log}");
+}
