@@ -264,6 +264,8 @@ mod tests {
         );
     }
 
+    /// The 64-bit address of the report that prompted the module name (a 32-bit build has no such address).
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn the_head_names_the_module_the_run_and_the_access() {
         let v = head_lines(
@@ -282,6 +284,10 @@ mod tests {
                 "access violation: read of 0x10",
             ]
         );
+    }
+
+    #[test]
+    fn the_head_without_a_module_names_the_address_and_the_access() {
         let v = head_lines(0xc000_0005, 0x1000, None, 1, &[1, 0xdead], None);
         assert_eq!(
             v[0],
