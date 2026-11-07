@@ -1938,8 +1938,17 @@ impl SoundDirector {
     pub fn menu_cues(&mut self, cues: &[SoundCue]) {
         let now = self.last_now.unwrap_or(0);
         for c in cues {
-            if let SoundCue::Interface { file, what } = c {
-                self.interface(now, [0.0; 3], file.clone(), what);
+            match c {
+                SoundCue::Interface { file, what } => self.interface(now, [0.0; 3], file.clone(), what),
+                // CRATE-7: the case reel's won gun, fired and racked with its own sounds
+                SoundCue::OwnWeapon { k, weapon } => {
+                    if let Some((file, _)) = self.weapon_file(*weapon, *k) {
+                        self.stats.own_weapon += 1;
+                        let cut = cuts_previous(*k).then_some((Emitter::Own, *weapon));
+                        self.own_weapon(now, [0.0; 3], file, Trigger::OwnWeapon { k: *k }, cut);
+                    }
+                }
+                _ => {}
             }
         }
     }

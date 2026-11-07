@@ -133,6 +133,11 @@ Both first-person and third-person views need a piece. The tool warns when one i
 
 ### 4.4 Challenges and unlocks
 
+**For now (owner decision 2026-11-05):** camos are unlocked from the Camo Crate, a case that drops in matches on an entry with
+camos and opens into one of them or into the plain gun of one of them, for 7 days, 30 days or permanent (DC_DEFAULTS.md
+CRATE-1..CRATE-4, CRATE-10). The challenges below are not built.
+
+
 - **Counting:** the game server adds an `@wstat uid=<id> weapon=<base> kills=<n> hs=<n> ...` line per player and weapon at match
   end. Kills with any variant count toward the base gun.
 - **Storing:** new tables `weapon_stats` and `variant_unlocks`.

@@ -9,6 +9,7 @@ return function(mod)
         id = "Weapon503",
         variant_of = 27,
         variant_name = "L96A1 Toxic",
+        variant_rarity = "rare", -- CRATE-6: how often a Camo Crate gives it and how its opening is shown
         PVSkin1 = "@camo:paint:27:PVSkin1:keep=128,243,122/333,222,16/333,250,16/333,278,16/333,306,16/333,334,16/290,335,18:fx=0.035,0.02,0,1,0:" .. art,
         HHSkin0 = "@camo:paint:27:HHSkin0:keep=78,152,23:fx=0.035,0.02,0,1,0:" .. art,
     })

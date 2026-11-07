@@ -242,6 +242,8 @@ pub struct ModelScene {
     pub view_cull: Option<ViewCull>,
     /// client-destructfx: the effect models of this frame ([`crate::fxmodels`]).
     pub fx_models: crate::fxmodels::FxModelSet,
+    /// CRATE-8: one model shown on its own (the case reel's won gun), with the model it is.
+    showcase: Option<(ModelRef, ModelInstance)>,
     /// client-tags2: the name of the body socket the name over the head stands on, read from the user's CShell.dll
     /// ([`crate::hud::marks::NAME_SOCKET`]); `None`: the names keep their box points.
     name_socket: Option<String>,
@@ -294,6 +296,7 @@ impl ModelScene {
             own_team: None,
             view_cull: None,
             fx_models: crate::fxmodels::FxModelSet::default(),
+            showcase: None,
             name_socket: crate::hud::marks::name_socket_from_rom(rom),
             figure: Some(crate::menu::figure::FigureTables::cached(rom)),
             gear: BTreeMap::new(),
@@ -855,7 +858,47 @@ impl ModelScene {
         }
         v.extend(self.drops.instances());
         v.extend(self.fx_models.instances());
+        v.extend(self.showcase.as_ref().map(|s| &s.1));
         v
+    }
+
+    /// CRATE-8: loads `m` as the showcase model (once; the last one is replaced) and returns its bind-pose bounds in
+    /// model space (`None`: it failed to load, or is still loading on the loader threads).
+    pub fn showcase_bounds(
+        &mut self,
+        ctx: &GpuContext,
+        renderer: &WorldRenderer,
+        m: &ModelRef,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        if self.showcase.as_ref().is_none_or(|s| &s.0 != m) {
+            self.drain();
+            let Fetch::Ready(Some(l)) = self.fetch(ctx, renderer, self.key_for(m)) else {
+                return None;
+            };
+            let mut inst = self.instance(ctx, renderer, &l);
+            inst.set_pose(&[]);
+            self.showcase = Some((m.clone(), inst));
+        }
+        self.showcase.as_ref().and_then(|s| s.1.bounds)
+    }
+
+    /// CRATE-8: turns the showcase model by `rotation` about the middle of its bounds and puts that middle at `centre`,
+    /// lit by `lights`.
+    pub fn pose_showcase(&mut self, rotation: glam::Quat, centre: Vec3, lights: LightSet) {
+        let Some((_, inst)) = self.showcase.as_mut() else {
+            return;
+        };
+        let mid = inst
+            .bounds
+            .map_or(Vec3::ZERO, |(lo, hi)| (Vec3::from(lo) + Vec3::from(hi)) * 0.5);
+        inst.rotation = rotation;
+        inst.position = centre - rotation * mid;
+        inst.lights = lights;
+    }
+
+    /// CRATE-8: no showcase model.
+    pub fn clear_showcase(&mut self) {
+        self.showcase = None;
     }
 
     /// CLI-1624: the posed instances of the character of object `obj` this frame (body first, then face, gear pieces,
@@ -1660,6 +1703,7 @@ impl ModelScene {
         crate::gpulost::retire(self.view.take());
         self.drops.gpu_reset();
         self.fx_models.gpu_reset();
+        crate::gpulost::retire(self.showcase.take());
         // dropping the loader closes its job queue: its threads end after their current job
         self.loader = None;
         self.loader_failed = false;

@@ -340,6 +340,16 @@ impl FigureTables {
 
     /// The body row of a look.
     // EVIDENCE: cshell+0x1d32e0, cshell+0x1e40f0
+    /// CRATE-8: the third-person model of weapon item `n` (a variant: its base gun with its skins), as the case reel's
+    /// showcase draws it.
+    pub fn weapon_model(&self, n: i32) -> Option<ModelRef> {
+        let h = crate::camo::hand_model(&self.hands, u32::try_from(n).ok()?)?;
+        Some(ModelRef {
+            model: h.model,
+            textures: h.skins,
+        })
+    }
+
     pub fn body_row(&self, ids: &LookIds) -> i32 {
         if let Some(c) = ids
             .character

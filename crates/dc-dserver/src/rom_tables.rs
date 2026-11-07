@@ -42,6 +42,11 @@ pub const KEY_PELLETS: &str = "VectorsPerRound";
 /// `[Weapon<n>]` trace length of the client's shot (knife 105).
 // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] Range (read at run time); SPEC: WEAPON_FIRE_2009.md §5.2
 pub const KEY_RANGE: &str = "Range";
+/// `[Weapon<n>]` sensor keys: the row's `SensorOption` (-1 or missing: no sensor) and its scan distance.
+// OBSERVED: ROM table keys WEAPONS.TXT [Weapon<n>] SensorOption, ScanDist (read at run time)
+// DISASM: cshell+0x17d04f (`ScanDist` -> row +0x48c), cshell+0x17d0c3 (`SensorOption` -> row +0x21c, default -1)
+pub const KEY_SENSOR_OPTION: &str = "SensorOption";
+pub const KEY_SCAN_DIST: &str = "ScanDist";
 /// `[Weapon<n>]` perturb bounds of the shot cone: plain, zoomed (while the 0x82 zoom bit is set) and triple-shot
 /// (while `wflag` is set), integers in thousandths of a tangent unit.
 // OBSERVED: ROM table keys WEAPONS.TXT [Weapon<n>] MinPerturb, MaxPerturb, ZoomedMinPerturb, ZoomedMaxPerturb,
@@ -310,7 +315,16 @@ pub struct WeaponRow {
     pub ani_type: Option<u8>,
     /// `Range`: how far the client traces the weapon's shot (WEAPON_FIRE_2009.md §5.2; the knife row 105).
     pub range: Option<f32>,
+    /// `SubControlleeWeaponID`: the weapon whose resting mines this one sets off (DSV-619; `None` for -1 or none).
+    pub controllee: Option<u16>,
+    /// A heartbeat-sensor row (`SensorOption` 0 or 1): its `ScanDist` (0 when missing); `None` for any other row.
+    pub scan_dist: Option<f32>,
 }
+
+/// `[Weapon<n>]` key naming the weapon a controller sets off (the claymore controller row names the claymore).
+// OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] SubControlleeWeaponID (read at run time)
+// DISASM: cshell+0x17d155 (the weapon row reader: the key -> row +0x228, default -1)
+pub const KEY_CONTROLLEE: &str = "SubControlleeWeaponID";
 
 /// `[Weapon<n>]` animation family key.
 // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] AniType (read at run time)
@@ -600,6 +614,16 @@ impl WeaponTable {
                         cone: cone_bounds(sec),
                         ani_type: num_u32(sec.get(KEY_ANI_TYPE)).and_then(|v| u8::try_from(v).ok()),
                         range: num_f32(sec.get(KEY_RANGE)).filter(|r| r.is_finite() && *r > 0.0),
+                        controllee: num_f32(sec.get(KEY_CONTROLLEE))
+                            .filter(|v| (0.0..=f32::from(u16::MAX)).contains(v))
+                            .map(|v| v as u16),
+                        scan_dist: num_f32(sec.get(KEY_SENSOR_OPTION))
+                            .filter(|o| *o == 0.0 || *o == 1.0)
+                            .map(|_| {
+                                num_f32(sec.get(KEY_SCAN_DIST))
+                                    .filter(|d| d.is_finite() && *d > 0.0)
+                                    .unwrap_or(0.0)
+                            }),
                     },
                 );
             }
@@ -1021,6 +1045,11 @@ impl WeaponTable {
             .is_some_and(|a| a.kind == Some(AMMO_KIND_THROWN))
     }
 
+    /// The weapon whose mines `weapon_id` sets off (its `SubControlleeWeaponID`): the claymore controller's claymore.
+    pub fn controllee(&self, weapon_id: u16) -> Option<u16> {
+        self.weapons.get(&weapon_id)?.controllee
+    }
+
     /// The projectile row name of `weapon_id` / `ammo_id`.
     // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] ProjectileFXName
     pub fn projectile_fx(&self, weapon_id: u16, ammo_id: u16) -> Option<&str> {
@@ -1044,6 +1073,9 @@ pub struct ProjectileRow {
     pub class: Option<String>,
     /// `ClassData` (the name of a class-data row; a mine's names a [`TRAP_SECTION`] row).
     pub class_data: Option<String>,
+    /// The lowest and the highest corner of the row's `Model` mesh (model space, bind pose), read for a mine's row
+    /// only (DSV-614, DSV-618): where it sits in the ground and where a shot hits it.
+    pub model_box: Option<([f32; 3], [f32; 3])>,
 }
 
 /// One `[LandTrapClassData<n>]` row: what a mine of a projectile row naming it does once it lies.
@@ -1078,6 +1110,35 @@ impl TrapRow {
 pub struct ProjectileTable {
     pub rows: BTreeMap<String, ProjectileRow>,
     pub traps: BTreeMap<String, TrapRow>,
+}
+
+/// The lowest and the highest corner of the first LOD of every piece of a model (vertex positions are stored in
+/// the bind pose's model space); `None` for a model without a vertex.
+// SPEC: FMT_LTB.md §5 (piece, LOD chain), §6 (render-object bodies, vertex streams)
+pub fn mesh_box(m: &dc_model::Model) -> Option<([f32; 3], [f32; 3])> {
+    let mut out: Option<([f32; 3], [f32; 3])> = None;
+    for lod in m.pieces.iter().filter_map(|p| p.lods.first()) {
+        let mesh = &lod.mesh;
+        for (i, st) in mesh.streams().iter().enumerate() {
+            let Some(layout) = mesh.layout(i) else {
+                continue;
+            };
+            for v in 0..mesh.vertex_count() as usize {
+                let Some(q) = st
+                    .position(&layout, v)
+                    .filter(|q| q.iter().all(|x| x.is_finite()))
+                else {
+                    continue;
+                };
+                let (lo, hi) = out.get_or_insert((q, q));
+                for k in 0..3 {
+                    lo[k] = lo[k].min(q[k]);
+                    hi[k] = hi[k].max(q[k]);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `<x, y, z>` (the table's vector form).
@@ -1137,6 +1198,7 @@ impl ProjectileTable {
                     velocity: num_f32(sec.get(KEY_PFX_VELOCITY)),
                     class: text(KEY_PFX_CLASS),
                     class_data: text(KEY_PFX_CLASS_DATA),
+                    model_box: None,
                 },
             );
         }
@@ -1151,12 +1213,39 @@ impl ProjectileTable {
         self.traps.get(&dc_bute::fold_latin1(cd)).copied()
     }
 
-    /// Reads the rows from the user's ROM.
+    /// Reads the rows from the user's ROM, with the mesh box of every mine row's model.
     pub fn from_vfs(vfs: &RezVfs) -> Result<Self, String> {
         match ButeDoc::try_from_vfs(vfs, ATTRIBUTES_REZ, FX_ENTRY) {
-            Ok(Some(d)) => Ok(Self::from_doc(&d)),
+            Ok(Some(d)) => {
+                let mut t = Self::from_doc(&d);
+                t.read_mine_models(vfs);
+                Ok(t)
+            }
             Ok(None) => Err("FX table entry missing".into()),
             Err(e) => Err(format!("FX table: {e}")),
+        }
+    }
+
+    /// Fills [`ProjectileRow::model_box`] of the mine rows (a row whose model is missing or unreadable keeps none).
+    // SPEC: FMT_LTB.md §5, §6 (pieces, LOD meshes, vertex streams) through dc-model
+    // DC-DEFAULT: DSV-614 (proposed), DSV-618 (proposed)
+    fn read_mine_models(&mut self, vfs: &RezVfs) {
+        let names: Vec<String> = self
+            .rows
+            .keys()
+            .filter(|n| self.trap_of(n).is_some())
+            .cloned()
+            .collect();
+        for n in names {
+            let Some(row) = self.rows.get_mut(&n) else {
+                continue;
+            };
+            row.model_box = row
+                .model
+                .as_deref()
+                .and_then(|m| crate::chars::read_entry(vfs, m).ok())
+                .and_then(|b| dc_model::Model::parse_without_tracks(&b).ok())
+                .and_then(|m| mesh_box(&m));
         }
     }
 
@@ -2140,8 +2229,13 @@ ItemName = \"I (Default)\"
             .collect();
         assert!(!mines.is_empty(), "projectile rows with mine class data");
         for (n, r) in &mines {
-            println!("mine row {n}: class {:?}, model {:?}", r.class, r.model);
+            println!(
+                "mine row {n}: class {:?}, model {:?}, mesh box {:?}",
+                r.class, r.model, r.model_box
+            );
             assert!(r.class.is_some() && r.model.is_some(), "{n}");
+            // DSV-614 / DSV-618: the model's mesh is read for the sink and the shot box
+            assert!(r.model_box.is_some(), "{n}: mesh box");
         }
         let thrown: Vec<u16> = t
             .weapons
@@ -2158,6 +2252,15 @@ ItemName = \"I (Default)\"
             .collect();
         println!("mine weapons (Type 1, mine class data, a blast): {thrown:?}");
         assert!(!thrown.is_empty());
+        // DSV-619: a controller row names a mine weapon as its controllee
+        let controllers: Vec<(u16, u16)> = t
+            .weapons
+            .weapons
+            .keys()
+            .filter_map(|&w| t.weapons.controllee(w).map(|c| (w, c)))
+            .collect();
+        println!("controllers (weapon, controllee): {controllers:?}");
+        assert!(controllers.iter().any(|(_, c)| thrown.contains(c)));
     }
 
     /// DSV-80: default attachments become mod indices by `[Mod<n>]` name (case-insensitive, lowest n first); unknown

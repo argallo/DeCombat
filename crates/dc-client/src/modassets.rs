@@ -246,11 +246,25 @@ pub struct HudOverrides {
     pub crosshair_outline: Option<f32>,
     pub crosshair_t_style: Option<bool>,
     pub crosshair_recoil_scale: Option<f32>,
+    /// CRATE-5: run the case reel before an award window.
+    pub case_reel: Option<bool>,
+    /// CRATE-5: the reel's spin in milliseconds.
+    pub case_reel_ms: Option<f32>,
 }
 
 impl HudOverrides {
     pub fn is_empty(&self) -> bool {
         *self == HudOverrides::default()
+    }
+
+    /// CRATE-5: the case reel the keys ask for (`None`: `case_reel` absent or false).
+    pub fn reel(&self) -> Option<crate::menu::reel::ReelSettings> {
+        self.case_reel.filter(|&on| on)?;
+        Some(crate::menu::reel::ReelSettings {
+            ms: self
+                .case_reel_ms
+                .map_or(crate::menu::reel::DEFAULT_MS, |v| v.round().max(1.0) as u32),
+        })
     }
 
     /// The drawn crosshair's shape from the keys, read per composed list (no Lua, no allocation).
@@ -311,6 +325,8 @@ pub fn parse_hud_overrides(
             "crosshair_gap" => out.crosshair_gap = value.as_f64().map(|v| v as f32),
             "crosshair_outline" => out.crosshair_outline = value.as_f64().map(|v| v as f32),
             "crosshair_recoil_scale" => out.crosshair_recoil_scale = value.as_f64().map(|v| v as f32),
+            "case_reel" => out.case_reel = matches!(value, LuaValue::Bool(_)).then(|| matches!(value, LuaValue::Bool(true))),
+            "case_reel_ms" => out.case_reel_ms = value.as_f64().map(|v| v as f32),
             "crosshair_dot" => out.crosshair_dot = matches!(value, LuaValue::Bool(_)).then(|| matches!(value, LuaValue::Bool(true))),
             "crosshair_t_style" => out.crosshair_t_style = matches!(value, LuaValue::Bool(_)).then(|| matches!(value, LuaValue::Bool(true))),
             _ => unreachable!("check_hud_override refuses every other key"),

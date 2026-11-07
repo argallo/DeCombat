@@ -1808,6 +1808,7 @@ fn help_lists_the_local_commands_and_the_mods_only_with_a_bridge() {
     let mut plain = driver();
     let lines = help(&mut plain);
     assert_eq!(lines, HELP_LINES);
+    assert_eq!(lines.last().map(String::as_str), Some(crate::hud::chat::HELP_LOBBY_LINE), "LG-427");
     assert!(lines.iter().any(|l| l.starts_with("/help")));
     assert!(lines.iter().any(|l| l.starts_with("/network (or /net)")));
     assert!(!lines.iter().any(|l| l.contains("/wallhack")), "{lines:?}");
@@ -1821,15 +1822,15 @@ fn help_lists_the_local_commands_and_the_mods_only_with_a_bridge() {
     let want: Vec<&str> = HELP_LINES.iter().chain(HELP_MOD_LINES).copied().collect();
     assert_eq!(lines, want, "all of them fit the chat window");
     assert_eq!(lines.len(), crate::hud::state::CHAT_MAX_LINES);
-    for l in &want {
-        let head = l.split_whitespace().next().unwrap();
+    for l in want.iter().filter(|l| **l != crate::hud::chat::HELP_LOBBY_LINE) {
+        let head = l.split_whitespace().next().unwrap().trim_end_matches(',');
         assert!(local_command(head).is_some(), "{l}");
     }
     let man = dc_mod_lua::ModManifest::from_file(&hacking_mod().join("manifest.json")).unwrap();
     assert_eq!(man.commands.len(), 4);
     for c in &man.commands {
         assert!(local_command(&c.command).is_some(), "{}", c.command);
-        assert!(want.iter().any(|l| l.starts_with(&c.command)), "{}", c.command);
+        assert!(want.iter().any(|l| l.contains(&c.command)), "{}", c.command);
     }
 }
 

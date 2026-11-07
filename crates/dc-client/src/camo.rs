@@ -133,6 +133,7 @@ mod tests {
         };
         table.rows.insert(25, base.clone());
         let variant = VariantInfo {
+            rarity: Default::default(),
             row: 500,
             base: 25,
             name: None,
@@ -152,6 +153,7 @@ mod tests {
     #[test]
     fn a_shop_picture_is_painted_from_the_variants_pattern() {
         let variant = VariantInfo {
+            rarity: Default::default(),
             row: 500,
             base: 25,
             name: None,

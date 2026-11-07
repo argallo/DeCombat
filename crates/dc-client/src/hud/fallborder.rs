@@ -13,15 +13,16 @@ use dc_ui_data::{VIRTUAL_HEIGHT, VIRTUAL_WIDTH};
 pub const TEXTURE: &str = "@dc:fall_vignette";
 
 /// The texture is this many texels square, stretched over the whole screen: a circle in the texture is the ellipse
-/// that touches the four screen edges at their midpoints. 128 keeps the alpha ramp (about 56 texels wide) free of
-/// visible steps at 1080p.
-pub const TEXELS: u32 = 128;
+/// that touches the four screen edges at their midpoints. 256 keeps the alpha ramp (about 15 texels wide since the
+/// clear radius went to 0.88) free of visible steps at 1080p.
+pub const TEXELS: u32 = 256;
 
 /// The vignette is clear inside this radius and fully tinted from [`FULL_RADIUS`] outward, measured in half
 /// screens from the centre (1.0 is the middle of an edge, the corners lie at 1.41) and eased between the two.
 // DC-DEFAULT: CLI-1847 (proposed; USER REPORT 2026-11-05 "too bright and as a square but should be a circle")
-// clear inside 0.55, full strength from 0.97 (the edges and corners), smoothstep between
-pub const CLEAR_RADIUS: f32 = 0.80;
+// clear inside 0.88 (0.80 until the owner's 2026-11-06 "show less red on screen when you fall"), full strength
+// from 1.0 (the edges and corners), smoothstep between
+pub const CLEAR_RADIUS: f32 = 0.88;
 pub const FULL_RADIUS: f32 = 1.0;
 
 /// The tint colour (the fallback damage arc's red) and its alpha at the edges and corners at full strength.
@@ -141,11 +142,11 @@ mod tests {
             );
         }
         // a circle, not a square: the same radius gives the same alpha on the axis and on the diagonal
-        let on_axis = alpha_at(&t, 0.90, 0.0);
-        let on_diagonal = alpha_at(&t, 0.6364, 0.6364);
+        let on_axis = alpha_at(&t, 0.95, 0.0);
+        let on_diagonal = alpha_at(&t, 0.6718, 0.6718);
         assert!(on_axis > 60 && on_axis < 200, "{on_axis}");
         assert!(
-            on_axis.abs_diff(on_diagonal) <= 12,
+            on_axis.abs_diff(on_diagonal) <= 20,
             "{on_axis} vs {on_diagonal}"
         );
         // and it rises monotonically outward

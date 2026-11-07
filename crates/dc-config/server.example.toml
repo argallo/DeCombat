@@ -199,6 +199,7 @@ per_hour = 20                   # OPS-7 (proposed)
 
 [monitor]
 retention_days = 14             # MON-2 (proposed): days the operator dashboard keeps matches, link windows and events; 0 = forever
+public_games_file = ""          # OPS-16 (proposed): absolute path of the public match board snapshot (docs/LIVE_GAMES.md); empty = off
 
 [messenger]
 max_friends = 50                # OPS-8 (proposed)

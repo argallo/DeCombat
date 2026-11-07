@@ -21,6 +21,8 @@ pub const HUD_OVERRIDE_KEYS: &[&str] = &[
     "crosshair_outline",
     "crosshair_t_style",
     "crosshair_recoil_scale",
+    "case_reel",
+    "case_reel_ms",
 ];
 
 /// The text values of `crosshair_recoil` (it also takes `true`, like `dynamic`, and `false`, like `static`).
@@ -35,6 +37,9 @@ pub const CROSSHAIR_RECOIL_SCALE_RANGE: (f64, f64) = (0.0, 5.0);
 
 /// The values of `crosshair_style` (CLI-1633).
 pub const CROSSHAIR_STYLES: &[&str] = &["cross", "circle", "dot", "cross_dot", "circle_dot"];
+
+/// The range of `case_reel_ms`, the case reel's spin in milliseconds (CRATE-5).
+pub const CASE_REEL_MS_RANGE: (f64, f64) = (1_500.0, 12_000.0);
 
 /// The range `hud_scale` must lie in (both ends allowed).
 pub const HUD_SCALE_RANGE: (f64, f64) = (0.5, 2.0);
@@ -113,7 +118,8 @@ pub fn check_hud_override(key: &str, value: &LuaValue) -> Result<(), String> {
         "crosshair_gap" => ranged(CROSSHAIR_GAP_RANGE),
         "crosshair_outline" => ranged(CROSSHAIR_OUTLINE_RANGE),
         "crosshair_recoil_scale" => ranged(CROSSHAIR_RECOIL_SCALE_RANGE),
-        "crosshair_dot" | "crosshair_t_style" => match value {
+        "case_reel_ms" => ranged(CASE_REEL_MS_RANGE),
+        "crosshair_dot" | "crosshair_t_style" | "case_reel" => match value {
             LuaValue::Bool(_) => Ok(()),
             other => Err(format!(
                 "HUD override '{key}' must be true or false, got {}",
@@ -168,7 +174,10 @@ mod tests {
             assert!(check_hud_override(k, &n(f64::NAN)).is_err(), "{k}");
             assert!(check_hud_override(k, &s("1")).is_err(), "{k}");
         }
-        for k in ["crosshair_dot", "crosshair_t_style"] {
+        assert!(check_hud_override("case_reel_ms", &n(5_500.0)).is_ok());
+        assert!(check_hud_override("case_reel_ms", &n(500.0)).is_err());
+        assert!(check_hud_override("case_reel_ms", &n(20_000.0)).is_err());
+        for k in ["crosshair_dot", "crosshair_t_style", "case_reel"] {
             assert!(check_hud_override(k, &LuaValue::Bool(true)).is_ok(), "{k}");
             assert!(check_hud_override(k, &n(1.0)).is_err(), "{k}");
         }

@@ -246,6 +246,7 @@ fn start(
         room_hacks: None,
         gun_ladder: Vec::new(),
         reticle: None,
+        prefs: None,
     };
     // w3-options: the profile's look settings and volumes, as the Mac's run without flags takes them (CLI-554)
     if menu.data.profile_doc.is_some() {

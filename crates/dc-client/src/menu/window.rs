@@ -864,6 +864,7 @@ fn match_options(
     mods: Option<crate::mods::HostRecipe>,
     room: &super::link::RoomView,
     reticle: Option<(u16, u32)>,
+    prefs: crate::window::MatchPrefs,
 ) -> WindowOptions {
     let mut mopts = wopts.clone();
     if let Some(s) = changed {
@@ -881,6 +882,8 @@ fn match_options(
     };
     // use-items-sweep: and the reticle item in use (CLI-1878)
     mopts.reticle = reticle;
+    // CLI-1907: and the settings the options over the match start from
+    mopts.prefs = Some(prefs);
     mopts
 }
 
@@ -1021,18 +1024,25 @@ pub fn run_menu_window(
                             menu.cat.rom.as_deref(),
                             &menu.data.store,
                         );
+                        let prefs = crate::window::MatchPrefs {
+                            settings: menu.data.settings.clone(),
+                            commands: menu.data.commands.clone(),
+                        };
                         let mopts = match_options(
                             &wopts,
                             &changed,
                             menu.mod_recipe(),
                             &menu.data.room,
                             reticle,
+                            prefs,
                         );
                         let (r, back, host) =
                             run_window_in_host(&mut el, Box::new(net), mopts, sound.take(), host);
                         sound = back;
                         // CLI-1280: an Alt+Enter in the match is saved now (also when the player quits from it)
                         menu.store_display_note();
+                        // CLI-1907: and what the options over the match changed
+                        menu.store_match_settings();
                         live = return_live(host, painter);
                         r.map(|r| print_exit_report(&r))
                     }

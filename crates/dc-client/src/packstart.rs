@@ -1,7 +1,8 @@
 //! The friend pack's double-click start (project decision, no 2009 counterpart). The Windows zip holds one thing to
 //! start, `DeCombat.exe`, next to `pack.json` and the README. Started with no arguments in a folder whose `pack.json`
 //! names a server, the exe finds the player's 2009 client folder beside it, then runs the game as a child process
-//! with the pack's lobby, the found folder and the log files of the logs folder, the child's output going to
+//! with the pack's lobby, the found folder and the log files of the logs folder (a start with only pass-through
+//! arguments, `--adapter <x>` and the like, is a pack start too, see [`passthrough`]), the child's output going to
 //! `dc-client.out` there (the last run's kept as `dc-client.prev.out`). A missing folder or a failed end is shown
 //! in a message box: a double-clicked console closes before anyone reads it.
 // DC-DEFAULT: CLI-1906 (proposed, OWNER REQUEST 2026-11-06), see DC_DEFAULTS.md
@@ -58,8 +59,14 @@ impl Refused {
 
 /// The game's command line for the pack in `dir` (`None`: the pack names no server, so this is no pack start):
 /// `--menu lobby --lobby <server> --rom <folder> [--server-fingerprint <fp>] --net-log <logs>/dc-client.net.jsonl`.
-/// No `--name`: the login screen's ID box starts empty or remembered (CLI-1490).
-pub fn plan(dir: &Path, pack: &Pack, logs: &Path) -> Option<Result<Vec<OsString>, Refused>> {
+/// No `--name`: the login screen's ID box starts empty or remembered (CLI-1490). The pass-through arguments of
+/// [`passthrough`] (`extra`) come last, so `--adapter <x>` wins over the saved Renderer row for that run (CLI-1852).
+pub fn plan(
+    dir: &Path,
+    pack: &Pack,
+    logs: &Path,
+    extra: &[OsString],
+) -> Option<Result<Vec<OsString>, Refused>> {
     let server = pack.server.as_deref()?;
     let Some(rom) = find_rom(dir) else {
         return Some(Err(Refused::NoRom));
@@ -81,8 +88,34 @@ pub fn plan(dir: &Path, pack: &Pack, logs: &Path) -> Option<Result<Vec<OsString>
     }
     args.push("--net-log".into());
     args.push(logs.join(NET_LOG_FILE).into_os_string());
+    args.extend(extra.iter().cloned());
     Some(Ok(args))
 }
+
+/// The arguments a pack start takes along to the game: `--adapter <auto|dx12|vulkan|metal|fallback>`, `--windowed`,
+/// `--no-overlay`. `Some(args)` when every argument is one of these (an empty list too: the plain double-click),
+/// `None` when any other is present or a value is missing or unknown, so every other start (`--running`, `--help`,
+/// tests, tools) is no pack start.
+pub fn passthrough(args: &[OsString]) -> Option<Vec<OsString>> {
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].to_str()? {
+            "--windowed" | "--no-overlay" => i += 1,
+            "--adapter" => {
+                let word = args.get(i + 1)?.to_str()?;
+                if !ADAPTERS.contains(&word) {
+                    return None;
+                }
+                i += 2;
+            }
+            _ => return None,
+        }
+    }
+    Some(args.to_vec())
+}
+
+/// The words `--adapter` takes (the client's own list).
+const ADAPTERS: [&str; 5] = ["auto", "dx12", "vulkan", "metal", "fallback"];
 
 /// The box after a failed end of the game.
 pub fn failed_text(code: i32, out: &Path) -> String {
@@ -105,9 +138,9 @@ pub fn message_box(text: &str, error: bool) {
     }
 }
 
-/// The start of an exe given no arguments: `None` when it is no pack start (no pack file beside it, or one without
-/// a server), else the process code after the game ended.
-pub fn run_if_pack() -> Option<i32> {
+/// The start of an exe given no arguments or only pass-through ones (`extra`, from [`passthrough`]): `None` when it
+/// is no pack start (no pack file beside it, or one without a server), else the process code after the game ended.
+pub fn run_if_pack(extra: &[OsString]) -> Option<i32> {
     let install = selfupdate::install_dir()?;
     let pack = selfupdate::pack()?;
     pack.server.as_ref()?;
@@ -128,7 +161,7 @@ pub fn run_if_pack() -> Option<i32> {
         });
     }
     let logs = crate::diag::default_logs_dir().unwrap_or_else(|| install.join("logs"));
-    let args = match plan(&install, &pack, &logs)? {
+    let args = match plan(&install, &pack, &logs, extra)? {
         Ok(a) => a,
         Err(r) => {
             message_box(&r.text(), true);
@@ -240,16 +273,16 @@ mod tests {
         let d = temp("plan");
         let logs = d.join("logs");
         // no server: no pack start, whatever is in the folder
-        assert_eq!(plan(&d, &pack(None, None), &logs), None);
+        assert_eq!(plan(&d, &pack(None, None), &logs, &[]), None);
         assert_eq!(
-            plan(&d, &pack(Some("play.example.org:10000"), None), &logs),
+            plan(&d, &pack(Some("play.example.org:10000"), None), &logs, &[]),
             Some(Err(Refused::NoRom))
         );
         assert!(Refused::NoRom.text().contains("next to DeCombat.exe"));
         client_folder(&d.join("Combat Arms"));
         let rom = d.join("Combat Arms").to_string_lossy().into_owned();
         let net = logs.join(NET_LOG_FILE).to_string_lossy().into_owned();
-        let a = plan(&d, &pack(Some("play.example.org:10000"), None), &logs)
+        let a = plan(&d, &pack(Some("play.example.org:10000"), None), &logs, &[])
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -266,7 +299,7 @@ mod tests {
             ]
         );
         let fp = "ab".repeat(32);
-        let a = plan(&d, &pack(Some("10.0.0.2:10000"), Some(&fp)), &logs)
+        let a = plan(&d, &pack(Some("10.0.0.2:10000"), Some(&fp)), &logs, &[])
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -285,6 +318,46 @@ mod tests {
             ]
         );
         assert!(!strings(&a).iter().any(|s| s == "--name"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn os(a: &[&str]) -> Vec<OsString> {
+        a.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn only_a_few_arguments_pass_through() {
+        assert_eq!(passthrough(&[]), Some(vec![]));
+        let a = os(&["--adapter", "dx12"]);
+        assert_eq!(passthrough(&a), Some(a.clone()));
+        let a = os(&["--windowed", "--adapter", "fallback", "--no-overlay"]);
+        assert_eq!(passthrough(&a), Some(a.clone()));
+        for w in ["auto", "dx12", "vulkan", "metal", "fallback"] {
+            assert!(passthrough(&os(&["--adapter", w])).is_some(), "{w}");
+        }
+        assert_eq!(passthrough(&os(&["--adapter"])), None);
+        assert_eq!(passthrough(&os(&["--adapter", "nonsense"])), None);
+        assert_eq!(passthrough(&os(&["--adapter", "--windowed"])), None);
+        assert_eq!(passthrough(&os(&["--running"])), None);
+        assert_eq!(passthrough(&os(&["--help"])), None);
+        assert_eq!(passthrough(&os(&["--no-such-flag"])), None);
+        // one unknown argument anywhere spoils the lot
+        assert_eq!(passthrough(&os(&["--adapter", "dx12", "--map", "x"])), None);
+        assert_eq!(passthrough(&os(&["dx12"])), None);
+    }
+
+    #[test]
+    fn the_extra_arguments_end_the_planned_command_line() {
+        let d = temp("extra");
+        let logs = d.join("logs");
+        client_folder(&d.join("Combat Arms"));
+        let extra = os(&["--adapter", "dx12", "--windowed"]);
+        let a = plan(&d, &pack(Some("play.example.org:10000"), None), &logs, &extra)
+            .unwrap()
+            .unwrap();
+        let s = strings(&a);
+        assert_eq!(&s[s.len() - 3..], ["--adapter", "dx12", "--windowed"]);
+        assert_eq!(s[s.len() - 4], logs.join(NET_LOG_FILE).to_string_lossy());
         let _ = std::fs::remove_dir_all(&d);
     }
 

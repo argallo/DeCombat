@@ -459,6 +459,16 @@ pub fn validate_mod(mod_path: &Path, rom_path: Option<&Path>) -> ValidationRepor
         }
     }
 
+    // CRATE-6: a variant's rarity tier the lobby and the client would refuse is refused here first. Only that error:
+    // the rows' ids are checked below, against the ROM tables when a ROM was given.
+    if loaded.is_ok() {
+        if let Err(e) = host.weapon_patches() {
+            if e.contains(dc_bute::modpatch::KEY_VARIANT_RARITY) {
+                errors.push(format!("Mod '{}': {}", mod_id, e));
+            }
+        }
+    }
+
     // Literal content ids, checked against the ROM tables when (and only when) a ROM was given.
     if loaded.is_ok() {
         if let Some(rom) = rom_path.filter(|r| r.is_dir()) {

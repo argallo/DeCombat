@@ -15,6 +15,7 @@ mod betaweb;
 mod botgroups;
 mod botpool;
 mod botsup;
+mod camo_crate;
 mod clan;
 mod clanreq;
 mod clanweb;
@@ -32,6 +33,7 @@ mod game;
 mod gm;
 mod grant;
 mod gungame;
+mod help;
 mod hisec;
 mod hosting;
 mod hosts;
@@ -58,6 +60,7 @@ mod opscfg;
 mod opsmon;
 mod opsweb;
 mod playeradmin;
+mod public_games;
 mod pwhash;
 mod pwpool;
 mod recover;
@@ -83,6 +86,8 @@ mod entry_mods_tests;
 mod flow_tests;
 #[cfg(test)]
 mod gm_tests;
+#[cfg(test)]
+mod help_tests;
 #[cfg(test)]
 mod hisec_tests;
 #[cfg(test)]
@@ -375,6 +380,15 @@ fn main() {
         let list = cfg_dir.join("server_list.json");
         server_list_culling_off = built.set.full_visibility_mod().map(str::to_string);
         server_list_no_recoil = built.set.no_recoil_mod().map(str::to_string);
+        // LG-427: `/help` lists the commands the lobby-wide set declares
+        if built.set.modded {
+            st.mod_commands = built
+                .set
+                .mods
+                .iter()
+                .flat_map(|m| m.commands.iter().cloned())
+                .collect();
+        }
         // LG-271: a login must carry the published mod-set hash
         st.login_mods.set = built.set.hash();
         // MAP-35: the first community index depends on the ROM alone (the set's maps follow it), so it is known
@@ -648,6 +662,7 @@ fn main() {
     }
     // 11. periodic item expiry
     net::spawn_expiry(Arc::clone(&shared));
+    public_games::start(&shared);
     // LG-316: the report mails waiting in the DB
     net::spawn_report_mail(Arc::clone(&shared));
     net::spawn_beta_mail_drain(Arc::clone(&shared));

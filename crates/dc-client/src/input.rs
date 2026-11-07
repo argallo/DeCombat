@@ -175,6 +175,8 @@ pub trait InputSource {
     /// CLI-1031: the options' mouse sensitivity changed in the match (its hotkeys); sources without look input
     /// ignore it.
     fn set_sensitivity(&mut self, _s: f32) {}
+    /// CLI-1907: the options over the match changed invert Y; sources without look input ignore it.
+    fn set_invert_y(&mut self, _on: bool) {}
     /// Short label for logs and the overlay.
     fn label(&self) -> &'static str;
 }
@@ -411,6 +413,10 @@ impl InputSource for KeyboardMouse {
 
     fn set_sensitivity(&mut self, s: f32) {
         self.look.sensitivity = s;
+    }
+
+    fn set_invert_y(&mut self, on: bool) {
+        self.look.invert_y = on;
     }
 
     fn shell_keys(&mut self) -> Vec<ShellKey> {

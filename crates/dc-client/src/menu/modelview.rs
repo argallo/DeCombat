@@ -90,6 +90,21 @@ pub struct ViewReq {
     pub rect: [i32; 4],
     /// CLI-1629: the x-ray style previewed on the character (the shop page only; `None`: no preview).
     pub xray: Option<crate::settings::XrayStyle>,
+    /// CRATE-8: draw this model on its own instead of the character.
+    pub showcase: Option<Showcase>,
+}
+
+/// CRATE-8: one model shown on its own in front of the interface camera (the case reel's won gun): turned by `yaw`
+/// and `pitch` (radians) about the middle of its bounds, which sits on the camera's axis at a depth where the model's
+/// length fills `fill` of the request's rectangle; a key light from the front left and a rim light of `rim` from behind.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Showcase {
+    pub model: ModelRef,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub fill: f32,
+    pub rim: [f32; 3],
 }
 
 struct Job {
@@ -110,6 +125,8 @@ struct Done {
 
 /// The menu's side of the character view.
 pub struct ModelView {
+    /// The names its renders are put under (two in turn).
+    prefix: String,
     rom: PathBuf,
     jobs: Option<Sender<Job>>,
     done: Option<Receiver<Done>>,
@@ -148,7 +165,13 @@ const TEX_PREFIX: &str = "#shop-model/";
 
 impl ModelView {
     pub fn new(rom: PathBuf) -> ModelView {
+        Self::named(rom, TEX_PREFIX)
+    }
+
+    /// A second view with textures of its own (`prefix`: the names it puts its renders under).
+    pub fn named(rom: PathBuf, prefix: &str) -> ModelView {
         ModelView {
+            prefix: prefix.to_string(),
             rom,
             jobs: None,
             done: None,
@@ -292,8 +315,8 @@ impl ModelView {
         // two names in turn: each frame changes the display list (the painter rebuilds), and the overlay atlas
         // refills a name's region in place (same size) instead of packing a new one per frame
         let old = self.shown.take().map(|(n, _, _)| n);
-        let turn = u8::from(old.as_deref() != Some(&format!("{TEX_PREFIX}1")));
-        let name = format!("{TEX_PREFIX}{turn}");
+        let turn = u8::from(old.as_deref() != Some(&format!("{}1", self.prefix)));
+        let name = format!("{}{turn}", self.prefix);
         if let Some(old) = old {
             assets.forget(&old);
         }
@@ -492,6 +515,10 @@ fn worker(rom: PathBuf, jobs: Receiver<Job>, done: Sender<Done>) {
 }
 
 fn render(g: &mut Gpu, job: &Job) -> Option<Tex> {
+    if let Some(s) = &job.req.showcase {
+        return render_showcase(g, job, s);
+    }
+    g.models.clear_showcase();
     let (w, h) = (job.size.0.max(1), job.size.1.max(1));
     let look = match &job.req.look {
         Some(l) => l.clone(),
@@ -625,6 +652,64 @@ fn render(g: &mut Gpu, job: &Job) -> Option<Tex> {
         let border = (dc_render::BOX_BORDER_PX * h as f32 / 768.0).round().max(1.0);
         paint_box(&mut tex, r, border, s.primary, s.secondary);
     }
+    Some(tex)
+}
+
+/// CRATE-8: the showcase model alone, posed and lit as `s` asks, over the request's rectangle (coverage as the
+/// character's: drawn over black and over white).
+fn render_showcase(g: &mut Gpu, job: &Job, s: &Showcase) -> Option<Tex> {
+    let (w, h) = (job.size.0.max(1), job.size.1.max(1));
+    let (lo, hi) = g.models.showcase_bounds(&g.ctx, &g.renderer, &s.model)?;
+    let size = Vec3::from(hi) - Vec3::from(lo);
+    let length = size.max_element().max(1.0);
+    // the depth at which `length` spans `fill` of the rectangle's width (the rectangle's share of the view's width)
+    let [fx, fy] = FOV_INTERFACE_DEG;
+    let share = job.req.rect[2] as f32 / dc_ui_data::VIRTUAL_WIDTH as f32;
+    let half = (fx.to_radians() / 2.0).tan() * share;
+    let depth = length / (2.0 * half * s.fill.max(0.05));
+    let centre = Vec3::new(0.0, 0.0, depth);
+    let rotation = glam::Quat::from_rotation_y(s.yaw)
+        * glam::Quat::from_rotation_x(s.pitch)
+        * glam::Quat::from_rotation_z(s.roll);
+    let reach = depth * 2.0;
+    let lights = dc_render::LightSet {
+        ambient: Vec3::splat(0.58),
+        lights: vec![
+            dc_render::ModelLight::dynamic(
+                centre + Vec3::new(-length, length * 0.8, -depth * 0.6),
+                reach,
+                Vec3::splat(1.25),
+            ),
+            dc_render::ModelLight::dynamic(
+                centre + Vec3::new(length * 0.6, length * 0.5, depth * 0.5),
+                reach,
+                Vec3::from(s.rim),
+            ),
+        ],
+    };
+    g.models.pose_showcase(rotation, centre, lights);
+    let rect = rect_px(job.req.rect, (w, h));
+    let (pw, ph) = (rect[2].min(w).max(1), rect[3].min(h).max(1));
+    if g.target.as_ref().is_none_or(|t| t.size != (pw, ph)) {
+        let mut t = crate::offscreen::Offscreen::new(&g.ctx, dc_render::OFFSCREEN_FORMAT, pw, ph);
+        t.always_read = true;
+        g.target = Some(t);
+    }
+    let target = g.target.as_mut()?;
+    let mut camera =
+        dc_render::Camera::looking(Vec3::ZERO, 0.0, 0.0, fx.to_radians(), fy.to_radians());
+    camera.window = pane_window(rect, (w, h));
+    let models = g.models.instances();
+    let mut shot = |clear: f64| {
+        target.clear_to(Some([clear, clear, clear, 1.0]));
+        target
+            .render_models_xray(&g.ctx, &g.renderer, &g.scene, &camera, &models, &[])
+            .ok()
+            .map(|f| crop(&f.rgba, f.width, f.height, [0, 0, f.width, f.height]))
+    };
+    let mut tex = shot(0.0)?;
+    let white = shot(1.0)?;
+    alpha_from_pair(&mut tex.rgba, &white.rgba);
     Some(tex)
 }
 

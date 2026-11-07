@@ -2900,6 +2900,61 @@ fn hisec_case_pickup_by_the_killer_reaches_the_lobby() {
         .contains(&"@hisec uid=7 case=0 key=1 name=Dave".to_string()));
 }
 
+/// CRATE-2 / CRATE-3: in a match whose weapon table has a variant, `camo_share` 100 makes every drop a Camo Crate: its
+/// key carries the camo bit, it shows the `camo_row` model and its pickup is an `@crate` line; without a variant (or
+/// with share 0) the same drop is a HiSec case.
+#[test]
+fn camo_crate_drops_only_with_variants_and_reports_its_own_line() {
+    use dc_dserver::game::hisec::{HisecTuning, CAMO_KEY_BIT};
+    use dc_dserver::rom_tables::HisecRow;
+    let mut t = hisec_tables();
+    t.hisec.rows.insert(
+        1,
+        HisecRow {
+            model: Some("PROPS\\SynthCase\\BlackCase.ltb".into()),
+            skins: vec![],
+            styles: vec![],
+            scale: Some([1.0; 3]),
+        },
+    );
+    let mut camo_t = t.clone();
+    camo_t.weapons.variants.insert(502, 25);
+    let h = |share| HisecTuning {
+        force: true,
+        pickup_radius: 5_000.0,
+        camo_share: share,
+        ..Default::default()
+    };
+    let key = 1 | CAMO_KEY_BIT;
+    let mut net = hisec_net(h(100), camo_t.clone());
+    net.shoot(0, 1, 4, [0.0; 3]);
+    net.run_for(300);
+    assert!(
+        net.pipe_lines()
+            .contains(&format!("@crate uid=7 kind=camo key={key} name=Dave")),
+        "{:?}",
+        net.pipe_lines()
+    );
+    assert!(!net.pipe_lines().iter().any(|l| l.starts_with("@hisec")));
+    let p0 = net.pid(0);
+    assert_eq!(
+        hisec_seen(net.c(1)),
+        vec![(0, 0, 0), (2, key, u32::from(p0)), (1, key, u32::from(p0))]
+    );
+    for (share, tables) in [(100, t.clone()), (0, camo_t.clone())] {
+        let mut net = hisec_net(h(share), tables);
+        net.shoot(0, 1, 4, [0.0; 3]);
+        net.run_for(300);
+        assert!(
+            net.pipe_lines()
+                .iter()
+                .any(|l| l.starts_with("@hisec uid=7 case=0 key=1 ")),
+            "share {share}: {:?}",
+            net.pipe_lines()
+        );
+    }
+}
+
 /// HS-1: the drop chance is 1 / the room goal in TDM; no drop without the case model, below `min_players`, or when
 /// switched off.
 #[test]

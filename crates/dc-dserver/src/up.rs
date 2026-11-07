@@ -73,6 +73,12 @@ pub const UP_USE_HOLD: u8 = 0xd8;
 /// left (0 = ran out).
 // SPEC: GAME_MESSAGES_2009_C2S.md §7.2 (0xad, cshell+0x275ad0)
 pub const UP_USE_PROGRESS_END: u8 = 0xad;
+/// `UP_SCAN`: `[sub:u8]` then sub 1 `[team:u16][on:u8]` (the heartbeat sensor switched on / off), sub 2
+/// `[team:u16][name:zstr8]` (another scanner's charge spent).
+// SPEC: GAME_MESSAGES_2009_C2S.md §7.3 (0xcd, cshell+0xb7a20, cshell+0xb5c40)
+pub const UP_SCAN: u8 = 0xcd;
+/// The switch sub-message of `UP_SCAN`.
+pub const SCAN_SWITCH: u8 = 1;
 
 /// Developer, console and local-world messages that are dropped (and logged once).
 // SPEC: GAME_MESSAGES_2009_C2S.md §5.3, §8; DC-DEFAULT: DC-C2S-1 (proposed)
@@ -367,6 +373,11 @@ pub enum Up {
         target: u16,
         remaining: f32,
     },
+    /// `UP_SCAN` 0xcd sub 1: the sender's heartbeat sensor switched `on` (team = the sender's own team).
+    Scan {
+        team: u16,
+        on: bool,
+    },
     /// A developer / console message (DC-C2S-1).
     Developer,
     /// Any other id.
@@ -470,6 +481,14 @@ pub fn parse_up(shell_id: u8, body: &BitWriter) -> Up {
             target: r.read_u16(),
             remaining: r.read_f32(),
         },
+        // SPEC: GAME_MESSAGES_2009_C2S.md §7.3 (sub 1 `[team:u16][on:u8]`; sub 2 has no server rule here)
+        UP_SCAN => match r.read_u8() {
+            SCAN_SWITCH => Up::Scan {
+                team: r.read_u16(),
+                on: r.read_u8() != 0,
+            },
+            _ => Up::Unknown,
+        },
         id if DEV_IDS.contains(&id) => Up::Developer,
         _ => Up::Unknown,
     }
@@ -514,6 +533,19 @@ mod tests {
             .write_bit(true)
             .write_bit(false);
         w
+    }
+
+    #[test]
+    fn scan_switch_parses_and_other_subs_are_unknown() {
+        let mut w = BitWriter::new();
+        w.write_u8(1).write_u16(2).write_u8(1);
+        assert_eq!(parse_up(UP_SCAN, &w), Up::Scan { team: 2, on: true });
+        let mut off = BitWriter::new();
+        off.write_u8(1).write_u16(1).write_u8(0);
+        assert_eq!(parse_up(UP_SCAN, &off), Up::Scan { team: 1, on: false });
+        let mut sub2 = BitWriter::new();
+        sub2.write_u8(2).write_u16(1).write_u8(0);
+        assert_eq!(parse_up(UP_SCAN, &sub2), Up::Unknown);
     }
 
     #[test]

@@ -154,6 +154,16 @@ pub struct WindowOptions {
     pub gun_ladder: Vec<u16>,
     /// use-items-sweep: the reticle item in use (the mark's shape bits, `0xAARRGGBB`; CLI-1878).
     pub reticle: Option<(u16, u32)>,
+    /// CLI-1907: the menu's settings and key table at the match start (the options over the match start from them;
+    /// `None`: a match without the menu, the defaults).
+    pub prefs: Option<MatchPrefs>,
+}
+
+/// CLI-1907: the menu's settings and the 2009 bindable command table, handed to the match for its options box.
+#[derive(Debug, Clone, Default)]
+pub struct MatchPrefs {
+    pub settings: crate::settings::Settings,
+    pub commands: crate::settings::CommandTable,
 }
 
 /// LG-274 / CLI-1627: whether a match of a room with Hacks setting `hacks` may run the x-ray render bridge: a room
@@ -862,6 +872,48 @@ pub fn report_form_route(
     }
 }
 
+/// Where a key goes while the options over the match are open (CLI-1907).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptionsRoute {
+    /// A menu key of the options (Escape, Enter, Up / Down, Tab, Backspace, Space).
+    Key(crate::menu::MenuKey),
+    /// The key a waiting key box takes (its scan code).
+    Scan(u8),
+    /// Typed text (the share code's paste goes through the clipboard, not here).
+    Text(String),
+    /// A key release under the open box: it still ends a held action or the held scoreboard.
+    Release,
+    /// Any other key under the open box: nothing happens.
+    Swallow,
+}
+
+/// The options box's key rule over the match: while it is open it takes every key as the menu window would give it
+/// to the box; releases still reach the match. `scan`: a key box waits for a key (Escape still gives up).
+// DC-DEFAULT: CLI-1907 (proposed) as the leave box and the report form (CLI-510, CLI-950)
+pub fn options_route(code: KeyCode, down: bool, repeat: bool, text: Option<&str>, scan: bool) -> OptionsRoute {
+    use crate::menu::MenuKey;
+    if !down {
+        return OptionsRoute::Release;
+    }
+    if scan && code != KeyCode::Escape {
+        if repeat {
+            return OptionsRoute::Swallow;
+        }
+        return crate::settings::scan_of_code(code).map_or(OptionsRoute::Swallow, OptionsRoute::Scan);
+    }
+    if let Some(k) = crate::menu::window::menu_key(code, false) {
+        let once = matches!(k, MenuKey::Escape | MenuKey::Enter | MenuKey::Tab | MenuKey::BackTab);
+        if repeat && once {
+            return OptionsRoute::Swallow;
+        }
+        return OptionsRoute::Key(k);
+    }
+    match text.filter(|t| !t.is_empty() && t.chars().all(|c| !c.is_control())) {
+        Some(t) => OptionsRoute::Text(t.to_string()),
+        None => OptionsRoute::Swallow,
+    }
+}
+
 /// An Escape in the match with the box closed: frees a captured cursor; the same press opens the exit box (no
 /// cursor-only step first, the 2009 key handler shows the box and the cursor together).
 // EVIDENCE: cshell+0x49670 case 0x1b, cshell+0x275290 (shows the box and refreshes the cursor)
@@ -1277,6 +1329,12 @@ struct App {
     pointer: [f64; 2],
     /// CLI-950: the in-match report form, open while the exit box's report answer is up.
     report_form: Option<crate::menu::reportdlg::ReportForm>,
+    /// CLI-1907: the options over the match (a menu of their own, built at the first Options click and kept for the
+    /// match) and whether they are up.
+    options_menu: Option<crate::menu::Menu>,
+    options_up: bool,
+    /// CLI-1907: the clipboard of the Mods tab's share code buttons (opened at their first use).
+    clipboard: Option<crate::menu::clipboard::SystemClipboard>,
     /// When the last report went out (a new one within ten seconds shows the notice, cshell+0x273b70).
     last_report: Option<Instant>,
     /// gpu-recover: a lost GPU device is being rebuilt.
@@ -1419,7 +1477,7 @@ impl App {
         };
         let now = ms_since(live.started);
         if self.grab_keep.retry_capture(now, live.captured, live.focused) {
-            if !self.leave.open && self.report_form.is_none() {
+            if !self.leave.open && !self.form_up() {
                 self.capture();
             }
             return;
@@ -1591,6 +1649,14 @@ impl App {
                 self.leave_view();
                 self.report_open();
             }
+            LeaveStep::Options => {
+                crate::events::emit("leave_box", serde_json::json!({ "options": true }));
+                // CLI-1907: the exit box gives way to the options; closing them shows the box again
+                self.leave = Default::default();
+                self.leave_held = false;
+                self.leave_view();
+                self.options_open();
+            }
             LeaveStep::Look | LeaveStep::None => {}
         }
         if step == LeaveStep::Cancelled {
@@ -1601,6 +1667,186 @@ impl App {
         if step == LeaveStep::Opened && self.live.as_ref().is_some_and(|l| l.hud.is_none()) {
             self.leave = Default::default();
             self.close(el, "escape");
+        }
+    }
+
+    /// A form of the menu is up over the match (the report form, the options): it keeps the cursor free.
+    fn form_up(&self) -> bool {
+        self.report_form.is_some() || self.options_up
+    }
+
+    /// CLI-1907: opens the options over the match: the lobby's options box with the settings in effect in the match
+    /// now (the hotkeys' sensitivity, the x-ray style) and, CLI-1908, a Mods tab listing the match's mods that have
+    /// settings.
+    fn options_open(&mut self) {
+        let Some(l) = self.live.as_ref() else {
+            return;
+        };
+        let size = (l.config.width, l.config.height);
+        let mut s = self
+            .opts
+            .prefs
+            .as_ref()
+            .map(|p| p.settings.clone())
+            .unwrap_or_default();
+        s.sensitivity = self.opts.look.sensitivity.round() as i32;
+        s.invert_y = self.opts.look.invert_y;
+        s.xray = crate::settings::xray_style();
+        let info = {
+            let host = self.mods.as_ref().map(|m| m.host.borrow());
+            crate::menu::optionsmods::MatchModsInfo::of_host(
+                host.as_deref(),
+                self.opts.mods.as_ref().map(|r| r.policy),
+            )
+        };
+        crate::events::emit(
+            "options_form",
+            serde_json::json!({ "open": true, "mods": info.mods.len() }),
+        );
+        match self.options_menu.as_mut() {
+            Some(m) => {
+                m.set_size(size.0, size.1);
+                m.reopen_over_match(Some(s), info);
+            }
+            None => {
+                let rom = self.source.rom();
+                let commands = self
+                    .opts
+                    .prefs
+                    .as_ref()
+                    .map(|p| p.commands.clone())
+                    .unwrap_or_default();
+                self.options_menu = Some(crate::menu::Menu::over_match(
+                    rom.as_deref(),
+                    None,
+                    size,
+                    s,
+                    commands,
+                    info,
+                ));
+            }
+        }
+        self.options_up = true;
+        self.options_overlay();
+    }
+
+    /// Hands the options' display list to the HUD (every frame while they are up: the caret, the preview's burst).
+    fn options_overlay(&mut self) {
+        let items = match self.options_menu.as_mut() {
+            Some(m) if self.options_up => m.items(),
+            _ => Vec::new(),
+        };
+        if let Some(h) = self.live.as_mut().and_then(|l| l.hud.as_mut()) {
+            h.set_overlay(items);
+        }
+    }
+
+    /// One input for the open options, then what it changed: the interface sounds, the sound rows heard at once, the
+    /// confirmed settings and the mods' values applied to the running match, the box closed.
+    fn options_input(&mut self, ev: crate::menu::MenuInput) {
+        let Some(m) = self.options_menu.as_mut().filter(|_| self.options_up) else {
+            return;
+        };
+        m.input(ev);
+        if m.data.clipboard_out.is_some() || m.data.clipboard_wanted {
+            let clip = self
+                .clipboard
+                .get_or_insert_with(crate::menu::clipboard::SystemClipboard::new);
+            m.pump_clipboard(clip);
+        }
+        let cues = m.take_sound_cues();
+        let heard = m.data.sound_live.take();
+        let confirmed = m.take_settings_change();
+        let now = m.data.settings.clone();
+        let open = m.over_match_open();
+        self.ui_cues.extend(cues);
+        if let Some(d) = self.live.as_mut().and_then(|l| l.sound.as_mut()) {
+            if let Some(s) = heard.as_ref().or(confirmed.as_ref()) {
+                crate::menu::apply_sound(s, d);
+            }
+        }
+        if let Some(s) = &confirmed {
+            self.apply_match_settings(s);
+        }
+        let mods_changed = self
+            .opts
+            .mods
+            .as_ref()
+            .is_some_and(|r| r.settings != now.mods_settings);
+        if mods_changed {
+            self.reload_match_mods(now.mods_settings.clone());
+        }
+        let known = self.opts.prefs.as_ref().map(|p| &p.settings);
+        if (confirmed.is_some() || mods_changed) && known != Some(&now) {
+            crate::settings::note_match_settings(now.clone());
+            self.opts.prefs.get_or_insert_with(MatchPrefs::default).settings = now;
+        }
+        if open {
+            self.options_overlay();
+        } else {
+            self.options_close();
+        }
+    }
+
+    /// CLI-1907: the options went down (OK, Cancel, the close button, Escape): the exit box shows again.
+    fn options_close(&mut self) {
+        self.options_up = false;
+        if let Some(h) = self.live.as_mut().and_then(|l| l.hud.as_mut()) {
+            h.set_overlay(Vec::new());
+        }
+        crate::events::emit("options_form", serde_json::json!({ "open": false }));
+        let step = self.leave.key(crate::loading::LeaveKey::Escape);
+        self.leave_view();
+        if step == crate::loading::LeaveStep::Opened {
+            crate::events::emit(
+                "leave_box",
+                serde_json::json!({ "open": true, "page": "Exit" }),
+            );
+        }
+        self.leave_pointer();
+    }
+
+    /// CLI-1907: the confirmed options in the running match: the mouse look at once (sensitivity, invert Y); the
+    /// volumes went with the sound director above. The key bindings, the frame-rate cap, Show FPS, the gamma and the
+    /// anti-aliasing were published by the options' OK and the match reads them per frame; the resolution and the
+    /// window look follow when the menu takes the window back, the renderer at the next start.
+    // DC-DEFAULT: CLI-1907 (proposed)
+    fn apply_match_settings(&mut self, s: &crate::settings::Settings) {
+        let v = s.sensitivity as f32;
+        self.opts.look.sensitivity = v;
+        self.input.set_sensitivity(v);
+        self.opts.look.invert_y = s.invert_y;
+        self.input.set_invert_y(s.invert_y);
+    }
+
+    /// CLI-1908: the match's mods loaded again with the player's new values (the way the next match loads them,
+    /// [`crate::mods::HostRecipe::load`]): the mods read `mod.settings` when they load, so the set is loaded again
+    /// and its HUD keys and hooks handed to the HUD. Every mod of the set starts its Lua state again.
+    // DC-DEFAULT: CLI-1908 (proposed) a change reloads the match's mod set (no per-mod change event)
+    fn reload_match_mods(
+        &mut self,
+        values: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    ) {
+        let Some(r) = self.opts.mods.as_mut() else {
+            return;
+        };
+        r.settings = values;
+        // the old set leaves the file lookups first: its drop installs nothing, the new one installs itself
+        drop(self.mods.take());
+        self.mods = crate::modassets::MatchMods::open(self.opts.mods.as_ref());
+        let wallhacks = room_wallhacks(self.opts.room_hacks);
+        if let Some(h) = self.live.as_mut().and_then(|l| l.hud.as_mut()) {
+            match &self.mods {
+                Some(m) => m.wire(h),
+                None => {
+                    h.hud.overrides = Default::default();
+                    h.hud.hook = None;
+                    h.xray = None;
+                }
+            }
+            if !wallhacks {
+                h.xray = None;
+            }
         }
     }
 
@@ -2424,6 +2670,10 @@ impl App {
         if self.report_form.is_some() {
             self.report_overlay();
         }
+        // CLI-1907: the options' list too (caret, the mod page's preview burst)
+        if self.options_up {
+            self.options_overlay();
+        }
         let Some(live) = self.live.as_mut() else {
             return;
         };
@@ -3090,6 +3340,30 @@ impl App {
         // m36 / CLI-510: while the leave box is open it takes every key: no look toggle, scoreboard, shell
         // key (chat, class, observer) or game action reaches the match; key releases still do, so nothing
         // stays held behind the box
+        // CLI-1907: the open options take every key
+        if self.options_up {
+            let scan = self.options_menu.as_ref().is_some_and(|m| m.wants_scan());
+            match options_route(code, down, k.repeat, k.text.as_deref(), scan) {
+                OptionsRoute::Key(mk) => self.options_input(crate::menu::MenuInput::Key(mk)),
+                OptionsRoute::Scan(s) => self.options_input(crate::menu::MenuInput::Scan(s)),
+                OptionsRoute::Text(t) => {
+                    for c in t.chars() {
+                        self.options_input(crate::menu::MenuInput::Char(c));
+                    }
+                }
+                OptionsRoute::Release => {
+                    if code == KeyCode::Tab {
+                        if let Some(l) = self.live.as_mut() {
+                            l.board_held = false;
+                        }
+                    } else if let Some(a) = action_for(code, &k.logical) {
+                        self.input.device(key_input(code, &k.logical, a, false));
+                    }
+                }
+                OptionsRoute::Swallow => {}
+            }
+            return;
+        }
         // CLI-950: the open report form takes every key
         match report_form_route(
             self.report_form.is_some(),
@@ -3249,8 +3523,7 @@ impl ApplicationHandler for App {
                     }
                     // CLI-1604: the iPad resumes the stage on scene activity (the pointer lock changing among
                     // them); an open leave box or report form keeps the mouse free there
-                    let box_open =
-                        cfg!(target_os = "ios") && (self.leave.open || self.report_form.is_some());
+                    let box_open = cfg!(target_os = "ios") && (self.leave.open || self.form_up());
                     if !box_open {
                         self.capture();
                     }
@@ -3318,7 +3591,7 @@ impl ApplicationHandler for App {
                     self.super_held = false;
                 }
                 // the leave box keeps the cursor free while it is open
-                if f && !self.leave.open && self.report_form.is_none() {
+                if f && !self.leave.open && !self.form_up() {
                     // CLI-1721: a capture refused while the window is still being restored is tried again
                     if let Some(l) = self.live.as_ref() {
                         self.grab_keep.on_focus(ms_since(l.started));
@@ -3336,6 +3609,16 @@ impl ApplicationHandler for App {
                 // a click captures the cursor; with the cursor captured the button is the fire button
                 let captured = self.live.as_ref().is_some_and(|l| l.captured);
                 let down = state == ElementState::Pressed;
+                // CLI-1907: the options take the left button
+                if self.options_up {
+                    let p = self.pointer_virtual();
+                    self.options_input(if down {
+                        crate::menu::MenuInput::Press(p)
+                    } else {
+                        crate::menu::MenuInput::Release(p)
+                    });
+                    return;
+                }
                 // CLI-950: the report form takes the left button
                 if self.report_form.is_some() {
                     let p = self.pointer_virtual();
@@ -3403,9 +3686,22 @@ impl ApplicationHandler for App {
                     let p = self.pointer_virtual();
                     self.report_input(crate::menu::MenuInput::Move(p));
                 }
+                if self.options_up {
+                    let p = self.pointer_virtual();
+                    self.options_input(crate::menu::MenuInput::Move(p));
+                }
                 self.leave_pointer();
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.options_up {
+                    let steps = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y,
+                        MouseScrollDelta::PixelDelta(p) => (p.y / 40.0) as f32,
+                    };
+                    let p = self.pointer_virtual();
+                    self.options_input(crate::menu::MenuInput::Wheel(p, steps.signum() as i32));
+                    return;
+                }
                 if self.report_form.is_some() {
                     let steps = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y,
@@ -3633,6 +3929,9 @@ pub fn run_window(
         leave_held: false,
         ui_cues: Vec::new(),
         report_form: None,
+        options_menu: None,
+        options_up: false,
+        clipboard: None,
         last_report: None,
         pointer: [0.0, 0.0],
         recovering: None,
@@ -3751,6 +4050,9 @@ impl App {
             leave_held: false,
             ui_cues: Vec::new(),
             report_form: None,
+            options_menu: None,
+            options_up: false,
+            clipboard: None,
             last_report: None,
             pointer: [0.0, 0.0],
             recovering: None,
@@ -3939,6 +4241,43 @@ mod tests {
         assert_eq!(
             report_form_route(true, KeyCode::KeyW, false, false, None),
             ReportRoute::Release
+        );
+    }
+
+    /// CLI-1907: the options over the match take every key as the menu window gives them to the box; a waiting key
+    /// box takes the next key itself (Escape still gives up); releases reach the match.
+    #[test]
+    fn the_options_over_the_match_take_every_key() {
+        use crate::menu::MenuKey;
+        assert_eq!(
+            options_route(KeyCode::Escape, true, false, None, false),
+            OptionsRoute::Key(MenuKey::Escape)
+        );
+        assert_eq!(
+            options_route(KeyCode::Escape, true, true, None, false),
+            OptionsRoute::Swallow,
+            "a held Escape does not close the box twice"
+        );
+        assert_eq!(
+            options_route(KeyCode::ArrowDown, true, true, None, false),
+            OptionsRoute::Key(MenuKey::Down),
+            "the list scrolls while Down is held"
+        );
+        assert_eq!(
+            options_route(KeyCode::KeyW, true, false, Some("w"), false),
+            OptionsRoute::Text("w".into())
+        );
+        assert_eq!(options_route(KeyCode::F5, true, false, None, false), OptionsRoute::Swallow);
+        assert_eq!(
+            options_route(KeyCode::KeyW, false, false, None, false),
+            OptionsRoute::Release
+        );
+        // a key box waits: W is its key, Escape still goes to the box
+        let w = crate::settings::scan_of_code(KeyCode::KeyW).unwrap();
+        assert_eq!(options_route(KeyCode::KeyW, true, false, Some("w"), true), OptionsRoute::Scan(w));
+        assert_eq!(
+            options_route(KeyCode::Escape, true, false, None, true),
+            OptionsRoute::Key(MenuKey::Escape)
         );
     }
 

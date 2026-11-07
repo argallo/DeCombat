@@ -46,6 +46,12 @@ pub const ZONE_MIN_HALF: f32 = 48.0;
 // DC-DEFAULT: DSV-193 (proposed) 16 units, 100 ms
 pub const FOLLOW_DIST: f32 = 16.0;
 pub const FOLLOW_MS: u32 = 100;
+/// A living player this close to a flag (horizontally and up / down) who is not handed it or does not return it is
+/// logged once per life and flag, with both distances and the reason: what the server saw of a player who reports
+/// that the flag did not react to him.
+// DC-DEFAULT: DSV-192 (amendment 2026-11-06, proposed) diagnostic only, twice the touch distances
+pub const NEAR_RADIUS: f32 = 2.0 * TOUCH_RADIUS;
+pub const NEAR_HEIGHT: f32 = 2.0 * TOUCH_HEIGHT;
 /// Height of a flag object above the floor when the world gives none to measure: the ROM world files place their
 /// flag objects 18..42 units above the floor below them, most at 28.
 // DC-DEFAULT: DSV-252 (proposed)
@@ -151,6 +157,8 @@ pub struct CtfState {
     /// Per player: his captures and his returns of the own flag in this match (the board's mission column).
     // DC-DEFAULT: DSV-253 (proposed)
     pub scored: std::collections::BTreeMap<u8, [u32; 2]>,
+    /// The near-flag notes already logged: (player, flag index) -> the player's spawn count then (DSV-192).
+    near_noted: std::collections::BTreeMap<(u8, usize), u32>,
 }
 
 impl CtfState {
@@ -198,6 +206,13 @@ fn touching(p: [f32; 3], f: [f32; 3]) -> bool {
     let dx = p[0] - f[0];
     let dz = p[2] - f[2];
     (dx * dx + dz * dz).sqrt() <= TOUCH_RADIUS && (p[1] - f[1]).abs() <= TOUCH_HEIGHT
+}
+
+/// Horizontal distance and height of `p` over `f`.
+fn offset(p: [f32; 3], f: [f32; 3]) -> (f32, f32) {
+    let dx = p[0] - f[0];
+    let dz = p[2] - f[2];
+    ((dx * dx + dz * dz).sqrt(), p[1] - f[1])
 }
 
 fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -426,11 +441,16 @@ impl Game {
         for (pid, team, pos) in alive {
             for i in 0..self.ctf.flags.len() {
                 let f = &self.ctf.flags[i];
-                if f.carrier.is_some() || !touching(pos, f.pos) {
+                if f.carrier.is_some() {
+                    continue;
+                }
+                if !touching(pos, f.pos) {
+                    self.note_near_flag(pid, i, pos, "outside the touch");
                     continue;
                 }
                 if f.team != team {
                     if self.ctf.flags.iter().any(|g| g.carrier == Some(pid)) {
+                        self.note_near_flag(pid, i, pos, "carries a flag already");
                         continue;
                     }
                     let fteam = f.team;
@@ -445,6 +465,8 @@ impl Game {
                     self.log(format!("ctf: team {team} flag returned by client {pid}"));
                     self.flag_event(i, EVENT_RETURNED, Some(pid));
                     self.flag_scored(pid, 1);
+                } else {
+                    self.note_near_flag(pid, i, pos, "his own flag, at its base");
                 }
             }
             self.try_capture(pid, team, pos, now);
@@ -466,6 +488,31 @@ impl Game {
                 self.flag_move(i, p, now);
             }
         }
+    }
+
+    /// Logs once per life a player within [`NEAR_RADIUS`] / [`NEAR_HEIGHT`] of flag `i` whom the tick's rules did not
+    /// hand it or let return it: his team, the flag's, both distances, the reason (DSV-192 amendment, diagnostic).
+    // DC-DEFAULT: DSV-192 (amendment 2026-11-06, proposed)
+    fn note_near_flag(&mut self, pid: u8, i: usize, pos: [f32; 3], why: &str) {
+        let Some(f) = self.ctf.flags.get(i) else {
+            return;
+        };
+        let (across, up) = offset(pos, f.pos);
+        if across > NEAR_RADIUS || up.abs() > NEAR_HEIGHT {
+            return;
+        }
+        let Some((team, life)) = self.players.get(&pid).map(|p| (p.team, p.spawns)) else {
+            return;
+        };
+        if self.ctf.near_noted.insert((pid, i), life) == Some(life) {
+            return;
+        }
+        let fteam = f.team;
+        let place = if f.at_base { "at its base" } else { "away" };
+        self.log(format!(
+            "ctf: client {pid} (team {team}) near the team {fteam} flag ({place}): {across:.0} across, {up:+.0} up, \
+             not taken: {why}"
+        ));
     }
 
     /// A carrier inside his team's capture zone (or near his flag's base when the world has no zone of his team)

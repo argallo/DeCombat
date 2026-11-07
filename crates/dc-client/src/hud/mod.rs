@@ -41,6 +41,7 @@ pub mod qrt;
 pub mod radar;
 pub mod rank;
 pub mod scope;
+pub mod sensor;
 pub mod spy;
 pub mod state;
 pub mod prompt;
@@ -268,6 +269,8 @@ impl Hud {
         // client-scoreboard: the board's place / level / header columns (own pinned keys, same CShell and table)
         layout.board_columns =
             board::BoardColumns::from_rom(rom, &table, 0, strings.as_ref()).unwrap_or_default();
+        // CLI-1910: the clan mark table of the rows' clan marks (the lobby's reader, cached per ROM folder)
+        layout.clan_marks = crate::menu::clan::ClanLits::cached(rom).marks;
         let (panel_images, panel_classes) = panel::rom_rows(rom, &keys);
         layout.weapon_panel = panel::WeaponPanelLayout::from_view(
             &dc_ui_data::HudView::new(&table, &keys, 0),
@@ -714,6 +717,7 @@ impl HudDriver {
             || self.state.aim_picture != fs.aim_picture
             || self.state.crouched != crouched
             || self.state.show_board != show_board
+            || self.state.sensor != fs.sensor
         {
             self.dirty = true;
         }
@@ -734,6 +738,7 @@ impl HudDriver {
         self.state.scope = fs.scope.clone();
         self.state.aim_cross_hidden = fs.aim_cross_hidden;
         self.state.aim_picture = fs.aim_picture.clone();
+        self.state.sensor = fs.sensor;
         self.state.crouched = crouched;
         // the board's open sound: the key going down outside the result board (the close is silent)
         if show_board && !self.state.show_board && self.state.result_mark.is_none() {
@@ -1154,12 +1159,14 @@ impl HudDriver {
         };
         let f = camera.forward();
         let yaw = f.x.atan2(f.z);
+        // the heartbeat sensor's enemies: inside the camera's view frustum
         self.state.radar = Some(radar::frame(
             l,
             &self.state,
             remotes,
             camera.pos.to_array(),
             yaw,
+            &|p| sensor::in_view(camera, p),
         ));
     }
 
@@ -1613,7 +1620,7 @@ mod sound_tests {
             assert_ne!(p, plain.pixel(x, y), "{name}");
         }
         // fading inward: deeper pixels are fainter, and the inner part of the frame is untouched
-        let (e, m) = (hit.pixel(1, h / 2), hit.pixel(w / 16, h / 2));
+        let (e, m) = (hit.pixel(1, h / 2), hit.pixel(w / 32, h / 2));
         assert!(m[3] > 0 && m[3] < e[3], "{m:?} vs {e:?}");
         for (x, y) in [
             (w / 2, h / 2),

@@ -3,6 +3,10 @@
 //! box reads; its window and the button state images are the 2009 build's literals. None of these texts is in this
 //! tree: each is read from the user's CShell.dll at the pinned rva and accepted only when its length and SHA-256
 //! prefix match.
+//!
+//! CLI-1907: our fourth button, Options, right under the return-to-lobby button. The 2009 box has none: its build
+//! makes three buttons and its layout section holds three button places. The report and back-to-game buttons move
+//! down to make room, the four one 2009 step apart.
 // EVIDENCE: cshell+0x274dd0 (the box's build: window image + WindowPos / WindowWidth / WindowHeight of its section,
 // then ButtonWidth / ButtonHeight and three buttons with four state images each at GotoLobby / GotoReport / GotoGame
 // positions relative to the window; DISASM cshell+0x274dff..0x27518c for the literal addresses)
@@ -76,15 +80,76 @@ fn slot(hover: bool, down: bool) -> usize {
     }
 }
 
+/// CLI-1907: the caption of our Options button.
+pub const T_OPTIONS: &str = "Options";
+
+/// CLI-1907: where our Options button goes and how the 2009 buttons make room: the four buttons stand one 2009 step
+/// apart (the report-to-back-to-game distance) from the lobby button down: lobby, Options, report, back to the game,
+/// so the last one still ends above the window picture's bottom band. `rel`: the three 2009 places relative to the
+/// window (lobby, report, back to the game). Returns the four places in the [`crate::loading`] button order (lobby,
+/// report, back to the game, Options).
+// DC-DEFAULT: CLI-1907 (proposed, owner request 2026-11-05 "a fourth button right below the Return to Lobby button")
+pub fn places_with_options(rel: [[i32; 2]; 3]) -> [[i32; 2]; 4] {
+    let step = rel[2][1] - rel[1][1];
+    let top = rel[0][1];
+    [
+        rel[0],
+        [rel[1][0], top + 2 * step],
+        [rel[2][0], top + 3 * step],
+        [rel[0][0], top + step],
+    ]
+}
+
+/// CLI-1907: the look of the 2009 buttons' words, which are part of their pictures: solid black letters, each with a
+/// one pixel light edge all round (the edge pixels of the pictures read about 0xdc..0xe5 on a mid grey face).
+// DC-DEFAULT: CLI-1907 (OBSERVED: the pictures of the 2009 system-menu buttons, read from the ROM and looked at
+// 2026-11-06: black glyph core, light one-pixel halo; the 2009 message box's own caption look is light grey on a blank
+// button picture, which is not what these three buttons show)
+const CAPTION_INK: u32 = 0xff00_0000;
+const CAPTION_EDGE: u32 = 0xffe4_e4e4;
+
+/// The four offsets of the light edge (virtual pixels): up, left, right, down only; the diagonal copies made the
+/// halo heavier than the baked words' (owner, 2026-11-06 "make the white border slightly smaller").
+const EDGE_OFFSETS: [[i32; 2]; 4] = [[0, -1], [-1, 0], [1, 0], [0, 1]];
+
+/// CLI-1907: `text` centred in the button `r` the way the other three buttons' baked words look: the light edge
+/// copies first, the black letters over them (our text renderer has no outline of its own).
+fn push_edged_caption(text: &str, r: [i32; 4], out: &mut Vec<DrawItem>) {
+    let align = dc_ui_data::pages::Align {
+        first: crate::menu::sheet::ALIGN_CENTRE,
+        second: dc_ui_data::pages::ALIGN_SECOND_CENTRE,
+    };
+    let mut put = |dx: i32, dy: i32, colour: u32| {
+        out.push(crate::menu::sheet::place_text(
+            text,
+            [r[0] + dx, r[1] + dy],
+            [r[2], r[3]],
+            align,
+            crate::menu::popup::CAPTION_FONT,
+            crate::menu::popup::CAPTION_SIZE,
+            colour,
+        ));
+    };
+    for [dx, dy] in EDGE_OFFSETS {
+        put(dx, dy, CAPTION_EDGE);
+    }
+    put(0, 0, CAPTION_INK);
+}
+
 /// The exit box: window rectangle and button rectangles in the virtual 1024 x 768 screen, and its images.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitBox {
     pub window: [i32; 4],
-    pub buttons: [[i32; 4]; 3],
+    /// The buttons in the [`crate::loading`] order: lobby, report, back to the game, and our Options (CLI-1907).
+    pub buttons: [[i32; 4]; 4],
     pub window_tex: Option<String>,
+    /// The 2009 buttons' four state images (lobby, report, back to the game).
     pub button_tex: [[Option<String>; 4]; 3],
-    /// The button captions drawn over plain fills when there are no images (no ROM).
-    pub captions: [String; 3],
+    /// CLI-1907: the message boxes' button picture (normal, over, pressed) our Options button is drawn with, its
+    /// caption over it.
+    pub options_art: [Option<String>; 3],
+    /// The button captions drawn over plain fills when there are no images (no ROM); the fourth is always drawn.
+    pub captions: [String; 4],
     /// The file of the interface "select" sound a button click plays (`None`: silent).
     // EVIDENCE: cshell+0x1aeb90 (a released control that takes the click plays interface sound 0x14; the exit box's
     // buttons are controls of its window), CLI-1012 (playtest report: "exiting a game does not make the button click noises")
@@ -93,16 +158,24 @@ pub struct ExitBox {
 
 impl ExitBox {
     /// Our own box without a ROM: centred, three buttons in a column (plain fills and captions).
-    // DC-DEFAULT: CLI-921 (proposed) the no-ROM exit box (400 x 200 centred, buttons 200 x 30)
+    // DC-DEFAULT: CLI-921 (proposed) the no-ROM exit box (400 x 240 centred, buttons 200 x 30; CLI-1907 made it 40
+    // higher for the fourth button)
     pub fn fallback() -> ExitBox {
-        let window = [312, 284, 400, 200];
-        let b = |i: i32| [412, 284 + 40 + i * 45, 200, 30];
+        let window = [312, 264, 400, 240];
+        let b = |i: i32| [412, 264 + 40 + i * 45, 200, 30];
         ExitBox {
             window,
-            buttons: [b(0), b(1), b(2)],
+            // lobby, Options under it, then report and back to the game (CLI-1907)
+            buttons: [b(0), b(2), b(3), b(1)],
             window_tex: None,
             button_tex: Default::default(),
-            captions: ["Lobby".into(), "Report".into(), "Back".into()],
+            options_art: Default::default(),
+            captions: [
+                "Lobby".into(),
+                "Report".into(),
+                "Back".into(),
+                T_OPTIONS.into(),
+            ],
             select_file: None,
         }
     }
@@ -118,18 +191,23 @@ impl ExitBox {
         let at = s.pair(&keys[0])?;
         let size = [s.int(&keys[1])?, s.int(&keys[2])?];
         let bsize = [s.int(&keys[3])?, s.int(&keys[4])?];
-        let mut buttons = [[0; 4]; 3];
-        for (i, b) in buttons.iter_mut().enumerate() {
-            // button places are relative to the window
-            let r = s.pair(&keys[5 + i])?;
-            *b = [at[0] + r[0], at[1] + r[1], bsize[0], bsize[1]];
-        }
+        // button places are relative to the window
+        let rel = [s.pair(&keys[5])?, s.pair(&keys[6])?, s.pair(&keys[7])?];
+        let buttons =
+            places_with_options(rel).map(|r| [at[0] + r[0], at[1] + r[1], bsize[0], bsize[1]]);
+        let paths = crate::menu::catalog::CodePaths::from_rom(rom);
         Some(ExitBox {
             window: [at[0], at[1], size[0], size[1]],
             buttons,
             window_tex: read(&WINDOW),
             button_tex: BUTTONS.map(|row| row.map(|p| read(&p))),
-            captions: Default::default(),
+            options_art: paths.popup_buttons.clone(),
+            captions: [
+                String::new(),
+                String::new(),
+                String::new(),
+                T_OPTIONS.into(),
+            ],
             select_file: crate::menu::frontfx::FrontLits::from_rom(rom)
                 .sounds
                 .get(&crate::menu::frontfx::SOUND_SELECT)
@@ -178,6 +256,11 @@ impl ExitBox {
         }
         for (i, r) in self.buttons.iter().enumerate() {
             let s = slot(view.hover == Some(i), view.down == Some(i));
+            // CLI-1907: our Options button: the message boxes' button picture with its caption
+            if i == crate::loading::EXIT_OPTIONS {
+                self.push_options(*r, s, out);
+                continue;
+            }
             match &self.button_tex[i][s] {
                 Some(t) => out.push(crate::menu::sheet::image(t, [r[0], r[1]], [r[2], r[3]])),
                 None => {
@@ -207,6 +290,37 @@ impl ExitBox {
             }
         }
     }
+
+    /// CLI-1907: our Options button at `r` in state slot `s` (0 normal, 1 over, 3 pressed): the message boxes'
+    /// button picture stretched over the button in nine parts (as the Mods windows' buttons), the caption centred.
+    fn push_options(&self, r: [i32; 4], s: usize, out: &mut Vec<DrawItem>) {
+        let look = match s {
+            3 => 2,
+            1 => 1,
+            _ => 0,
+        };
+        match &self.options_art[look] {
+            Some(t) => {
+                crate::menu::nine::draw_art(
+                    t,
+                    crate::menu::modbrowser::BUTTON_ART,
+                    r,
+                    [255; 4],
+                    out,
+                );
+            }
+            None => out.push(DrawItem::Fill {
+                rect: [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32],
+                colour: [
+                    [70, 70, 70, 255],
+                    [110, 110, 110, 255],
+                    [0; 4],
+                    [40, 40, 40, 255],
+                ][s],
+            }),
+        }
+        push_edged_caption(&self.captions[crate::loading::EXIT_OPTIONS], r, out);
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +338,7 @@ mod tests {
     fn hover_draws_the_over_image() {
         let mut b = ExitBox::fallback();
         b.button_tex = [0, 1, 2].map(|i| [0, 1, 2, 3].map(|s| Some(format!("b{i}s{s}"))));
+        b.options_art = [None, None, None];
         let texs = |v: LeaveView| {
             let mut out = Vec::new();
             b.push_items(&v, &mut out);
@@ -255,5 +370,75 @@ mod tests {
         let p = [r[0] as f32 + 1.0, r[1] as f32 + 1.0];
         assert_eq!(b.button_at(LeavePage::Exit, p), Some(1));
         assert_eq!(b.button_at(LeavePage::Exit, [0.0, 0.0]), None);
+        // CLI-1907: the fourth button is Options
+        let r = b.buttons[crate::loading::EXIT_OPTIONS];
+        let p = [r[0] as f32 + 1.0, r[1] as f32 + 1.0];
+        assert_eq!(
+            b.button_at(LeavePage::Exit, p),
+            Some(crate::loading::EXIT_OPTIONS)
+        );
+    }
+
+    /// CLI-1907: Options takes the place under the lobby button, report and back to the game move down one step; the
+    /// four buttons do not overlap and stay inside the window.
+    #[test]
+    fn options_sits_under_the_lobby_button() {
+        let p = places_with_options([[60, 62], [60, 105], [60, 143]]);
+        assert_eq!(p, [[60, 62], [60, 138], [60, 176], [60, 100]]);
+        let b = ExitBox::fallback();
+        let mut ys: Vec<i32> = b.buttons.iter().map(|r| r[1]).collect();
+        ys.sort();
+        assert!(
+            ys.windows(2).all(|w| w[1] - w[0] >= b.buttons[0][3]),
+            "{ys:?}"
+        );
+        let o = b.buttons[crate::loading::EXIT_OPTIONS];
+        assert_eq!(o[1], ys[1], "Options right under the lobby button");
+        for r in b.buttons {
+            assert!(
+                r[1] + r[3] <= b.window[1] + b.window[3],
+                "inside the window: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_options_button_draws_its_caption() {
+        let b = ExitBox::fallback();
+        let mut out = Vec::new();
+        b.push_items(&LeaveView::default(), &mut out);
+        let labels: Vec<_> = out
+            .iter()
+            .filter_map(|d| match d {
+                DrawItem::Label { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&T_OPTIONS), "{labels:?}");
+    }
+
+    /// CLI-1907: the caption looks like the baked words of the 2009 buttons: eight light edge copies, then the black
+    /// letters on top, all at the same place the black ones are drawn at (the edge copies one pixel around it).
+    #[test]
+    fn the_options_caption_is_black_with_a_light_edge() {
+        let mut out = Vec::new();
+        push_edged_caption("Options", [100, 200, 170, 30], &mut out);
+        let labels: Vec<_> = out
+            .iter()
+            .filter_map(|d| match d {
+                DrawItem::Label {
+                    style, pos, text, ..
+                } if text == "Options" => Some((style.colour, *pos)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels.len(), 5, "{labels:?}");
+        let (ink, at) = labels[4];
+        assert_eq!(ink, [0, 0, 0, 255], "the black letters come last, on top");
+        for (colour, pos) in &labels[..4] {
+            assert_eq!(*colour, [0xe4, 0xe4, 0xe4, 255]);
+            let d = [(pos[0] - at[0]).abs(), (pos[1] - at[1]).abs()];
+            assert!(d == [1.0, 0.0] || d == [0.0, 1.0], "{pos:?}");
+        }
     }
 }

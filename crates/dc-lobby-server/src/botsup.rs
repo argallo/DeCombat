@@ -13,7 +13,7 @@
 // Provenance: ORIGINAL (DeCombat operator tooling)
 // DC-DEFAULT: LG-388 the supervisor, its flags, restarts and stop
 
-use crate::botgroups::{self, Group, RoomPick};
+use crate::botgroups::{self, Group, RoomPick, Spot, Steer};
 use crate::state::{Core, Shared};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -569,8 +569,9 @@ pub fn bot_args(f: &Facts, g: &Group, name: &str, channel: u32) -> Vec<String> {
 }
 
 /// The bots of the enabled groups (none on a lobby that does not manage bots or is stopping), within the total cap
-/// in group order (a cap lowered below what is stored leaves the later groups' bots out).
-pub fn wants(st: &Core, groups: &[Group], f: &Facts) -> Vec<Want> {
+/// in group order (a cap lowered below what is stored leaves the later groups' bots out). A following group in
+/// `spots` sits where its steering put it (OPS-15), on that entry's channels.
+pub fn wants(st: &Core, groups: &[Group], f: &Facts, spots: &BTreeMap<i64, Spot>) -> Vec<Want> {
     if !st.opts.bots_managed || st.stopping {
         return Vec::new();
     }
@@ -578,8 +579,20 @@ pub fn wants(st: &Core, groups: &[Group], f: &Facts) -> Vec<Want> {
     let mut left = st.opts.bots_max_total;
     let mut out = Vec::new();
     for g in groups.iter().filter(|g| g.enabled) {
-        let Ok(chs) = botgroups::usable_channels(g, &entries) else {
+        let Ok(mut chs) = botgroups::usable_channels(g, &entries) else {
             continue;
+        };
+        let moved;
+        let g = match spots.get(&g.id) {
+            Some(s) => {
+                chs = s.channels.clone();
+                moved = Group {
+                    server_id: s.entry,
+                    ..g.clone()
+                };
+                &moved
+            }
+            None => g,
         };
         for (i, name) in g.names().into_iter().enumerate() {
             if left == 0 {
@@ -596,6 +609,64 @@ pub fn wants(st: &Core, groups: &[Group], f: &Facts) -> Vec<Want> {
         }
     }
     out
+}
+
+/// OPS-15: the steering of the following groups, kept by the supervisor thread between its rounds.
+#[derive(Default)]
+pub struct Follows {
+    steer: HashMap<i64, Steer>,
+}
+
+impl Follows {
+    /// The spot of each enabled following group this round (a move at most every `FOLLOW_MOVE_GAP`), and a log line
+    /// per move. A group whose configured entry or channels change starts again from them.
+    pub fn update(
+        &mut self,
+        st: &Core,
+        groups: &[Group],
+        now: Instant,
+    ) -> (BTreeMap<i64, Spot>, Vec<String>) {
+        let entries = crate::servers::entries(st);
+        let mut spots = BTreeMap::new();
+        let mut lines = Vec::new();
+        let mut keep = BTreeSet::new();
+        for g in groups.iter().filter(|g| g.enabled) {
+            let RoomPick::Follow(nick) = &g.room else {
+                continue;
+            };
+            let Ok(chs) = botgroups::usable_channels(g, &entries) else {
+                continue;
+            };
+            let home = Spot {
+                entry: g.server_id,
+                channels: chs,
+            };
+            keep.insert(g.id);
+            let s = self
+                .steer
+                .entry(g.id)
+                .or_insert_with(|| Steer::new(home.clone()));
+            if s.home != home {
+                *s = Steer::new(home);
+            }
+            let place = botgroups::place_of_player(st, &entries, nick);
+            if s.step(&place, now) {
+                let to = entries
+                    .iter()
+                    .find(|e| e.id == s.now.entry)
+                    .map_or_else(|| format!("entry {}", s.now.entry), |e| e.name.clone());
+                lines.push(format!(
+                    "group {} {} follows {nick} to {to} channel {}",
+                    g.id,
+                    g.prefix,
+                    botgroups::channels_text(&s.now.channels)
+                ));
+            }
+            spots.insert(g.id, s.now.clone());
+        }
+        self.steer.retain(|id, _| keep.contains(id));
+        (spots, lines)
+    }
 }
 
 /// The groups' loadouts (LG-251's `account loadout`), given to each bot account once per spec: after its first login
@@ -675,7 +746,13 @@ impl Loadouts {
 }
 
 /// One round of the supervisor thread; false once the lobby stops.
-pub fn tick(shared: &Shared, sup: &Handle, lo: &mut Loadouts, dir: &Path) -> bool {
+pub fn tick(
+    shared: &Shared,
+    sup: &Handle,
+    lo: &mut Loadouts,
+    fo: &mut Follows,
+    dir: &Path,
+) -> bool {
     let now = Instant::now();
     let (wants, restart, notes, log) = {
         let g = crate::net::lock(shared);
@@ -691,8 +768,12 @@ pub fn tick(shared: &Shared, sup: &Handle, lo: &mut Loadouts, dir: &Path) -> boo
             }
         };
         let f = facts(&g, dir);
-        let w = wants(&g, &groups, &f);
+        let (spots, moves) = fo.update(&g, &groups, now);
+        let w = wants(&g, &groups, &f, &spots);
         let (r, n) = lo.apply(&g, &groups, &w);
+        for m in &moves {
+            g.note(&format!("bots: {m}"));
+        }
         (w, r, n, Arc::clone(&g.log))
     };
     let mut s = lock(sup);
@@ -758,9 +839,10 @@ pub fn spawn(shared: &Shared) {
         .name("bots".into())
         .spawn(move || {
             let mut lo = Loadouts::default();
+            let mut fo = Follows::default();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
-                if !tick(&shared, &sup, &mut lo, &dir) {
+                if !tick(&shared, &sup, &mut lo, &mut fo, &dir) {
                     break;
                 }
             }

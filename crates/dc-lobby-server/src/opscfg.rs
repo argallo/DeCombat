@@ -55,6 +55,8 @@ pub struct OpsRules {
     pub flag_moderators_to_game: bool,
     // DC-DEFAULT: MON-2 (proposed) days the operator monitor keeps its rows (0 = forever)
     pub monitor_retention_days: u32,
+    // DC-DEFAULT: OPS-16 (proposed) absolute path of the public match board snapshot (empty = off)
+    pub monitor_public_games_file: String,
     // DC-DEFAULT: LG-395 (proposed) the most one dashboard change may add or take: NX, GP, EXP
     pub admin_max_nx: i64,
     pub admin_max_gp: i64,
@@ -80,6 +82,7 @@ impl Default for OpsRules {
             expiry_boxes: true,
             flag_moderators_to_game: true,
             monitor_retention_days: 14,
+            monitor_public_games_file: String::new(),
             admin_max_nx: 100_000,
             admin_max_gp: 1_000_000,
             admin_max_exp: 10_000_000,
@@ -102,6 +105,7 @@ impl OpsRules {
             || key.starts_with("messenger.")
             || key == "reports.per_hour"
             || key == "monitor.retention_days"
+            || key == "monitor.public_games_file"
     }
 
     /// Applies one override; false for an unknown key or a value of the wrong type.
@@ -185,6 +189,7 @@ impl OpsRules {
             "monitor.retention_days" => n
                 .map(|x| self.monitor_retention_days = x.clamp(0.0, 3650.0) as u32)
                 .is_some(),
+            "monitor.public_games_file" => s.map(|x| self.monitor_public_games_file = x).is_some(),
             _ => false,
         }
     }

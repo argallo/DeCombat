@@ -665,7 +665,7 @@ fn the_renderer_row_saves_the_pick_for_the_next_start() {
             continue;
         }
         assert_eq!(d.items, vec!["Vulkan".to_string(), "DirectX 12".to_string()]);
-        let at = d.row_point(1).unwrap();
+        let at = d.row_point(0).unwrap(); // Vulkan: the opt-in (DirectX 12 is the default)
         m.input(MenuInput::Move(at));
         m.input(MenuInput::Press(at));
         m.input(MenuInput::Release(at));
@@ -676,11 +676,11 @@ fn the_renderer_row_saves_the_pick_for_the_next_start() {
     if !found {
         return;
     }
-    assert_eq!(m.data.settings.renderer, Renderer::Vulkan, "not changed before OK");
+    assert_eq!(m.data.settings.renderer, Renderer::Dx12, "not changed before OK");
     press(&mut m, CMD_OK);
     let after = m.take_settings_change().expect("OK reports a change");
-    assert_eq!(after.renderer, Renderer::Dx12);
+    assert_eq!(after.renderer, Renderer::Vulkan);
     let (doc, _) = m.data.profile_store.as_ref().unwrap().load().expect("readable");
-    assert_eq!(doc.own_get(OWN_RENDERER), Some("dx12"));
+    assert_eq!(doc.own_get(OWN_RENDERER), Some("vulkan"));
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
 }

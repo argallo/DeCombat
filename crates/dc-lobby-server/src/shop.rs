@@ -645,7 +645,36 @@ pub fn buy_reply(ok: bool, reason: u32, uid: u32, end: u64, gp_after: u32, award
     w.into_frame()
 }
 
-fn refuse_purchase(st: &mut Core, sid: Sid, reason: u32, gp: i64) {
+/// LG-428: the words of a refusal reason for the log (the box table at the top of this file).
+fn reason_text(reason: u32) -> &'static str {
+    match reason {
+        reason::NOT_ENOUGH_MONEY => "not enough money",
+        reason::INVENTORY_FULL => "inventory full",
+        reason::NO_SUCH_CHARACTER => "no such character",
+        // LG-302: a rank refusal answers 0x60 as well
+        reason::NOT_FOR_SALE => "not for sale (or below the rank requirement)",
+        reason::NOT_GIFTABLE => "not giftable",
+        reason::SHOP_UNAVAILABLE => "shop data updating or unavailable",
+        reason::NOT_ENOUGH_CREDIT => "not enough credit",
+        reason::RECEIVER_NOT_LEADER => "receiver is no clan leader",
+        _ => "unknown reason",
+    }
+}
+
+// DC-DEFAULT: LG-428 (proposed, OWNER REPORT 2026-11-05 playtest) a refused purchase is logged with the account, the
+// product and the reason, so "I could not buy it" can be traced from the lobby log
+fn refuse_purchase(st: &mut Core, sid: Sid, product: i32, reason: u32, gp: i64) {
+    let who = match account_of(st, sid) {
+        Some(a) => match st.character(a).map(|c| c.nick).filter(|n| !n.is_empty()) {
+            Some(nick) => format!("account {a} ({nick})"),
+            None => format!("account {a}"),
+        },
+        None => "no account".to_string(),
+    };
+    st.note(&format!(
+        "shop: purchase refused for {who}: product {product}, reason {reason:#x} ({})",
+        reason_text(reason)
+    ));
     st.send(sid, buy_reply(false, reason, 0, 0, clamp_u32(gp), -1));
 }
 
@@ -700,21 +729,21 @@ fn extends_owned(
 fn on_buy(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     let req = parse_buy(p);
     let Some(account) = account_of(st, sid) else {
-        refuse_purchase(st, sid, reason::NOT_FOR_SALE, 0);
+        refuse_purchase(st, sid, req.product, reason::NOT_FOR_SALE, 0);
         return Ok(());
     };
     let ch = st.character(account).unwrap_or_default();
     let Some(cat) = st.rom.shop.catalog.as_ref() else {
-        refuse_purchase(st, sid, reason::SHOP_UNAVAILABLE, ch.gp);
+        refuse_purchase(st, sid, req.product, reason::SHOP_UNAVAILABLE, ch.gp);
         return Ok(());
     };
     let Some(prod) = cat.product(req.product).cloned() else {
-        refuse_purchase(st, sid, reason::NOT_FOR_SALE, ch.gp);
+        refuse_purchase(st, sid, req.product, reason::NOT_FOR_SALE, ch.gp);
         return Ok(());
     };
     let items = product_items(cat, &prod);
     if items.is_empty() || !is_shown(st, req.product) {
-        refuse_purchase(st, sid, reason::NOT_FOR_SALE, ch.gp);
+        refuse_purchase(st, sid, req.product, reason::NOT_FOR_SALE, ch.gp);
         return Ok(());
     }
     let price = price_of(st, &prod);
@@ -728,7 +757,7 @@ fn on_buy(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
         && !(credit && req.option != 0 && st.rules.shop.credit_to_inbox)
         && !extends_owned(st, account, &items, &req)?
     {
-        refuse_purchase(st, sid, reason::RANK_TOO_LOW, ch.gp);
+        refuse_purchase(st, sid, req.product, reason::RANK_TOO_LOW, ch.gp);
         return Ok(());
     }
     // CD-37: payment option 0 draws on the credit balance, anything else on the prepaid balance
@@ -740,7 +769,7 @@ fn on_buy(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
         (ch.nx, "nx", 2)
     };
     if balance < price as i64 {
-        refuse_purchase(st, sid, reason::NOT_ENOUGH_MONEY, ch.gp);
+        refuse_purchase(st, sid, req.product, reason::NOT_ENOUGH_MONEY, ch.gp);
         return Ok(());
     }
     let case = is_case(&items);
@@ -758,7 +787,7 @@ fn on_buy(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
             })
             .unwrap_or(false);
         if !pool_ok {
-            refuse_purchase(st, sid, reason::SHOP_UNAVAILABLE, ch.gp);
+            refuse_purchase(st, sid, req.product, reason::SHOP_UNAVAILABLE, ch.gp);
             return Ok(());
         }
     }
@@ -780,7 +809,7 @@ fn on_buy(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
             })
             .sum::<i64>();
         if !delivery::room_for(st, account, new_rows)? {
-            refuse_purchase(st, sid, reason::INVENTORY_FULL, ch.gp);
+            refuse_purchase(st, sid, req.product, reason::INVENTORY_FULL, ch.gp);
             return Ok(());
         }
     }

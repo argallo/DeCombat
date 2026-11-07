@@ -436,6 +436,36 @@ impl<'a> MapTable<'a> {
         }
     }
 
+    /// A map's name for the operator's pages: a community map's record name (the room-list label), else the ROM
+    /// row's `Key`, else the last part of `world`. Empty for none of them.
+    // DC-DEFAULT: OPS-13 (proposed)
+    pub fn name_of(&self, map: u32, world: &str) -> String {
+        if let Some(m) = self.community_of(map) {
+            let name = m.record.name.trim();
+            return if name.is_empty() {
+                m.key().to_string()
+            } else {
+                name.to_string()
+            };
+        }
+        if let Some(key) = self
+            .rom
+            .game_room
+            .maps()
+            .get(map as usize)
+            .and_then(|row| row.get("Key"))
+            .map(|k| k.trim())
+            .filter(|k| !k.is_empty())
+        {
+            return key.to_string();
+        }
+        let tail = world.rsplit(['\\', '/']).next().unwrap_or(world);
+        tail.strip_suffix(".dat")
+            .or_else(|| tail.strip_suffix(".DAT"))
+            .unwrap_or(tail)
+            .to_string()
+    }
+
     /// The `room key=...` line. A community map takes the mode row's key / type and the points of the mode's
     /// default ROM map (it has no GMS row of its own), `time=` from the record's `round_seconds` when set, else
     /// today's fallbacks; the goal is the room's (the record's goal became the room's goal when the map was

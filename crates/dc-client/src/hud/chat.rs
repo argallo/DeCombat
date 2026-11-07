@@ -383,16 +383,23 @@ pub enum LocalCommand {
     Report,
 }
 
-/// CLI-1636: what `/help` lists in every match, one chat line each. The chat window holds six lines (`CHAT_MAX_LINES`).
+/// LG-427: the line `/help` ends the lobby's commands with in a match. A match's chat goes to the game server
+/// (`UP_CHAT`, [`UP_CHAT`]), never to the lobby, so the lobby's `/help` (which lists the clan, friend, room and
+/// server commands) cannot be asked from there.
+// DC-DEFAULT: LG-427 (proposed, OWNER REQUEST 2026-11-06)
+pub const HELP_LOBBY_LINE: &str = "lobby commands: type /help in the lobby chat";
+
+/// CLI-1636: what `/help` lists in every match, one chat line each, then [`HELP_LOBBY_LINE`] (LG-427). The chat
+/// window holds six lines (`CHAT_MAX_LINES`), x-ray lines included.
 pub const HELP_LINES: &[&str] = &[
     "/help - lists these commands; /report sends the server's owner a diagnostic report",
     "/network (or /net) - network numbers on / off; /network 2 adds the players, /network off hides them",
+    HELP_LOBBY_LINE,
 ];
 /// CLI-1636: what `/help` adds on a declared x-ray server (the CLI-1620 bridge exists).
 pub const HELP_MOD_LINES: &[&str] = &[
     "/wallhack - next see-through style: box, chams, skeleton",
-    "/nametags - enemy name tags on / off",
-    "/health (or /healthbars) - health bars on / off",
+    "/nametags, /health (or /healthbars) - enemy name tags, health bars on / off",
     "/teammates - team mates' see-through colours on / off",
 ];
 
@@ -805,6 +812,26 @@ mod tests {
             .write_u8(team_only as u8)
             .write_u32(whisper);
         w
+    }
+
+    /// LG-427: a match's `/help` is local (never sent), ends with the pointer to the lobby's `/help`, and with the
+    /// x-ray lines still fits the six-line chat window.
+    #[test]
+    fn match_help_points_to_the_lobby_and_fits_the_window() {
+        let mut c = ChatInput::default();
+        c.press(ChatPress::Enter, 0);
+        c.press(ChatPress::Text("/help".into()), 1);
+        let o = c.press(ChatPress::Enter, 2);
+        assert_eq!(o.command, Some(LocalCommand::Help));
+        assert!(o.send.is_none(), "a match's chat does not reach the lobby, so the line is not sent");
+        assert_eq!(HELP_LOBBY_LINE, "lobby commands: type /help in the lobby chat");
+        assert_eq!(HELP_LINES.last(), Some(&HELP_LOBBY_LINE));
+        assert!(HELP_LINES.len() + HELP_MOD_LINES.len() <= crate::hud::state::CHAT_MAX_LINES);
+        // every other listed line starts with a command the chat takes itself
+        for l in HELP_LINES.iter().chain(HELP_MOD_LINES).filter(|l| **l != HELP_LOBBY_LINE) {
+            let head = l.split_whitespace().next().unwrap().trim_end_matches(',');
+            assert!(local_command(head).is_some(), "{l}");
+        }
     }
 
     #[test]

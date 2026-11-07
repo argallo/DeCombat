@@ -717,6 +717,7 @@ impl Wares {
                 }
             }
         }
+        add_camo_crate(&mut art);
         Wares {
             shop,
             items,
@@ -921,6 +922,29 @@ impl Wares {
             13000..=13999 => 0x19,
             _ => return None,
         })
+    }
+
+    /// CRATE-5: what case `case_no` can hold: the Camo Crate the loaded set's camos and their plain guns, each as often
+    /// as its odds (CRATE-10), any other case its ROM pool (`Available_ItemID<k>`).
+    pub fn case_pool(&self, case_no: i32) -> Vec<i32> {
+        if dc_bute::camo_crate::is_camo_crate(i64::from(case_no)) {
+            return dc_bute::camo_crate::reel_mix(&camo_crate_contents());
+        }
+        self.items
+            .as_ref()
+            .map(|t| t.supply_pool(case_no))
+            .unwrap_or_default()
+    }
+
+    /// CRATE-5: item `n` as a cell of the case reel.
+    pub fn reel_cell(&self, n: i32) -> super::reel::Cell {
+        super::reel::Cell {
+            item: n,
+            picture: self.icons_of(n).into_iter().next(),
+            name: self.label_of(n),
+            rarity: crate::camo::variant(n).map(|v| v.rarity),
+            tag: self.kind_of(n).and_then(super::shop::class_tag),
+        }
     }
 
     /// The catalogue's name of item number `n` (`#n` for an item the catalogue does not sell).
@@ -1208,6 +1232,73 @@ pub fn equip_rows(tab: usize) -> &'static [(usize, usize, i32)] {
     }
 }
 
+
+/// CRATE-1: the Camo Crate's row: the pictures of the ROM case it looks like, with its own name and text (it is in no ROM
+/// table).
+// DC-DEFAULT: CRATE-1 (proposed)
+pub fn add_camo_crate(art: &mut BTreeMap<i32, ItemArt>) {
+    use dc_bute::camo_crate::{ITEM, LOOK_OF, NAME};
+    if art.contains_key(&ITEM) {
+        return;
+    }
+    let mut a = art.get(&LOOK_OF).cloned().unwrap_or_default();
+    a.name = NAME.to_string();
+    a.description = CAMO_CRATE_TEXT.to_string();
+    a.functions.clear();
+    a.feature.clear();
+    a.keyed_case = false;
+    art.insert(ITEM, a);
+}
+
+/// The Camo Crate's description (our own words; the odds are its function lines, [`camo_crate_lines`]).
+pub const CAMO_CRATE_TEXT: &str =
+    "Holds a gun of this server's community camos, its regular version or a camo, for 7 days, 30 days or for good. Opens without a key.";
+
+/// CRATE-10: what the Camo Crate holds with the loaded set's camos (the lobby draws from the same list).
+pub fn camo_crate_contents() -> Vec<dc_bute::camo_crate::Content> {
+    dc_bute::camo_crate::contents(
+        crate::camo::variants()
+            .iter()
+            .map(|v| (v.row, v.base, v.rarity)),
+    )
+}
+
+/// The colour of a tier's line in the crate's odds: the reel's tier colours, the regular guns in the panel's own white.
+fn tier_line_colour(t: dc_bute::camo_crate::Tier) -> u32 {
+    match t {
+        dc_bute::camo_crate::Tier::Regular => 0xffee_eeee,
+        dc_bute::camo_crate::Tier::Camo(r) => {
+            let [red, g, b] = super::reelfx::colour(r);
+            0xff00_0000 | u32::from(red) << 16 | u32::from(g) << 8 | u32::from(b)
+        }
+    }
+}
+
+/// CRATE-10: the Camo Crate's odds as detail panel function lines, rarest last: each tier the crate holds, in its colour
+/// (a `^0xAARRGGBB^` run), with its chance and, for more than one item, how many share it ("Regular gun x2  94.6%").
+// DC-DEFAULT: CRATE-10 (proposed; USER REQUEST 2026-11-06 "add the drop percentage in-game for the crate") the odds are
+// the crate's function lines, the 2009 panel's coloured list (cshell+0x2ebc10 runs)
+pub fn camo_crate_lines(contents: &[dc_bute::camo_crate::Content]) -> Vec<String> {
+    use dc_bute::camo_crate::{percent_text, tier_odds, Tier};
+    let odds = tier_odds(contents);
+    Tier::ALL
+        .into_iter()
+        .filter_map(|t| {
+            let n = contents.iter().filter(|c| c.tier == t).count();
+            (n > 0).then(|| {
+                let count = if n > 1 { format!(" x{n}") } else { String::new() };
+                format!(
+                    "^0x{:08x}^{}{}^  {}",
+                    tier_line_colour(t),
+                    t.name(),
+                    count,
+                    percent_text(odds[t.index()])
+                )
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1218,6 +1309,30 @@ mod tests {
             item_no,
             ..InvRecord::default()
         }
+    }
+
+    /// CRATE-10: the crate's odds lines name each tier it holds in its colour, with the share and the count.
+    #[test]
+    fn the_camo_crates_odds_lines_name_each_tier_it_holds() {
+        use dc_bute::modpatch::Rarity::*;
+        let c = dc_bute::camo_crate::contents([(502, 25, Epic), (503, 27, Legendary)]);
+        assert_eq!(
+            camo_crate_lines(&c),
+            vec![
+                "^0xffeeeeee^Regular gun x2^  94.6%".to_string(),
+                "^0xffc46bff^Epic camo^  4.1%".to_string(),
+                "^0xffffc53d^Legendary camo^  1.4%".to_string(),
+            ]
+        );
+        let runs = super::super::shop::colour_runs(&camo_crate_lines(&c)[2], 0xffeb_b14d);
+        assert_eq!(
+            runs,
+            vec![
+                ("Legendary camo".to_string(), 0xffff_c53d),
+                ("  1.4%".to_string(), 0xffeb_b14d)
+            ]
+        );
+        assert!(camo_crate_lines(&[]).is_empty());
     }
 
     #[test]
@@ -1233,6 +1348,7 @@ mod tests {
             },
         );
         let variant = dc_bute::modpatch::VariantInfo {
+            rarity: Default::default(),
             row: 500,
             base: 25,
             name: Some("G36E Candy".into()),

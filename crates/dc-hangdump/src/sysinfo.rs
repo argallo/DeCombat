@@ -86,7 +86,9 @@ fn reg_string(key: &str, value: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn reg_dword(key: &str, value: &str) -> Option<u32> {
-    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD,
+    };
     let (k, v) = (wide(key), wide(value));
     let mut d = 0u32;
     let mut len = 4u32;

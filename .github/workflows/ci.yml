@@ -143,3 +143,4 @@ jobs:
           bash tools/vps/tests/healthcheck_test.sh
           bash tools/vps/tests/migrate_test.sh
           bash tools/vps/tests/deploy_test.sh
+          python3 -I -m unittest discover -s tools/vps/tests -p test_live_games.py

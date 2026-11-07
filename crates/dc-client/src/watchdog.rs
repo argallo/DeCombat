@@ -726,11 +726,13 @@ fn final_report(stalled_ms: u64, dir: Option<&Path>) {
 
 /// The panic report and the exception filter, once per process: a panic (other than the GPU-loss unwinding of
 /// crate::gpulost) writes `panic_<pid>.txt` (message, place, thread, every thread's breadcrumbs) into `dir` before
-/// the previous hook runs; an unhandled SEH exception writes `crash_<pid>/` (crash.txt, crash.dmp).
+/// the previous hook runs; an unhandled SEH exception writes `crash_<pid>/` (crash.txt, crash.dmp); both start with the faulting place and
+/// a `run:` line (version, commit, target, profile, adapter and driver).
 pub fn install_crash_reports(dir: &Path) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         dc_hangdump::crash::install(dir.to_path_buf());
+        dc_hangdump::crash::set_context(crate::diag::run_context());
         let dir = dir.to_path_buf();
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -755,6 +757,7 @@ pub fn install_crash_reports(dir: &Path) {
                     "dc-client panic on thread \"{}\" at {place}: {msg}",
                     thread.name().unwrap_or("?")
                 )];
+                text.extend(dc_hangdump::crash::context_line());
                 text.push("breadcrumbs (per thread, newest first):".into());
                 text.extend(dc_hangdump::crumb::lines(
                     &dc_hangdump::crumb::snapshot(),

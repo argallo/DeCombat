@@ -1397,6 +1397,150 @@ fn pack_lines_fit_the_line_limit_and_a_changed_zip_is_refused() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// CRATE-3 / CRATE-4 / CRATE-6 / CRATE-10: an `@crate` line of a game gives the player one inbox row of the crate; opening
+/// it on the featured entry with two camos (a Common of row 25 and a Legendary of row 27) gives either a camo or the plain
+/// row 25 / 27, each for the days of the HiSec table, a repeat extending the row it has (the odds pick which, see
+/// `dc_bute::camo_crate::draw`). On a plain entry the row stays and the reply is ok 0.
+#[test]
+fn a_camo_crate_drops_into_the_inbox_and_opens_into_the_entrys_camos() {
+    use crate::shopmsg::{INBOX_OPEN, INBOX_OPEN_REPLY, INBOX_STALE_PUSH};
+    let dir = temp("crate");
+    let camos = pack(
+        &dir,
+        "camos",
+        "shared",
+        &["content.weapons"],
+        r#"return function(mod)
+            mod.content.weapons:register({id = "Weapon502", variant_of = 25, variant_name = "Synth A"})
+            mod.content.weapons:register({id = "Weapon503", variant_of = 27, variant_name = "Synth B", variant_rarity = "legendary"})
+        end"#,
+    );
+    let mut st = featured(&dir, vec![camos]);
+    let mut cat = dc_bute::ShopCatalog::from_doc(&dc_bute::ButeDoc::parse(""));
+    cat.add_camo_crate();
+    Arc::get_mut(&mut st.rom).unwrap().shop.catalog = Some(cat);
+    let (l, account) = on_entry(&mut st, 1, "erin", 1);
+    st.games.insert(
+        5,
+        crate::game::Game {
+            id: 5,
+            room: crate::room::RoomKey {
+                channel: 7,
+                no: 905,
+            },
+            port: 0,
+            map: 0,
+            mode: 0,
+            link: Default::default(),
+            ready: true,
+            over: false,
+            players: Vec::new(),
+            clients: [("0".to_string(), account)].into_iter().collect(),
+            left: Default::default(),
+            result_done: false,
+            entry_keys: Default::default(),
+            seat_tickets: Default::default(),
+            seat_told: Default::default(),
+            reap_scheduled: false,
+            tmp_workdir: None,
+            hisec_keys: Default::default(),
+            net: Default::default(),
+        },
+    );
+    let rows = |st: &Core| -> Vec<(i64, i64)> {
+        let mut q = st
+            .db
+            .prepare("SELECT uproduct, product_id FROM inbox WHERE user_no = ?1 ORDER BY uproduct")
+            .unwrap();
+        q.query_map([account as i64], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let feed = |st: &mut Core, line: &str| {
+        st.scope(|st| crate::game::on_line(st, 5, line)).unwrap();
+    };
+    for key in [0x4000_0001u32, 0x4000_0002, 0x4000_0003] {
+        feed(
+            &mut st,
+            &format!("@crate uid={account} kind=camo key={key} name=erin"),
+        );
+        // the same key again delivers nothing
+        feed(
+            &mut st,
+            &format!("@crate uid={account} kind=camo key={key} name=erin"),
+        );
+    }
+    let got = rows(&st);
+    assert_eq!(
+        got.iter().map(|r| r.1).collect::<Vec<_>>(),
+        vec![i64::from(dc_bute::camo_crate::PRODUCT); 3]
+    );
+    assert!(drain(&l.rx).iter().any(|(id, _)| *id == INBOX_STALE_PUSH));
+    let open = |st: &mut Core, entry: i64| -> Vec<u8> {
+        let mut b = (entry as u32).to_le_bytes().to_vec();
+        b.extend((dc_bute::camo_crate::PRODUCT as u32).to_le_bytes());
+        l.send(st, INBOX_OPEN, &b)
+            .into_iter()
+            .find(|(id, _)| *id == INBOX_OPEN_REPLY)
+            .unwrap()
+            .1
+    };
+    let won_items = |st: &Core, rows: std::ops::RangeInclusive<i64>| -> Vec<(i64, i64)> {
+        let mut v: Vec<(i64, i64)> = db::items(&st.db, account)
+            .unwrap()
+            .into_iter()
+            .filter(|i| rows.contains(&i.item_no))
+            .map(|i| (i.item_no, i.end_time))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    // a plain entry: refused, the row stays
+    let r = open(&mut st, got[0].0);
+    assert_eq!(u32_at(&r, 6), 0);
+    assert_eq!(rows(&st).len(), 3);
+    // the featured entry: each opening a camo or a plain gun for the HiSec days (7, 30 or permanent)
+    st.sessions.get_mut(&l.sid).unwrap().server = 3;
+    let mut camos = Vec::new();
+    for (k, row) in got.iter().enumerate() {
+        let r = open(&mut st, row.0);
+        assert_eq!(u32_at(&r, 6), 1, "opening {k}");
+        assert_eq!(u32_at(&r, 0x1e), 0, "no key");
+        let (item, days) = (u32_at(&r, 0x12), u32_at(&r, 0x1a));
+        assert!([0, 7, 30].contains(&days), "{days} days");
+        match item {
+            502 | 503 => camos.push(i64::from(item)),
+            25 | 27 => {}
+            n => panic!("item {n} is not in the crate"),
+        }
+    }
+    camos.sort_unstable();
+    camos.dedup();
+    let held: Vec<i64> = won_items(&st, 502..=503).iter().map(|i| i.0).collect();
+    assert_eq!(held, camos, "one row per camo, a repeat extends it");
+    assert!(
+        won_items(&st, 25..=27).len() <= 2,
+        "a plain gun again is extended"
+    );
+    {
+        use dc_bute::camo_crate::{Content, Tier};
+        use dc_bute::modpatch::Rarity;
+        let c = |item, tier| Content { item, tier };
+        assert_eq!(
+            crate::camo_crate::pool(&st, 3),
+            vec![
+                c(25, Tier::Regular),
+                c(27, Tier::Regular),
+                c(502, Tier::Camo(Rarity::Common)),
+                c(503, Tier::Camo(Rarity::Legendary)),
+            ]
+        );
+    }
+    assert!(rows(&st).is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A pack that registers camo variants: 500 of the SMG 101, 501 of the pistol 102 (cosmetic keys only, VAR-2).
 const VARIANT_LUA: &str = "return function(mod) \
      mod.content.weapons:register({id = \"Weapon500\", variant_of = 101, variant_name = \"Camo SMG\"}) \
@@ -1451,6 +1595,60 @@ fn a_camo_variant_counts_as_its_base_gun_under_a_weapon_rule() {
     assert_eq!(
         slots(dc_bute::arms::NO_SNIPERS),
         [(0, 500), (2, 103), (10, 501)]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// OPS-13: the monitor names a match's map from the table of the room's channel, as the lobby started it: on a curated
+/// entry an added map has its own name, on a plain entry the same index is not that map (it was the lobby-wide table
+/// before, which has no added map on a vanilla lobby, so the page showed the ROM's fallback world).
+#[test]
+fn the_monitor_names_an_added_map_from_the_entrys_table() {
+    let dir = temp("monitor_name");
+    let m = map_pack(&dir, "valley");
+    let mut st = featured_with_table(&dir, vec![m]);
+    Arc::get_mut(&mut st.rom).unwrap().game_room =
+        dc_bute::GameRoomData::from_doc(dc_bute::ButeDoc::parse(
+            &crate::maps_tests::TABLE.replacen("[Map0]", "[Map0]\nKey=SnowValley", 1),
+        ));
+    let room = |channel| crate::room::RoomKey { channel, no: 1 };
+    let (world, name) = crate::opsmon::room_map(&st, room(7), 1, 0);
+    assert_eq!(name, "fixture valley");
+    assert!(world.ends_with("valley.dat"), "{world}");
+    // the ROM map, and the same index on the plain entry (no such map there): the ROM's own key / world
+    let (_rom_world, rom_name) = crate::opsmon::room_map(&st, room(1), 0, 0);
+    assert_eq!(rom_name, "SnowValley");
+    assert_ne!(rom_name, "fixture valley");
+    let (_, plain) = crate::opsmon::room_map(&st, room(1), 1, 0);
+    assert_ne!(plain, "fixture valley");
+    // the live view and the stored row use the same name
+    assert_eq!(st.maps_of_channel(7).name_of(1, &world), "fixture valley");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// OPS-14: `GET /ops/guns` lists the camo variants of the loaded sets with their own names, in their base gun's slot.
+#[test]
+fn the_gun_list_names_the_camo_variants_of_a_curated_set() {
+    let dir = temp("guns_list");
+    let pack_v = pack(&dir, "pack_v", "shared", &["content.weapons"], VARIANT_LUA);
+    let st = featured_with_backpack(&dir, vec![pack_v]);
+    let v = crate::opsmon::guns_json(&st);
+    let rows: Vec<(i64, String, i64)> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            (
+                g.get("id").and_then(|x| x.as_i64()).unwrap(),
+                g.get("name").and_then(|x| x.as_str()).unwrap().to_string(),
+                g.get("slot").and_then(|x| x.as_i64()).unwrap(),
+            )
+        })
+        .collect();
+    assert!(rows.contains(&(500, "Camo SMG".to_string(), 0)), "{rows:?}");
+    assert!(
+        rows.contains(&(501, "Camo Pistol".to_string(), 1)),
+        "{rows:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -13,6 +13,10 @@ echo, storage, mail, CLI). Not yet tested against a real player's failure.
   (connection test), LG-360 (upload endpoint, limits, storage, mail), LG-361 (UDP echo), LG-362 (`reports` CLI,
   retention). See `DC_DEFAULTS.md`.
 - Privacy: `docs/legal/PRIVACY.md` (section "Diagnostic reports").
+- A player whose graphics driver crashes the game (the `crash.txt` names a driver module such as `nvoglv64.dll`) can switch the
+  renderer (DirectX 12 is the default, Vulkan the opt-in): Options, Graphic, Renderer (applies at the next start), or, for
+  a friend pack, a shortcut to `DeCombat.exe` with ` --adapter dx12` or ` --adapter vulkan` appended to its target (the pack's exe takes `--adapter <x>`, `--windowed` and
+  `--no-overlay` and still does the pack start).
 
 ## 1. What the player sees
 
@@ -63,7 +67,7 @@ fits):
 | `nettest` | the last connection test's result (when one ran) |
 | `note` | the player's text (`/report`, the bug form), at most 1000 characters |
 | `login` | the login name the player typed |
-| `files` | `[{"name", "text"}]`: the tails of `dc-client.out` (256 KiB; the Windows pack's `DeCombat.exe` sends its game's output there, CLI-1906), the previous run's `dc-client.prev.out` (256 KiB), `dc-client.net.jsonl` (512 KiB, the last match), `dc-client.watchdog.log` (64 KiB), `dc-client.hang.txt`; the text files of `stall_*` and `crash_*` folders and `panic_*.txt` not yet reported (128 KiB each) |
+| `files` | `[{"name", "text"}]`: the tails of `dc-client.out` (256 KiB; the Windows pack's `DeCombat.exe` sends its game's output there, CLI-1906), the previous run's `dc-client.prev.out` (256 KiB), `dc-client.net.jsonl` (512 KiB, the last match), `dc-client.watchdog.log` (64 KiB), `dc-client.hang.txt`; the text files of `stall_*` and `crash_*` folders and `panic_*.txt` not yet reported (128 KiB each; a `crash.txt` names the module that holds the faulting address, e.g. `nvoglv64.dll+0x1c8a32`, and the access it attempted; `crash.txt` and `panic_*.txt` carry a `run:` line with the version, commit, target, profile, adapter and driver) |
 
 **Never in a report** (redaction, applied to every text before it is packed): passwords (`password` / `--password`
 values, JSON `"password"` fields), identity tokens (`tok:...`, `Bearer ...`, JSON `"token"` fields, any

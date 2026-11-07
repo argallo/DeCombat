@@ -261,6 +261,13 @@ pub fn on_open(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
         return Ok(());
     };
     let items = shop::product_items(cat, prod);
+    // DC-DEFAULT: CRATE-4 (proposed) a Camo Crate opens without a key into a camo of the entry (camo_crate.rs)
+    if items
+        .first()
+        .is_some_and(|i| dc_bute::camo_crate::is_camo_crate(i.item_no))
+    {
+        return crate::camo_crate::open(st, sid, account, entry);
+    }
     // DC-DEFAULT: HS-7 (proposed) a HiSec case opens only with a matching key (hisec.rs)
     if let Some(value) = items
         .first()

@@ -289,6 +289,13 @@ pub fn open_case_with(
     let roll = st.keys.u32();
     let item_no = pool[pick as usize % pool.len()] as i64;
     let days = draw_days(odds, roll);
+    grant_drawn(st, account, item_no, days).map(Some)
+}
+
+/// Grants item `item_no` for `days` (0 = permanent) as a case award does (CD-02 / CD-76): an owned permanent instance
+/// stays, the owned timed instance that lasts longest is extended (a permanent draw makes it permanent), else a new item.
+// DC-DEFAULT: CD-02, CD-76 (the extension rules of every case award; the Camo Crate's regular guns too, CRATE-10)
+pub fn grant_drawn(st: &mut Core, account: u32, item_no: i64, days: i64) -> DbResult<Delivered> {
     let now = clock::now_ticks();
     let owned: Vec<Item> = db::items(&st.db, account)?
         .into_iter()
@@ -296,13 +303,13 @@ pub fn open_case_with(
         .collect();
     // a permanent instance stays permanent; otherwise extend the timed instance that lasts longest
     if let Some(p) = owned.iter().find(|i| i.end_time == 0) {
-        return Ok(Some(Delivered {
+        return Ok(Delivered {
             uid: p.uid,
             item_no,
             end: 0,
             extended: true,
             days,
-        }));
+        });
     }
     if let Some(t) = owned.iter().max_by_key(|i| i.end_time) {
         let end = if days == 0 {
@@ -314,23 +321,23 @@ pub fn open_case_with(
             "UPDATE items SET end_time = ?2 WHERE uid = ?1",
             params![t.uid, end],
         )?;
-        return Ok(Some(Delivered {
+        return Ok(Delivered {
             uid: t.uid,
             item_no,
             end,
             extended: true,
             days,
-        }));
+        });
     }
     let end = new_end(now, days);
     let uid = insert_item(st, account, item_no, now, end, 0, 0)?;
-    Ok(Some(Delivered {
+    Ok(Delivered {
         uid,
         item_no,
         end,
         extended: false,
         days,
-    }))
+    })
 }
 
 /// Non-default items an account holds (the capacity counts these).

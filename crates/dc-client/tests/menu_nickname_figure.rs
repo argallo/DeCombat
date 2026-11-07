@@ -119,6 +119,7 @@ fn shots(
             place: PLACE,
             rect: PANE_RECT,
             xray: None,
+            showcase: None,
         };
         v.want(Some(req), (1024, 768), Some(0.0), 0.0);
         v.wait(&mut menu.cat.assets, Duration::from_secs(120));

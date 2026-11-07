@@ -37,5 +37,7 @@ Options that would make DeCombat look more modern without touching the 2009 game
 - **DLSS / frame generation:** not wanted. Its fixed per-frame cost (~0.5-1 ms) is as much as our whole frame; the
   game is not GPU-bound; the temporal smoothing blurs exactly the sharp low-res look; NVIDIA-only with a binary SDK
   that does not fit an open clean-room project. Render scale (item 7) gives the low-end gain instead.
-- **Renderer backend:** Vulkan stays the Windows default (performance on low-end PCs); DX12 is the opt-in fallback;
-  macOS is Metal only. A Graphic-tab toggle between Vulkan and DX12 is queued separately.
+- **Renderer backend:** DirectX 12 is the Windows default (user decision 2026-11-06, after a Vulkan driver crash on a GTX 960); Vulkan is the opt-in (it was
+  the default for its lower cost on low-end PCs);
+  macOS is Metal only. The Graphic tab's Renderer row picks between them (next start), and `--adapter dx12|vulkan` does for
+  one run, also on the friend pack's `DeCombat.exe` (a shortcut with it appended to the target).

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS ops_matches (
     room         INTEGER NOT NULL DEFAULT 0,
     map          INTEGER NOT NULL DEFAULT 0,
     map_world     TEXT NOT NULL DEFAULT '',
+    map_name      TEXT NOT NULL DEFAULT '',
     mode         INTEGER NOT NULL DEFAULT 0,
     mode_key     TEXT NOT NULL DEFAULT '',
     host         TEXT NOT NULL DEFAULT 'local',
@@ -119,6 +120,8 @@ pub mod kind {
     pub const LOGIN: &str = "login";
     pub const DISCONNECT: &str = "lobby_disconnect";
     pub const READY_REFUSED: &str = "ready_refused";
+    /// Entry into a room from the list, or a late join into a running match, refused (room full, join in progress off, kicked, wrong password).
+    pub const JOIN_REFUSED: &str = "join_refused";
     pub const START_REFUSED: &str = "start_refused";
     pub const START_FAILED: &str = "start_failed";
     pub const LEFT_AT_START: &str = "left_at_start";
@@ -140,7 +143,10 @@ pub mod kind {
 /// True for the kinds the dashboard's "problems" list and the error-spike alert count.
 pub fn is_problem(k: &str, detail: &str) -> bool {
     match k {
-        kind::LOGIN | kind::MATCH_JOIN | kind::MATCH_LEFT | kind::ADMIN => false,
+        // a refused entry is a rule at work, not a fault: it shows in the account events only
+        kind::LOGIN | kind::MATCH_JOIN | kind::MATCH_LEFT | kind::ADMIN | kind::JOIN_REFUSED => {
+            false
+        }
         // a disconnect is a problem only when it cut a match short
         kind::DISCONNECT => detail.contains("in a match"),
         _ => true,
@@ -327,6 +333,74 @@ pub fn purge(c: &Connection, now: i64, days: u32) -> rusqlite::Result<usize> {
     Ok(n)
 }
 
+/// OPS-14: `GET /ops/guns`: the weapons a loadout can name, `{id, name, slot}` (slot 0 primary, 1 secondary, 2 melee,
+/// 3 throwing): the ROM item table's weapons, then the camo variants of the loaded mod sets (lobby-wide and each curated
+/// entry's) in their base gun's slot, with the variant's own name. Empty without a ROM item table.
+// DC-DEFAULT: OPS-14 (proposed)
+pub fn guns_json(st: &Core) -> J {
+    let mut guns: Vec<(i64, String, i64)> = st.rom.weapon_list();
+    let contents = st
+        .mods
+        .iter()
+        .map(|m| &m.client_content)
+        .chain(st.entry_mods.values().map(|e| &e.client.client_content));
+    let mut variants: Vec<(i64, String, i64)> = Vec::new();
+    for v in contents.flat_map(|c| c.variants()) {
+        let id = i64::from(v.row);
+        let Some(slot) = st
+            .rom
+            .slot_of_item(i64::from(v.base))
+            .filter(|s| (0..=3).contains(s))
+        else {
+            continue;
+        };
+        if guns.iter().chain(&variants).any(|g| g.0 == id) {
+            continue;
+        }
+        let name = v
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| format!("Variant {id}"), str::to_string);
+        variants.push((id, name, slot));
+    }
+    variants.sort_by(|a, b| (a.2, &a.1, a.0).cmp(&(b.2, &b.1, b.0)));
+    guns.extend(variants);
+    J::Array(
+        guns.into_iter()
+            .map(|(id, name, slot)| {
+                o(vec![
+                    ("id", n(id as f64)),
+                    ("name", s(name)),
+                    ("slot", n(slot as f64)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// The world and the name of a game's map as the lobby started it: the room's channel decides the map table (a
+/// curated entry has its own community maps, MAP-82), a clan room takes the clan mode's world.
+// DC-DEFAULT: OPS-13 (proposed) every page names a match's map from the table the lobby started it with
+fn game_map(st: &Core, g: &crate::game::Game) -> (String, String) {
+    room_map(st, g.room, g.map, g.mode)
+}
+
+/// [`game_map`] for a room's `(map, mode)`.
+pub(crate) fn room_map(
+    st: &Core,
+    room: crate::room::RoomKey,
+    map: u32,
+    mode: u32,
+) -> (String, String) {
+    let table = st.maps_of_channel(room.channel);
+    let world = crate::clan::world(st, room)
+        .unwrap_or_else(|| table.world_for(map, mode, &st.opts.dserver_world));
+    let name = table.name_of(map, &world);
+    (world, name)
+}
+
 /// The `ops_matches` row of a game, made at the first need (the start, or the first pipe line).
 fn ensure_match(st: &mut Core, game: u64) -> Option<i64> {
     if let Some(m) = st.monitor.games.get(&game) {
@@ -344,11 +418,11 @@ fn ensure_match(st: &mut Core, game: u64) -> Option<i64> {
         ),
         None => ("local".to_string(), build_sha().to_string()),
     };
-    let map_world = st.maps().world_for(g.map, g.mode, "");
+    let (map_world, map_name) = game_map(st, g);
     let mode_key = st.rom.mode_key(g.mode);
     let r = st.db.execute(
-        "INSERT INTO ops_matches (game, started, channel, room, map, map_world, mode, mode_key, host, host_version, port) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO ops_matches (game, started, channel, room, map, map_world, map_name, mode, mode_key, host, host_version, port) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             game as i64,
             crate::clock::unix_now(),
@@ -356,6 +430,7 @@ fn ensure_match(st: &mut Core, game: u64) -> Option<i64> {
             g.room.no as i64,
             g.map as i64,
             map_world,
+            map_name,
             g.mode as i64,
             mode_key,
             host,
@@ -931,7 +1006,7 @@ pub fn live_json(st: &Core) -> J {
             ),
             ("room", s(format!("{}-{}", g.room.channel, g.room.no))),
             ("mode", s(st.rom.mode_key(g.mode))),
-            ("map", s(st.maps().world_for(g.map, g.mode, ""))),
+            ("map", s(game_map(st, g).1)),
             ("host", s(host)),
             ("port", n(g.port)),
             ("ready", J::Bool(g.ready)),
@@ -1185,9 +1260,19 @@ const PLAYER_COLS: &str = "match_id, user_no, nick, bot, client, joined, left_at
 
 const MATCH_COLS: &str =
     "id, game, started, ended, channel, room, map, map_world, mode, mode_key, host, host_version, \
-    port, players, bots, outcome, winner, alpha, bravo, silent_drops";
+    port, players, bots, outcome, winner, alpha, bravo, silent_drops, map_name";
+
+/// A match row's map name; the rows from before the name column hold the world only.
+fn name_or_world(name: String, world: &str) -> String {
+    if name.is_empty() {
+        world.to_string()
+    } else {
+        name
+    }
+}
 
 fn match_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<J> {
+    let world: String = r.get(7)?;
     Ok(o(vec![
         ("id", n(r.get::<_, i64>(0)? as f64)),
         ("game", n(r.get::<_, i64>(1)? as f64)),
@@ -1198,7 +1283,7 @@ fn match_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<J> {
             s(format!("{}-{}", r.get::<_, i64>(4)?, r.get::<_, i64>(5)?)),
         ),
         ("map", n(r.get::<_, i64>(6)? as f64)),
-        ("map_world", s(r.get::<_, String>(7)?)),
+        ("map_world", s(world.clone())),
         ("mode", n(r.get::<_, i64>(8)? as f64)),
         ("mode_key", s(r.get::<_, String>(9)?)),
         ("host", s(r.get::<_, String>(10)?)),
@@ -1211,6 +1296,7 @@ fn match_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<J> {
         ("alpha", n(r.get::<_, i64>(17)? as f64)),
         ("bravo", n(r.get::<_, i64>(18)? as f64)),
         ("silent_drops", n(r.get::<_, i64>(19)? as f64)),
+        ("map_name", s(name_or_world(r.get(20)?, &world))),
     ]))
 }
 
@@ -1311,7 +1397,7 @@ pub fn timeline_json(c: &Connection, name: &str, limit: u32) -> rusqlite::Result
         .query_map(params![user as i64, limit], event_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut q = c.prepare(&format!(
-        "SELECT {PLAYER_COLS}, m.room, m.channel, m.map_world, m.mode_key, m.host, m.outcome FROM ops_match_players p \
+        "SELECT {PLAYER_COLS}, m.room, m.channel, m.map_world, m.mode_key, m.host, m.outcome, m.map_name FROM ops_match_players p \
          JOIN ops_matches m ON m.id = p.match_id WHERE p.user_no = ?1 ORDER BY p.joined DESC, p.id DESC LIMIT ?2"
     ).replace("match_id, user_no", "p.match_id, p.user_no").replace(", id,", ", p.id,"))?;
     let matches = q
@@ -1322,7 +1408,9 @@ pub fn timeline_json(c: &Connection, name: &str, limit: u32) -> rusqlite::Result
                     "room".into(),
                     s(format!("{}-{}", r.get::<_, i64>(27)?, r.get::<_, i64>(26)?)),
                 );
-                m.insert("map_world".into(), s(r.get::<_, String>(28)?));
+                let world: String = r.get(28)?;
+                m.insert("map_name".into(), s(name_or_world(r.get(32)?, &world)));
+                m.insert("map_world".into(), s(world));
                 m.insert("mode_key".into(), s(r.get::<_, String>(29)?));
                 m.insert("host".into(), s(r.get::<_, String>(30)?));
                 m.insert("outcome".into(), s(r.get::<_, String>(31)?));
@@ -1401,7 +1489,7 @@ pub fn db_checks(c: &Connection, now: i64, t: &Thresholds) -> rusqlite::Result<V
     let mut out = Vec::new();
     if t.silent_drops > 0 {
         let mut q = c.prepare(
-            "SELECT id, channel, room, map_world, silent_drops FROM ops_matches \
+            "SELECT id, channel, room, COALESCE(NULLIF(map_name, ''), map_world), silent_drops FROM ops_matches \
              WHERE silent_drops >= ?1 AND (ended = 0 OR ended >= ?2) AND started >= ?3 ORDER BY id DESC LIMIT 5",
         )?;
         let bad: Vec<String> = q
@@ -1689,7 +1777,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                         when(gn(&m, "started") as i64),
                         gs(&m, "room"),
                         gs(&m, "mode_key"),
-                        gs(&m, "map_world"),
+                        gs(&m, "map_name"),
                         gs(&m, "host"),
                         gs(&m, "host_version"),
                         gn(&m, "players"),
@@ -1746,7 +1834,7 @@ fn cli_timeline(c: &Connection, name: &str, limit: u32) -> Result<(), String> {
             gs(p, "match"),
             gs(p, "room"),
             gs(p, "mode_key"),
-            gs(p, "map_world"),
+            gs(p, "map_name"),
             gs(p, "host"),
             gs(p, "outcome"),
             player_text(p)
@@ -1770,7 +1858,7 @@ fn cli_match(c: &Connection, id: i64, net: bool) -> Result<(), String> {
         gs(h, "game"),
         gs(h, "room"),
         gs(h, "mode_key"),
-        gs(h, "map_world"),
+        gs(h, "map_name"),
         gs(h, "host"),
         gs(h, "host_version"),
         gs(h, "port"),
@@ -1876,6 +1964,55 @@ mod tests {
         st.scope(|st| crate::game::on_line(st, g, l)).unwrap();
     }
 
+    #[test]
+    fn public_board_uses_client_numbers_and_excludes_private_or_ended_games() {
+        use crate::room::RoomPhase;
+        let mut st = crate::botgroups::tests::three_entries();
+        let (mut client, _) = crate::flow_tests::player(&mut st, 1, 2, "tester", "PrivateNick");
+        let no = crate::flow_tests::open_room(&mut st, &mut client, "");
+        let key = RoomKey { channel: 4, no };
+        let mut room = st.rooms.remove(&RoomKey { channel: 1, no }).unwrap();
+        room.key = key;
+        room.game = Some(9);
+        room.gun_game = true;
+        room.state = RoomPhase::Playing;
+        room.title = "PrivateTitle".into();
+        st.rooms.insert(key, room);
+        let mut g = game(9);
+        g.room = key;
+        g.ready = true;
+        st.games.insert(9, g);
+        let snapshot = crate::public_games::snapshot;
+        let board = snapshot(&st);
+        let row = &board["games"][0];
+        assert_eq!(row["server"], "US West");
+        assert_eq!(row["channel"], 1);
+        assert_eq!(row["room"], 1);
+        assert_eq!(row["mode"], "Gun Game");
+        assert_eq!(row["players"], 1);
+        assert_eq!(row.as_object().unwrap().len(), 8);
+        assert!(!board.to_string().contains("Private"));
+        let empty = |st: &Core| assert_eq!(snapshot(st)["games"], serde_json::json!([]));
+        st.rooms.get_mut(&key).unwrap().password = "locked".into();
+        empty(&st);
+        st.rooms.get_mut(&key).unwrap().password.clear();
+        st.games.get_mut(&9).unwrap().over = true;
+        empty(&st);
+        st.games.get_mut(&9).unwrap().over = false;
+        st.rooms.get_mut(&key).unwrap().state = RoomPhase::Waiting;
+        empty(&st);
+        let clan_key = RoomKey {
+            channel: crate::clan::CLAN_CHANNEL_BASE,
+            no,
+        };
+        let mut room = st.rooms.remove(&key).unwrap();
+        room.key = clan_key;
+        room.state = RoomPhase::Playing;
+        st.rooms.insert(clan_key, room);
+        st.games.get_mut(&9).unwrap().room = clan_key;
+        empty(&st);
+    }
+
     fn count(c: &Connection, sql: &str) -> i64 {
         c.query_row(sql, [], |r| r.get(0)).unwrap()
     }
@@ -1893,6 +2030,43 @@ mod tests {
     const SUM: &str = "@linksum client=0 uid=UID how=silent code=3 secs=312.5 rtt=61 rtt_p95=95 rtt_max=410 \
                        rtt_n=1200 jitter=3.2 input=29.8 updates=9300 gap=840 resends=7 rel=2100 drops=1 in=19000 \
                        out=9400 maxdg=548";
+
+    /// OPS-13: a match row keeps the map's name; a row from before the column shows its world; a database from before
+    /// the column gets it on open.
+    #[test]
+    fn a_match_row_shows_its_map_name_and_an_old_database_gains_the_column() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let old: Vec<&str> = SCHEMA.lines().filter(|l| !l.contains("map_name")).collect();
+        conn.execute_batch(&old.join("\n")).unwrap();
+        assert!(conn.prepare("SELECT map_name FROM ops_matches").is_err());
+        conn.execute(
+            "INSERT INTO ops_matches (started, map_world) VALUES (1, 'Worlds/Old')",
+            [],
+        )
+        .unwrap();
+        crate::db::prepare(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO ops_matches (started, map_world, map_name) VALUES (2, 'C:/mods/x/world.dat', 'Freight Hall')",
+            [],
+        )
+        .unwrap();
+        let v = matches_json(&conn, 10).unwrap();
+        let J::Array(rows) = v else { panic!("{v:?}") };
+        let names: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| (gs(r, "map_name"), gs(r, "map_world")))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (
+                    "Freight Hall".to_string(),
+                    "C:/mods/x/world.dat".to_string()
+                ),
+                ("Worlds/Old".to_string(), "Worlds/Old".to_string())
+            ]
+        );
+    }
 
     #[test]
     fn linksum_lines_parse_and_bad_ones_do_not() {
@@ -2127,6 +2301,13 @@ mod tests {
             "lobby connection 5 closed (in room 1-2, in a match)",
         );
         event(&st, a, kind::READY_REFUSED, "weapon limit 6");
+        // a refused entry shows in the account events, not in the problems
+        event(
+            &st,
+            a,
+            kind::JOIN_REFUSED,
+            "room 1-2: entry refused: kicked",
+        );
         diagnostics_uploaded(&st, a, "r17", "crash report");
         fault(&st, "db: locked");
         assert_eq!(

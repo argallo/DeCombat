@@ -303,7 +303,7 @@ fn each_bot_gets_the_flags_of_bots_sh_and_its_groups_channel_round_robin() {
     let f = facts(&st, &dir.join("bots"));
     assert_eq!(f.lobby, "127.0.0.1:10000");
     assert_eq!(f.mods, None, "a vanilla lobby passes no hashes");
-    let w = wants(&st, &[a, b, c, off], &f);
+    let w = wants(&st, &[a, b, c, off], &f, &BTreeMap::new());
     let names: Vec<(&str, u32)> = w.iter().map(|w| (w.name.as_str(), w.channel)).collect();
     assert_eq!(
         names,
@@ -349,23 +349,23 @@ fn each_bot_gets_the_flags_of_bots_sh_and_its_groups_channel_round_robin() {
     b2.id = 2;
     let groups = [a2, b2];
     assert_eq!(
-        wants(&capped, &groups, &f)
+        wants(&capped, &groups, &f, &BTreeMap::new())
             .iter()
             .map(|w| w.name.clone())
             .collect::<Vec<_>>(),
         vec!["PlusBot1", "PlusBot2", "PlusBot3", "WestBot1"]
     );
     capped.stopping = true;
-    assert!(wants(&capped, &groups, &f).is_empty());
+    assert!(wants(&capped, &groups, &f, &BTreeMap::new()).is_empty());
     capped.stopping = false;
     capped.opts.bots_managed = false;
-    assert!(wants(&capped, &groups, &f).is_empty());
+    assert!(wants(&capped, &groups, &f, &BTreeMap::new()).is_empty());
     // a modded lobby's bots carry its hashes; a lobby on one address is reached there
     let mut modded = managed(&dir);
     modded.login_mods.set = "ab".repeat(32);
     modded.login_mods.content = "0".into();
     let mf = facts(&modded, &dir);
-    let mw = wants(&modded, &groups[..1], &mf);
+    let mw = wants(&modded, &groups[..1], &mf, &BTreeMap::new());
     assert_eq!(
         flag(&mw[0].args, "--mod-set-hash"),
         Some("ab".repeat(32).as_str())
@@ -386,7 +386,7 @@ fn loadouts_are_given_once_per_spec_after_the_first_login() {
     g.id = crate::botgroups::save(&st.db, &g, 1).unwrap();
     let f = facts(&st, &dir);
     let groups = vec![g.clone()];
-    let w = wants(&st, &groups, &f);
+    let w = wants(&st, &groups, &f, &BTreeMap::new());
     let mut lo = Loadouts::default();
     let (restart, notes) = lo.apply(&st, &groups, &w);
     assert!(restart.is_empty());
@@ -438,9 +438,10 @@ fn the_lobby_thread_runs_the_stored_groups_and_its_stop_ends_them() {
     let h: Handle = Arc::new(Mutex::new(sup(&dir, &[])));
     crate::net::lock(&shared).bot_sup = Some(Arc::clone(&h));
     let mut lo = Loadouts::default();
+    let mut fo = Follows::default();
     let end = Instant::now() + Duration::from_secs(20);
     while !(file_says(&dir, "PlusBot1.args") && file_says(&dir, "PlusBot2.args")) {
-        assert!(tick(&shared, &h, &mut lo, &dir));
+        assert!(tick(&shared, &h, &mut lo, &mut fo, &dir));
         assert!(Instant::now() < end, "the bots did not start");
         std::thread::sleep(Duration::from_millis(30));
     }
@@ -461,7 +462,96 @@ fn the_lobby_thread_runs_the_stored_groups_and_its_stop_ends_them() {
     // the graceful stop's part: both end by their pipes, the thread's next round ends it
     shutdown(&shared);
     assert!(file_says(&dir, "PlusBot1.end") && file_says(&dir, "PlusBot2.end"));
-    assert!(!tick(&shared, &h, &mut lo, &dir));
+    assert!(!tick(&shared, &h, &mut lo, &mut fo, &dir));
     assert_eq!((starts(&dir, "PlusBot1"), starts(&dir, "PlusBot2")), (1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_following_group_moves_to_the_players_entry_and_channel_and_stays_while_they_are_away() {
+    use crate::botgroups::tests::player_at;
+    let dir = scratch("follow");
+    let mut st = managed(&dir);
+    let mut g = group("ZoeBot", 2, 1, &[1, 2], RoomPick::Follow("Zoe".into()));
+    g.id = 4;
+    let mut any = group("PlusBot", 1, 1, &[3], RoomPick::Any);
+    any.id = 5;
+    let groups = vec![g.clone(), any];
+    let f = facts(&st, &dir);
+    let mut fo = Follows::default();
+    let t0 = Instant::now();
+    let at = |w: &[Want], i: usize| {
+        (
+            flag(&w[i].args, "--server-id").map(str::to_string),
+            flag(&w[i].args, "--channel").map(str::to_string),
+            w[i].channel,
+        )
+    };
+    let s = |v: &str| Some(v.to_string());
+    // not online here: the bots sit on the group's own entry and channels
+    let (spots, moves) = fo.update(&st, &groups, t0);
+    assert!(moves.is_empty());
+    let w = wants(&st, &groups, &f, &spots);
+    assert_eq!(at(&w, 0), (s("1"), s("1"), 1));
+    assert_eq!(at(&w, 1), (s("1"), s("2"), 2));
+    assert_eq!(
+        at(&w, 2),
+        (s("1"), s("3"), 3),
+        "a group that follows nobody"
+    );
+    // Zoe goes to Vanilla++ (entry 3) channel 8: both bots go there at once, the other group stays
+    let _a = player_at(&mut st, 11, "Zoe", Some(8), None);
+    let (spots, moves) = fo.update(&st, &groups, t0);
+    assert_eq!(
+        moves,
+        vec!["group 4 ZoeBot follows Zoe to Vanilla++ channel 8"]
+    );
+    let w = wants(&st, &groups, &f, &spots);
+    assert_eq!(at(&w, 0), (s("3"), s("8"), 8));
+    assert_eq!(at(&w, 1), (s("3"), s("8"), 8));
+    assert_eq!(flag(&w[0].args, "--filler"), Some("=Zoe"));
+    assert_eq!(at(&w, 2), (s("1"), s("3"), 3));
+    // she hops to US West channel 5 at once: the move waits for the gap, then follows
+    let _b = player_at(&mut st, 12, "Zoe", Some(5), Some((1, "")));
+    let (spots, moves) = fo.update(&st, &groups, t0 + Duration::from_secs(3));
+    assert!(moves.is_empty());
+    assert_eq!(spots[&4].channels, vec![8]);
+    let (spots, moves) = fo.update(&st, &groups, t0 + Duration::from_secs(10));
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    let w = wants(&st, &groups, &f, &spots);
+    assert_eq!(at(&w, 1), (s("2"), s("5"), 5));
+    // she logs off: the bots stay on channel 5
+    let _c = player_at(&mut st, 13, "Zoe", None, None);
+    let (spots, moves) = fo.update(&st, &groups, t0 + Duration::from_secs(60));
+    assert!(moves.is_empty());
+    assert_eq!(
+        spots[&4],
+        Spot {
+            entry: 2,
+            channels: vec![5]
+        }
+    );
+    // an edit of the group's entry or channels starts it again from them; a stopped group is forgotten
+    let edited = vec![Group {
+        channels: vec![2],
+        ..g.clone()
+    }];
+    let (spots, _) = fo.update(&st, &edited, t0 + Duration::from_secs(61));
+    assert_eq!(
+        spots[&4],
+        Spot {
+            entry: 1,
+            channels: vec![2]
+        }
+    );
+    let stopped = vec![Group {
+        enabled: false,
+        ..g
+    }];
+    assert!(fo
+        .update(&st, &stopped, t0 + Duration::from_secs(62))
+        .0
+        .is_empty());
+    assert!(fo.steer.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

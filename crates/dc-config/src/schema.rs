@@ -1020,11 +1020,17 @@ impl Default for ReportsSection {
 pub struct MonitorSection {
     /// DC-DEFAULT: MON-2 (proposed). Days the match records, link windows and account events are kept; 0 = forever.
     pub retention_days: u32,
+    /// DC-DEFAULT: OPS-16 (proposed). Absolute path of the public match board's JSON snapshot, rewritten every
+    /// 30 s for an external publisher; empty = off. The file holds no player name, address or room title.
+    pub public_games_file: String,
 }
 
 impl Default for MonitorSection {
     fn default() -> Self {
-        MonitorSection { retention_days: 14 }
+        MonitorSection {
+            retention_days: 14,
+            public_games_file: String::new(),
+        }
     }
 }
 

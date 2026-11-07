@@ -1530,6 +1530,7 @@ mod tests {
                     name: "Owls".into(),
                     group_no: 7,
                     colour: 0x80ff0000,
+                    mark: [0; 2],
                 }),
                 mission: [0; 3],
             },

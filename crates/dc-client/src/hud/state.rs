@@ -200,6 +200,10 @@ pub struct IntroShow {
     pub at: u32,
 }
 
+/// CRATE-2: the Camo Crate's match lines (our own words; the name in the HiSec line's white).
+pub const CAMO_DROP_TEXT: &str = "A Camo Crate has dropped.";
+pub const CAMO_TAKEN_TEXT: &str = "^0xFFFFFFFF^%s^ has obtained a Camo Crate.";
+
 /// Kinds of the multi-kill notes on the left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MkKind {
@@ -369,6 +373,8 @@ pub struct HudState {
     pub combo_at: Option<u32>,
     /// HiSec case map (key -> owner client id, 0xFFFFFFFF nobody) and this frame's case marks.
     pub case_owner: BTreeMap<u32, u32>,
+    /// CRATE-2: a sub 0 drop line waits for the sub 2 that follows it, whose key says whether a Camo Crate dropped.
+    pub case_drop_pending: bool,
     pub case_marks: Vec<CaseMark>,
     /// The capture flags and own capture zones on screen this frame (CLI-1073).
     pub flag_marks: Vec<super::modetop::FlagMark>,
@@ -453,6 +459,8 @@ pub struct HudState {
     pub wound: Option<super::death::WoundNote>,
     /// The radar of this frame ([`super::radar::frame`]); `None` until the frame loop gives the camera.
     pub radar: Option<super::radar::RadarFrame>,
+    /// The own heartbeat sensor of this frame ([`super::sensor`]); `None`: none carried.
+    pub sensor: Option<super::sensor::SensorView>,
     /// The own kill banner and its pending voice lines ([`super::banners`]).
     pub banner: super::banners::BannerState,
     /// The low-health pulse and heartbeat clock ([`super::vitals`]).
@@ -1075,12 +1083,25 @@ impl HudState {
     // SPEC: HISEC_2009.md §3.2 (sub 0 line 0x18c1; sub 1 only for a player in the roster: line 0x18c2 with the
     // name, a multi-kill note, entry removed, own player: pickup banner; sub 2 insert / update the owner)
     pub fn on_hisec(&mut self, e: CaseEvent, now: u32) {
+        let camo = |key: u32| dc_bute::camo_crate::is_camo_key(key);
+        // CRATE-2: the drop line names the case once its key is known (the server sends sub 2 right after sub 0)
+        let drop_line = |h: &mut Self, crate_drop: bool| {
+            if std::mem::take(&mut h.case_drop_pending) {
+                let t = if crate_drop {
+                    CAMO_DROP_TEXT.to_string()
+                } else {
+                    h.texts.case_drop.clone()
+                };
+                h.line(t, ChatKind::Hisec, now);
+            }
+        };
         match e {
             CaseEvent::Dropped => {
-                let t = self.texts.case_drop.clone();
-                self.line(t, ChatKind::Hisec, now);
+                drop_line(self, false);
+                self.case_drop_pending = true;
             }
             CaseEvent::Taken { key, player } => {
+                drop_line(self, false);
                 let Some(pid) = u8::try_from(player)
                     .ok()
                     .filter(|p| self.roster.contains_key(p))
@@ -1088,14 +1109,22 @@ impl HudState {
                     return;
                 };
                 let name = self.name(pid);
-                let t = fill_name(&self.texts.case_taken, &name);
+                let form = if camo(key) {
+                    CAMO_TAKEN_TEXT.to_string()
+                } else {
+                    self.texts.case_taken.clone()
+                };
+                let t = fill_name(&form, &name);
                 self.line(t, ChatKind::Hisec, now);
-                self.push_mk(MkNote {
-                    at: now,
-                    name,
-                    mate: self.relation(pid) == Relation::Mate,
-                    kind: MkKind::Hisec,
-                });
+                // the note's picture names a HiSec case: none for a Camo Crate
+                if !camo(key) {
+                    self.push_mk(MkNote {
+                        at: now,
+                        name,
+                        mate: self.relation(pid) == Relation::Mate,
+                        kind: MkKind::Hisec,
+                    });
+                }
                 // EVIDENCE: cshell+0x2e6e7..0x2e7fb: first cshell+0x9a3e0 (removes the case entry, the picked-up
                 // sound only when one existed), then cshell+0x993e0 whenever the player is the own client (the
                 // picked-up-by-me sound, no entry check); cshell+0x98d50 maps the kinds to keys
@@ -1108,6 +1137,7 @@ impl HudState {
                 }
             }
             CaseEvent::Owner { key, owner } => {
+                drop_line(self, camo(key));
                 // EVIDENCE: cshell+0x2e6c1..0x2e6e2 (owner -1: the timer-running-out sound, any other owner: the
                 // drop sound); PROVEN cshell+0x9a620 (the map insert / update)
                 self.banner.voices.push(if owner == HISEC_NOBODY {
@@ -1985,6 +2015,17 @@ mod tests {
         let lines: Vec<&str> = h.chat.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(lines, ["dropped", "alpha took it"]);
         assert!(h.chat.iter().all(|l| l.kind == ChatKind::Hisec));
+        // CRATE-2: a Camo Crate's key names it in both lines, and its pickup adds no HiSec note
+        let crate_key = 2 | dc_bute::camo_crate::CAMO_KEY_BIT;
+        let notes = h.mk.len();
+        h.on_hisec(CaseEvent::Dropped, 50);
+        h.on_hisec(CaseEvent::Owner { key: crate_key, owner: 0 }, 50);
+        h.on_hisec(CaseEvent::Taken { key: crate_key, player: 0 }, 60);
+        let lines: Vec<&str> = h.chat.iter().map(|l| l.text.as_str()).skip(2).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], CAMO_DROP_TEXT);
+        assert!(lines[1].contains("alpha") && lines[1].contains("Camo Crate"), "{lines:?}");
+        assert_eq!(h.mk.len(), notes);
     }
 
     #[test]

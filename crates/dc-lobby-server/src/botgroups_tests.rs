@@ -53,10 +53,10 @@ fn a_group_is_checked_against_the_server_list() {
             .collect::<Vec<_>>(),
         vec![(1, 1, 3), (2, 4, 3), (3, 7, 3)]
     );
-    let g = parse(&obj(group_body("PlusBot", 7, 2, &[4, 6, 4])), &e).unwrap();
+    let g = parse(&obj(group_body("PlusBot", 15, 2, &[4, 6, 4])), &e).unwrap();
     assert_eq!(
         (g.prefix.as_str(), g.count, g.server_id, g.channels.clone()),
-        ("PlusBot", 7, 2, vec![4, 6])
+        ("PlusBot", 15, 2, vec![4, 6])
     );
     assert_eq!(
         (g.skill.as_str(), g.loadout.as_str(), g.room.clone()),
@@ -65,8 +65,8 @@ fn a_group_is_checked_against_the_server_list() {
     let err = |v: Value| parse(&obj(v), &e).unwrap_err();
     assert!(err(group_body("PlusBot", 0, 2, &[4])).contains("count"));
     assert!(
-        err(group_body("PlusBot", 8, 2, &[4])).contains("count"),
-        "a room holds 8"
+        err(group_body("PlusBot", 16, 2, &[4])).contains("count"),
+        "a room holds up to 16"
     );
     assert!(
         err(group_body("PlusBot", 3, 4, &[4])).contains("server_id: 4"),
@@ -494,7 +494,12 @@ fn playing_room(key: crate::room::RoomKey, host: u32) -> crate::room::Room {
 
 #[test]
 fn the_status_lists_entries_groups_and_where_each_bot_is() {
-    let st = three_entries();
+    let mut st = three_entries();
+    // OPS-14: an entry naming another lobby is no entry of this one: the status lists it apart, for the form to show disabled
+    st.opts.other_lobbies =
+        vec![
+            serde_json::from_value(json!({"name": "Modded", "lobby": "127.0.0.1:10091"})).unwrap(),
+        ];
     let e = crate::servers::entries(&st);
     let mut g = parse(&obj(group_body("PlusBot", 2, 2, &[4, 6])), &e).unwrap();
     g.id = save(&st.db, &g, 1).unwrap();
@@ -522,7 +527,16 @@ fn the_status_lists_entries_groups_and_where_each_bot_is() {
             v["max_total"].as_u64(),
             v["per_group"].as_u64()
         ),
-        (Some(false), Some(21), Some(7))
+        (Some(false), Some(21), Some(15))
+    );
+    assert_eq!(
+        v["entries"].as_array().unwrap().len(),
+        3,
+        "every entry of this lobby"
+    );
+    assert_eq!(
+        v["others"],
+        json!([{"name": "Modded", "lobby": "127.0.0.1:10091"}])
     );
     assert_eq!(v["entries"][1]["name"], "US West");
     assert_eq!(v["entries"][1]["channels"], json!([4, 5, 6]));
@@ -544,4 +558,282 @@ fn the_status_lists_entries_groups_and_where_each_bot_is() {
     assert_eq!(b[1]["lobby"]["room"]["id"], "6-1");
     assert_eq!(b[1]["lobby"]["room"]["title"], "Fun room");
     assert_eq!(b[1]["lobby"]["room"]["in_match"], true);
+}
+
+/// A character `nick` with a lobby session `sid` on `channel` (None: offline), in room `room` of it.
+pub fn player_at(
+    st: &mut Core,
+    sid: u64,
+    nick: &str,
+    channel: Option<u32>,
+    room: Option<(u32, &str)>,
+) -> std::sync::mpsc::Receiver<crate::state::Outgoing> {
+    let login = nick.to_ascii_lowercase();
+    let acc = match crate::db::account_by_login(&st.db, &login).unwrap() {
+        Some(a) => a.user_no,
+        None => {
+            let acc = crate::db::create_account(&st.db, &login, 1).unwrap();
+            crate::db::create_character(
+                &st.db,
+                &crate::db::NewCharacter {
+                    user_no: acc,
+                    nick,
+                    face: 0,
+                    exp: 0,
+                    gp: 0,
+                    nx: 0,
+                    now: 0,
+                },
+                true,
+            )
+            .unwrap();
+            acc
+        }
+    };
+    st.sessions.retain(|_, s| s.account != Some(acc));
+    let rx = crate::state::testing::connect(st, sid, crate::logs::Listener::Lobby);
+    let Some(ch) = channel else {
+        st.sessions.remove(&sid);
+        return rx;
+    };
+    let key = room.map(|(no, password)| {
+        let key = crate::room::RoomKey { channel: ch, no };
+        let mut r = playing_room(key, acc);
+        r.password = password.into();
+        st.rooms.insert(key, r);
+        key
+    });
+    let s = st.sessions.get_mut(&sid).unwrap();
+    s.account = Some(acc);
+    s.in_lobby = true;
+    s.channel = Some(ch);
+    s.room = key;
+    rx
+}
+
+#[test]
+fn the_lobby_sees_where_a_followed_player_is() {
+    let mut st = three_entries();
+    let e = crate::servers::entries(&st);
+    assert_eq!(
+        place_of_player(&st, &e, "Zoe"),
+        Place::Unknown,
+        "no character of that name"
+    );
+    let _a = player_at(&mut st, 5, "Zoe", None, None);
+    assert_eq!(place_of_player(&st, &e, "Zoe"), Place::Offline);
+    let _b = player_at(&mut st, 6, "Zoe", Some(8), None);
+    assert_eq!(
+        place_of_player(&st, &e, "zoe"),
+        Place::Channel {
+            entry: 3,
+            channel: 8,
+            room: None
+        },
+        "names are case-insensitive (CD-16); channel 8 is entry 3's"
+    );
+    let _c = player_at(&mut st, 7, "Zoe", Some(5), Some((2, "")));
+    assert_eq!(
+        place_of_player(&st, &e, "Zoe"),
+        Place::Channel {
+            entry: 2,
+            channel: 5,
+            room: Some(SeenRoom {
+                no: 2,
+                locked: false
+            })
+        }
+    );
+    let _d = player_at(&mut st, 8, "Zoe", Some(5), Some((3, "secret")));
+    assert_eq!(
+        place_of_player(&st, &e, "Zoe"),
+        Place::Channel {
+            entry: 2,
+            channel: 5,
+            room: Some(SeenRoom {
+                no: 3,
+                locked: true
+            })
+        }
+    );
+    let _f = player_at(
+        &mut st,
+        9,
+        "Zoe",
+        Some(crate::clan::CLAN_CHANNEL_BASE + 1),
+        None,
+    );
+    assert_eq!(place_of_player(&st, &e, "Zoe"), Place::Clan);
+    st.sessions.get_mut(&9).unwrap().channel = None;
+    assert_eq!(place_of_player(&st, &e, "Zoe"), Place::NoChannel);
+    st.sessions.get_mut(&9).unwrap().closing = true;
+    assert_eq!(
+        place_of_player(&st, &e, "Zoe"),
+        Place::Offline,
+        "a closing session is gone"
+    );
+}
+
+#[test]
+fn a_following_group_goes_to_the_players_channel_at_most_every_ten_seconds() {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let home = Spot {
+        entry: 1,
+        channels: vec![1, 2],
+    };
+    let on = |entry, channel| Place::Channel {
+        entry,
+        channel,
+        room: None,
+    };
+    // the first move is at once, all bots on the player's channel of the player's entry
+    let there = Spot {
+        entry: 3,
+        channels: vec![8],
+    };
+    assert_eq!(follow_step(&home, None, &on(3, 8), t0), Some(there.clone()));
+    // already there: no move
+    let in_room = Place::Channel {
+        entry: 3,
+        channel: 8,
+        room: Some(SeenRoom {
+            no: 1,
+            locked: false,
+        }),
+    };
+    assert_eq!(follow_step(&there, None, &in_room, t0), None);
+    // offline, on no channel, in the clan lobby, unknown here: the bots stay where they are
+    for p in [
+        Place::Offline,
+        Place::NoChannel,
+        Place::Clan,
+        Place::Unknown,
+    ] {
+        assert_eq!(follow_step(&there, None, &p, t0), None, "{p:?}");
+    }
+    // the rate limit: a hop within FOLLOW_MOVE_GAP of the last move waits, then the bots go
+    assert_eq!(FOLLOW_MOVE_GAP, Duration::from_secs(10));
+    let moved = Some(t0);
+    assert_eq!(
+        follow_step(&there, moved, &on(2, 5), t0 + Duration::from_secs(9)),
+        None
+    );
+    assert_eq!(
+        follow_step(&there, moved, &on(2, 5), t0 + Duration::from_secs(10)),
+        Some(Spot {
+            entry: 2,
+            channels: vec![5]
+        })
+    );
+    // the steering of one group: a player hopping channels moves the bots once per gap, to where they are then
+    let mut s = Steer::new(home.clone());
+    assert!(s.step(&on(3, 8), t0));
+    assert!(!s.step(&on(3, 7), t0 + Duration::from_secs(1)));
+    assert!(!s.step(&on(2, 4), t0 + Duration::from_secs(5)));
+    assert_eq!(s.now, there, "still on channel 8");
+    assert!(
+        !s.step(&Place::Offline, t0 + Duration::from_secs(30)),
+        "offline: they stay"
+    );
+    assert!(s.step(&on(2, 4), t0 + Duration::from_secs(31)));
+    assert_eq!(
+        (s.now.entry, s.now.channels.clone(), s.home.clone()),
+        (2, vec![4], home)
+    );
+}
+
+#[test]
+fn the_follow_status_says_where_the_player_is_and_that_a_group_follows_in_its_lobby_only() {
+    let st = three_entries();
+    let e = crate::servers::entries(&st);
+    let others = vec!["US Central".to_string()];
+    let (lv, t) = follow_text("Zoe", &Place::Unknown, &e, &others);
+    assert_eq!(lv, "warn");
+    assert!(t.contains("Zoe is not a player of this lobby"), "{t}");
+    assert!(
+        t.contains("within its own lobby only") && t.contains("US Central (another lobby)"),
+        "{t}"
+    );
+    assert!(t.contains("that instance's Bots tab"), "{t}");
+    let (lv, t) = follow_text("Zoe", &Place::Offline, &e, &others);
+    assert_eq!(lv, "wait");
+    assert!(
+        t.starts_with("Waiting for Zoe: not online on this lobby"),
+        "{t}"
+    );
+    assert!(t.contains("US Central"), "{t}");
+    let (_, t) = follow_text("Zoe", &Place::Offline, &e, &[]);
+    assert!(
+        t.ends_with("A group follows within its own lobby only."),
+        "{t}"
+    );
+    assert_eq!(follow_text("Zoe", &Place::NoChannel, &e, &[]).0, "wait");
+    assert!(follow_text("Zoe", &Place::Clan, &e, &[])
+        .1
+        .contains("clan lobby"));
+    let on8 = Place::Channel {
+        entry: 3,
+        channel: 8,
+        room: None,
+    };
+    assert_eq!(
+        follow_text("Zoe", &on8, &e, &[]),
+        (
+            "ok",
+            "Zoe is on Vanilla++ channel 8, in no room: the bots wait on that channel.".to_string()
+        )
+    );
+    let r = |locked| Place::Channel {
+        entry: 2,
+        channel: 5,
+        room: Some(SeenRoom { no: 3, locked }),
+    };
+    assert_eq!(
+        follow_text("Zoe", &r(false), &e, &[]),
+        (
+            "ok",
+            "Zoe is in room 5-3 on US West channel 5: the bots join it while it has a free seat."
+                .to_string()
+        )
+    );
+    let (lv, t) = follow_text("Zoe", &r(true), &e, &[]);
+    assert_eq!(lv, "warn");
+    assert!(t.contains("has a password: the bots do not join it"), "{t}");
+}
+
+#[test]
+fn the_status_of_a_following_group_carries_the_follow_line() {
+    let mut st = three_entries();
+    st.opts.other_lobbies =
+        vec![
+            serde_json::from_value(json!({"name": "US Central", "lobby": "127.0.0.1:10091"}))
+                .unwrap(),
+        ];
+    let e = crate::servers::entries(&st);
+    let mut b = group_body("ZoeBot", 2, 1, &[1]);
+    b["room"] = json!("follow");
+    b["room_arg"] = json!("Zoe");
+    let mut g = parse(&obj(b), &e).unwrap();
+    g.id = save(&st.db, &g, 1).unwrap();
+    let mut any = parse(&obj(group_body("PlusBot", 1, 1, &[1])), &e).unwrap();
+    any.id = save(&st.db, &any, 1).unwrap();
+    let sh = shared_of(st);
+    let (_, v) = request(&sh, "GET", "/ops/bots", &[], "");
+    assert_eq!(v["groups"][0]["follow"]["level"], "warn", "{v}");
+    assert!(v["groups"][0]["follow"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("not a player of this lobby"));
+    assert!(
+        v["groups"][1]["follow"].is_null(),
+        "only a following group has the line"
+    );
+    let _rx = player_at(&mut crate::net::lock(&sh), 5, "Zoe", Some(9), None);
+    let (_, v) = request(&sh, "GET", "/ops/bots", &[], "");
+    assert_eq!(v["groups"][0]["follow"]["level"], "ok");
+    assert_eq!(
+        v["groups"][0]["follow"]["text"],
+        "Zoe is on Vanilla++ channel 9, in no room: the bots wait on that channel."
+    );
 }

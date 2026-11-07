@@ -177,6 +177,16 @@ fn rom_operator_slash_lines_send_the_2009_requests_and_print_the_replies() {
     menu.input(MenuInput::Key(MenuKey::Enter));
     let f = peer.frames(Duration::from_millis(300));
     assert_eq!(ids(&f), [CHAT_SEND], "a player's slash line is chat");
+    // LG-427: `/help` in the lobby chat goes to the lobby (which answers with its commands), for a player and an operator
+    for (operator, line) in [(false, "/help"), (true, "/HELP now")] {
+        set_operator(&mut menu, operator);
+        type_text(&mut menu, line);
+        menu.input(MenuInput::Key(MenuKey::Enter));
+        let f = peer.frames(Duration::from_millis(300));
+        assert_eq!(ids(&f), [CHAT_SEND], "{line} is sent (operator {operator})");
+        assert_eq!(wstr_at(&frame(&f, CHAT_SEND), 6), line);
+    }
+    set_operator(&mut menu, false);
 
     // an operator: restrict 0x3d0, its reply 0x3d1 prints the confirmation with the name
     set_operator(&mut menu, true);

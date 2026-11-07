@@ -232,6 +232,10 @@ pub struct AwardBox {
     pub slot: String,
     pub reveal_at: Instant,
     pub revealed: bool,
+    /// CRATE-5: the spin that runs before the window opens (a pack's `case_reel` key).
+    pub reel: Option<super::reel::Reel>,
+    /// CRATE-1: a title of our own (the Camo Crate's name) in place of the text id.
+    pub own_title: Option<String>,
 }
 
 impl AwardBox {
@@ -293,11 +297,59 @@ impl AwardBox {
             slot: lits.slot.clone()?,
             reveal_at: now + Duration::from_millis(REVEAL_MS),
             revealed: false,
+            reel: None,
+            own_title: None,
         })
     }
 
-    /// Reveals the parts once the second has passed; `true` when this call revealed them.
+    /// CRATE-5: runs `reel` first; the window then opens with its parts shown at once.
+    pub fn with_reel(mut self, reel: super::reel::Reel) -> AwardBox {
+        self.reel = Some(reel);
+        self
+    }
+
+    /// The reel is still running (the window is not drawn yet).
+    pub fn spinning(&self, now: Instant) -> bool {
+        self.reel.as_ref().is_some_and(|r| !r.done(now))
+    }
+
+    /// A click during the spin: the strip stops at once.
+    pub fn skip(&mut self, now: Instant) {
+        if let Some(r) = self.reel.as_mut() {
+            r.skip(now);
+        }
+    }
+
+    /// CRATE-8: the won gun's model as the reel shows it at `now` (`None` once the window is revealed).
+    pub fn showcase(&self, now: Instant) -> Option<super::reel::ShowcaseFrame> {
+        self.reel
+            .as_ref()
+            .filter(|_| !self.revealed)
+            .and_then(|r| r.showcase(now))
+    }
+
+    /// The reel's sounds since the last call.
+    pub fn take_sounds(&mut self) -> Vec<super::reel::Sound> {
+        self.reel
+            .as_mut()
+            .map(|r| r.take_sounds())
+            .unwrap_or_default()
+    }
+
+    /// Reveals the parts once the second has passed (with a reel: once it is done); `true` when the box changed (every
+    /// frame of a spin).
     pub fn tick(&mut self, now: Instant) -> bool {
+        if let Some(r) = self.reel.as_mut() {
+            if !r.done(now) {
+                r.tick(now);
+                return true;
+            }
+            if !self.revealed {
+                self.revealed = true;
+                return true;
+            }
+            return false;
+        }
         if !self.revealed && now >= self.reveal_at {
             self.revealed = true;
             return true;
@@ -318,9 +370,22 @@ impl AwardBox {
     /// The window's draw items: the blind, the art, the title, the parts once revealed and the OK button (`look`: 0
     /// normal, 1 over, 2 down; disabled until revealed).
     pub fn draw(&self, cat: &mut Catalog, look: usize, out: &mut Vec<DrawItem>) {
+        self.draw_at(cat, look, Instant::now(), out)
+    }
+
+    /// [`AwardBox::draw`] at `now` (the reel's place).
+    pub fn draw_at(&self, cat: &mut Catalog, look: usize, now: Instant, out: &mut Vec<DrawItem>) {
         let at = |p: [i32; 2]| [WINDOW[0] + p[0], WINDOW[1] + p[1]];
         if let Some(b) = cat.paths.overlay.blind.clone() {
             out.push(image(&b, [0, 0], [0x400, 0x300]));
+        }
+        if let Some(r) = self.reel.as_ref().filter(|_| !self.revealed) {
+            let look = super::reel::ReelLook {
+                window: self.opened_art.clone(),
+                slot: self.slot.clone(),
+            };
+            r.draw(cat, &look, now, out);
+            return;
         }
         let art = if self.revealed {
             &self.opened_art
@@ -337,8 +402,12 @@ impl AwardBox {
             first: ALIGN_LEFT,
             second: 0,
         };
+        let title = self
+            .own_title
+            .clone()
+            .unwrap_or_else(|| cat.text(self.title));
         out.push(place_text(
-            &cat.text(self.title),
+            &title,
             at(TITLE_AT),
             [0, 0],
             top_left,

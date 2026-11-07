@@ -859,3 +859,61 @@ fn numbers_read_with_separators() {
     assert_eq!(mute_minutes_left(0, 10), 0);
     assert_eq!(mute_minutes_left(10 + 60 * clock::TICKS_PER_SEC + 1, 10), 2);
 }
+
+/// OPS-14: the Players tab's loadout write equips the items like `account loadout`, logs the event, and changes
+/// nothing on a refusal (a bad spec, a slot the item does not fit, no character, no account).
+#[test]
+fn a_loadout_write_equips_the_items_and_a_refusal_changes_nothing() {
+    let sh = shared();
+    {
+        let mut g = sh.lock().unwrap();
+        let class = (0..200)
+            .find(|k| dc_bute::equip_slot_by_class_code(*k) == Some(0))
+            .expect("a weapon class code for slot 0");
+        std::sync::Arc::get_mut(&mut g.rom)
+            .unwrap()
+            .weapon_kinds
+            .insert(27, class);
+    }
+    let (a, _) = player(&sh, "kim", "Kimmy", None);
+    let items = |sh: &Shared| -> Vec<(i64, i64)> {
+        let g = sh.lock().unwrap();
+        let mut v: Vec<(i64, i64)> = db::items(&g.db, a)
+            .unwrap()
+            .iter()
+            .map(|i| (i.item_no, i.slot))
+            .collect();
+        v.sort();
+        v
+    };
+    let before = items(&sh);
+    for bad in ["", "x:y", "0:27; drop", "1:27"] {
+        let (s, v) = post(&sh, "loadout", json!({"account": a, "spec": bad}));
+        assert!(s == 400, "{bad:?}: {s} {v}");
+        assert_eq!(items(&sh), before, "{bad:?} changed the items");
+    }
+    let (s, v) = post(&sh, "loadout", json!({"account": 9999, "spec": "0:27"}));
+    assert_eq!(s, 404, "{v}");
+    let (s, v) = post(&sh, "loadout", json!({"account": a, "spec": "0:27,3:900"}));
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("equipped 0:27"),
+        "{v}"
+    );
+    let after = items(&sh);
+    assert!(
+        after.contains(&(27, 0)) && after.contains(&(900, 3)),
+        "{after:?}"
+    );
+    assert!(
+        events(&sh, a)
+            .iter()
+            .any(|e| e.contains("loadout 0:27,3:900 by ")),
+        "{:?}",
+        events(&sh, a)
+    );
+    // an account without a character
+    let nochar = db::create_account(&sh.lock().unwrap().db, "plain", 0).unwrap();
+    let (s, v) = post(&sh, "loadout", json!({"account": nochar, "spec": "0:27"}));
+    assert_eq!(s, 409, "{v}");
+}

@@ -195,6 +195,42 @@ fn validate_runs_the_entry_under_the_declared_capabilities() {
     );
 }
 
+/// CRATE-6: a variant's rarity tier must be one the lobby and the client know; validate says so before a lobby refuses it.
+#[test]
+fn validate_refuses_an_unknown_variant_rarity() {
+    let tmp = TempDir::new("val_tier").unwrap();
+    let body = |tier: &str| {
+        format!(
+            "return function(mod) mod.content.weapons:register({{ id = \"Weapon503\", variant_of = 27, \
+             variant_rarity = \"{tier}\" }}) end\n"
+        )
+    };
+    let bad = write_mod(
+        tmp.path(),
+        "tier_bad",
+        "shared",
+        &["content.weapons"],
+        &[],
+        &body("mythic"),
+    );
+    let r = validate_mod(&bad, None);
+    assert!(
+        !r.ok && r.errors.iter().any(|e| e.contains("mythic")),
+        "{:?}",
+        r.errors
+    );
+    let good = write_mod(
+        tmp.path(),
+        "tier_good",
+        "shared",
+        &["content.weapons"],
+        &[],
+        &body("Epic"),
+    );
+    let r = validate_mod(&good, None);
+    assert!(r.ok, "{:?}", r.errors);
+}
+
 #[test]
 fn lint_finds_undeclared_use_even_in_callbacks_that_validate_never_runs() {
     let tmp = TempDir::new("lint_cap").unwrap();

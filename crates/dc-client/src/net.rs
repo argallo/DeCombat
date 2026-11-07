@@ -1360,6 +1360,8 @@ struct Shared {
     item_target: bool,
     /// The target of the running hold to plant / defuse (CLI-1054).
     bomb_hold: Option<u16>,
+    /// The own heartbeat sensor: its battery and switch ([`crate::hud::sensor`]).
+    sensor: crate::hud::sensor::Sensor,
     /// The own plant / defuse hold's sounds (CLI-1530): its start (ms), defuse, the bomb row.
     hold_sound: Option<(u32, bool, u16)>,
     /// w2-sprites: the billboard objects and the list of the last poll ([`crate::sprites`]).
@@ -1423,6 +1425,7 @@ impl Shared {
                     self.hud.life_state = st;
                     self.arsenal.on_life(now, st);
                     self.drops.on_life(now, st);
+                    self.sensor.on_life(st);
                     // SPEC: GAME_MESSAGES_2009_S2C.md §4.1 (state 2 writes the death time `local_player`+0x440,
                     // state 1 clears it, state 3 leaves it)
                     match st {
@@ -1556,6 +1559,7 @@ impl Shared {
                 } => {
                     self.hud_events
                         .push((now, HudEvent::RoundBegin(round_secs)));
+                    self.sensor.on_round_begin();
                     self.hud_events.push((
                         now,
                         HudEvent::RoundNumbers {
@@ -1618,6 +1622,12 @@ impl Shared {
                     // SPEC: WEAPON_FIRE_2009_addendum_cone.md AC-1.5
                     let mut r = dc_wire::udp::BitReader::with_bit_len(&body, bits);
                     match shell {
+                        // CLI-1912: the server's answer to the heartbeat sensor's switch
+                        crate::hud::sensor::GS_RADAR_PING => {
+                            if let Some(on) = crate::hud::sensor::read_switch_answer(&mut r) {
+                                self.sensor.on_answer(on);
+                            }
+                        }
                         // DC-DEFAULT: CLI-1642 (proposed) a Possession move: no firing, the body glides
                         dc_wire::possession::SHELL_ID => {
                             if let Some((to, ms)) = dc_wire::possession::read_move(&mut r) {
@@ -3141,6 +3151,7 @@ impl NetWorld {
             use_target: None,
             item_target: false,
             bomb_hold: None,
+            sensor: Default::default(),
             hold_sound: None,
             billboards: crate::sprites::BillboardTracker::default(),
             billboard_list: Vec::new(),
@@ -3701,6 +3712,7 @@ impl WorldSource for NetWorld {
             }),
             own_team,
             held_weapon: g.arsenal.held().map(|c| c.weapon),
+            sensor: g.sensor.view(),
             equipment: g.equipment.clone(),
         }
     }
@@ -3861,6 +3873,24 @@ impl WorldSource for NetWorld {
         }
         for m in out {
             g.outgoing.push((m.shell, m.body));
+        }
+        // the heartbeat sensor: its switch goes out with the own team (`UP_SCAN` 0xcd sub 1)
+        // DC-DEFAULT: CLI-1912 (proposed)
+        {
+            let sprinting = frame.aim.control & dc_sim::player::bits::SPRINT != 0;
+            let input = g.arsenal.sensor_input(sprinting);
+            let team = g
+                .hud_own
+                .0
+                .zip(g.session.as_ref())
+                .and_then(|(p, s)| s.obs.roster.get(&p).map(|r| r.team))
+                .unwrap_or(0);
+            if let Some(on) = g.sensor.step(now, &input) {
+                g.outgoing.push((
+                    crate::hud::sensor::UP_SCAN,
+                    crate::hud::sensor::scan_body(u16::from(team), on),
+                ));
+            }
         }
         // CLI-1230 / CLI-1795: the use prompt's door: the one the use key turns now (our server's reach, DSV-270)
         let gm = &mut *g;

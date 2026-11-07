@@ -369,6 +369,15 @@ pub fn body_defaults(doc: &ButeDoc) -> Vec<StarterItem> {
     out
 }
 
+/// A table value: the text between its quotes (a trailing `//` comment dropped), else the trimmed value.
+fn table_name(v: &str) -> String {
+    let v = v.trim();
+    match v.strip_prefix('"').and_then(|r| r.split_once('"')) {
+        Some((inner, _)) => inner.trim().to_string(),
+        None => v.split("//").next().unwrap_or("").trim().to_string(),
+    }
+}
+
 /// `ItemID -> ItemType` of the `WeaponItem` sections.
 pub fn weapon_kinds(doc: &ButeDoc) -> std::collections::HashMap<i64, i32> {
     doc.iter()
@@ -657,6 +666,51 @@ impl RomData {
                 format!("room goal={} ff={} arms={}{}", goal, ff, arms, time)
             }
         }
+    }
+
+    /// OPS-14: the weapons of the ROM item table for the dashboard's gun lists: `(item number, name, slot)` of every
+    /// `WeaponItem` row with a weapon slot 0..3, by slot then name. A name a person cannot read (another code page, or
+    /// none) is shown as `Weapon <number>`.
+    // DC-DEFAULT: OPS-14 (proposed)
+    pub fn weapon_list(&self) -> Vec<(i64, String, i64)> {
+        let Some(t) = self.items.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(i64, String, i64)> = Vec::new();
+        for (tag, sec) in t.doc().iter() {
+            if !tag.starts_with("WeaponItem") {
+                continue;
+            }
+            let Some(id) = sec
+                .get("ItemID")
+                .and_then(|v| table_name(v).parse::<i64>().ok())
+            else {
+                continue;
+            };
+            let Some(slot) = self.slot_of_item(id).filter(|s| (0..=3).contains(s)) else {
+                continue;
+            };
+            let name = sec
+                .get("ItemName")
+                .map(|v| table_name(v))
+                .unwrap_or_default();
+            let readable =
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_graphic() || c == ' ');
+            if out.iter().any(|o| o.0 == id) {
+                continue;
+            }
+            out.push((
+                id,
+                if readable {
+                    name
+                } else {
+                    format!("Weapon {id}")
+                },
+                slot,
+            ));
+        }
+        out.sort_by(|a, b| (a.2, &a.1, a.0).cmp(&(b.2, &b.1, b.0)));
+        out
     }
 
     /// Slot an item number goes to when an operator lists it in `inventory.starter`.
@@ -992,5 +1046,24 @@ GMS_COOP=c.gms
         let kits: std::collections::BTreeSet<String> =
             (0..30).filter_map(|s| r.random_kit(s)).collect();
         assert!(kits.len() > 3, "{kits:?}");
+    }
+
+    #[test]
+    fn the_weapon_list_names_every_weapon_row_by_slot() {
+        // synthetic fixture (no ROM data): types 1 primary, 4 secondary, 7 melee, 16 backpack (not listed)
+        let d = "[WeaponItem0]\nItemID=10\nItemType=1\nItemName=\"Alpha Rifle\"\n[WeaponItem1]\nItemID=11\nItemType=1\nItemName=Beta Rifle // note\n[WeaponItem2]\nItemID=20\nItemType=4\nItemName=Gamma Pistol\n[WeaponItem3]\nItemID=30\nItemType=7\nItemName=\n[WeaponItem4]\nItemID=40\nItemType=16\nItemName=Pack\n[WeaponItem5]\nItemID=11\nItemType=1\nItemName=Dup\n";
+        let mut rom = RomData::empty();
+        rom.items = Some(ItemsTable::from_doc(doc(d)));
+        rom.weapon_kinds = weapon_kinds(&doc(d));
+        assert_eq!(
+            rom.weapon_list(),
+            vec![
+                (10, "Alpha Rifle".to_string(), 0),
+                (11, "Beta Rifle".to_string(), 0),
+                (20, "Gamma Pistol".to_string(), 1),
+                (30, "Weapon 30".to_string(), 2),
+            ]
+        );
+        assert!(RomData::empty().weapon_list().is_empty());
     }
 }

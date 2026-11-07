@@ -546,6 +546,9 @@ pub enum LeaveStep {
     Asked,
     /// The exit box's report button: the window opens the report form (CLI-950, [`crate::menu::reportdlg`]).
     Report,
+    /// CLI-1907: the exit box's Options button: the window opens the options over the match
+    /// ([`crate::menu::Menu::over_match`]).
+    Options,
     /// The hovered or pressed button changed (redraw only).
     Look,
     /// Yes: leave the match.
@@ -561,7 +564,7 @@ pub enum LeaveKey {
     Confirm,
     /// N: No of the question.
     Deny,
-    /// A click on button `n` of the page shown (exit box: lobby, report, back to the game; question: Yes, No).
+    /// A click on button `n` of the page shown (exit box: lobby, report, back to the game, Options; question: Yes, No).
     Click(usize),
 }
 
@@ -580,6 +583,9 @@ pub enum LeavePage {
 pub const EXIT_LOBBY: usize = 0;
 pub const EXIT_REPORT: usize = 1;
 pub const EXIT_CANCEL: usize = 2;
+/// CLI-1907: our fourth button (drawn under the lobby button, [`crate::hud::exitbox::places_with_options`]).
+// DC-DEFAULT: CLI-1907 (proposed)
+pub const EXIT_OPTIONS: usize = 3;
 
 /// What the HUD draws of the box: page, hovered button, pressed button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -633,6 +639,10 @@ impl LeaveBox {
             (LeavePage::Exit, LeaveKey::Click(EXIT_REPORT)) => {
                 self.view.down = None;
                 LeaveStep::Report
+            }
+            (LeavePage::Exit, LeaveKey::Click(EXIT_OPTIONS)) => {
+                self.view.down = None;
+                LeaveStep::Options
             }
             (LeavePage::Exit, LeaveKey::Click(EXIT_CANCEL)) => close(self),
             (LeavePage::Exit, _) => LeaveStep::None,
@@ -775,6 +785,11 @@ mod tests {
         b.key(LeaveKey::Escape);
         b.key(LeaveKey::Click(EXIT_LOBBY));
         assert_eq!(b.key(LeaveKey::Confirm), LeaveStep::Leave);
+        // CLI-1907: the Options button asks the window for the options (the box stays as it was until the window
+        // takes it down)
+        b.key(LeaveKey::Escape);
+        assert_eq!(b.key(LeaveKey::Click(EXIT_OPTIONS)), LeaveStep::Options);
+        assert!(b.open);
     }
 
     #[test]

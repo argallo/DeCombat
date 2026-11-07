@@ -1696,6 +1696,12 @@ pub struct Player {
     pub hand_weapon: Option<u16>,
     /// Last `sprinting` bit of `UP_SPRINT_STATE` (the echo is sent on a change).
     pub sprinting: Option<bool>,
+    /// The client switched its heartbeat sensor on (`UP_SCAN` sub 1; cleared at the spawn and the round end),
+    /// DSV-615. It counts only while [`Game::scan_reach`] says so (introduced, alive, a sensor row drawn).
+    pub scanning: bool,
+    /// The last radar switch answered to the client (`None`: none since the spawn); an answer goes out only when
+    /// the verdict changes.
+    scan_answered: Option<bool>,
     /// Time of the last `UP_THROW_HOLD`: the next `UP_FIRE` is a throw, not a bullet.
     last_throw: Option<Millis>,
     /// Last view-angle repair (CV2-5).
@@ -2930,6 +2936,8 @@ impl Game {
             death_clip: None,
             visible: false,
             sprinting: None,
+            scanning: false,
+            scan_answered: None,
             last_throw: None,
             view_repair_at: None,
             aim_sent: None,
@@ -3207,12 +3215,15 @@ impl Game {
                 }
                 self.hand_weapon_changed(pid, weapon_id);
                 self.pose_weapon_changed(pid, weapon_id, now);
+                // DSV-615: a sensor drawn after the switch arrived takes it now (and a weapon change ends it)
+                self.scan_sync(pid);
             }
             Up::RespawnRequest { id } => self.on_respawn_request(pid, id, now),
             Up::Chat { text, scope, .. } => self.on_chat(pid, &text, scope),
             Up::RosterQuery { pid: q } => self.on_roster_query(pid, q),
             Up::Perf(p) => self.on_perf(pid, p),
             Up::Sprint { sprinting, .. } => self.on_sprint(pid, sprinting),
+            Up::Scan { on, .. } => self.on_scan(pid, on),
             Up::WeaponSound {
                 sound,
                 weapon_id,
@@ -3259,6 +3270,75 @@ impl Game {
     /// client reaches sprint speed only once the server allowed it).
     // SPEC: CAPTURE_tdm1_GAME_VALIDATION.md §3.11, §6 (new row: always allow; PROVEN-CAPTURE by the client's reaction)
     // DC-DEFAULT: CV2-4 (proposed) sprint acknowledgement
+    /// `UP_SCAN` sub 1: the heartbeat sensor of `pid` switched on or off (a player not in the match is ignored). The
+    /// switch counts while he is alive with a heartbeat-sensor row drawn ([`Game::scan_reach`]); the verdict is
+    /// answered to the sender with the radar switch whenever it changes ([`Game::scan_sync`]): "off" for a refused
+    /// "on" (a 2009 client needs the "off" to clear its marks; a DeCombat client stops its scan, CLI-1912), "on" when
+    /// a later draw of the sensor makes a waiting switch count. A repeat of the same switch gets no answer.
+    // DC-DEFAULT: DSV-615 (proposed) the switch counts with the drawn sensor row only; the answer goes to the sender
+    // on a change of the verdict (2009 server's rule not in the allowed sources)
+    fn on_scan(&mut self, pid: u8, on: bool) {
+        let Some(p) = self.players.get_mut(&pid).filter(|p| p.introduced) else {
+            return;
+        };
+        p.scanning = on;
+        self.scan_sync(pid);
+    }
+
+    /// Answers `pid`'s radar switch when its verdict differs from the last answer (DSV-615).
+    fn scan_sync(&mut self, pid: u8) {
+        let verdict = self.scan_reach(pid).is_some();
+        let weapon = self.drawn_weapon(pid).unwrap_or(0);
+        let Some(p) = self.players.get_mut(&pid) else {
+            return;
+        };
+        // nothing to answer before the first switch since the spawn
+        if p.scan_answered.is_none() && !p.scanning {
+            return;
+        }
+        if p.scan_answered == Some(verdict) {
+            return;
+        }
+        p.scan_answered = Some(verdict);
+        self.send(pid, gs::radar_switch(verdict, weapon));
+    }
+
+    /// Round end (and intermission): every heartbeat sensor is switched off; a client whose scan counted is told.
+    // DC-DEFAULT: DSV-615 (proposed)
+    pub(super) fn scan_stop_all(&mut self) {
+        let pids: Vec<u8> = self.players.keys().copied().collect();
+        for pid in pids {
+            if let Some(p) = self.players.get_mut(&pid) {
+                p.scanning = false;
+            }
+            self.scan_sync(pid);
+        }
+    }
+
+    /// The weapon `pid` holds now (the slot of the last `UP_WEAPON_CHANGE` or the spawn's draw).
+    fn drawn_weapon(&self, pid: u8) -> Option<u16> {
+        self.players
+            .get(&pid)
+            .and_then(|p| p.current.and_then(|i| p.weapons.get(i)).map(|w| w.weapon))
+    }
+
+    /// While `pid`'s heartbeat sensor is on, alive and drawn: its row's scan distance (world units, horizontal), the
+    /// reach within which the visibility layer shows him every enemy (DSV-616).
+    // DC-DEFAULT: DSV-616 (proposed) the reach is the row's `ScanDist` in world units (the client compares it with the
+    // radar distance, world distance x the radar's character scale, which is at least the world distance in the ROM)
+    pub fn scan_reach(&self, pid: u8) -> Option<f32> {
+        let p = self.players.get(&pid)?;
+        if !p.scanning || !p.introduced || p.life != Life::Alive {
+            return None;
+        }
+        let w = self.drawn_weapon(pid)?;
+        self.tables
+            .weapons
+            .weapons
+            .get(&self.tables.weapons.base_of(w))
+            .and_then(|r| r.scan_dist)
+    }
+
     fn on_sprint(&mut self, pid: u8, sprinting: bool) {
         let Some(p) = self.players.get_mut(&pid) else {
             return;
@@ -3972,7 +4052,13 @@ impl Game {
         let Some(p) = self.players.get(&pid) else {
             return false;
         };
-        if p.weapons.iter().any(|x| x.weapon == w) {
+        // DC-DEFAULT: DSV-619 (proposed) a controller passes with the carried weapon it controls (the client draws it
+        // after the claymore's placement)
+        let controls = self.tables.weapons.controllee(w);
+        if p.weapons
+            .iter()
+            .any(|x| x.weapon == w || controls == Some(x.weapon))
+        {
             return false;
         }
         // DC-DEFAULT: DSV-610 (proposed) a weapon of the player's own lobby loadout is judged in its equipment slot
@@ -4186,6 +4272,9 @@ impl Game {
         p.kills_this_life = 0;
         p.weapons = weapons.clone();
         p.current = drawn;
+        // DC-DEFAULT: DSV-615 (proposed) a spawn switches the heartbeat sensor off (the client does too, cshell+0xb4f00)
+        p.scanning = false;
+        p.scan_answered = None;
         p.motion = Motion::Stand;
         p.motion_since = now;
         p.spawned_at = now;
@@ -5549,6 +5638,69 @@ mod tests {
         g.tick(1200);
         assert_eq!(g.ctf().captures, [2, 0]);
         assert!(matches!(g.phase(), RoundPhase::Over { win: 1, .. }));
+    }
+
+    /// DSV-192 (amendment 2026-11-06): a living player near a flag he is not handed is logged once per life and flag,
+    /// with both distances and the reason; nobody farther than twice the touch distances is logged.
+    #[test]
+    fn a_player_near_a_flag_he_is_not_handed_is_logged_once_per_life() {
+        let mut g = Game::new(GameTuning::default(), &world(), tables());
+        let mut room = RoomSettings::default();
+        room.pairs.insert("type".into(), "7".into());
+        room.pairs.insert("goal".into(), "3".into());
+        g.set_room(&room);
+        g.bind_flags(&[(900, 1, [-1000.0, 0.0, 0.0]), (901, 2, [1000.0, 0.0, 0.0])]);
+        for (pid, uid, team, obj) in [(0u8, 7u32, 0u8, 1u16), (1, 8, 1, 3)] {
+            let e = entry(uid, team, "P");
+            g.note_identified(&e);
+            g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+            g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+            g.on_up(pid, Up::WorldReady, 20);
+        }
+        g.take_out();
+        let notes = |o: &[GameOut]| -> Vec<String> {
+            o.iter()
+                .filter_map(|x| match x {
+                    GameOut::Log(l) if l.contains(" near the team ") => Some(l.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let at = |g: &mut Game, pid: u8, p: [f32; 3]| g.players.get_mut(&pid).unwrap().pos = p;
+        at(&mut g, 1, [0.0, 0.0, 3000.0]);
+        // far away: nothing
+        at(&mut g, 0, [700.0, 0.0, 0.0]);
+        g.tick(100);
+        assert!(notes(&g.take_out()).is_empty());
+        // 100 across, 30 up from the enemy flag: outside the touch, logged once
+        at(&mut g, 0, [900.0, 30.0, 0.0]);
+        g.tick(200);
+        assert_eq!(
+            notes(&g.take_out()),
+            vec![
+                "ctf: client 0 (team 1) near the team 2 flag (at its base): 100 across, +30 up, not taken: \
+                 outside the touch"
+                    .to_string()
+            ]
+        );
+        at(&mut g, 0, [890.0, 30.0, 0.0]);
+        g.tick(300);
+        assert!(notes(&g.take_out()).is_empty(), "once per life");
+        // on the own flag at its base: logged with that reason
+        at(&mut g, 0, [-1000.0, 20.0, 10.0]);
+        g.tick(400);
+        let n = notes(&g.take_out());
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert!(n[0].contains(
+            "team 1 flag (at its base): 10 across, +20 up, not taken: his own flag, at its base"
+        ));
+        // a new life logs again; on the enemy flag he takes it and nothing is logged for it
+        g.players.get_mut(&0).unwrap().spawns += 1;
+        at(&mut g, 0, [1000.0, 0.0, 0.0]);
+        g.tick(500);
+        let o = g.take_out();
+        assert_eq!(g.ctf().flags[1].carrier, Some(0));
+        assert!(notes(&o).is_empty(), "{:?}", notes(&o));
     }
 
     /// DSV-252: over a floor a dropped flag stands as high above the floor as at its base (the world file's flag
@@ -9670,6 +9822,119 @@ mod tests {
         );
     }
 
+    /// DSV-615 / DSV-616: the heartbeat sensor's switch is taken only with a sensor row drawn by a living player, is
+    /// answered with the radar switch, gives the scan reach while on and ends with "off", a weapon change or a spawn.
+    #[test]
+    fn the_heartbeat_switch_gives_the_scan_reach_of_the_drawn_sensor() {
+        let mut t = tables();
+        // synthetic rows (made-up numbers in the ROM key shape): 4 a sensor, 5 a gun, 6 a scanner of another option
+        let doc = dc_bute::ButeDoc::parse(concat!(
+            "[Weapon4]\nName = \"S\"\nGuntype = 11\nSensorOption = 0\nScanDist = 900\n",
+            "[Weapon5]\nName = \"G\"\n",
+            "[Weapon6]\nName = \"Q\"\nGuntype = 11\nSensorOption = 2\nScanDist = 900\n",
+            "[WeaponOrder]\nClass0 = \"P\"\nP0 = \"S\"\nP1 = \"G\"\nP2 = \"Q\"\n",
+        ));
+        t.weapons = crate::rom_tables::WeaponTable::from_doc(&doc);
+        assert_eq!(t.weapons.weapons[&4].scan_dist, Some(900.0));
+        assert_eq!(t.weapons.weapons[&6].scan_dist, None);
+        let mut g = Game::new(GameTuning::default(), &world(), t);
+        let e = entry(7, 0, "P");
+        g.note_identified(&e);
+        g.add_player(0, Some(&e), None, 1, [0.0; 3], [0.0; 3], 0);
+        g.on_up(0, Up::PlayerInfo(Box::default()), 10);
+        g.on_up(0, Up::WorldReady, 20);
+        let ws: Vec<WeaponState> = [4, 5, 6].iter().map(|w| g.new_weapon(*w, None)).collect();
+        let p = g.players.get_mut(&0).unwrap();
+        p.life = Life::Alive;
+        p.weapons = ws;
+        p.current = Some(1);
+        g.take_out();
+        let answers = |g: &mut Game| -> Vec<Vec<u8>> {
+            g.take_out()
+                .iter()
+                .filter_map(|o| match o {
+                    GameOut::To(0, m) if m.as_bytes()[1] == crate::gs::GS_RADAR_PING => {
+                        Some(m.as_bytes()[2..8].to_vec())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let ans = |on: u8, w: u32| {
+            let mut v = vec![1, on];
+            v.extend_from_slice(&w.to_le_bytes());
+            v
+        };
+        // the gun drawn: refused, answered off once; a repeat gets no answer
+        g.on_up(0, Up::Scan { team: 0, on: true }, 100);
+        assert_eq!(g.scan_reach(0), None);
+        assert_eq!(answers(&mut g), vec![ans(0, 5)]);
+        g.on_up(0, Up::Scan { team: 0, on: true }, 110);
+        assert!(
+            answers(&mut g).is_empty(),
+            "a repeated switch is not answered"
+        );
+        // the sensor drawn later (its weapon change after the switch): the waiting switch counts, answered on
+        g.on_up(
+            0,
+            Up::WeaponChange {
+                slot: 0,
+                weapon_id: 4,
+                aux: 0,
+            },
+            200,
+        );
+        assert_eq!(g.players[&0].current, Some(0));
+        assert_eq!(g.scan_reach(0), Some(900.0));
+        assert_eq!(answers(&mut g), vec![ans(1, 4)]);
+        g.on_up(0, Up::Scan { team: 0, on: true }, 210);
+        assert!(answers(&mut g).is_empty(), "a repeated on is not answered");
+        // another weapon drawn while on: no reach, answered off
+        g.on_up(
+            0,
+            Up::WeaponChange {
+                slot: 1,
+                weapon_id: 5,
+                aux: 0,
+            },
+            250,
+        );
+        assert_eq!(g.scan_reach(0), None);
+        assert_eq!(answers(&mut g), vec![ans(0, 5)]);
+        g.players.get_mut(&0).unwrap().current = Some(0);
+        assert_eq!(g.scan_reach(0), Some(900.0));
+        // dead: none; off: none
+        g.players.get_mut(&0).unwrap().life = Life::Dying { died: 300 };
+        assert_eq!(g.scan_reach(0), None);
+        g.players.get_mut(&0).unwrap().life = Life::Alive;
+        g.on_up(0, Up::Scan { team: 0, on: false }, 400);
+        assert_eq!(g.scan_reach(0), None);
+        // a scanner of another option is no heartbeat sensor
+        g.players.get_mut(&0).unwrap().current = Some(2);
+        g.on_up(0, Up::Scan { team: 0, on: true }, 500);
+        assert_eq!(g.scan_reach(0), None);
+        // a player not in the match is ignored
+        g.players.get_mut(&0).unwrap().current = Some(0);
+        g.players.get_mut(&0).unwrap().introduced = false;
+        g.take_out();
+        g.on_up(0, Up::Scan { team: 0, on: true }, 550);
+        assert!(answers(&mut g).is_empty());
+        assert_eq!(g.scan_reach(0), None);
+        g.players.get_mut(&0).unwrap().introduced = true;
+        // the round's end switches it off and says so
+        g.on_up(0, Up::Scan { team: 0, on: true }, 560);
+        assert!(g.scan_reach(0).is_some());
+        g.take_out();
+        g.scan_stop_all();
+        assert_eq!(g.scan_reach(0), None);
+        assert_eq!(answers(&mut g), vec![ans(0, 4)]);
+        // a spawn switches it off
+        g.on_up(0, Up::Scan { team: 0, on: true }, 600);
+        assert!(g.scan_reach(0).is_some());
+        g.spawn(0, 700);
+        assert!(!g.players[&0].scanning);
+    }
+
     /// A game with a synthetic mine: weapon 3 with its ammunition row 0 (`Type` 1, a blast, `MaxAmount` 2) whose
     /// projectile row names a mine class-data row (made-up numbers in the ROM key shape: detonate radius 50, armed
     /// 2 s after it rests, a 5 s lifetime that is no fuse). Players 0 (the thrower) and 2 are team 0, player 1 is
@@ -9680,6 +9945,8 @@ mod tests {
             "[Weapon3]\nName = \"Mine\"\nAmmoName0 = \"M\"\n",
             "[Ammo0]\nName = \"M\"\nType = 1\nMaxAmount = 2\nAreaDamage = 40\nAreaDamageType = 7\n",
             "AreaDamageRadius = 300\nProjectileFXName = \"TestMine\"\n",
+            "[Weapon4]\nName = \"Ctl\"\nAmmoName0 = \"C\"\nShotsPerClip = 1\nSubControlleeWeaponID = 3\n",
+            "[Ammo1]\nName = \"C\"\nType = 5\nMaxAmount = 2\n",
             "[WeaponOrder]\nClass0 = \"P\"\nP0 = \"Mine\"\n",
         ));
         t.weapons = crate::rom_tables::WeaponTable::from_doc(&doc);
@@ -9821,6 +10088,255 @@ mod tests {
         now += 200;
         g.tick_projectiles(now);
         assert_eq!(g.flights_in_air(), 0, "armed: the enemy on it sets it off");
+    }
+
+    /// [`mine_game`] with a made-up mesh box on the mine's projectile row: 12 wide, 24 high, its origin at the
+    /// bottom. Returns the game with the mine thrown at 4000 and resting, and the time it rests.
+    fn resting_mine_with_a_box() -> (Game, Millis) {
+        let mut g = mine_game(false);
+        let key = dc_bute::fold_latin1("TestMine");
+        g.tables.projectiles.rows.get_mut(&key).unwrap().model_box =
+            Some(([-6.0, 0.0, -6.0], [6.0, 24.0, 6.0]));
+        throw_mine(&mut g, 4000);
+        let mut now = 4000;
+        while !g.flights[0].resting {
+            now += 50;
+            g.tick_projectiles(now);
+            assert!(now < 10_000, "it comes to rest");
+        }
+        g.take_out();
+        (g, now)
+    }
+
+    /// DSV-614: a resting mine is streamed half its mesh height below the point it rests on (the mid-height of the
+    /// mesh on the surface); in flight it is streamed where it is; its trigger keeps the surface point. A mesh
+    /// centred at or below its origin does not rise.
+    #[test]
+    fn a_resting_mine_is_drawn_half_in_the_ground() {
+        let mut g = mine_game(false);
+        let key = dc_bute::fold_latin1("TestMine");
+        g.tables.projectiles.rows.get_mut(&key).unwrap().model_box =
+            Some(([-6.0, 0.0, -6.0], [6.0, 24.0, 6.0]));
+        throw_mine(&mut g, 4000);
+        g.tick_projectiles(4016);
+        let fl = &g.flights[0];
+        assert!(!fl.resting);
+        assert_eq!(g.flight_stream()[0].1, fl.pos, "in flight: where it is");
+        let mut now = 4016;
+        while !g.flights[0].resting {
+            now += 50;
+            g.tick_projectiles(now);
+            assert!(now < 10_000, "it comes to rest");
+        }
+        let at = g.flights[0].pos;
+        let (k, drawn, vel) = g.flight_stream()[0];
+        assert_eq!(k, g.flights[0].key);
+        assert_eq!(vel, [0.0; 3]);
+        assert_eq!(
+            drawn,
+            [at[0], at[1] - 12.0, at[2]],
+            "sunk by half the 24-unit mesh"
+        );
+        assert_eq!(
+            g.flight_pos(k),
+            Some(at),
+            "the trigger and the blast keep the surface point"
+        );
+        // a mesh centred on its origin (a claymore-like model) does not rise; scale applies; no mesh: no sink
+        assert_eq!(
+            super::projectile::Mine::look(Some(([-15.0, -12.0, -5.0], [2.0, 9.0, 7.0])), [1.0; 3])
+                .0,
+            0.0
+        );
+        let (sink, mid, half) = super::projectile::Mine::look(
+            Some(([-6.0, 0.0, -6.0], [6.0, 24.0, 6.0])),
+            [1.0, 0.5, 1.0],
+        );
+        assert_eq!((sink, mid, half), (6.0, 6.0, [6.0, 6.0, 6.0]));
+        assert_eq!(
+            super::projectile::Mine::look(None, [1.0; 3]),
+            (0.0, 0.0, super::projectile::MINE_HIT_HALF)
+        );
+    }
+
+    /// Player 0's pellet of a gun (weapon 50, no row) from 200 units beside the resting mine at `at`, aimed at
+    /// `target`, at `now`.
+    fn shoot_at(
+        g: &mut Game,
+        at: [f32; 3],
+        target: [f32; 3],
+        hit: Option<(f32, Option<u16>)>,
+        now: Millis,
+    ) {
+        let pos = [at[0] + 200.0, at[1], at[2]];
+        g.players.get_mut(&0).unwrap().pos = pos;
+        let origin = [pos[0], pos[1] + 33.0, pos[2]];
+        let f = crate::up::UpFire {
+            weapon_id: 50,
+            ammo_id: 50,
+            origin,
+            dir: sub3(target, origin),
+            last: true,
+            hit,
+            complete: true,
+            ..crate::up::UpFire::default()
+        };
+        g.on_up(0, Up::Fire(Box::new(f)), now);
+    }
+
+    /// DSV-618: a pellet that meets a resting mine's box sets it off (its own thrower's, before it is armed): the
+    /// blast follows in the next flight step; a pellet past the box, and one that claims a hit on a player or a world
+    /// model in front of the mine, do not; a mine already set off takes no further pellet of the volley.
+    #[test]
+    fn a_shot_at_a_resting_mine_sets_it_off_and_a_miss_does_not() {
+        let (mut g, mut now) = resting_mine_with_a_box();
+        let at = g.flights[0].pos;
+        let centre = g.flights[0].mine.unwrap().box_centre(at);
+        assert_eq!(centre, at, "the mesh's mid-height on the surface");
+        // 10 units beside the 6-unit half width: a miss
+        now += 16;
+        shoot_at(
+            &mut g,
+            at,
+            [centre[0], centre[1], centre[2] + 10.0],
+            None,
+            now,
+        );
+        now += 16;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 1, "a pellet past the box");
+        // a pellet that claims a hit 100 units out (on someone in front of the mine, 200 away): not the mine
+        now += 16;
+        shoot_at(&mut g, at, centre, Some((100.0, Some(3))), now);
+        now += 16;
+        g.tick_projectiles(now);
+        assert_eq!(
+            g.flights_in_air(),
+            1,
+            "the pellet stopped at its claimed hit"
+        );
+        // a claimed hit on a world model (a crate: no object) 100 units out, short of the mine: not the mine
+        now += 16;
+        shoot_at(&mut g, at, centre, Some((100.0, None)), now);
+        now += 16;
+        g.tick_projectiles(now);
+        assert_eq!(
+            g.flights_in_air(),
+            1,
+            "the pellet stopped at the world model it hit"
+        );
+        // at the box's top edge: the thrower's own shot sets it off before it is armed
+        assert!(g.flights[0]
+            .mine
+            .unwrap()
+            .armed_at
+            .is_some_and(|t| later(t, now)));
+        now += 16;
+        shoot_at(
+            &mut g,
+            at,
+            [centre[0], centre[1] + 11.0, centre[2]],
+            None,
+            now,
+        );
+        assert_eq!(
+            g.flights_in_air(),
+            1,
+            "the blast follows in the flight step"
+        );
+        let again = crate::up::UpFire {
+            weapon_id: 50,
+            ammo_id: 50,
+            origin: [at[0] + 200.0, at[1] + 33.0, at[2]],
+            dir: sub3(centre, [at[0] + 200.0, at[1] + 33.0, at[2]]),
+            last: true,
+            complete: true,
+            ..crate::up::UpFire::default()
+        };
+        assert!(
+            !g.shoot_mine(0, &again),
+            "the set-off mine takes no more pellets"
+        );
+        now += 16;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 0, "the shot set it off");
+        let o = g.take_out();
+        assert!(o
+            .iter()
+            .any(|x| matches!(x, GameOut::ProjectileGone { .. })));
+        assert!(
+            g.players[&0].health < 100.0,
+            "its blast hurts the thrower 200 units away (radius 300)"
+        );
+    }
+
+    /// DSV-619: a controller's fire (weapon 4, whose row names the mine weapon 3 as its controllee) sets off every
+    /// resting mine of its shooter (armed or not), not another player's and not one still in flight.
+    #[test]
+    fn a_controller_sets_off_its_shooters_resting_mines() {
+        let mut g = mine_game(false);
+        assert_eq!(g.tables.weapons.controllee(4), Some(3));
+        assert_eq!(g.tables.weapons.controllee(3), None);
+        let mut now = 4000;
+        let settle = |g: &mut Game, now: &mut Millis| {
+            for _ in 0..200 {
+                *now += 50;
+                g.tick_projectiles(*now);
+                if g.flights.iter().all(|f| f.resting) {
+                    return;
+                }
+            }
+            panic!("the mines come to rest");
+        };
+        throw_mine(&mut g, now);
+        settle(&mut g, &mut now);
+        let own = g.flights[0].key;
+        // an enemy's mine 2000 units away
+        let theirs = crate::up::UpFire {
+            weapon_id: 3,
+            ammo_id: 0,
+            origin: [2000.0, 33.0, 0.0],
+            dir: [0.0, -1.0, 0.0],
+            last: true,
+            complete: true,
+            ..crate::up::UpFire::default()
+        };
+        g.on_up(1, Up::Fire(Box::new(theirs)), now);
+        settle(&mut g, &mut now);
+        // a second own mine, still in the air when the controller fires
+        now += 16;
+        throw_mine(&mut g, now);
+        assert_eq!(g.flights_in_air(), 3);
+        g.take_out();
+        now += 16;
+        let ctl = crate::up::UpFire {
+            weapon_id: 4,
+            ammo_id: 1,
+            origin: [0.0, 33.0, 0.0],
+            dir: [1.0, 0.0, 0.0],
+            last: true,
+            hit: None,
+            complete: true,
+            ..crate::up::UpFire::default()
+        };
+        g.on_up(0, Up::Fire(Box::new(ctl)), now);
+        now += 16;
+        g.tick_projectiles(now);
+        assert_eq!(g.flights_in_air(), 2, "only the resting own mine went off");
+        assert!(g.flights.iter().all(|f| f.key != own));
+        assert!(g.flights.iter().any(|f| f.owner == 1 && f.resting));
+        assert!(g.flights.iter().any(|f| f.owner == 0 && !f.resting));
+        let o = g.take_out();
+        assert!(o
+            .iter()
+            .any(|x| matches!(x, GameOut::ProjectileGone { key } if *key == own)));
+        assert!(
+            g.players[&0].health < 100.0,
+            "the blast at his feet hurts the thrower"
+        );
+        assert_eq!(g.players[&1].health, 100.0, "2000 units away");
+        // nothing of the shooter's rests any more: a second set-off finds nothing
+        assert_eq!(g.set_off_mines_of(0, 3), 0);
     }
 
     /// DSV-612: a thrower keeps at most the ammunition row's `MaxAmount` live mines (the oldest goes without a

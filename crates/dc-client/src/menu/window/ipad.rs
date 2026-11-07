@@ -242,6 +242,8 @@ impl Shell {
                     *p.sound = back;
                     // CLI-1280: an Alt+Enter in the match is saved now (also when the player quits from it)
                     p.menu.store_display_note();
+                    // CLI-1907: and what the options over the match changed
+                    p.menu.store_match_settings();
                     let live = return_live(host, painter);
                     let r = r.map(|r| print_exit_report(&r));
                     finish_play(p.menu, &handle, &handoff, false, &r);
@@ -296,12 +298,18 @@ impl Shell {
                     p.menu.cat.rom.as_deref(),
                     &p.menu.data.store,
                 );
+                // CLI-1907: the settings the options over the match start from
+                let prefs = crate::window::MatchPrefs {
+                    settings: p.menu.data.settings.clone(),
+                    commands: p.menu.data.commands.clone(),
+                };
                 let mopts = match_options(
                     p.wopts,
                     p.changed,
                     p.menu.mod_recipe(),
                     &p.menu.data.room,
                     reticle,
+                    prefs,
                 );
                 let mut turn = Box::new(MatchTurn::new(Box::new(net), mopts, p.sound.take(), host));
                 turn.handler().resumed(el);

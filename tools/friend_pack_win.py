@@ -93,6 +93,15 @@ DeCombat is a new program and its exe is not code-signed, so Windows is careful 
   (https://github.com/argallo/DeCombat/releases). In PowerShell, in the folder of the zip:
   `Get-FileHash .\\{name}.zip` and compare the hash with the line for this zip in `SHA256SUMS`.
 
+## If the game crashes at start or in the menus
+
+Most often it is the graphics driver, so update your GPU driver first (NVIDIA, AMD or Intel, from their website).
+The game uses DirectX 12 by default. To try Vulkan instead, set Options, Graphic, Renderer to Vulkan (it applies at
+the next start), or start the game with `--adapter vulkan`: make a shortcut to DeCombat.exe (right-click it, "Show
+more options", "Send to", "Desktop (create shortcut)"), right-click the shortcut, "Properties", and add
+` --adapter vulkan` at the very end of the Target box, after the closing quote. If the game crashes on Vulkan, go
+back to DirectX 12 the same way (Renderer row, or ` --adapter dx12` on the shortcut).
+
 ## Beta: feedback and resets
 
 This is a beta: accounts and progress may be reset before the full launch.

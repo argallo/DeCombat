@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh DeCombat live games in Discord
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

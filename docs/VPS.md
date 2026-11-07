@@ -474,6 +474,12 @@ project's own export on the entry "Vanilla++", its game server and the client on
 lobby; DC_DEFAULTS.md MAP-67 .. MAP-69, MAP-89) or `tools/vanilla_plus_mac.sh` on a Mac; the proof that the whole chain
 plays is `cargo test -p dc-client --test vanilla_plus` (MAP-72).
 
+## Live games in Discord
+
+An instance can write a public-only snapshot of its running matches into `/var/lib/decombat-public-games/<instance>.json`
+(`DC_MONITOR__PUBLIC_GAMES_FILE` in its `decombat.env`), and `tools/vps/live_games.py` with two systemd units keeps one
+Discord message current from those files. Nothing is installed or enabled by a deploy: docs/LIVE_GAMES.md.
+
 ## Deploys from the dashboard
 
 After a one-time setup as root (`tools/vps/deploy_setup.sh`, a read-only GitHub deploy key), the dashboard's Updates tab

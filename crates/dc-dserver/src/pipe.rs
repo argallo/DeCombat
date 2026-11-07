@@ -606,6 +606,15 @@ pub fn hisec_line(uid: u32, case_row: u32, key: u32, nick: &str) -> String {
     format!("@hisec uid={uid} case={case_row} key={key} name={nick}")
 }
 
+/// `@crate uid=<u32> kind=camo key=<case key> name=<nick>`: the player picked up a Camo Crate in the match (the lobby
+/// delivers one crate, CRATE-3). `name=` is last and runs to the end of the line. A DeCombat addition, like `@hisec`: an
+/// older lobby reads it as "other" and ignores it.
+// SPEC: DSERVER_PIPE.md §4 (event lines `@<name> k=v ...`)
+// DC-DEFAULT: CRATE-3 (proposed)
+pub fn crate_line(uid: u32, key: u32, nick: &str) -> String {
+    format!("@crate uid={uid} kind=camo key={key} name={nick}")
+}
+
 /// `@end`: the server is stopping.
 // SPEC: DSERVER_PIPE.md §4.7
 pub const END_LINE: &str = "@end";

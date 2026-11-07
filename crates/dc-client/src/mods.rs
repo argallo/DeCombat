@@ -1454,6 +1454,7 @@ impl ClientMods {
     /// Unloads every mod (leaving a server, or vanilla).
     pub fn unload(&mut self) {
         crate::camo::set_content(None);
+        crate::menu::reel::set(None);
         self.host = None;
         self.recipe = None;
     }
@@ -1592,6 +1593,13 @@ impl ClientMods {
                 self.status.hash = Some(hash.clone());
                 self.status.local_refused = refused;
                 crate::camo::set_content(Some(&content));
+                // CRATE-5: a pack of the set may switch the case reel on (its HUD keys were checked at load)
+                crate::menu::reel::set(
+                    self.host
+                        .as_ref()
+                        .and_then(|h| crate::modassets::hud_overrides(h).ok())
+                        .and_then(|o| o.reel()),
+                );
                 self.status.content = content;
                 self.status.maps = maps;
                 self.status.community_map_base = set.community_map_base;

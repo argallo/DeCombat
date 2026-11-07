@@ -201,6 +201,9 @@ pub struct Core {
     pub login_mods: ExpectedMods,
     /// LG-313: the curated sets of the featured server entries, by entry id; none = every pick as before.
     pub entry_mods: BTreeMap<u32, crate::modset::EntrySet>,
+    /// LG-427: the commands the lobby-wide mod set declares in its manifests (`/help` lists them; empty unless the
+    /// lobby runs a modded set; a featured entry's set carries its own).
+    pub mod_commands: Vec<dc_mod_lua::ModCommand>,
     /// LG-313: the hashes a connection last claimed for an entry (0x3f11), by connection.
     pub entry_claims: BTreeMap<Sid, dc_wire::entrymods::EntryHashes>,
     /// Per-session operator state (observer mode, report counters); see gm.rs.
@@ -264,6 +267,7 @@ impl Core {
             community_maps: Vec::new(),
             login_mods: ExpectedMods::default(),
             entry_mods: BTreeMap::new(),
+            mod_commands: Vec::new(),
             entry_claims: BTreeMap::new(),
             ops: Default::default(),
             stopping: false,

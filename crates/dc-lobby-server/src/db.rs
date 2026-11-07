@@ -353,6 +353,18 @@ pub fn prepare(conn: &Connection) -> DbResult<()> {
     conn.execute_batch(NX_REWARDS)?;
     // MON-2 / MON-3: the operator monitor's tables (new tables: older DBs get them empty)
     conn.execute_batch(crate::opsmon::SCHEMA)?;
+    // OPS-13: a match records the name of its map; older rows have none and show their world
+    let mut has = false;
+    conn.pragma(None, "table_info", "ops_matches", |r| {
+        let name: String = r.get(1)?;
+        has |= name == "map_name";
+        Ok(())
+    })?;
+    if !has {
+        conn.execute_batch(
+            "ALTER TABLE ops_matches ADD COLUMN map_name TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
     // LG-389: the dashboard's bot groups (new tables: older DBs get them empty)
     conn.execute_batch(crate::botgroups::SCHEMA)?;
     Ok(())

@@ -2,6 +2,9 @@
 //! screen the top bar's option button was pressed on, closed by OK (the settings take effect and the profile is
 //! saved), Cancel / the close button / Escape (nothing changes).
 //!
+//! CLI-1907 / CLI-1908: opened over a match (the exit box's Options button, [`super::Menu::over_match`]) it has a
+//! fifth tab, Mods ([`super::optionsmods`]), and the Graphic tab says what waits for the end of the match.
+//!
 //! The frame page and each tab's page are ROM layout pages drawn through the sheet. The rows of a tab are built
 //! the 2009 way from the tab screen's layout section (element count, then per element its type, height, index,
 //! command index, spacer and offset) as controls of the sheet: on / off buttons, sliders with minus / plus, the
@@ -21,6 +24,10 @@
 
 use super::catalog::{prefix_of_a, Catalog, OverlayPaths};
 use super::dropdown::{self, Dropdown};
+use super::modbrowser::PageAct;
+use super::optionsmods::{
+    ModsTab, TabClick, CMD_SETTINGS_BASE as CMD_MOD_SETTINGS, CMD_TAB_MODS, TAB_MODS,
+};
 use super::sheet::{place_text, Look, Part, Sheet};
 use super::{build_sheet, Ctx, Go, MenuData, MenuKey, Screen};
 use crate::hud::compose::part_of;
@@ -431,6 +438,8 @@ pub struct Options {
     /// CLI-1595: where our rows cut the list (list y from its top) and the gap they take; the back image is drawn
     /// around it.
     split: Option<(i32, i32)>,
+    /// CLI-1908: the Mods tab of the options over a match (`None` in the lobby: four tabs as in 2009).
+    mods: Option<ModsTab>,
 }
 
 impl Options {
@@ -453,9 +462,79 @@ impl Options {
             art: cat.paths.overlay.clone(),
             drop: None,
             split: None,
+            mods: data.match_mods.clone().map(ModsTab::new),
         };
         o.open_tab(cat, 0);
         o
+    }
+
+    /// CLI-1908: the Mods tab, when the options are over a match.
+    pub fn mods_tab(&self) -> Option<&ModsTab> {
+        self.mods.as_ref()
+    }
+
+    /// CLI-1908: the Mods tab's page: the frame and the Graphic tab's window without its controls (its labels are in
+    /// the list's back image, not drawn here), our lines on it.
+    fn open_mods_tab(&mut self, cat: &Catalog) {
+        self.tab = TAB_MODS;
+        self.capture = None;
+        self.sheet = build_sheet(cat, &[FRAME_PAGE, TAB_PAGES[0]]);
+        for p in self.sheet.parts.iter_mut() {
+            if p.kind == WidgetKind::Button && CMD_TABS.contains(&p.command) {
+                p.enabled = true;
+            }
+            if p.page == TAB_PAGES[0] && p.kind != WidgetKind::Window {
+                p.shown = false;
+            }
+        }
+        self.base_parts = self.sheet.parts.len();
+        self.rows.clear();
+        self.list_id = LIST;
+        self.back = None;
+        self.scroll = 0;
+        self.drop = None;
+        self.split = None;
+        self.place_mods();
+    }
+
+    /// CLI-1908: the Mods tab's button and buttons for the sheet now up; while a mod's settings page is open every
+    /// control of the options under it is hidden (the page covers the box; nothing under it takes the pointer), the
+    /// frame's blind stays.
+    fn place_mods(&mut self) {
+        let open = self.tab == TAB_MODS;
+        let Some(m) = self.mods.as_mut() else {
+            return;
+        };
+        m.place(&self.sheet, open);
+        if m.view.is_some() {
+            for p in self.sheet.parts.iter_mut() {
+                let blind = p.page == FRAME_PAGE && p.kind == WidgetKind::Window && p.layer == 0;
+                if !blind {
+                    p.shown = false;
+                }
+            }
+        }
+    }
+
+    /// CLI-1908: what the open settings page did: a changed value goes into the settings in effect and the edited
+    /// ones at once (the match applies it, OK or Cancel alike, as the Mods screen saves at once); Back shows the tab.
+    fn page_done(&mut self, act: PageAct, ctx: &mut Ctx) {
+        let Some(m) = self.mods.as_mut() else {
+            return;
+        };
+        match act {
+            PageAct::Changed => {
+                if let Some(v) = &m.view {
+                    v.store(&mut ctx.data.settings);
+                    v.store(&mut self.edit);
+                }
+            }
+            PageAct::Back => {
+                m.view = None;
+                self.open_mods_tab(ctx.cat);
+            }
+            PageAct::None => {}
+        }
     }
 
     /// The open tab (0 graphic, 1 sound, 2 control, 3 quick enter).
@@ -517,6 +596,10 @@ impl Options {
     }
 
     fn open_tab(&mut self, cat: &Catalog, tab: usize) {
+        if tab == TAB_MODS {
+            self.open_mods_tab(cat);
+            return;
+        }
         self.tab = tab;
         self.capture = None;
         self.sheet = build_sheet(cat, &[FRAME_PAGE, TAB_PAGES[tab]]);
@@ -561,6 +644,7 @@ impl Options {
         }
         self.base_parts = self.sheet.parts.len();
         self.lay_list(cat);
+        self.place_mods();
     }
 
     /// Shows the page's list for the current values (the graphic page: the full list for user control, else the
@@ -1150,6 +1234,7 @@ impl Options {
                 self.edit.invert_y = d.invert_y;
                 self.edit.binds = d.binds;
             }
+            TAB_MODS => {}
             _ => self.edit.inert.retain(|k, _| !k.starts_with("quick.")),
         }
     }
@@ -1341,6 +1426,13 @@ impl Screen for Options {
     }
 
     fn key(&mut self, k: MenuKey, ctx: &mut Ctx) {
+        // CLI-1908: an open mod settings page: Escape closes it (back to the Mods tab), other keys do nothing
+        if self.mods.as_ref().is_some_and(|m| m.view.is_some()) {
+            if k == MenuKey::Escape {
+                self.page_done(PageAct::Back, ctx);
+            }
+            return;
+        }
         match k {
             // Escape: a waiting key box gives up, else the screen closes as Cancel does
             // DC-DEFAULT: CLI-556 (proposed)
@@ -1359,6 +1451,10 @@ impl Screen for Options {
     // DC-DEFAULT: CLI-700 (proposed) one wheel notch moves the options list by one key step (the options pages'
     // scroll lists, Page14 / Page16 records with the scroll flag, are laid out by this screen, not by the layout list)
     fn wheel(&mut self, _p: [f32; 2], notches: i32, _ctx: &mut Ctx) -> bool {
+        if let Some(v) = self.mods.as_mut().and_then(|m| m.view.as_mut()) {
+            v.wheel(notches);
+            return true;
+        }
         self.scroll_by(-notches * SCROLL_STEP);
         true
     }
@@ -1366,11 +1462,90 @@ impl Screen for Options {
     /// The shown list's rows as one block of their height: its scroll bar spans them.
     // EVIDENCE: cshell+0x2f0430 (the bar's range = the rows' heights; step = the first row's height + spacing)
     fn list_rows(&self, _data: &MenuData) -> Vec<(i32, i32, usize, i32)> {
+        if self.tab == TAB_MODS {
+            return Vec::new();
+        }
         vec![(PAGE_WINDOW, self.list_id, self.content_height() as usize, 1)]
+    }
+
+    /// CLI-1908: the Mods tab's controls and the open mod settings page hold the pointer over them.
+    fn modal_input(&mut self, ev: &super::MenuInput, ctx: &mut Ctx) -> bool {
+        use super::MenuInput;
+        let Some(m) = self.mods.as_mut() else {
+            return false;
+        };
+        if let Some(v) = m.view.as_mut() {
+            let act = v.modal_input(ev, ctx);
+            self.page_done(act, ctx);
+            return true;
+        }
+        match *ev {
+            MenuInput::Move(p) => {
+                if m.moved(p) {
+                    ctx.sound(super::frontfx::SOUND_SELECT_CHANGE);
+                }
+                false
+            }
+            MenuInput::Press(p) => m.press(p),
+            MenuInput::Release(p) => match m.release(p) {
+                Some(TabClick::Tab) => {
+                    ctx.sound(super::frontfx::SOUND_SELECT);
+                    if self.tab != TAB_MODS {
+                        self.open_mods_tab(ctx.cat);
+                    }
+                    true
+                }
+                Some(TabClick::Settings(i)) => {
+                    ctx.sound(super::frontfx::SOUND_SELECT);
+                    if m.open_page(ctx.cat, i, &ctx.data.settings) {
+                        self.place_mods();
+                    }
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn copy_text(&self) -> Option<String> {
+        self.mods
+            .as_ref()
+            .and_then(|m| m.view.as_ref())
+            .map(|v| v.page.code.clone())
+    }
+
+    fn paste(&mut self, text: &str, ctx: &mut Ctx) -> bool {
+        let Some(v) = self.mods.as_mut().and_then(|m| m.view.as_mut()) else {
+            return false;
+        };
+        if v.paste(text) {
+            self.page_done(PageAct::Changed, ctx);
+        }
+        true
+    }
+
+    fn slider_rects(&self) -> Vec<[i32; 4]> {
+        self.mods
+            .as_ref()
+            .and_then(|m| m.view.as_ref())
+            .map_or_else(Vec::new, |v| v.slider_rects())
+    }
+
+    /// The open mod settings page's preview fires its burst.
+    fn animate(&mut self, _secs: f32) -> bool {
+        self.mods.as_ref().is_some_and(|m| m.view.is_some())
+    }
+
+    fn animating(&self) -> bool {
+        self.mods.as_ref().is_some_and(|m| m.view.is_some())
     }
 
     /// The bar's step is the first row's height; a moved bar moves the rows.
     fn lists_synced(&mut self) {
+        if self.tab == TAB_MODS {
+            return;
+        }
         let first = self.rows.first().map_or(1, |r| r.height.max(1));
         let value = self
             .list_part()
@@ -1427,6 +1602,32 @@ impl Screen for Options {
                 if t != self.tab {
                     self.open_tab(ctx.cat, t);
                 }
+            }
+            // CLI-1908: the Mods tab (over a match only)
+            CMD_TAB_MODS if self.mods.is_some() => {
+                if self.tab != TAB_MODS {
+                    self.open_mods_tab(ctx.cat);
+                }
+            }
+            c if self.mods.is_some() && (CMD_MOD_SETTINGS..CMD_MOD_SETTINGS + 100).contains(&c) => {
+                let i = (c - CMD_MOD_SETTINGS) as usize;
+                if self.tab == TAB_MODS
+                    && self
+                        .mods
+                        .as_mut()
+                        .is_some_and(|m| m.open_page(ctx.cat, i, &ctx.data.settings))
+                {
+                    self.place_mods();
+                }
+            }
+            c if self.mods.as_ref().is_some_and(|m| m.view.is_some())
+                && super::modbrowser::is_page_command(c) =>
+            {
+                let act = match self.mods.as_mut().and_then(|m| m.view.as_mut()) {
+                    Some(v) => v.act(c, ctx),
+                    None => PageAct::None,
+                };
+                self.page_done(act, ctx);
             }
             c => {
                 let Some((r, ctl)) = self.row_of_command(c) else {
@@ -1506,8 +1707,21 @@ impl Screen for Options {
         false
     }
 
-    fn draw_extra(&self, cat: &mut Catalog, data: &MenuData, _secs: f32, out: &mut Vec<DrawItem>) {
+    fn draw_extra(&self, cat: &mut Catalog, data: &MenuData, secs: f32, out: &mut Vec<DrawItem>) {
         self.draw_rows(cat, data, out);
+        // CLI-1907 / CLI-1908: over a match: the Mods tab, its page or a mod's settings page, the Graphic tab's note
+        if let Some(m) = &self.mods {
+            if let Some(v) = &m.view {
+                v.draw(cat, secs, out);
+                return;
+            }
+            m.draw_tab(cat, self.tab == TAB_MODS, out);
+            match self.tab {
+                TAB_MODS => m.draw_body(cat, out),
+                0 => m.draw_graphic_note(cat, out),
+                _ => {}
+            }
+        }
     }
 
     fn dropdown(&self) -> Option<&Dropdown> {
@@ -1616,7 +1830,7 @@ mod tests {
     fn the_renderer_row_is_listed_only_where_the_choice_exists() {
         assert_eq!(renderer_text(Renderer::Vulkan), "Vulkan");
         assert_eq!(renderer_text(Renderer::Dx12), "DirectX 12");
-        assert_eq!(RENDERER_CHOICES[0], Renderer::Vulkan, "Vulkan first (the default)");
+        assert_eq!(RENDERER_CHOICES, [Renderer::Vulkan, Renderer::Dx12], "both choices, Vulkan listed first");
         assert_eq!(
             Options::own_row_label(&Knob::Renderer).map(|(l, w)| (l, w.len())),
             Some(("Renderer", 0))

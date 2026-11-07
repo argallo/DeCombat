@@ -1341,7 +1341,7 @@ pub struct ModsScreen {
     /// CLI-1634: the optional mods as listed.
     pub get: Vec<crate::modcatalog::CatalogEntry>,
     /// MOD-24: the open settings page (it takes the window).
-    pub page: Option<SettingsPage>,
+    pub page: Option<ModPageView>,
     /// `None` until the first read chooses: My Mods when something is installed, else Browse.
     pub tab: Option<ModsTab>,
     /// The data folder, for the pictures of the optional mods.
@@ -1945,8 +1945,8 @@ impl ModsScreen {
             }
         }
         self.buttons.list = list;
-        if let Some(page) = &self.page {
-            self.buttons.list = page_buttons(page);
+        if let Some(view) = &mut self.page {
+            view.rebuild();
         }
     }
 
@@ -1984,20 +1984,30 @@ impl ModsScreen {
         let Some(m) = self.local.get(i).filter(|m| !m.settings.is_empty()) else {
             return;
         };
-        self.page = Some(SettingsPage::open(m, ctx.data.settings.mods_settings.get(&m.id)));
+        let page = SettingsPage::open(m, ctx.data.settings.mods_settings.get(&m.id));
+        self.page = Some(ModPageView::new(ctx.cat, page, modsettings::T_APPLIES));
         self.rebuild(ctx);
     }
 
     /// MOD-24: the page's values into the profile (they reach the mod at the next match load).
     fn store_page(&mut self, ctx: &mut Ctx) {
-        if let Some(p) = &self.page {
-            ctx.data
-                .settings
-                .mods_settings
-                .insert(p.id.clone(), p.values.clone());
+        if let Some(v) = &self.page {
+            v.store(&mut ctx.data.settings);
             super::store_settings(ctx.data, ctx.cat);
         }
         self.rebuild(ctx);
+    }
+
+    /// What the page's command or input did: a changed value is stored, Back closes the page.
+    fn page_done(&mut self, act: PageAct, ctx: &mut Ctx) {
+        match act {
+            PageAct::Changed => self.store_page(ctx),
+            PageAct::Back => {
+                self.page = None;
+                self.rebuild(ctx);
+            }
+            PageAct::None => {}
+        }
     }
 
     /// CLI-1634: downloaded local mod `i` leaves the disk and the enable list.
@@ -2109,41 +2119,14 @@ impl ModsScreen {
         match cmd {
             CMD_TAB_BROWSE => self.set_tab(ModsTab::Browse, ctx.data),
             CMD_TAB_MINE => self.set_tab(ModsTab::Mine, ctx.data),
-            modsettings::CMD_PAGE_BACK => {
-                self.page = None;
-                self.rebuild(ctx);
-            }
-            c if (modsettings::CMD_PAGE_STEP_BASE..modsettings::CMD_PAGE_NUDGE_BASE).contains(&c) => {
-                let k = (c - modsettings::CMD_PAGE_STEP_BASE) as usize;
-                if self.page.as_mut().is_some_and(|p| p.step(k)) {
-                    self.store_page(ctx);
+            c if is_page_command(c) => match &mut self.page {
+                Some(v) => {
+                    let act = v.act(c, ctx);
+                    self.page_done(act, ctx);
                 }
-            }
-            c if (modsettings::CMD_PAGE_NUDGE_BASE..modsettings::CMD_PAGE_RESET).contains(&c) => {
-                let n = (c - modsettings::CMD_PAGE_NUDGE_BASE) as usize;
-                if self.page.as_mut().is_some_and(|p| p.nudge(n / 2, n % 2 == 1)) {
-                    self.store_page(ctx);
-                }
-            }
-            modsettings::CMD_PAGE_RESET => {
-                if self.page.as_mut().is_some_and(|p| p.reset()) {
-                    self.store_page(ctx);
-                }
-            }
-            modsettings::CMD_PAGE_COPY => {
-                if let Some(p) = &mut self.page {
-                    ctx.data.clipboard_out = Some(p.code.clone());
-                    p.message = Some((modsettings::T_COPIED.to_string(), false));
-                }
-            }
-            modsettings::CMD_PAGE_PASTE => ctx.data.clipboard_wanted = true,
-            c if (modsettings::CMD_PAGE_COLOUR_BASE..CMD_SETTINGS_BASE).contains(&c) => {
-                let n = c - modsettings::CMD_PAGE_COLOUR_BASE;
-                let (k, cell) = (n / modsettings::CELLS_PER_ROW, n % modsettings::CELLS_PER_ROW);
-                if self.page.as_mut().is_some_and(|p| p.pick(k as usize, cell as usize)) {
-                    self.store_page(ctx);
-                }
-            }
+                None if c == modsettings::CMD_PAGE_PASTE => ctx.data.clipboard_wanted = true,
+                None => {}
+            },
             c if (CMD_SETTINGS_BASE..CMD_SETTINGS_BASE + 1000).contains(&c) => {
                 self.open_settings((c - CMD_SETTINGS_BASE) as usize, ctx)
             }
@@ -2359,6 +2342,9 @@ impl Screen for ModsScreen {
         MODS_NAME
     }
     fn layout_rects(&self) -> Option<([i32; 4], Vec<[i32; 4]>)> {
+        if let Some(v) = &self.page {
+            return Some(v.layout_rects());
+        }
         Some((MODS_RECT, button_rects(&self.buttons)))
     }
     fn sheet(&self) -> &Sheet {
@@ -2411,26 +2397,23 @@ impl Screen for ModsScreen {
         self.act(cmd, ctx);
     }
     fn copy_text(&self) -> Option<String> {
-        self.page.as_ref().map(|p| p.code.clone())
+        self.page.as_ref().map(|v| v.page.code.clone())
     }
     fn paste(&mut self, text: &str, ctx: &mut Ctx) -> bool {
-        let Some(p) = &mut self.page else {
+        let Some(v) = &mut self.page else {
             return false;
         };
-        if p.import(text) {
+        if v.paste(text) {
             self.store_page(ctx);
         }
         true
     }
     fn slider_rects(&self) -> Vec<[i32; 4]> {
-        self.page.as_ref().map_or_else(Vec::new, |p| {
-            p.sliders().into_iter().map(|sl| p.track_rect(PAGE_X, PAGE_TOP, sl)).collect()
-        })
+        self.page.as_ref().map_or_else(Vec::new, |v| v.slider_rects())
     }
     fn wheel(&mut self, p: [f32; 2], notches: i32, ctx: &mut Ctx) -> bool {
-        if let Some(page) = &mut self.page {
-            page.scroll_by(notches);
-            self.rebuild_buttons(ctx.data);
+        if let Some(v) = &mut self.page {
+            v.wheel(notches);
             return true;
         }
         let [dx, dy, dw, dh] = DETAIL_RECT;
@@ -2445,34 +2428,21 @@ impl Screen for ModsScreen {
         true
     }
     fn modal_input(&mut self, ev: &MenuInput, ctx: &mut Ctx) -> bool {
+        if let Some(v) = &mut self.page {
+            if matches!(ev, MenuInput::Move(_) | MenuInput::Press(_) | MenuInput::Release(_)) {
+                let act = v.modal_input(ev, ctx);
+                self.page_done(act, ctx);
+                return true;
+            }
+        }
         match *ev {
             MenuInput::Move(p) => {
-                if let Some(page) = &mut self.page {
-                    if let Some(sl) = page.drag {
-                        page.drag_to(PAGE_X, sl, p[0]);
-                        return true;
-                    }
-                }
                 if self.buttons.moved(p) {
                     ctx.sound(super::frontfx::SOUND_SELECT_CHANGE);
                 }
             }
             MenuInput::Press(p) => {
                 if self.buttons.press(p) {
-                    return true;
-                }
-                if let Some(page) = &mut self.page {
-                    if let Some(sl) = page.slider_at(PAGE_X, PAGE_TOP, p) {
-                        page.drag = Some(sl);
-                        page.drag_to(PAGE_X, sl, p[0]);
-                        return true;
-                    }
-                    if let Some((k, c)) = page.cell_at(PAGE_X, PAGE_TOP, p) {
-                        let cmd = modsettings::CMD_PAGE_COLOUR_BASE
-                            + k as i32 * modsettings::CELLS_PER_ROW
-                            + c as i32;
-                        self.act(cmd, ctx);
-                    }
                     return true;
                 }
                 for k in 0..MODS_ROWS {
@@ -2486,11 +2456,6 @@ impl Screen for ModsScreen {
                 }
             }
             MenuInput::Release(p) => {
-                if self.page.as_mut().is_some_and(|page| page.drag.take().is_some()) {
-                    // the profile takes the value the drag ended on, not each step of it
-                    self.store_page(ctx);
-                    return true;
-                }
                 if let Some(c) = self.buttons.release(p) {
                     ctx.sound(super::frontfx::SOUND_SELECT);
                     self.act(c, ctx);
@@ -2502,12 +2467,11 @@ impl Screen for ModsScreen {
     }
     fn draw_extra(&self, cat: &mut Catalog, _data: &MenuData, secs: f32, out: &mut Vec<DrawItem>) {
         let [x, _, w, _] = MODS_RECT;
-        frame(cat, &self.art, MODS_RECT, out);
-        if let Some(page) = &self.page {
-            draw_page(cat, page, secs, out);
-            self.buttons.draw(cat, out);
+        if let Some(v) = &self.page {
+            v.draw(cat, secs, out);
             return;
         }
+        frame(cat, &self.art, MODS_RECT, out);
         out.push(title_text(T_MODS, LIST_RECT[0], MODS_RECT[1], false, TITLE_COLOUR));
         let title_w = measure(cat, T_MODS) + 24;
         let (ctx_line, colour) = &self.context;
@@ -2629,11 +2593,173 @@ fn page_buttons(page: &SettingsPage) -> Vec<Button> {
     list
 }
 
-fn draw_page(cat: &mut Catalog, page: &SettingsPage, secs: f32, out: &mut Vec<DrawItem>) {
+/// Whether `cmd` is one of the settings page's commands (Back, the rows, Reset, Copy, Paste, the palettes).
+pub fn is_page_command(cmd: i32) -> bool {
+    (modsettings::CMD_PAGE_BACK..CMD_SETTINGS_BASE).contains(&cmd)
+}
+
+/// What an input on a [`ModPageView`] did, for its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageAct {
+    /// Nothing the owner acts on (a look change, a copy, a drag step).
+    None,
+    /// A value changed: the owner stores the page's values ([`ModPageView::store`]).
+    Changed,
+    /// The page's Back button: the owner closes it.
+    Back,
+}
+
+/// MOD-24: one mod's settings page as a window of its own (frame, rows, preview, share code, buttons). The Mods
+/// screen shows it, and the options over a match show the same page from their Mods tab (CLI-1908): one set of
+/// widgets for both.
+pub struct ModPageView {
+    pub page: SettingsPage,
+    buttons: Buttons,
+    art: WindowArt,
+    /// The line under the title: when the values reach the mod.
+    pub note: &'static str,
+}
+
+impl ModPageView {
+    pub fn new(cat: &Catalog, page: SettingsPage, note: &'static str) -> ModPageView {
+        let mut v = ModPageView {
+            page,
+            buttons: Buttons::default(),
+            art: WindowArt::from_rom(cat.rom.as_deref()),
+            note,
+        };
+        v.rebuild();
+        v
+    }
+
+    /// The buttons again for the page as it is now (values, scroll).
+    pub fn rebuild(&mut self) {
+        self.buttons.list = page_buttons(&self.page);
+    }
+
+    /// The page's values into `s` (the owner saves or applies them).
+    pub fn store(&self, s: &mut crate::settings::Settings) {
+        s.mods_settings
+            .insert(self.page.id.clone(), self.page.values.clone());
+    }
+
+    /// The window's frame and its buttons (the layout test checks the buttons lie inside the frame).
+    pub fn layout_rects(&self) -> ([i32; 4], Vec<[i32; 4]>) {
+        (MODS_RECT, button_rects(&self.buttons))
+    }
+
+    /// One of the page's commands ([`is_page_command`]).
+    pub fn act(&mut self, cmd: i32, ctx: &mut Ctx) -> PageAct {
+        let p = &mut self.page;
+        let changed = match cmd {
+            modsettings::CMD_PAGE_BACK => return PageAct::Back,
+            c if (modsettings::CMD_PAGE_STEP_BASE..modsettings::CMD_PAGE_NUDGE_BASE).contains(&c) => {
+                p.step((c - modsettings::CMD_PAGE_STEP_BASE) as usize)
+            }
+            c if (modsettings::CMD_PAGE_NUDGE_BASE..modsettings::CMD_PAGE_RESET).contains(&c) => {
+                let n = (c - modsettings::CMD_PAGE_NUDGE_BASE) as usize;
+                p.nudge(n / 2, n % 2 == 1)
+            }
+            modsettings::CMD_PAGE_RESET => p.reset(),
+            modsettings::CMD_PAGE_COPY => {
+                ctx.data.clipboard_out = Some(p.code.clone());
+                p.message = Some((modsettings::T_COPIED.to_string(), false));
+                false
+            }
+            modsettings::CMD_PAGE_PASTE => {
+                ctx.data.clipboard_wanted = true;
+                false
+            }
+            c if (modsettings::CMD_PAGE_COLOUR_BASE..CMD_SETTINGS_BASE).contains(&c) => {
+                let n = c - modsettings::CMD_PAGE_COLOUR_BASE;
+                let (k, cell) = (n / modsettings::CELLS_PER_ROW, n % modsettings::CELLS_PER_ROW);
+                p.pick(k as usize, cell as usize)
+            }
+            _ => false,
+        };
+        if changed {
+            self.rebuild();
+            PageAct::Changed
+        } else {
+            PageAct::None
+        }
+    }
+
+    /// A pointer move, press or release over the page (it holds the pointer while it is open).
+    pub fn modal_input(&mut self, ev: &MenuInput, ctx: &mut Ctx) -> PageAct {
+        match *ev {
+            MenuInput::Move(p) => {
+                if let Some(sl) = self.page.drag {
+                    self.page.drag_to(PAGE_X, sl, p[0]);
+                    return PageAct::None;
+                }
+                if self.buttons.moved(p) {
+                    ctx.sound(super::frontfx::SOUND_SELECT_CHANGE);
+                }
+            }
+            MenuInput::Press(p) => {
+                if self.buttons.press(p) {
+                    return PageAct::None;
+                }
+                if let Some(sl) = self.page.slider_at(PAGE_X, PAGE_TOP, p) {
+                    self.page.drag = Some(sl);
+                    self.page.drag_to(PAGE_X, sl, p[0]);
+                    return PageAct::None;
+                }
+                if let Some((k, c)) = self.page.cell_at(PAGE_X, PAGE_TOP, p) {
+                    let cmd = modsettings::CMD_PAGE_COLOUR_BASE
+                        + k as i32 * modsettings::CELLS_PER_ROW
+                        + c as i32;
+                    return self.act(cmd, ctx);
+                }
+            }
+            MenuInput::Release(p) => {
+                if self.page.drag.take().is_some() {
+                    // the value the drag ended on is stored, not each step of it
+                    self.rebuild();
+                    return PageAct::Changed;
+                }
+                if let Some(c) = self.buttons.release(p) {
+                    ctx.sound(super::frontfx::SOUND_SELECT);
+                    return self.act(c, ctx);
+                }
+            }
+            _ => {}
+        }
+        PageAct::None
+    }
+
+    /// A pasted share code; `true` when it changed a value.
+    pub fn paste(&mut self, text: &str) -> bool {
+        let changed = self.page.import(text);
+        self.rebuild();
+        changed
+    }
+
+    /// The wheel scrolls the rows.
+    pub fn wheel(&mut self, notches: i32) {
+        self.page.scroll_by(notches);
+        self.rebuild();
+    }
+
+    pub fn slider_rects(&self) -> Vec<[i32; 4]> {
+        let p = &self.page;
+        p.sliders().into_iter().map(|sl| p.track_rect(PAGE_X, PAGE_TOP, sl)).collect()
+    }
+
+    /// The window: frame, rows, preview, share code, buttons.
+    pub fn draw(&self, cat: &mut Catalog, secs: f32, out: &mut Vec<DrawItem>) {
+        frame(cat, &self.art, MODS_RECT, out);
+        draw_page(cat, &self.page, self.note, secs, out);
+        self.buttons.draw(cat, out);
+    }
+}
+
+fn draw_page(cat: &mut Catalog, page: &SettingsPage, note: &str, secs: f32, out: &mut Vec<DrawItem>) {
     let [x, y, ..] = MODS_RECT;
     let tx = x + MODS_PAD;
     out.push(title_text(&format!("{} - {T_SETTINGS}", page.name), tx, y, false, TITLE_COLOUR));
-    out.push(text(modsettings::T_APPLIES, [tx, TAB_Y], MESSAGE_COLOUR));
+    out.push(text(note, [tx, TAB_Y], MESSAGE_COLOUR));
     let row_text = |s: &str, x: i32, y: i32, colour: u32| {
         place_text(
             s,

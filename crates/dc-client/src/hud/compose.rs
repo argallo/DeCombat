@@ -291,6 +291,8 @@ impl HudAssets {
                 None if path == super::fallborder::TEXTURE => {
                     Some(Arc::new(super::fallborder::texture()))
                 }
+                // CRATE-7: the case reel's effect textures are made here
+                None if path.starts_with("@dc:reel_") => crate::menu::reelfx::texture_arc(path),
                 // CLI-1893: our own flag pictures (the ROM catalogue puts them in the ROM flags' shape at load)
                 None if path.starts_with("@dc:flag_") => {
                     crate::menu::ownflag::texture(path, crate::menu::ownflag::OWN_SHAPE)

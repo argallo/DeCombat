@@ -12,8 +12,10 @@
 //!
 //! Each row also carries the clan name (the record's clan colour, else the layout's), the name in the record's own
 //! colour word when it has one, and the mission value centred on its point; the header gains the clan and mission
-//! labels (w2-board). The 2009 row also builds a clan mark, a flag and an internet-cafe mark; DeCombat does not draw
-//! them yet (CLI-533), and the class mark is built but hidden by the 2009 row (cshell+0xbe7c0).
+//! labels (w2-board). A clan member's row also shows the clan mark (CLI-1910): the background and emblem layers of
+//! the clan mark table at the row's clan mark point, composed as the lobby's Character Info panel composes them. The
+//! 2009 row also builds a flag and an internet-cafe mark; DeCombat does not draw them yet (CLI-533), and the class
+//! mark is built but hidden by the 2009 row (cshell+0xbe7c0).
 //!
 //! No key or texture text is in this file: the layout keys and the level-table keys are read from the user's
 //! `CShell.dll` by rva and accepted only by length and SHA-256 prefix.
@@ -129,9 +131,11 @@ pub enum BoardKey {
     GuildAt,
     ClanNameColour,
     TaskAt,
+    /// CLI-1910: the row's clan mark point.
+    ClanMarkAt,
 }
 
-const BOARD_PINS: [(BoardKey, u32, &str, usize, u32); 16] = [
+const BOARD_PINS: [(BoardKey, u32, &str, usize, u32); 17] = [
     (
         BoardKey::PlacePos,
         0x3d1fa8,
@@ -236,6 +240,16 @@ const BOARD_PINS: [(BoardKey, u32, &str, usize, u32); 16] = [
         0x53a30,
     ),
     (BoardKey::TaskAt, 0x3d2074, "802af19fe8dcbd15", 17, 0x53870),
+    // CLI-1910: the clan mark control's point (HUD set n, else set 0, like the other row keys)
+    // EVIDENCE: cshell+0x536b0 (the accessor: the key literal looked up in the HUD set, else in set 0), cshell+0xc0ac0
+    // (the clan mark control placed at its pair)
+    (
+        BoardKey::ClanMarkAt,
+        0x3d202c,
+        "e17647073fabf828",
+        18,
+        0x536b0,
+    ),
 ];
 
 impl BoardKey {
@@ -277,6 +291,8 @@ pub struct BoardColumns {
     pub clan_colour: Option<[u8; 4]>,
     /// w2-board: the mission value's point (the line centred on it), relative to the row.
     pub mission: Option<[i32; 2]>,
+    /// CLI-1910: the clan mark control's top-left point, relative to the row.
+    pub clan_mark_at: Option<[i32; 2]>,
 }
 
 impl BoardColumns {
@@ -338,6 +354,7 @@ impl BoardColumns {
             clan_at: pair(BoardKey::GuildAt),
             clan_colour: colour(BoardKey::ClanNameColour),
             mission: pair(BoardKey::TaskAt),
+            clan_mark_at: pair(BoardKey::ClanMarkAt),
         }
     }
 }
@@ -461,6 +478,11 @@ pub struct ClanTag {
     pub group_no: u64,
     /// The clan name's colour word (`0xAARRGGBB`), 0 = the element's default colour.
     pub colour: u32,
+    /// CLI-1910: `g1`, `g2`: the clan mark's emblem and background ids in the clan mark table.
+    // EVIDENCE: cshell+0xc0ac0 (argument 16 looked up in the table's first list and set as the control's layer of
+    // cshell+0x343cc0, argument 17 in the second list as the layer of cshell+0x343d50), cshell+0x126fa0 (the lobby
+    // sets the emblem and the background through the same two calls)
+    pub mark: [u32; 2],
 }
 
 /// What the board row and the death panel take from a 0x6b record beyond the counts: the level index, the name
@@ -491,6 +513,7 @@ impl RowMark {
                 name: c.name.clone(),
                 group_no: c.group_no,
                 colour: c.colour,
+                mark: c.mark,
             }),
             mission: r.mission,
         }
@@ -555,6 +578,31 @@ pub fn clan_text(
         (None, w) => argb(w),
     };
     Some((c.name.clone(), colour))
+}
+
+/// CLI-1910 the clan mark of a board row at `row`: the background and emblem textures (each `None` when its id is
+/// below 1, past the table or an empty entry) and the rectangle their art is drawn over (the 26 x 26 control at the
+/// row's clan mark point, the art at the lobby panel's scale). `None` for a row without a clan block (a player
+/// without a clan shows no mark), without the layout point, or when neither layer resolves.
+// EVIDENCE: cshell+0xc0ac0 (the clan mark control: created at the row's clan mark point, cshell+0x536b0, with the scale
+// 0x3ed2d2d3 and the size 0x1a x 0x1a, the lobby panel's call of cshell+0x1211b0; its two layers set only when argument
+// 13, `has_group`, is set), cshell+0x343cc0 / 0x343d50 (each layer shown only when its id and its texture are set),
+// cshell+0x280570 (an id below 1 or past the list, or an empty entry: no texture), cshell+0xbe7c0 (a shown row shows
+// the control), cshell+0xbf220 (the dead colours touch only the texts)
+pub fn clan_mark_layers<'a>(
+    cols: &BoardColumns,
+    marks: &'a crate::menu::clan::ClanMarks,
+    mark: Option<&RowMark>,
+    row: [i32; 2],
+) -> Option<(Option<&'a str>, Option<&'a str>, [i32; 4])> {
+    let at = cols.clan_mark_at?;
+    let [emblem, background] = mark?.clan.as_ref()?.mark;
+    let (e, b) = (marks.emblem(emblem), marks.background(background));
+    if e.is_none() && b.is_none() {
+        return None;
+    }
+    let [w, h] = crate::menu::clan::MARK_PANEL_DRAWN;
+    Some((b, e, [row[0] + at[0], row[1] + at[1], w, h]))
 }
 
 /// The mission column's text: `v68/v6c` in mode classes 7 and 8, else `v64`.
@@ -676,6 +724,11 @@ mod tests {
             (5, 0x11223344, [1, 2, 3])
         );
         assert_eq!(level_index(Some(&m), 2), 5);
+        assert_eq!(
+            m.clan.as_ref().map(|c| c.mark),
+            Some([1, 2]),
+            "CLI-1910: g1, g2"
+        );
         let mut neg = rec.clone();
         neg.look[4] = -3;
         let n = RowMark::of_record(&neg);
@@ -718,6 +771,30 @@ mod tests {
         assert_eq!(mission_text(None, None), "0");
     }
 
+    /// CLI-1910 with the user's ROM: the clan mark point resolves (the pinned key is read, so the other board
+    /// columns still load) and the first emblem and background of the clan mark table load as HUD textures.
+    /// Skipped without CA_ROM.
+    #[test]
+    fn rom_clan_mark_point_and_textures_resolve() {
+        let Ok(rom) = std::env::var("CA_ROM") else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let mut hud = crate::hud::Hud::from_rom(Path::new(&rom), 1024, 768, None).expect("ROM HUD");
+        let c = &hud.layout.board_columns;
+        assert!(c.clan_mark_at.is_some(), "clan mark point");
+        assert!(
+            c.clan_at.is_some() && c.level.is_some(),
+            "the other columns still load"
+        );
+        let marks = hud.layout.clan_marks.clone();
+        let e = (1..marks.emblems.len() as u32).find_map(|i| marks.emblem(i));
+        let b = (1..marks.backgrounds.len() as u32).find_map(|i| marks.background(i));
+        for t in [e.expect("an emblem"), b.expect("a background")] {
+            assert!(hud.assets.texture(t).is_some(), "texture {t}");
+        }
+    }
+
     #[test]
     fn new_columns_from_a_key_lookup() {
         let raw = |k: BoardKey| -> Option<String> {
@@ -726,6 +803,7 @@ mod tests {
                     BoardKey::GuildAt => "(120,2)",
                     BoardKey::ClanNameColour => "<10,20,300>",
                     BoardKey::TaskAt => "(330,4)",
+                    BoardKey::ClanMarkAt => "(112,1)",
                     _ => return None,
                 }
                 .to_string(),
@@ -735,6 +813,7 @@ mod tests {
         assert_eq!(c.clan_at, Some([120, 2]));
         assert_eq!(c.clan_colour, Some([10, 20, 255, 255]));
         assert_eq!(c.mission, Some([330, 4]));
+        assert_eq!(c.clan_mark_at, Some([112, 1]));
         assert_eq!(
             (c.clan_label.clone(), c.mission_label.clone()),
             (None, None)
@@ -747,6 +826,7 @@ mod tests {
             BoardKey::GuildAt,
             BoardKey::ClanNameColour,
             BoardKey::TaskAt,
+            BoardKey::ClanMarkAt,
         ] {
             assert_eq!(BOARD_PINS[k as usize].0, k, "pin table in enum order");
         }

@@ -57,6 +57,8 @@ impl Game {
         if !matches!(self.phase, RoundPhase::Running { .. }) {
             return;
         }
+        // DC-DEFAULT: DSV-615 (proposed) no heartbeat sensor scans past the round's end
+        self.scan_stop_all();
         self.end_hold_ms = first_hold_ms;
         let wins_before = self.round_wins;
         // DC-DEFAULT: DSV-148 (proposed) no team round win in FFA (the winner's value is a player's)

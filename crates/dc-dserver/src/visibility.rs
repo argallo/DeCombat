@@ -482,6 +482,9 @@ pub struct Actor {
     pub full_precision: bool,
     /// The player that killed this one in its current death (None while alive or killed by the world); VIS-14.
     pub killer: Option<u8>,
+    /// While this player's heartbeat sensor scans: the horizontal reach within which every enemy is shown to him,
+    /// walls or not (DSV-616, [`Game::scan_reach`]).
+    pub sense: Option<f32>,
 }
 
 /// The players of the game layer as visibility actors; `plain_full_precision` = the session creates plain player
@@ -509,9 +512,21 @@ pub fn actors(game: &Game, plain_full_precision: bool) -> Vec<Actor> {
                 } else {
                     p.killed_by
                 },
+                sense: game.scan_reach(p.pid),
             }
         })
         .collect()
+}
+
+/// The viewer's heartbeat sensor reaches the enemy: the horizontal distance within the sensor's reach (the 2009
+/// sensor shows enemies through walls, so their positions must reach the client).
+// DC-DEFAULT: DSV-616 (proposed) a scanning viewer gets the enemies within the reach unculled; the client's view
+// cone test runs on the client (the server does not know its field of view), so the reach is a full circle
+fn sensed(v: &Actor, e: &Actor) -> bool {
+    v.sense.is_some_and(|r| {
+        let (dx, dz) = (v.pos[0] - e.pos[0], v.pos[2] - e.pos[2]);
+        dx * dx + dz * dz <= r * r
+    })
 }
 
 /// The FFA mode class: every other player is an enemy.
@@ -748,7 +763,7 @@ impl Visibility {
                     continue;
                 }
                 let dist = len(sub(v.pos, e.pos));
-                if dist <= self.cfg.always_radius {
+                if dist <= self.cfg.always_radius || sensed(v, e) {
                     p.last_clear = Some(now);
                     continue;
                 }
@@ -922,7 +937,7 @@ impl Visibility {
             return false;
         }
         let sees = |me: &Visibility, from: &Actor| -> bool {
-            if len(sub(from.pos, e.pos)) <= me.cfg.always_radius {
+            if len(sub(from.pos, e.pos)) <= me.cfg.always_radius || sensed(from, e) {
                 return true;
             }
             let l = me.lookahead_ms(from, tick_ms, tick_ms);
@@ -1333,6 +1348,7 @@ mod tests {
             spawns: 1,
             full_precision: false,
             killer: None,
+            sense: None,
         }
     }
 
@@ -1432,6 +1448,40 @@ mod tests {
             "window 1000 ms after the last clear test at 2000: {t}"
         );
         assert!(v.stats.parks >= 3 && v.stats.shows == 2);
+    }
+
+    /// DSV-616: a viewer whose heartbeat sensor scans gets the enemies within its reach through the wall; out of the
+    /// reach, or once the sensor stops (after the exposure window), they are parked as before.
+    #[test]
+    fn a_scanning_sensor_shows_enemies_behind_a_wall_within_its_reach() {
+        let mut v = vis(VisTuning::default());
+        let mut a = vec![
+            actor(1, 1, [-450.0, 0.0, 0.0]),
+            actor(2, 2, [450.0, 0.0, 0.0]),
+        ];
+        a[0].sense = Some(1000.0);
+        let c = v.update(&a, &[1, 2], false, 33, 0);
+        // the sensor's owner sees 2; 2 (no sensor) has 1 parked
+        assert!(!v.parked(1, 102) && v.parked(2, 101), "{c:?}");
+        // the spawn test agrees
+        assert!(!v.spawn_parked(&a, 1, 2, false, 33, 10));
+        // beyond the reach: parked once the window ran out
+        a[0].sense = Some(800.0);
+        for t in (33..1200).step_by(33) {
+            v.update(&a, &[1, 2], false, 33, t);
+        }
+        assert!(v.parked(1, 102));
+        // in reach again (horizontal distance: the height difference does not count)
+        a[0].sense = Some(900.0);
+        a[1].pos[1] = 200.0;
+        let c = v.update(&a, &[1, 2], false, 33, 1233);
+        assert!(!v.parked(1, 102), "{c:?}");
+        // the sensor off: parked after the window
+        a[0].sense = None;
+        for t in (1266..2400).step_by(33) {
+            v.update(&a, &[1, 2], false, 33, t);
+        }
+        assert!(v.parked(1, 102));
     }
 
     #[test]

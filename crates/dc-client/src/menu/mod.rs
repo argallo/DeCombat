@@ -51,6 +51,7 @@ pub mod modpanel;
 pub mod nickname;
 pub mod nine;
 pub mod options;
+pub mod optionsmods;
 pub mod ownflag;
 pub mod paint;
 pub mod pane;
@@ -58,6 +59,8 @@ pub mod pilot;
 pub mod popup;
 pub mod prefetch;
 pub mod recordbox;
+pub mod reel;
+pub mod reelfx;
 pub mod report;
 pub mod reportdlg;
 pub mod result;
@@ -217,6 +220,24 @@ pub(crate) fn store_settings(data: &mut MenuData, cat: &Catalog) {
     data.profile_doc = Some(doc);
 }
 
+/// CLI-1907: the empty screen under the options over a match (the match is drawn under the menu's list there).
+#[derive(Default)]
+pub struct MatchUnder {
+    sheet: Sheet,
+}
+
+impl Screen for MatchUnder {
+    fn name(&self) -> &'static str {
+        "match"
+    }
+    fn sheet(&self) -> &Sheet {
+        &self.sheet
+    }
+    fn sheet_mut(&mut self) -> &mut Sheet {
+        &mut self.sheet
+    }
+}
+
 /// What the screens share.
 #[derive(Debug, Default)]
 pub struct MenuData {
@@ -329,6 +350,8 @@ pub struct MenuData {
     pub lobby_pin: Option<String>,
     /// CLI-1617: the profile folder the mods live under (`<data>/mods`); `None`: no profile folder.
     pub mods_dir: Option<PathBuf>,
+    /// CLI-1908: the options are over a match: their Mods tab lists these mods (`None`: the lobby's options).
+    pub match_mods: Option<optionsmods::MatchModsInfo>,
     /// LG-272: the other lobbies the login's lobby lists (push 0x3f02).
     pub other_lobbies: Vec<link::OtherLobby>,
     /// CLI-1622: the lobby of the list the player joined (its name) and where the player came from; the login screen
@@ -737,6 +760,8 @@ pub struct Menu {
     fade: Option<frontfx::Fade>,
     lits: frontfx::FrontLits,
     sounds: Vec<i32>,
+    /// CRATE-7: the case reel's gun sounds (the won gun's own) since the last [`Menu::take_sound_cues`].
+    reel_cues: Vec<crate::sound::SoundCue>,
     held_inputs: Vec<MenuInput>,
     /// The pointer (virtual pixels) of the last pointer input, [`cursor::DEFAULT_POINTER`] before any.
     pointer: [f32; 2],
@@ -754,6 +779,8 @@ pub struct Menu {
     messenger: messenger::Messenger,
     /// shop-model: the character view (created when a screen first asks for it; needs the ROM).
     figure: Option<modelview::ModelView>,
+    /// CRATE-8: the case reel's won gun, rendered on its own view.
+    showcase: Option<modelview::ModelView>,
     /// The next display list waits for the character render ([`Menu::image`]).
     figure_wait: bool,
     /// shop-model: the clip time the pane figure is posed at (`None`: the window's live clock, the headless image
@@ -895,6 +922,25 @@ impl Menu {
             });
         }
         let screen: Box<dyn Screen> = Box::new(login::Login::new(&cat, &data));
+        let lits = opts
+            .rom
+            .as_deref()
+            .map(frontfx::FrontLits::from_rom)
+            .unwrap_or_default();
+        let mut m = Menu::assemble(cat, data, link, screen, prefetch, lits);
+        m.with_ctx(|s, ctx| s.enter(ctx));
+        m
+    }
+
+    /// The menu's state around `screen` (the first screen, entered by the caller).
+    fn assemble(
+        cat: Catalog,
+        data: MenuData,
+        link: Link,
+        screen: Box<dyn Screen>,
+        prefetch: Option<prefetch::Prefetch>,
+        lits: frontfx::FrontLits,
+    ) -> Menu {
         let mut m = Menu {
             cat,
             data,
@@ -917,12 +963,9 @@ impl Menu {
             screen_state: Go::Login.state_id(),
             music_cue: cue_for_screen_state(Go::Login.state_id()),
             fade: None,
-            lits: opts
-                .rom
-                .as_deref()
-                .map(frontfx::FrontLits::from_rom)
-                .unwrap_or_default(),
+            lits,
             sounds: Vec::new(),
+            reel_cues: Vec::new(),
             held_inputs: Vec::new(),
             pointer: cursor::DEFAULT_POINTER,
             pointer_shown: true,
@@ -932,13 +975,86 @@ impl Menu {
             fed_events: Vec::new(),
             messenger: messenger::Messenger::default(),
             figure: None,
+            showcase: None,
             figure_wait: false,
             figure_time_ms: None,
             figure_still: false,
         };
         m.trail.push(m.screen.name().into());
-        m.with_ctx(|s, ctx| s.enter(ctx));
         m
+    }
+
+    /// CLI-1907: the options over a match (the exit box's Options button): a menu without a lobby connection whose
+    /// only screen is the options box over an empty screen (the match shows through the frame's blind); `rom`,
+    /// `font`, `width` x `height` as for [`Menu::new`]; `settings` and `commands`: the menu's settings and key table
+    /// at the match start; `mods`: what the Mods tab lists (CLI-1908). OK publishes and applies the settings
+    /// ([`Menu::take_settings_change`]); closing the box leaves [`Menu::over_match_open`] false.
+    // DC-DEFAULT: CLI-1907 (proposed) the lobby's options box, unchanged, over the match
+    pub fn over_match(
+        rom: Option<&std::path::Path>,
+        font: Option<(Vec<u8>, usize)>,
+        (width, height): (u32, u32),
+        settings: crate::settings::Settings,
+        commands: crate::settings::CommandTable,
+        mods: optionsmods::MatchModsInfo,
+    ) -> Menu {
+        let cat = rom
+            .and_then(|r| Catalog::from_rom(r, width, height).ok())
+            .unwrap_or_else(|| Catalog::fallback(font, width, height));
+        let lits = rom.map(frontfx::FrontLits::from_rom).unwrap_or_default();
+        let data = MenuData {
+            settings,
+            commands,
+            ..MenuData::default()
+        };
+        let mut m = Menu::assemble(cat, data, Link::detached(), Box::new(MatchUnder::default()), None, lits);
+        m.music_cue = None;
+        m.screen_state = NOT_A_SCREEN;
+        m.pointer_shown = false;
+        m.reopen_over_match(None, mods);
+        m
+    }
+
+    /// CLI-1907: the options over the match again (a later Options click in the same match): the settings in effect
+    /// now (`None`: the ones the box last kept) and the Mods tab's list.
+    pub fn reopen_over_match(
+        &mut self,
+        settings: Option<crate::settings::Settings>,
+        mods: optionsmods::MatchModsInfo,
+    ) {
+        if let Some(s) = settings {
+            self.data.settings = s;
+        }
+        self.data.settings_changed = false;
+        self.data.sound_live = None;
+        self.data.match_mods = Some(mods);
+        self.popups.clear();
+        self.under.clear();
+        self.screen = Box::new(MatchUnder::default());
+        self.pressed = None;
+        self.drop_pressed = None;
+        self.hover_part = None;
+        self.overlay(Go::Options);
+        self.dirty = true;
+    }
+
+    /// CLI-1907: the options over the match are still up (Cancel, OK, the close button or Escape take them down).
+    pub fn over_match_open(&self) -> bool {
+        self.screen.name() == options::NAME
+    }
+
+    /// CLI-1907: the settings the options over the match changed become the menu's and are saved (right after the
+    /// match, also when the player quit from it, and with every update).
+    pub fn store_match_settings(&mut self) {
+        let Some(s) = crate::settings::take_match_settings_note() else {
+            return;
+        };
+        if s != self.data.settings {
+            self.data.settings = s;
+            self.data.settings_changed = true;
+            crate::settings::publish(&self.data.settings);
+            store_settings(&mut self.data, &self.cat);
+        }
     }
 
     /// CLI-1610: the identity authority's web port and the login name of a cached token (main sets both at start).
@@ -999,6 +1115,17 @@ impl Menu {
     pub fn tick_popup_at(&mut self, now: Instant) {
         if self.popups.first_mut().is_some_and(|p| p.tick(now)) {
             self.dirty = true;
+        }
+        // CRATE-5: the reel's ticks
+        if let Some(p) = self.popups.first_mut() {
+            for s in p.take_sounds() {
+                match s {
+                    reel::Sound::Rom(id) => self.sounds.push(id),
+                    reel::Sound::Weapon { k, weapon } => self
+                        .reel_cues
+                        .push(crate::sound::SoundCue::OwnWeapon { k, weapon }),
+                }
+            }
         }
     }
 
@@ -1168,7 +1295,7 @@ impl Menu {
     // EVIDENCE: cshell+0x1b20c0 (a key without a file plays nothing)
     pub fn take_sound_cues(&mut self) -> Vec<crate::sound::SoundCue> {
         let rom = self.lits.rom;
-        std::mem::take(&mut self.sounds)
+        let mut cues: Vec<crate::sound::SoundCue> = std::mem::take(&mut self.sounds)
             .into_iter()
             .map(|id| (self.lits.sounds.get(&id).cloned(), id))
             .filter(|(file, _)| file.is_some() || !rom)
@@ -1176,7 +1303,9 @@ impl Menu {
                 file,
                 what: frontfx::cue_name(id),
             })
-            .collect()
+            .collect();
+        cues.append(&mut self.reel_cues);
+        cues
     }
 
     /// One menu frame's sound hand-over (the window's per-frame hook, also run by the tests): the screen's music cue
@@ -1882,6 +2011,7 @@ impl Menu {
     /// Reads the connection events (and takes the textures decoded ahead).
     pub fn update(&mut self) {
         self.store_display_note();
+        self.store_match_settings();
         // CLI-1031: a sensitivity the match's hotkeys changed becomes the setting and is saved (2009 stores it in
         // the profile values, cshell+0x49060); the next match starts with it
         // CLI-1570: a network overlay mode the match's `/network` chose is saved in our own profile section
@@ -2389,6 +2519,58 @@ impl Menu {
         v.item()
     }
 
+    /// CRATE-8: hands the reel's showcase to its own view (made ready during the spin) and returns the render placed and
+    /// faded as the frame asks (`wait`: block until the render is there, the headless image path).
+    fn showcase_item(&mut self, frame: Option<reel::ShowcaseFrame>, wait: bool) -> Option<DrawItem> {
+        if frame.is_none() && self.showcase.is_none() {
+            return None;
+        }
+        let size = self.cat.size();
+        let rom = self.cat.rom.clone()?;
+        let v = self
+            .showcase
+            .get_or_insert_with(|| modelview::ModelView::named(rom, "#case-showcase/"));
+        let Some(f) = frame else {
+            v.want(None, size, None, 0.0);
+            return None;
+        };
+        let req = modelview::ViewReq {
+            look: None,
+            pieces: Vec::new(),
+            lights: Vec::new(),
+            place: modelview::Placement {
+                origin: [0.0; 3],
+                yaw: f.yaw,
+            },
+            rect: reel::SHOWCASE_RECT,
+            xray: None,
+            showcase: Some(modelview::Showcase {
+                model: f.model.clone(),
+                yaw: f.yaw,
+                pitch: f.pitch,
+                roll: 0.0,
+                fill: reel::SHOWCASE_FILL,
+                rim: f.rim,
+            }),
+        };
+        v.want(Some(req), size, Some(0.0), 0.0);
+        // made ready during the spin without holding the frame up; a shown one is waited for on the image path
+        if wait && f.shown {
+            v.wait(&mut self.cat.assets, MODEL_VIEW_WAIT);
+        } else if v.poll(&mut self.cat.assets) {
+            self.dirty = true;
+        }
+        if !f.shown {
+            return None;
+        }
+        let mut item = v.item()?;
+        if let DrawItem::Image { dst, tint, .. } = &mut item {
+            *dst = f.dst;
+            tint[3] = (f.alpha.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+        Some(item)
+    }
+
     /// The character request of the current screen (tests).
     pub fn figure_request(&self) -> Option<modelview::ViewReq> {
         self.screen.pane_figure(&self.data)
@@ -2440,6 +2622,13 @@ impl Menu {
         if let Some(p) = self.popups.first() {
             p.draw(&mut self.cat, &mut out);
         }
+        // CRATE-8: the won gun's model over the reel
+        let frame = self
+            .popups
+            .first()
+            .and_then(|p| p.award.as_ref())
+            .and_then(|a| a.showcase(Instant::now()));
+        out.extend(self.showcase_item(frame, wait));
         if let Some((_, alpha)) = self.fading() {
             let fader = self.lits.fader.clone();
             let size = fader.as_deref().and_then(|t| self.cat.tex_size(t));

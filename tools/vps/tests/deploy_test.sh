@@ -49,7 +49,7 @@ rm -rf "$O/tools/vps/tests"
 cp -r "$REPO/tools/host" "$O/tools/host"
 for f in server-vps.toml decombat-lobby.service decombat-lobby@.service decombat-bots.service decombat-host.service \
     decombat.env decombat-hardening.conf decombat-backup.service decombat-backup.timer decombat-health.service \
-    decombat-health.timer backup.conf alerts.conf; do
+    decombat-health.timer decombat-live-games.service decombat-live-games.timer backup.conf alerts.conf; do
     cp "$REPO/examples/$f" "$O/examples/"
 done
 commit() { echo "$1" > "$O/README"; git -C "$O" add -A >/dev/null; git -C "$O" commit -q -m "$1"; git -C "$O" rev-parse HEAD; }

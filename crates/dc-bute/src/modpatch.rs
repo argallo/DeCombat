@@ -62,6 +62,61 @@ pub const KEY_VARIANT_NAME: &str = "variant_name";
 pub const KEY_VARIANT_ICON: &str = "variant_icon";
 /// The key of a variant that wears the look of another row (a model the ROM already has), by row number.
 pub const KEY_VARIANT_LOOK_OF: &str = "variant_look_of";
+/// A variant's rarity tier (CRATE-6): how often a Camo Crate gives it and how its opening is shown.
+pub const KEY_VARIANT_RARITY: &str = "variant_rarity";
+
+/// A variant's rarity tier (CRATE-6), lowest first. A variant without the key is [`Rarity::Common`].
+// DC-DEFAULT: CRATE-6 (proposed; USER DECISION 2026-11-06 "weighted odds": rarer camos drop less often)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Rarity {
+    #[default]
+    Common,
+    Rare,
+    Epic,
+    Legendary,
+}
+
+impl Rarity {
+    pub const ALL: [Rarity; 4] = [
+        Rarity::Common,
+        Rarity::Rare,
+        Rarity::Epic,
+        Rarity::Legendary,
+    ];
+
+    /// The key's value: one of the names, any case.
+    pub fn parse(text: &str) -> Option<Rarity> {
+        let t = text.trim().trim_matches('"');
+        Rarity::ALL
+            .into_iter()
+            .find(|r| r.key().eq_ignore_ascii_case(t))
+    }
+
+    /// The value the key takes.
+    pub fn key(self) -> &'static str {
+        match self {
+            Rarity::Common => "common",
+            Rarity::Rare => "rare",
+            Rarity::Epic => "epic",
+            Rarity::Legendary => "legendary",
+        }
+    }
+
+    /// The name players see.
+    pub fn name(self) -> &'static str {
+        match self {
+            Rarity::Common => "Common",
+            Rarity::Rare => "Rare",
+            Rarity::Epic => "Epic",
+            Rarity::Legendary => "Legendary",
+        }
+    }
+
+    /// 0 for Common up to 3 for Legendary.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
 
 /// The base row a weapon row's text says it is a variant of (VAR-1).
 pub fn variant_base(text: Option<&str>) -> Option<u16> {
@@ -95,6 +150,7 @@ pub fn is_cosmetic_key(key: &str) -> bool {
         KEY_VARIANT_NAME,
         KEY_VARIANT_ICON,
         KEY_VARIANT_LOOK_OF,
+        KEY_VARIANT_RARITY,
     ]
     .contains(&key)
     {
@@ -126,6 +182,7 @@ fn is_model_or_style_key(key: &str) -> bool {
             KEY_VARIANT_NAME,
             KEY_VARIANT_ICON,
             KEY_VARIANT_LOOK_OF,
+            KEY_VARIANT_RARITY,
         ]
         .contains(&key)
 }
@@ -143,6 +200,8 @@ pub struct VariantInfo {
     pub pv_skins: BTreeMap<usize, String>,
     /// The row whose look it wears (VAR-5).
     pub look_of: Option<i32>,
+    /// Its rarity tier (CRATE-6; Common without the key).
+    pub rarity: Rarity,
 }
 
 /// A refused document or apply.
@@ -376,6 +435,17 @@ impl WeaponContent {
         let weapons = weapons
             .into_iter()
             .map(|p| {
+                // CRATE-6: a tier the lobby and the client do not know is refused where the pack is read
+                if let Some(r) = p
+                    .fields
+                    .get(KEY_VARIANT_RARITY)
+                    .filter(|r| Rarity::parse(r).is_none())
+                {
+                    return Err(PatchError(format!(
+                        "weapon {}: {KEY_VARIANT_RARITY} {r:?} is not one of common, rare, epic, legendary",
+                        p.weapon
+                    )));
+                }
                 Ok(WeaponPatch {
                     fields: check_fields(&format!("weapon {}", p.weapon), p.fields)?,
                     ..p
@@ -415,6 +485,11 @@ impl WeaponContent {
                         .fields
                         .get(KEY_VARIANT_LOOK_OF)
                         .and_then(|v| v.trim().parse().ok()),
+                    rarity: w
+                        .fields
+                        .get(KEY_VARIANT_RARITY)
+                        .and_then(|v| Rarity::parse(v))
+                        .unwrap_or_default(),
                 })
             })
             .collect()
@@ -561,6 +636,14 @@ impl WeaponContent {
             if let Some(k) = fields.keys().find(|k| !is_cosmetic_key(k)) {
                 return err(format!(
                     "variant [{name}]: {k:?} is not a cosmetic key; a variant may not change how the gun plays"
+                ));
+            }
+            if let Some(r) = fields
+                .get(KEY_VARIANT_RARITY)
+                .filter(|r| Rarity::parse(r).is_none())
+            {
+                return err(format!(
+                    "variant [{name}]: {KEY_VARIANT_RARITY} {r:?} is not one of common, rare, epic, legendary"
                 ));
             }
         }
@@ -713,6 +796,37 @@ mod variant_tests {
         );
         let v = c.variants();
         assert_eq!((v[0].row, v[0].base), (500, 25));
+    }
+
+    /// CRATE-6: a variant names its rarity tier; one without the key is Common, an unknown tier is refused.
+    #[test]
+    fn a_variant_names_its_rarity_and_an_unknown_one_is_refused() {
+        let mut d = doc();
+        let c = variant(
+            500,
+            &[("variant_of", "25"), ("variant_rarity", "Legendary")],
+        );
+        c.apply_to_doc(&mut d).unwrap();
+        assert_eq!(c.variants()[0].rarity, Rarity::Legendary);
+        let plain = variant(501, &[("variant_of", "25")]);
+        assert_eq!(plain.variants()[0].rarity, Rarity::Common);
+        let e = WeaponContent::new(
+            vec![WeaponPatch {
+                weapon: 502,
+                op: PatchOp::Register,
+                fields: [("variant_of", "25"), ("variant_rarity", "mythic")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            }],
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(e.0.contains("mythic"), "{e}");
+        assert!(Rarity::ALL
+            .iter()
+            .all(|r| Rarity::parse(r.key()) == Some(*r) && Rarity::parse(r.name()) == Some(*r)));
+        assert!(Rarity::Common < Rarity::Legendary);
     }
 
     #[test]

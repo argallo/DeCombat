@@ -187,7 +187,9 @@ declared settings; a bad code shows a message and changes nothing.
 mod with settings gets a Settings button on its row. Values live in the player's profile
 (`mods.setting.<id>.<key>`), not on any server; a stored value the declaration does not allow (out of range, off a
 number's grid) reads as the default. A client older than 2026-11-01 refuses a manifest with `number` as an unknown type.
-`mod.settings` is read-only, and a change applies at the next match load. The page previews a mod that sets
+`mod.settings` is read-only, and a change applies at the next match load. In a match the same page opens from the
+Mods tab of the options (Escape, Options): a change there loads the match's mod set again with the new values, so the
+mod's entry function runs again (a mod keeps no Lua state across that). The page previews a mod that sets
 `crosshair_style`.
 
 The mod-set entry (`dc-modkit modset`, the server-list data) carries `description`, `author`, `tags` and the
@@ -374,7 +376,7 @@ published and every login is vanilla, so discovered map mods are logged as ignor
 is derived from the mod-set hash, so a client fetches the table of the set it joins.
 
 **HUD override keys** (`mod.content.hud:override(key, value)`, capability `content.hud`; CLI-1613). Any other key
-refuses the mod at load: `Unknown HUD override key 'x'; the keys are: crosshair, crosshair_colour, hitmarker, hud_scale, crosshair_style, crosshair_recoil, crosshair_length, crosshair_thickness, crosshair_gap, crosshair_dot, crosshair_outline, crosshair_t_style, crosshair_recoil_scale`.
+refuses the mod at load: `Unknown HUD override key 'x'; the keys are: crosshair, crosshair_colour, hitmarker, hud_scale, crosshair_style, crosshair_recoil, crosshair_length, crosshair_thickness, crosshair_gap, crosshair_dot, crosshair_outline, crosshair_t_style, crosshair_recoil_scale, case_reel, case_reel_ms`.
 
 | key | value | effect |
 |---|---|---|
@@ -390,6 +392,8 @@ refuses the mod at load: `Unknown HUD override key 'x'; the keys are: crosshair,
 | `crosshair_gap` | number -50 to 100 (default 0) | added to the distance of the arms from the centre and to a ring's radius; below zero the arms cross |
 | `crosshair_dot` | `true` / `false` (default `false`) | a centre dot on any style |
 | `crosshair_t_style` | `true` / `false` (default `false`) | no top arm |
+| `case_reel` | `true` / `false` (default `false`) | opening a supply case first spins a strip of what the case can hold until it stops on the award, then the award window opens (CRATE-5; `examples/mods/case_reel`); the award is the server's either way. A camo's rarity tier dresses the spin and the reveal with the game's own sounds (CRATE-7), and a won gun leaps out as its turning 3D model (CRATE-8) |
+| `case_reel_ms` | number 1500 to 12000 (default 7000) | how long the spin takes |
 | `crosshair_outline` | number 0 to 10 (default 0: none) | a black outline of this width around the shape |
 
 The client reads these once when the mod set has loaded; nothing runs per frame.
@@ -779,6 +783,20 @@ cosmetic keys, and a camo ships as your own pattern plus a path that paints it o
 holds no game pixels. `examples/mods/variant_candy_g36e` is a full example, and the rules are VAR-1 to VAR-3 in `DC_DEFAULTS.md`.
 A client older than this feature refuses an entry that has a variant pack, so a variant goes on an entry only after that client
 has shipped.
+
+Players unlock the camos of an entry from the **Camo Crate** (CRATE-1 to CRATE-4, CRATE-10): on an entry with camos, half of the
+in-match case drops are Camo Crates. A crate holds every camo of the entry and, once each, the plain base gun of each camo (its
+`variant_of` row) as a regular gun. Opening one gives a regular gun 70 % of the time, or a camo: Common 18 %, Rare 8 %, Epic
+3 %, Legendary 1 %. Either lasts the days of a HiSec case: 7 days 50 %, 30 days 35 %, permanent 15 %. Within a tier each item is as likely,
+and a tier the crate holds nothing of gives its share to the others in proportion. Every player has the same odds, and the
+crate's detail panel in the inbox shows them. A new camo pack on the entry adds its camo and its plain gun as soon as it loads,
+with nothing else to edit; the pack itself sets no price or reward.
+
+A variant may name its **rarity tier** with `variant_rarity = "common"`, `"rare"`, `"epic"` or `"legendary"` (any case; Common
+without the key). The tier sets which of the crate's odds it shares (CRATE-6, CRATE-10) and how its opening is shown with the case reel (CRATE-7, CRATE-8: bar colour, the
+mark's colour climbing as the strip slows, and a bigger reveal for a rarer tier). `dc-modkit validate` refuses another value.
+Pick the tier for how special the look is, not for anything about play: a variant plays the same as its base gun whatever its
+tier. A client or lobby older than this key refuses an entry that uses it, so it goes on an entry only after both have shipped.
 
 ## 13. Maps: `dc-mapkit`
 

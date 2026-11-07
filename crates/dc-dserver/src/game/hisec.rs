@@ -66,6 +66,13 @@ pub struct HisecTuning {
     /// Test flag: every kill that may drop a case drops one (`hisec.force=on`).
     // DC-DEFAULT: HS-1 (test flag, proposed) off
     pub force: bool,
+    /// Percent of the drops that are a Camo Crate instead of a HiSec case, in a match whose weapon table has variants
+    /// (`hisec.camo_share`, 0..100; 0 = never).
+    // DC-DEFAULT: CRATE-2 (proposed) half of the drops on an entry with camos
+    pub camo_share: u32,
+    /// The `[Hisec<n>]` row whose model a Camo Crate shows in the world (`hisec.camo_row`).
+    // DC-DEFAULT: CRATE-2 (proposed) row 1
+    pub camo_row: u32,
 }
 
 impl Default for HisecTuning {
@@ -81,6 +88,8 @@ impl Default for HisecTuning {
             case_row: 0,
             case_rows: [(0, 80), (1, 20), (0, 0), (0, 0)],
             force: false,
+            camo_share: 50,
+            camo_row: 1,
         }
     }
 }
@@ -89,7 +98,7 @@ impl Default for HisecTuning {
 /// Weighted case rows the tuning can hold (HS-15); a pair with weight 0 is unused.
 pub const CASE_ROWS_MAX: usize = 4;
 
-pub const HISEC_KEYS: [&str; 10] = [
+pub const HISEC_KEYS: [&str; 12] = [
     "enabled",
     "expected_kills",
     "max_active",
@@ -100,7 +109,14 @@ pub const HISEC_KEYS: [&str; 10] = [
     "case_row",
     "case_rows",
     "force",
+    "camo_share",
+    "camo_row",
 ];
+
+/// The bit a Camo Crate's case key carries (CRATE-2), so that a client tells it from a HiSec case by the key alone; the
+/// key counter stays far below it.
+// DC-DEFAULT: CRATE-2 (proposed)
+pub use dc_bute::camo_crate::CAMO_KEY_BIT;
 
 impl HisecTuning {
     /// Sets one `hisec.*` key (the prefix is optional).
@@ -130,6 +146,8 @@ impl HisecTuning {
                     .ok_or_else(bad)?
             }
             "case_row" => self.case_row = int()?,
+            "camo_share" => self.camo_share = int()?.min(100),
+            "camo_row" => self.camo_row = int()?,
             // `row:weight` pairs separated by `/` (the `-hisec` list itself is comma-separated); `none` = empty
             "case_rows" => {
                 let mut rows = [(0u32, 0u32); CASE_ROWS_MAX];
@@ -187,6 +205,8 @@ pub(crate) struct Case {
     pub key: u32,
     /// The ROM case table row it shows and delivers as (HS-15).
     pub row: u32,
+    /// A Camo Crate (CRATE-2): the lobby delivers a crate, not the row's HiSec case.
+    pub camo: bool,
     pub pos: [f32; 3],
     /// Reserved for this player until `reserved_until`.
     pub owner: Option<u8>,
@@ -333,7 +353,15 @@ impl Game {
         if roll >= p {
             return;
         }
-        let row = self.pick_case_row();
+        // CRATE-2: on an entry with camos, a share of the drops are Camo Crates
+        let camo = !self.tables.weapons.variants.is_empty()
+            && h.camo_share > 0
+            && (self.next_rand() % 100) < u64::from(h.camo_share);
+        let row = if camo {
+            h.camo_row
+        } else {
+            self.pick_case_row()
+        };
         let Some(look) = self.case_look_of(row) else {
             self.log(format!(
                 "hisec: no case model (ROM row {row} of the case table), no drop"
@@ -344,8 +372,8 @@ impl Game {
             return;
         };
         let pos = self.case_place(at);
-        let key = self.next_case_key;
-        self.next_case_key = self.next_case_key.wrapping_add(1).max(1);
+        let key = self.next_case_key | if camo { CAMO_KEY_BIT } else { 0 };
+        self.next_case_key = (self.next_case_key.wrapping_add(1) % CAMO_KEY_BIT).max(1);
         self.out.push(GameOut::CaseCreate(Box::new(CaseOut {
             key,
             look,
@@ -370,6 +398,7 @@ impl Game {
         self.cases.push(Case {
             key,
             row,
+            camo,
             pos,
             owner: reserved.then_some(k),
             reserved_until: until,
@@ -377,8 +406,11 @@ impl Game {
             shown,
         });
         self.log(format!(
-            "hisec: case {key} (row {row}) dropped at ({:.0}, {:.0}, {:.0}) for client {k} (chance {p:.3})",
-            pos[0], pos[1], pos[2]
+            "hisec: {} {key} (row {row}) dropped at ({:.0}, {:.0}, {:.0}) for client {k} (chance {p:.3})",
+            if camo { "camo crate" } else { "case" },
+            pos[0],
+            pos[1],
+            pos[2]
         ));
     }
 
@@ -470,11 +502,11 @@ impl Game {
     // event lines; `@hisec` is a DeCombat addition, the lobby ignores lines it does not know)
     // DC-DEFAULT: HS-5 (proposed); HS-6 (proposed) delivery is the lobby's
     fn hisec_take(&mut self, key: u32, pid: u8) {
-        let row = self
+        let (row, camo) = self
             .cases
             .iter()
             .find(|c| c.key == key)
-            .map_or(self.cfg.hisec.case_row, |c| c.row);
+            .map_or((self.cfg.hisec.case_row, false), |c| (c.row, c.camo));
         self.cases.retain(|c| c.key != key);
         self.broadcast(&gs::hisec_taken(key, pid));
         self.out.push(GameOut::CaseGone { key });
@@ -491,9 +523,13 @@ impl Game {
                 )
             })
             .unwrap_or_default();
-        // HS-13 / HS-15: the row the case dropped as, so the lobby delivers that case
-        self.out
-            .push(GameOut::Pipe(crate::pipe::hisec_line(uid, row, key, &nick)));
+        // HS-13 / HS-15: the row the case dropped as, so the lobby delivers that case; CRATE-3: a Camo Crate's own line
+        let line = if camo {
+            crate::pipe::crate_line(uid, key, &nick)
+        } else {
+            crate::pipe::hisec_line(uid, row, key, &nick)
+        };
+        self.out.push(GameOut::Pipe(line));
         self.log(format!("hisec: case {key} picked up by client {pid}"));
     }
 }

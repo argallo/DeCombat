@@ -174,6 +174,11 @@ pub fn serve(
             };
             (200, HTML, PAGE.replace("__CSRF__", &tok))
         }
+        // OPS-14: the weapons the loadout lists offer
+        "/ops/guns" => {
+            let g = crate::net::lock(shared);
+            (200, JSON, crate::opsmon::guns_json(&g).to_json_string())
+        }
         "/ops/live" => {
             let g = crate::net::lock(shared);
             (200, JSON, crate::opsmon::live_json(&g).to_json_string())
@@ -310,11 +315,21 @@ mod tests {
         assert!(
             body.contains("<title>") && !body.contains("<script src") && !body.contains("<link")
         );
+        // OPS-13 / OPS-14: the page names a match's map by `map_name`, lists the guns by name, and starts a new group
+        // with one channel ticked
+        assert!(
+            body.contains("m.map_name")
+                && body.contains("/ops/guns")
+                && body.contains("loadoutPicker")
+                && body.contains("i === 0")
+                && !body.contains("m.map_world")
+        );
         for p in [
             "/ops/live",
             "/ops/events?problems=1",
             "/ops/matches",
             "/ops/alerts",
+            "/ops/guns",
         ] {
             let (st, ct, body) = get(p, LO, "localhost:10090", None, true);
             assert_eq!((st, ct), (200, JSON), "{p}: {body}");

@@ -568,6 +568,11 @@ impl ServerConf {
             num(c.monitor.retention_days.into()),
         );
         put(
+            "monitor.public_games_file",
+            "monitor.public_games_file",
+            text(&c.monitor.public_games_file),
+        );
+        put(
             "messenger.max_friends",
             "messenger.max_friends",
             num(c.messenger.max_friends.into()),
@@ -1122,6 +1127,23 @@ playable = [\"TDM\", \"BOMB\", \"NOPE\"]
         let c = ServerConf::load(None, &env).unwrap().unwrap();
         assert_eq!(c.cfg.room.max_players_cap, 9);
         assert!(c.path.is_none() && c.ex.has("room.max_players_cap"));
+    }
+
+    // DC-DEFAULT: OPS-16 (proposed) the instance env file turns the public match board on
+    #[test]
+    fn the_public_board_path_comes_from_the_environment() {
+        let env = vec![(
+            "DC_MONITOR__PUBLIC_GAMES_FILE".to_string(),
+            "/var/lib/decombat-public-games/default.json".to_string(),
+        )];
+        let c = ServerConf::load(None, &env).unwrap().unwrap();
+        let mut rules = Rules::default();
+        assert_eq!(rules.ops.monitor_public_games_file, "");
+        assert!(c.apply_rules(&mut rules).is_empty());
+        assert_eq!(
+            rules.ops.monitor_public_games_file,
+            "/var/lib/decombat-public-games/default.json"
+        );
     }
 
     #[test]

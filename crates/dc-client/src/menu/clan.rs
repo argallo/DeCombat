@@ -470,16 +470,24 @@ impl ClanMarks {
     /// The emblem and background textures of a mark (`None` unless both exist).
     // EVIDENCE: cshell+0x280570 (index >= 1, below the count, an entry with a path)
     pub fn textures(&self, emblem: u32, background: u32) -> Option<(&str, &str)> {
-        fn pick(v: &[Option<String>], i: u32) -> Option<&str> {
-            if i < 1 {
-                return None;
-            }
-            v.get(i as usize).and_then(|p| p.as_deref())
+        Some((self.emblem(emblem)?, self.background(background)?))
+    }
+
+    /// The texture of one layer: emblem `i` / background `i` (`None` below 1, past the list or for an empty entry).
+    // EVIDENCE: cshell+0x280570 (index >= 1, below the count, an entry with a path)
+    pub fn emblem(&self, i: u32) -> Option<&str> {
+        Self::pick(&self.emblems, i)
+    }
+
+    pub fn background(&self, i: u32) -> Option<&str> {
+        Self::pick(&self.backgrounds, i)
+    }
+
+    fn pick(v: &[Option<String>], i: u32) -> Option<&str> {
+        if i < 1 {
+            return None;
         }
-        Some((
-            pick(&self.emblems, emblem)?,
-            pick(&self.backgrounds, background)?,
-        ))
+        v.get(i as usize).and_then(|p| p.as_deref())
     }
 }
 

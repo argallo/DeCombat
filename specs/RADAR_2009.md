@@ -139,10 +139,11 @@ shows an enemy while he fires. Mission kinds 1, 3, 4, 5, 11 compare the screen d
   a picture, the default picture is shown whole (CLI-143).
 - View disc: the used region mirrored, drawn as a square of the used width about the centre and turned by `yaw - WorldNorth` (CLI-141:
   WorldNorth 0).
-- Entries: players only, the rule of R-5 without the accessory: living team mates within the radius with the mate icon; enemies and dead
-  players never (CLI-142). The own point is the frame camera's position, the yaw the camera's.
-- The radar follows the HUD's regular recompose (CLI-144), not every frame. Not implemented: the on/off key, the accessory and its rim
-  variant, mission icons, the observer gate (the life-state layer gate of R-2 IS applied), the frozen angle while the camera manager's flag +0x134 is set, the NPC / objective kinds.
+- Entries: players only, the rule of R-5: living team mates within the radius with the mate icon; dead players never (CLI-142); enemies only
+  while the own heartbeat sensor scans, inside the camera's view frustum and within the row's scan distance (CLI-1914, `hud/sensor.rs`; the
+  rim then shows the battery forms). The own point is the frame camera's position, the yaw the camera's.
+- The radar follows the HUD's regular recompose (CLI-144), not every frame. Not implemented: the on/off key, the other scanner rows
+  (sensor options 2 / 3) and the team share of option 1, mission icons, the observer gate (the life-state layer gate of R-2 IS applied), the frozen angle while the camera manager's flag +0x134 is set, the NPC / objective kinds.
 
 ## R-7. Comparison with the 2009 client
 

@@ -180,6 +180,7 @@ fn figure(m: &mut Menu, rom: &Path, xray: Option<XrayStyle>) -> Option<Vec<[u8; 
         place: PLACE,
         rect: PANE_RECT,
         xray,
+        showcase: None,
     };
     v.want(Some(req), (1024, 768), Some(0.0), 0.0);
     v.wait(&mut m.cat.assets, Duration::from_secs(120));

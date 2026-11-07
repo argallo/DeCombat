@@ -403,6 +403,23 @@ pub fn shell_flag_90(flag: bool) -> BitWriter {
     })
 }
 
+/// `GS_RADAR_PING` kind 1 `[kind:u8 = 1][on:u8][weapon:u32]`: the answer to the heartbeat sensor's switch. A 2009 client
+/// sets its radar's scan range from the weapon row's `ScanDist` with "on" and clears the range, its revealed marks and
+/// the refill timer with "off" (without the "off" it would keep showing the last marks).
+// SPEC: GAME_MESSAGES_2009_S2C.md §7.1 (0xcd, stage F); DISASM: cshell+0x451d6..0x45285 (kind 8 bits, the second byte 8
+// bits, kind 1 then 32 bits -> cshell+0xb8650(second byte, value)); EVIDENCE: cshell+0xb8650 (1: range := row +0x48c of
+// the weapon `value`; else range 0 and cshell+0xb77e0 clears the reveal bytes)
+pub const GS_RADAR_PING: u8 = 0xcd;
+pub const RADAR_PING_SWITCH: u8 = 1;
+
+pub fn radar_switch(on: bool, weapon: u16) -> BitWriter {
+    shell(GS_RADAR_PING, |w| {
+        w.write_u8(RADAR_PING_SWITCH)
+            .write_u8(on as u8)
+            .write_u32(u32::from(weapon));
+    })
+}
+
 /// `GS_SPRINT_ALLOWED` `[allowed:bool1]`.
 // SPEC: CAPTURE_tdm1_GAME_VALIDATION.md §3.11 (`0d ca 01` / `0d ca 00`)
 pub fn sprint_allowed(allowed: bool) -> BitWriter {

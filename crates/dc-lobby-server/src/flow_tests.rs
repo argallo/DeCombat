@@ -4079,3 +4079,214 @@ fn a_bot_leaves_a_running_match_for_a_person_and_the_match_goes_on() {
     assert_eq!(r.state, phase, "the match still runs");
     assert!(a.has(ROOM_USER_REMOVE_PUSH));
 }
+
+// ---- join in progress: the host's option through the wire, entry into a playing room, refusals logged ----
+
+/// The `join_refused` events of the monitor, oldest first (their detail text).
+fn join_refusals(st: &Core) -> Vec<String> {
+    let mut q = st
+        .db
+        .prepare("SELECT detail FROM ops_events WHERE kind = 'join_refused' ORDER BY id")
+        .unwrap();
+    q.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// The host's 0x38c for field `field` (mode 0); true when the lobby answers ok.
+fn set_option(st: &mut Core, host: &mut Client, field: u32, value: u32) -> bool {
+    host.send(st, ROOM_SETTING_CHANGE, &u32s(&[0, field, value]));
+    u32_at(&host.take(ROOM_SETTING_CHANGE_REPLY), 6) == 1
+}
+
+/// The join in progress value of the room view (0x389 +0x78) as `c` reads it.
+fn room_info_mid_join(st: &mut Core, c: &mut Client) -> u32 {
+    c.send(st, ROOM_INFO, &[]);
+    u32_at(&c.take(ROOM_INFO_REPLY), 0x78)
+}
+
+/// The host starts the room and the countdown runs out: the room plays.
+fn start_and_play(st: &mut Core, host: &mut Client, key: RoomKey) {
+    host.send(st, ROOM_USER_FLAG, &u32s(&[0, 2]));
+    assert_eq!(u32_at(&host.take(ROOM_USER_FLAG_REPLY), 6), 1);
+    countdown(st, key);
+    assert_eq!(st.rooms[&key].state, RoomPhase::Playing);
+}
+
+/// The host turns join in progress on through the real 0x38c, the room view says so, the room plays and a member
+/// joins from the room list: entry, Ready, the match address.
+#[test]
+fn host_enables_join_in_progress_and_a_member_joins_late() {
+    let mut st = state();
+    let (mut a, _) = player(&mut st, 1, 2, "jp1", "JpHost");
+    let (mut b, nb) = player(&mut st, 3, 4, "jp2", "JpLate");
+    let no = open_room(&mut st, &mut a, "");
+    let key = RoomKey { channel: 1, no };
+    // off and on again, the way the host's two check boxes send it (0x38c field 9, value 0 / 1)
+    assert_eq!(
+        room_info_mid_join(&mut st, &mut a),
+        1,
+        "a new room allows it"
+    );
+    assert!(set_option(&mut st, &mut a, 9, 0));
+    assert_eq!(st.rooms[&key].mid_join, 0);
+    assert_eq!(room_info_mid_join(&mut st, &mut a), 0);
+    assert!(set_option(&mut st, &mut a, 9, 1));
+    assert_eq!(st.rooms[&key].mid_join, 1);
+    assert_eq!(room_info_mid_join(&mut st, &mut a), 1);
+    // friendly fire (field 10) and kill cam (13) do not touch it
+    assert!(set_option(&mut st, &mut a, 10, 0));
+    assert!(set_option(&mut st, &mut a, 13, 0));
+    assert_eq!(st.rooms[&key].mid_join, 1);
+    start_and_play(&mut st, &mut a, key);
+    assert_eq!(enter(&mut st, &mut b, no, "").0, 1);
+    assert_eq!(
+        room_info_mid_join(&mut st, &mut b),
+        1,
+        "the member reads the same"
+    );
+    b.send(&mut st, ROOM_USER_FLAG, &u32s(&[0, 1]));
+    assert_eq!(u32_at(&b.take(ROOM_USER_FLAG_REPLY), 6), 1);
+    assert!(b.has(MATCH_ADDRESS_PUSH), "the address follows the ok");
+    assert_eq!(st.rooms[&key].member(nb).unwrap().state, 3);
+    assert!(join_refusals(&st).is_empty());
+}
+
+/// Join in progress off in the room: the entry from the list is refused (generic reason) and logged.
+#[test]
+fn entry_into_a_playing_room_with_join_in_progress_off_is_refused_and_logged() {
+    let mut st = state();
+    let (mut a, _) = player(&mut st, 1, 2, "jq1", "JqHost");
+    let (mut b, nb) = player(&mut st, 3, 4, "jq2", "JqLate");
+    let no = open_room(&mut st, &mut a, "");
+    let key = RoomKey { channel: 1, no };
+    assert!(set_option(&mut st, &mut a, 9, 0));
+    start_and_play(&mut st, &mut a, key);
+    assert_eq!(
+        enter(&mut st, &mut b, no, ""),
+        (0, 1),
+        "reason 1: the generic box"
+    );
+    assert!(st.rooms[&key].member(nb).is_none());
+    let seen = join_refusals(&st);
+    assert_eq!(seen.len(), 1);
+    assert!(
+        seen[0].contains("playing, join in progress off (room option)"),
+        "{seen:?}"
+    );
+    // the option on, the server rule off: another cause in words
+    st.rooms.get_mut(&key).unwrap().mid_join = 1;
+    st.rules.allow_late_join = false;
+    assert_eq!(enter(&mut st, &mut b, no, "").0, 0);
+    assert!(join_refusals(&st)[1].contains("late join disabled on this server"));
+    // and back on: the same member comes in
+    st.rules.allow_late_join = true;
+    assert_eq!(enter(&mut st, &mut b, no, "").0, 1);
+}
+
+/// A member who sits in the waiting room of a room that started without him cannot Ready into it with the option off:
+/// 0x393 {fail, 0x8e, join kind} as before, and the cause is logged.
+#[test]
+fn ready_into_a_playing_room_with_join_in_progress_off_is_refused_and_logged() {
+    let mut st = state();
+    let (mut a, _) = player(&mut st, 1, 2, "jr1", "JrHost");
+    let (mut b, nb) = player(&mut st, 3, 4, "jr2", "JrLate");
+    let no = open_room(&mut st, &mut a, "");
+    let key = RoomKey { channel: 1, no };
+    assert_eq!(enter(&mut st, &mut b, no, "").0, 1);
+    assert!(set_option(&mut st, &mut a, 9, 0));
+    start_and_play(&mut st, &mut a, key);
+    assert_eq!(
+        st.rooms[&key].member(nb).unwrap().state,
+        0,
+        "left in the room"
+    );
+    b.send(&mut st, ROOM_USER_FLAG, &u32s(&[0, 1]));
+    let d = b.take(ROOM_USER_FLAG_REPLY);
+    assert_eq!(u32_at(&d, 6), 0);
+    assert_eq!(
+        u16::from_le_bytes([d[0xa], d[0xb]]),
+        crate::wire::REASON_JOIN_FAILED
+    );
+    assert!(!b.has(MATCH_ADDRESS_PUSH));
+    let seen = join_refusals(&st);
+    assert_eq!(seen.len(), 1);
+    assert!(
+        seen[0].contains("late join refused: join in progress off (room option)"),
+        "{seen:?}"
+    );
+    // settings need a waiting room: the option cannot change now
+    assert!(!set_option(&mut st, &mut a, 9, 1));
+    st.rooms.get_mut(&key).unwrap().mid_join = 1;
+    st.rules.allow_late_join = false;
+    b.send(&mut st, ROOM_USER_FLAG, &u32s(&[0, 1]));
+    assert_eq!(u32_at(&b.take(ROOM_USER_FLAG_REPLY), 6), 0);
+    assert!(join_refusals(&st)[1].contains("late join disabled on this server"));
+}
+
+/// A playing room that is full: a person comes in when a bot makes way; a room of people (or of a GM) is closed to
+/// him, and the refusal says "full" with the count.
+#[test]
+fn entry_into_a_full_playing_room_needs_a_bot_that_yields_and_a_refusal_is_logged() {
+    // full of bots: the person is taken, the pool bot goes first
+    let mut st = pool_state(5);
+    st.rules.bot_keep_seat_online = 1;
+    let (mut hb, hb_acc) = player(&mut st, 1, 2, "VpsBot3", "VpsBot3");
+    let no = seat_room(&mut st, &mut hb, 2);
+    let key = RoomKey { channel: 1, no };
+    let (mut pb, pb_acc) = seat(&mut st, 200);
+    assert!(seat_enter(&mut st, &mut pb, no));
+    start_and_play(&mut st, &mut hb, key);
+    assert_eq!(room_at(&st, no).members.len(), 2);
+    let mut guest = people(&mut st, 1, 400).pop().unwrap();
+    assert!(seat_enter(&mut st, &mut guest.0, no), "a bot makes way");
+    assert!(
+        room_at(&st, no).member(pb_acc).is_none(),
+        "the pool bot went"
+    );
+    // the room is full again with the guest in it: the keep-a-seat rule sends the host bot out too
+    assert!(room_at(&st, no).member(hb_acc).is_none());
+    assert!(room_at(&st, no).member(guest.1).is_some());
+    assert!(join_refusals(&st).is_empty());
+    // full of people: nobody yields
+    let mut st = pool_state(0);
+    st.rules.bot_keep_seat_online = 1;
+    let mut host = people(&mut st, 1, 100).pop().unwrap();
+    let no = seat_room(&mut st, &mut host.0, 1);
+    let key = RoomKey { channel: 1, no };
+    start_and_play(&mut st, &mut host.0, key);
+    let mut guest = people(&mut st, 1, 300).pop().unwrap();
+    assert!(!seat_enter(&mut st, &mut guest.0, no));
+    let seen = join_refusals(&st);
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].contains("full (1/1, no bot yields)"), "{seen:?}");
+    // full of a GM bot: no one yields either
+    let mut st = pool_state(0);
+    st.rules.bot_keep_seat_online = 1;
+    let (mut gm, gm_acc) = player(&mut st, 1, 2, "VpsBot4", "VpsBot4");
+    st.db
+        .execute(
+            "UPDATE accounts SET gm = 1 WHERE user_no = ?1",
+            [gm_acc as i64],
+        )
+        .unwrap();
+    let no = seat_room(&mut st, &mut gm, 1);
+    let key = RoomKey { channel: 1, no };
+    start_and_play(&mut st, &mut gm, key);
+    let mut guest = people(&mut st, 1, 100).pop().unwrap();
+    assert!(!seat_enter(&mut st, &mut guest.0, no));
+    assert!(join_refusals(&st)[0].contains("full (1/1"));
+}
+
+/// A wrong password is refused with its own reason and logged with its cause.
+#[test]
+fn a_wrong_password_entry_is_logged_with_its_cause() {
+    let mut st = state();
+    let (mut a, _) = player(&mut st, 1, 2, "jk1", "JkHost");
+    let (mut b, _) = player(&mut st, 3, 4, "jk2", "JkGuest");
+    let no = open_room(&mut st, &mut a, "pw1");
+    assert_eq!(enter(&mut st, &mut b, no, "bad").0, 0);
+    let seen = join_refusals(&st);
+    assert!(seen[0].contains("wrong password"), "{seen:?}");
+}

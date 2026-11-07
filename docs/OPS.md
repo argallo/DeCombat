@@ -271,7 +271,7 @@ this repository. What they do on our lobby:
 | observer mode | watch unseen | 0x30e |
 
 The test commands `/notice <text>`, `/expire`, `/shopver`, `/grade <n>` and `!hisec <item>` are GM-only on a public lobby. A ticker to everybody: `/notice <text>` as a
-GM. A text at every login: `notice.login_ticker` and `notice.login_box` in `lobby.json` beside the database (OPS-10). `account grant`, `account loadout` and `account event` change a player's things; see `--help`.
+GM. `/help` in the lobby chat lists the commands the player can use right there (the GM and test commands only for those who may use them, and the commands of the server entry's mods). A text at every login: `notice.login_ticker` and `notice.login_box` in `lobby.json` beside the database (OPS-10). `account grant`, `account loadout` and `account event` change a player's things; see `--help`.
 
 ## 12. Reports
 
@@ -348,7 +348,7 @@ instance: `-AdminPort <its admin port>` (`status.sh --instance modded` names it)
 `ssh -i <key> -N -L 10090:127.0.0.1:10090 root@<VPS_IP>`, then `http://127.0.0.1:10090/ops?token=<DC_ADMIN_TOKEN>`.
 
 The page: **Live** (the hosts with their build and whether it is the lobby's, the matches running with each player's newest 10 s window
-coloured ok / warn / bad, the rooms, the newest problems; it refreshes every 30 s, like every tab while nothing is being typed), **Problems**, **Matches** (the last 100, a link per match:
+coloured ok / warn / bad, the rooms, the newest problems; it refreshes every 30 s, like every tab while nothing is being typed), **Problems**, **Matches** (the last 100, with each map's name as the lobby started it on that server entry (OPS-13), a link per match:
 every player's whole-link numbers, a round-trip line per player, the match's events and every 10 s window), **Player** (search by character
 or login: the account panel with its changes, section 16, then the matches and the events of the account; the list marks banned, disabled and
 muted accounts and has an "Only banned" filter), **Alerts** (the checks of section 8 with their default thresholds), **Bots** (the bot groups the lobby runs and
@@ -377,6 +377,10 @@ sudo -u decombat /opt/decombat/bin/dc-lobby-server ops --db /opt/decombat/data/c
 Times there are UTC. **Deploy order**: the lobby (it makes its new tables at its start), then the host agents' game servers (`deploy_hosts.py`):
 until a host runs the new `dc-dserver`, its matches have records without link numbers. Nothing in the client changes.
 
+**Public match board (OPS-16).** The records above are for operators. For players, a lobby can write a public-only snapshot of its running
+matches (`[monitor] public_games_file`, env `DC_MONITOR__PUBLIC_GAMES_FILE`, off by default) and a separate script keeps one Discord message
+up to date from it: docs/LIVE_GAMES.md.
+
 ## 16. Changing an account from the dashboard (LG-395..LG-398)
 
 Open **Players**, pick a name. The **Account** panel shows the login, character, account number, created and last login, whether the
@@ -389,6 +393,7 @@ first; each needs the dashboard's page token, so it works only from the page its
 | Give / Take NX, GP, EXP | adds or takes the amount, with a reason. At most `[gm] admin_max_nx` (100,000), `admin_max_gp` (1,000,000), `admin_max_exp` (10,000,000) in one change; a balance never goes below 0. NX is the prepaid balance the daily bonus and clan wins pay into: NX is earned in play here, this is for prizes and corrections, never for selling. An online player's game shows the new NX and GP at once (the lobby sends the balance); the shop's balance refresh asks again and gets the same. In a match, GP and EXP show when it ends. EXP given here pays no rank reward | by the opposite change |
 | Ban | for hours or days, or for good, with a reason: every connection drops and each login gets the banned box with the days left | Lift the ban |
 | Kick now | drops the connections (reason required); they can log in again | - |
+| Loadout | the OPS-14 row: a dropdown of gun names per slot (primary, secondary, melee, throwing; the ROM's weapons and the camo variants of the loaded mod sets, from `GET /ops/guns`) writes the spec `account loadout` takes, with a typed field for ids the lists lack. Gives the items for good and equips them, the old items stay unequipped in the inventory; an online player sees them from the next login | equip the old items again |
 | Mute | the server drops their chat and whispers for N minutes (at most `gm.max_mute_minutes`) | Unmute |
 | Disable login | LG-142: refused at the next login; a session already open stays, so kick as well | Enable login |
 | Send a password reset mail | the recovery code mail (15 minutes, once) to the address the player gave; needs `[mail]`; at most 3 an hour | - |

@@ -1,0 +1,26 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "content.hud"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "Case openings spin: before the award window opens, a strip of everything the case can hold runs past a centre mark and slows down until it stops on what you got. Works for supply cases, HiSec cases and the Camo Crate; a click skips to the stop. Drawn on your own screen only: what a case gives is decided by the server before the strip starts, and nothing in play changes.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "case_reel",
+  "kind": "shared",
+  "name": "Case Reel",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": ["cosmetic", "menu"],
+  "version": "0.1.1"
+}

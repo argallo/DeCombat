@@ -38,6 +38,10 @@ pub fn route(st: &mut Core, sid: Sid, frame_id: i32, payload: &[u8]) -> crate::s
     if crate::gm::dispatch(st, sid, id, payload)? {
         return Ok(());
     }
+    // LG-427: `/help` answers the sender alone
+    if crate::help::dispatch(st, sid, id, payload)? {
+        return Ok(());
+    }
     if crate::notices::dispatch(st, sid, id, payload)? {
         return Ok(());
     }

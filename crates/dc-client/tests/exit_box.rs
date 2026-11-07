@@ -1,6 +1,7 @@
 //! Round 10 (CLI-920): the in-match exit box one Escape opens, drawn over the HUD centred on the window at its
 //! real size (two sizes), with the hovered button in its over state, and the leave question behind its lobby
-//! button. Made-up state only; the ROM variant needs `CA_ROM` (nothing of the ROM in this file).
+//! button; CLI-1907: our fourth button, Options, under the lobby button, inside the 2009 window. Made-up state only;
+//! the ROM variant needs `CA_ROM` (nothing of the ROM in this file).
 
 use dc_client::hud::compose::{resolve, Prim};
 use dc_client::hud::{DrawItem, Hud, HudState};
@@ -63,7 +64,8 @@ fn check_centred(hud: &mut Hud) {
                 && (c[1] - h as f32 / 2.0).abs() <= 0.01 * h as f32,
             "box centred on {w}x{h}: centre {c:?}"
         );
-        assert_eq!(buttons.len(), 3);
+        // CLI-1907: lobby, report, back to the game and our Options
+        assert_eq!(buttons.len(), 4);
         for b in &buttons {
             assert!(
                 b[0] >= win[0] && b[2] <= win[2] && b[1] >= win[1] && b[3] <= win[3],
@@ -123,6 +125,32 @@ fn rom_exit_box_is_centred_and_hover_shows_the_over_image() {
     let b = hud.exit_box.clone();
     assert!(b.window_tex.is_some(), "the 2009 window image resolves");
     assert!(b.button_tex.iter().flatten().all(|t| t.is_some()));
+    // CLI-1907: Options is drawn with the message boxes' button picture, right under the lobby button; the 2009
+    // buttons keep their order downwards
+    assert!(
+        b.options_art.iter().all(|t| t.is_some()),
+        "the button picture resolves"
+    );
+    let o = b.buttons[dc_client::loading::EXIT_OPTIONS];
+    let lobby = b.buttons[dc_client::loading::EXIT_LOBBY];
+    let report = b.buttons[dc_client::loading::EXIT_REPORT];
+    let game = b.buttons[dc_client::loading::EXIT_CANCEL];
+    assert!(
+        lobby[1] < o[1] && o[1] < report[1] && report[1] < game[1],
+        "{:?}",
+        b.buttons
+    );
+    assert!(
+        o[1] - lobby[1] >= lobby[3] && report[1] - o[1] >= o[3],
+        "no overlap: {:?}",
+        b.buttons
+    );
+    let drawn = image_names(&hud.items(&exit_view(Some(dc_client::loading::EXIT_OPTIONS))));
+    let lit = b.options_art[1].clone().unwrap();
+    assert!(
+        drawn.iter().any(|t| t.starts_with(&lit)),
+        "hovered Options: the over picture: {drawn:?}"
+    );
     check_centred(&mut hud);
     hud.set_size(1024, 768);
     let plain = image_names(&hud.items(&exit_view(None)));

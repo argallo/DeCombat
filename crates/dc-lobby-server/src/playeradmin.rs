@@ -6,6 +6,8 @@
 //! - `ban`: `hours` and / or `days`, or `permanent: true`, and `reason`; drops the connections like the GM ban. `unban`.
 //! - `kick` (`reason`), `mute` (`minutes`), `unmute` (gm.rs, the GM tools' own functions).
 //! - `disable`, `enable` (LG-142), `reset_mail` (LG-242's code mail to the account's address).
+//! - `loadout`: `spec` = the items as `account loadout` takes them (`0:27,1:3`, or `random`); gives and equips them
+//!   (accounts.rs `equip_loadout`), counting from the account's next login (OPS-14).
 //! - `delete`: `confirm` = the login; refused for a GM account and while the account is connected. Irreversible.
 //!
 //! Every write goes through the dashboard's write guard (a JSON body, the page's own `Origin`, the page's token in
@@ -39,6 +41,7 @@ pub const ACTIONS: &[&str] = &[
     "disable",
     "enable",
     "reset_mail",
+    "loadout",
     "delete",
 ];
 
@@ -441,8 +444,44 @@ pub fn act(
                 crate::accounts::mask_email(&email)
             )))
         }
+        "loadout" => loadout(st, account, &acc.login, &who, m, by),
         "delete" => delete(st, account, &acc, &who, m, by),
         other => refuse(404, format!("no action {other}")),
+    }
+}
+
+/// OPS-14: gives and equips a loadout (`spec`, the CLI's `account loadout` syntax). Nothing changes on a refusal.
+// DC-DEFAULT: OPS-14 (proposed) the Players tab equips a loadout like `account loadout` does, from the next login
+fn loadout(
+    st: &mut Core,
+    account: u32,
+    login: &str,
+    who: &str,
+    m: &Map<String, Value>,
+    by: &str,
+) -> Outcome {
+    let spec = m.get("spec").and_then(Value::as_str).unwrap_or("").trim();
+    let spec = match crate::botgroups::clean_loadout(spec) {
+        Ok(s) if !s.is_empty() => s,
+        Ok(_) => return refuse(400, "spec: random, or <slot>:<item>,... (for example 0:27)"),
+        Err(e) => return refuse(400, e.replacen("loadout", "spec", 1)),
+    };
+    if st.character(account).is_none() {
+        return refuse(409, format!("{who} has no character yet"));
+    }
+    st.db.execute_batch("SAVEPOINT ops_loadout")?;
+    match crate::accounts::equip_loadout(&st.db, &st.rom, login, &spec, None) {
+        Ok(text) => {
+            st.db.execute_batch("RELEASE ops_loadout")?;
+            gm::log_action(st, 0, "loadout", account, 0, &spec)?;
+            record(st, account, &format!("loadout {spec} by {by}"));
+            Ok(Ok(text))
+        }
+        Err(e) => {
+            st.db
+                .execute_batch("ROLLBACK TO ops_loadout; RELEASE ops_loadout")?;
+            refuse(400, e)
+        }
     }
 }
 

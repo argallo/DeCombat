@@ -8,7 +8,8 @@
 #          bin/ goes to /opt/decombat/bin, its COMMIT.txt (plus the install time and the tarball's SHA-256) to
 #          /opt/decombat/bin/COMMIT.txt; its tools/vps scripts, the systemd units (decombat-lobby.service and the
 #          instance template decombat-lobby@.service) and the examples instance.sh reads (/opt/decombat/tools/
-#          examples) are refreshed when present.
+#          examples; also the two decombat-live-games units, docs/LIVE_GAMES.md, which nothing installs or enables)
+#          are refreshed when present.
 # --rom    a tar.gz of a server ROM folder (dc-server-rom, docs/SERVER_ROM.md; tools/vps/push.ps1 -Rom makes it):
 #          unpacked next to /opt/decombat/rom, checked with `dc-server-rom --verify`, then swapped in.
 # Afterwards every enabled lobby instance is restarted, one after the other (a graceful stop first: running matches
@@ -112,7 +113,7 @@ if [ -n "$TARBALL" ]; then
     # what instance.sh create reads (the installed tools have no examples/ next to them otherwise)
     if [ -f "$PKG/examples/server-vps.toml" ]; then
         install -d -m 0755 -o root -g root "$DC_ROOT/tools/examples"
-        for f in server-vps.toml decombat-lobby@.service; do
+        for f in server-vps.toml decombat-lobby@.service decombat-live-games.service decombat-live-games.timer; do
             [ -f "$PKG/examples/$f" ] || continue
             tr -d '\r' < "$PKG/examples/$f" > "$WORK/example"
             install -m 0644 -o root -g root "$WORK/example" "$DC_ROOT/tools/examples/$f"

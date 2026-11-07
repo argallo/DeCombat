@@ -136,14 +136,17 @@ it says MISSING when `dc-botclient` is not beside `dc-lobby-server` (the server 
 
 - a name prefix: the bots are `<prefix>1` .. `<prefix><count>` (2..12 letters, digits or `_`, a letter first, no digit
   last, not `PoolBot`);
-- how many, 1..7 (a room holds 8);
-- the server entry and one or more of its channels. Bot 1 takes the first ticked channel, bot 2 the next, and so on
+- how many, 1..15 (a room holds up to 16: `room.max_players_cap`; all groups together stay within `bots.managed_max_total`, default 21);
+- the server entry (every entry of this lobby's server list; an entry that names another lobby, such as the modded instance, is
+  listed greyed out: its bots log in there, so add that group in that instance's dashboard) and one or more of its channels. A new
+  group starts with the first channel ticked. Bot 1 takes the first ticked channel, bot 2 the next, and so on
   round the list: three channels and seven bots give 3, 2 and 2 bots;
-- the room: any room with a person in it, the room of one player (they follow that player and leave with them), or the
-  first room whose title holds a text;
+- the room: any room with a person in it, the room of one player (they follow that player and leave with them, see
+  "Following a player" below), or the first room whose title holds a text;
 - the skill: a level 0..100, a range such as `30-65` (each bot gets its own level from its name), or `off`;
-- a loadout, or nothing to leave their guns alone: `random`, or the items as `account loadout` takes them (`0:27` is
-  the L96A1 in slot 0). Each bot gets it once, after its first login made the account (or at once when it has one), and
+- a loadout, or nothing to leave their guns alone: a dropdown of gun names per slot (primary, secondary, melee, throwing; the ROM's
+  weapons and the camo variants of the loaded mod sets), or typed below them: `random`, or the items as `account loadout` takes
+  them (`0:27` is the L96A1 in slot 0). Each bot gets it once, after its first login made the account (or at once when it has one), and
   restarts so the kit counts. The status shows `loadout 0:27`, `after the first login` or why it was refused.
 
 The tab lists each group and its bots: the process (running, restarting with the seconds left, stopped), how long it has
@@ -152,6 +155,18 @@ run, its restarts and last exit, its channel, and from the lobby whether it is l
 **Stop** ends its bots and keeps the group; **Start** runs them again; **Delete** ends them and removes the group. A
 change that would run more than `managed_max_total` bots is refused. Every change is an event of kind `bots` in the
 dashboard's events list, by group number and prefix. Groups can be saved while `managed` is off; they start once it is on.
+
+**Following a player.** A group that follows a player goes where the lobby sees that player: when they are on a channel
+of another entry or another channel of this lobby, the group's bots restart there (all of them on the player's channel,
+with that entry's `--server-id`; a curated entry's packs come from the same `--mod-cache`) and take a seat in the
+player's room. While the player is on a channel in no room, the bots wait on that channel; while they are offline, on
+the server or channel list, or in the clan lobby, the bots stay where they are (where the group was set up, until the
+first move). A group moves at most once every 10 s, so a player hopping channels does not restart the bots on every hop;
+each move restarts the bots 2 s apart. A room with a password is not joined (the bots know none) and a full room has no
+seat. Editing the group's entry or channels puts the bots back there. The group's card says where the player is, or
+that they are waiting. A group follows within its own lobby only: the lobby sees its own sessions, so a player on an entry
+of another lobby (the modded instance) is "not online on this lobby"; to follow them there, make the group in that
+instance's Bots tab. Rule: OPS-15 in DC_DEFAULTS.md.
 
 What each bot runs: `dc-botclient --parent-pipe --lobby 127.0.0.1:<auth port> --name <name> --room any --duration 3600
 --match-wait 3600 --shooter --hunt --respawn-after 0 --skill <skill> --matches 0 --filler <prefix>` (or `=<player>`),

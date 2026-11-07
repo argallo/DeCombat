@@ -170,7 +170,19 @@ pub mod key {
     // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] DotSightName (a HUD picture on the knife rows)
     // DISASM: cshell+0x17c14e (`DotSightName` -> row +0xc8)
     pub const DOT_SIGHT: &str = "DotSightName";
+    // OBSERVED: ROM table keys WEAPONS.TXT [Weapon<n>] SubControlWeaponID, SubControlleeWeaponID (the claymore row names
+    // its controller, the controller row the claymore)
+    // DISASM: cshell+0x17d140 (`SubControlWeaponID` -> row +0x224, default -1), cshell+0x17d155
+    // (`SubControlleeWeaponID` -> row +0x228, default -1)
+    pub const SUB_CONTROL: &str = "SubControlWeaponID";
+    pub const CONTROLLEE: &str = "SubControlleeWeaponID";
 }
+
+/// The order class (2009 numbering) whose rows hand the hand over to their sub-control or controllee weapon after a
+/// round use ([`Arsenal::hand_over`]).
+// EVIDENCE: cshell+0x237180 (the weapon update, at cshell+0x23765d: a round used, row `HideWhenEmpty` set and order
+// class 5)
+pub const HANDOVER_CLASS: u8 = 5;
 
 /// `Guntype` of the melee rows (the zoom key is their alternate fire, CLI-1350).
 // DISASM: cshell+0x1f8b40 (row +0x418 == 0 with the zoom bit -> fire mode 1); OBSERVED: ROM `Guntype` 0 rows are the
@@ -271,6 +283,12 @@ pub struct WeaponRow {
     pub dot_sight: Option<String>,
     /// `CameraSway*` (row +0x3f0..+0x3fc): the scope sway ([`crate::zoom::CameraSway`]).
     pub sway: crate::zoom::CameraSway,
+    /// `SubControlWeaponID` (row +0x224): the weapon a round use hands over to (the claymore's controller).
+    pub sub_control: Option<u16>,
+    /// `SubControlleeWeaponID` (row +0x228): the weapon the controller hands back to (the claymore).
+    pub controllee: Option<u16>,
+    /// The row's sensor numbers (`SensorOption` and the battery, [`crate::hud::sensor`]); `None`: no sensor row.
+    pub sensor: Option<crate::hud::sensor::SensorSpec>,
 }
 
 /// The weapon rows of the ROM.
@@ -333,6 +351,13 @@ fn num(v: Option<&String>) -> Option<f32> {
     let t = v?.trim();
     let t = t.strip_suffix(['f', 'F']).unwrap_or(t);
     t.parse::<f32>().ok().filter(|x| x.is_finite())
+}
+
+/// A row value naming a weapon number (`-1` and other negatives: none).
+fn weapon_id(v: Option<&String>) -> Option<u16> {
+    num(v)
+        .filter(|x| (0.0..=f32::from(u16::MAX)).contains(x))
+        .map(|x| x as u16)
 }
 
 fn text(v: Option<&String>) -> Option<String> {
@@ -440,6 +465,9 @@ impl WeaponTable {
                         sec,
                         crate::zoom::CameraSway::WEAPON_DEFAULT,
                     ),
+                    sub_control: weapon_id(sec.get(key::SUB_CONTROL)),
+                    controllee: weapon_id(sec.get(key::CONTROLLEE)),
+                    sensor: crate::hud::sensor::SensorSpec::of_row(&|k| num(sec.get(k))),
                 },
             );
         }
@@ -997,6 +1025,9 @@ impl Carried {
 pub enum Phase {
     Idle,
     Select,
+    /// The prefire clip ahead of the fire clip, for a row whose round goes at its postfire clip's fire key (the
+    /// claymore's lay-down, [`Arsenal::fires_in_postfire`]).
+    PreFire,
     Fire,
     Reload,
     /// A throwable's wind-up, the held loop, and the release.
@@ -1016,6 +1047,7 @@ impl Phase {
         match self {
             Phase::Idle => "ready",
             Phase::Select => "select",
+            Phase::PreFire => "prefire",
             Phase::Fire => "fire",
             Phase::Reload => "reload",
             Phase::ThrowPre | Phase::ThrowHold => "hold",
@@ -1231,6 +1263,8 @@ pub struct Arsenal {
     spawn_draw_due: bool,
     /// The first draw after a spawn, for the log ([`Arsenal::take_spawn_draw`]).
     spawn_draw: Option<SpawnDraw>,
+    /// The weapon a hand-over took out of each slot, with its count ([`Arsenal::hand_over`]).
+    parked: BTreeMap<u8, Carried>,
 }
 
 /// The weapon the first select after a spawn drew and why (one log line per spawn, CLI-1856).
@@ -1310,6 +1344,7 @@ impl Arsenal {
             sprint_anim: crate::viewanim::SprintAnim::default(),
             spawn_draw_due: false,
             spawn_draw: None,
+            parked: BTreeMap::new(),
         }
     }
 
@@ -1375,6 +1410,34 @@ impl Arsenal {
 
     pub fn held(&self) -> Option<&Carried> {
         self.held.and_then(|s| self.slots.get(&s))
+    }
+
+    /// The heartbeat sensor's facts of the frame ([`crate::hud::sensor`]): the first carried sensor row (a variant
+    /// has its base gun's), whether it is the drawn weapon with the sensor `Guntype`, and whether that one fires.
+    // DISASM: cshell+0x60d90 (each granted weapon with `SensorOption` != -1 arms the radar's battery), cshell+0x489cf
+    // (the drawn row's `Guntype` 0xb selects the sensor)
+    pub fn sensor_input(&self, sprinting: bool) -> crate::hud::sensor::SensorInput {
+        let row_of = |w: u16| {
+            self.row(w)
+                .or_else(|| self.row(crate::camo::base_weapon(w)))
+        };
+        let spec_of = |w: u16| row_of(w).and_then(|r| r.sensor).filter(|s| s.heartbeat());
+        let carried = self
+            .slots
+            .values()
+            .find_map(|c| spec_of(c.weapon).map(|s| (c.weapon, s)));
+        let held = self.held().is_some_and(|c| {
+            Some(c.weapon) == carried.map(|x| x.0)
+                && row_of(c.weapon).and_then(|r| r.gun_type)
+                    == Some(crate::hud::sensor::GUN_TYPE_SENSOR)
+        });
+        crate::hud::sensor::SensorInput {
+            carried,
+            held,
+            firing: self.phase == Phase::Fire,
+            sprinting,
+            alive: self.alive,
+        }
     }
 
     /// `GS_MATCH_SETTINGS` 0x7d `own_value`: the shot counter := `v`.
@@ -1750,6 +1813,113 @@ impl Arsenal {
             .is_some_and(|n| n >= 1)
     }
 
+    /// Whether the trigger fires the held weapon once per press: a [`Arsenal::single_shot`] row, or a row of the
+    /// thrown kind (`ClientWeaponType` [`CLIENT_KIND_THROWN`]) whose fire clip has no throw key, such as a mine: its
+    /// placement is one `UP_FIRE` per press, never repeated while the key is held.
+    // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] ClientWeaponType, RapidFireCount (the two mine rows: the thrown
+    // kind with no RapidFireCount; their first-person fire clip has a fire key and no throw key, their reload clip a
+    // single key); before, a held key (one 50 ms click spans three frames) placed every mine of the stock: shot,
+    // reload of no length, shot again (the owner's 2026-11-06 report "mines place 3 all at once")
+    // DC-DEFAULT: DSV-613 (proposed) one placement per press
+    fn one_per_press(&self, weapon: u16) -> bool {
+        self.single_shot(weapon)
+            || self
+                .row(weapon)
+                .is_some_and(|r| r.client_kind == Some(CLIENT_KIND_THROWN))
+    }
+
+    /// Whether the round of `weapon` goes at the fire key of its postfire clip: its fire clip has no fire key and its
+    /// postfire clip has one (the claymore: a prefire clip that lays it down, a fire clip of no length, the postfire
+    /// clip with the fire key). Such a press plays the prefire clip first.
+    // EVIDENCE: cshell+0x2360c0 (the fire key of any clip calls the weapon's slot +0x180), cshell+0x237130 (slot +0x180
+    // sets the fire-pending byte while the weapon's own clip plays in the firing state 3), cshell+0x238110 (the firing
+    // state plays the prefire clip (none for order classes 2 and 3), then the fire clip, then the postfire clip)
+    // OBSERVED: the ROM claymore rows' first-person clips (2026-11-06: prefire 1000 ms, fire 0 ms with no key, postfire
+    // 700 ms with the fire key at 534 ms; counts only)
+    // DC-DEFAULT: DSV-620 (proposed) only such rows play the prefire clip and take the postfire clip's fire key
+    fn fires_in_postfire(&mut self, weapon: u16) -> bool {
+        self.clips_of(weapon).is_some_and(|c| {
+            let fire_key = |f: &Option<ClipFact>| {
+                f.as_ref()
+                    .is_some_and(|f| f.marks.iter().any(|m| m.1 == Mark::Fire))
+            };
+            c.fire.is_some() && !fire_key(&c.fire) && fire_key(&c.postfire)
+        })
+    }
+
+    /// After a round use of an order class 5 row with `HideWhenEmpty`: the held slot hands over to the row's controllee
+    /// (`SubControlleeWeaponID`), else to its sub-control weapon (`SubControlWeaponID`), when that weapon has a round,
+    /// and draws it (the claymore placed: its controller; the controller fired: the claymore). The weapon handed off
+    /// is parked with its count and comes back at the next hand-over; a weapon never carried starts with its row's
+    /// clip and `MaxAmount`. Returns whether the hand-over took place (else the usual empty test follows).
+    // EVIDENCE: cshell+0x237180 (at cshell+0x23765d..0x2376b1: class 5 and row +0x240 -> the weapon list's slot +0xb8
+    // with row +0x228 if set, else row +0x224; success skips the empty test)
+    // DISASM: cshell+0x479d0 (that slot: the class's slot gets the new weapon, refused when its ammunition count is 0)
+    // DC-DEFAULT: DSV-620 (proposed) the parked count and the row's count for a weapon never carried
+    fn hand_over(&mut self, now: u32, out: &mut Vec<Outgoing>) -> bool {
+        let Some(slot) = self.held else {
+            return false;
+        };
+        let Some(c) = self.slots.get(&slot).copied() else {
+            return false;
+        };
+        if self.order_class(c.weapon) != HANDOVER_CLASS || !self.hides_when_empty(c.weapon) {
+            return false;
+        }
+        let Some(target) = self
+            .row(c.weapon)
+            .and_then(|r| r.controllee.or(r.sub_control))
+        else {
+            return false;
+        };
+        let next = match self.parked.get(&slot) {
+            Some(p) if p.weapon == target => *p,
+            _ => {
+                let Some(r) = self.row(target).cloned() else {
+                    return false;
+                };
+                let size = r.clip.unwrap_or(1).max(1);
+                let total = r.max_amount.unwrap_or(size);
+                Carried {
+                    slot,
+                    weapon: target,
+                    ammo_id: r.ammo.unwrap_or(target),
+                    clip: size.min(total),
+                    stock: total.saturating_sub(size.min(total)),
+                    clip_size: r.clip,
+                    source: "handover",
+                }
+            }
+        };
+        if !self.loaded(&next) {
+            return false;
+        }
+        self.parked.insert(slot, c);
+        self.slots.insert(slot, Carried { slot, ..next });
+        self.select_now(now, slot, out);
+        // an empty clip with rounds in the stock reloads by itself once the draw ends
+        // EVIDENCE: cshell+0x237180 (at its end: an empty clip with a count above 0 outside the reload state 9 calls
+        // the reload cshell+0x1f6520)
+        if next.clip_size.is_some() && next.clip == 0 && next.stock > 0 {
+            self.reload_wanted = true;
+        }
+        true
+    }
+
+    /// A new life: a slot left holding a controller gets back the weapon it controls (parked by [`Arsenal::hand_over`]).
+    // DC-DEFAULT: DSV-620 (proposed)
+    fn unpark(&mut self) {
+        for (slot, p) in std::mem::take(&mut self.parked) {
+            let back = self.slots.get(&slot).is_some_and(|c| {
+                self.row(c.weapon)
+                    .is_some_and(|r| r.controllee == Some(p.weapon))
+            });
+            if back {
+                self.slots.insert(slot, p);
+            }
+        }
+    }
+
     /// Server 0x67: a spawn (1 after anything else) starts the select step; any other state stops the weapon.
     pub fn on_life(&mut self, now: u32, state: u8) {
         let alive = state == 1;
@@ -1760,6 +1930,7 @@ impl Arsenal {
             self.spawned_at = Some(now);
             self.need_select = true;
             self.spawn_draw_due = true;
+            self.unpark();
             self.phase = Phase::Idle;
             self.spreads.clear();
             self.recoil.reset();
@@ -1798,6 +1969,7 @@ impl Arsenal {
             .get(&g.slot)
             .is_some_and(|c| c.weapon != g.weapon);
         self.class_pos.insert(g.slot, g.class_pos);
+        self.parked.remove(&g.slot);
         self.slots.insert(
             g.slot,
             Carried {
@@ -1864,6 +2036,7 @@ impl Arsenal {
     // between the reset and its grants)
     pub fn on_status_reset(&mut self, now: u32) {
         self.slots.clear();
+        self.parked.clear();
         self.class_pos.clear();
         if self.held.take().is_some() {
             self.reset_zoom();
@@ -1885,6 +2058,7 @@ impl Arsenal {
     /// Server 0xb4.
     pub fn on_remove(&mut self, slot: u8) {
         self.slots.remove(&slot);
+        self.parked.remove(&slot);
         self.class_pos.remove(&slot);
         if self.held == Some(slot) {
             self.held = None;
@@ -2355,10 +2529,14 @@ impl Arsenal {
         let has = self
             .held()
             .is_some_and(|c| c.clip > 0 || c.clip_size.is_none());
-        if !has || self.phase != Phase::Fire {
+        if !has || !matches!(self.phase, Phase::Fire | Phase::PostFire) {
             return;
         }
         self.shoot(now, aim, targets, world, out);
+        // DC-DEFAULT: DSV-620 (proposed) the claymore placed: its controller is drawn (and back)
+        if self.hand_over(now, out) {
+            return;
+        }
         // a zoomed shot of a bolt-action weapon arms its zoom-out
         // DISASM: cshell+0x1f8b40 ("fire now" while +0xf0 > 0 or +0xf4, row +0x200 -> +0x1b3 := 1, +0x1b4 := now)
         if self.scope.active()
@@ -2795,6 +2973,22 @@ impl Arsenal {
                     self.start(now, Phase::Idle);
                 }
             }
+            Phase::PreFire => {
+                // the prefire clip's sound keys, then the fire clip from where it ended (the trigger may be up by
+                // now: the firing state goes on)
+                // EVIDENCE: cshell+0x238110 (a finished prefire clip starts the fire clip, else the postfire clip)
+                let rate = self.anim_rate(w, true);
+                let marks = at_rate(self.clip_marks(w, |c| c.prefire.as_ref(), &[]), rate);
+                for m in self.due_marks(now, &marks) {
+                    if let Mark::Sound(n) = m {
+                        self.sound(&mut out, n, aim);
+                    }
+                }
+                let len = ms_at_rate(self.clip_len(w, |c| c.prefire.as_ref(), 0), rate);
+                if t >= len {
+                    self.start(self.phase_at + len, Phase::Fire);
+                }
+            }
             Phase::Fire => {
                 // the fire clip loops while an automatic weapon's trigger is held: each pass starts where the last
                 // ended (the cadence is the clip length, not the frame rate)
@@ -2803,7 +2997,7 @@ impl Arsenal {
                 let rate = self.anim_rate(w, true);
                 let marks = at_rate(self.clip_marks(w, which, &[(0, Mark::Fire)]), rate);
                 let len = ms_at_rate(self.clip_len(w, which, fallback::FIRE_MS), rate);
-                let single = self.single_shot(w);
+                let single = self.one_per_press(w);
                 for _ in 0..64 {
                     for m in self.due_marks(now, &marks) {
                         match m {
@@ -2853,12 +3047,21 @@ impl Arsenal {
                 // SPEC: GAME_MESSAGES_2009_C2S.md §4.3 (sound keys of the playing clip)
                 let rate = self.anim_rate(w, true);
                 let marks = at_rate(self.clip_marks(w, |c| c.postfire.as_ref(), &[]), rate);
+                // DC-DEFAULT: DSV-620 (proposed) the postfire clip's fire key is the round of a row whose fire clip
+                // has none ([`Arsenal::fires_in_postfire`])
+                let placed = self.fires_in_postfire(w);
                 for m in self.due_marks(now, &marks) {
-                    if let Mark::Sound(n) = m {
-                        self.sound(&mut out, n, aim);
+                    match m {
+                        Mark::Sound(n) if self.phase == Phase::PostFire => {
+                            self.sound(&mut out, n, aim)
+                        }
+                        Mark::Fire if placed => self.fire_key(now, aim, targets, world, &mut out),
+                        _ => {}
                     }
                 }
-                if t >= ms_at_rate(self.clip_len(w, |c| c.postfire.as_ref(), 0), rate) {
+                if self.phase == Phase::PostFire
+                    && t >= ms_at_rate(self.clip_len(w, |c| c.postfire.as_ref(), 0), rate)
+                {
                     self.start(now, Phase::Idle);
                 }
             }
@@ -2945,14 +3148,14 @@ impl Arsenal {
             Phase::Idle => {}
         }
         if self.phase == Phase::PostFire
-            && (self.reload_wanted || (self.trigger && (self.pressed || !self.single_shot(w))))
+            && (self.reload_wanted || (self.trigger && (self.pressed || !self.one_per_press(w))))
         {
             // a new press (or the reload key) during the postfire clip: the weapon is ready again at once
             // DISASM: cshell+0x238110 (with the postfire clip playing and the fire wanted, the prefire or fire clip is
             // started over it)
             self.start(now, Phase::Idle);
         }
-        if self.phase == Phase::Fire && self.reload_wanted {
+        if matches!(self.phase, Phase::PreFire | Phase::Fire) && self.reload_wanted {
             // the reload key cuts the fire clip short
             self.start(now, Phase::Idle);
         }
@@ -2963,14 +3166,20 @@ impl Arsenal {
                 if std::mem::take(&mut self.reload_wanted) && c.clip < size && c.stock > 0 {
                     self.begin_reload(now, &mut out);
                 } else if self.trigger {
-                    let single = self.single_shot(c.weapon);
+                    let single = self.one_per_press(c.weapon);
                     if self.throwable(c.weapon) {
                         if self.pressed && c.total() > 0 {
                             self.pressed = false;
                             self.start(now, Phase::ThrowPre);
                         }
                     } else if c.clip > 0 || c.clip_size.is_none() {
-                        if !single || self.pressed {
+                        let pre = self.fires_in_postfire(c.weapon)
+                            && self.clip_len(c.weapon, |c| c.prefire.as_ref(), 0) > 1;
+                        if pre && self.pressed {
+                            self.pressed = false;
+                            self.alt = false;
+                            self.start(now, Phase::PreFire);
+                        } else if !single || self.pressed {
                             self.pressed = false;
                             self.alt = self.alt_wanted;
                             self.start(now, Phase::Fire);
@@ -3061,7 +3270,9 @@ impl Arsenal {
         // postfire clip plays in the firing state)
         let refused = match self.phase {
             Phase::Reload => true,
-            Phase::Fire | Phase::PostFire => row.reload_after_fire && !self.scope.active(),
+            Phase::PreFire | Phase::Fire | Phase::PostFire => {
+                row.reload_after_fire && !self.scope.active()
+            }
             _ => false,
         };
         if !refused {
@@ -3221,7 +3432,7 @@ impl Arsenal {
     fn phase_rate(&self, weapon: u16, phase: Phase) -> f32 {
         match phase {
             Phase::Reload => self.anim_rate(weapon, false),
-            Phase::Fire | Phase::PostFire => self.anim_rate(weapon, true),
+            Phase::PreFire | Phase::Fire | Phase::PostFire => self.anim_rate(weapon, true),
             _ => 1.0,
         }
     }
@@ -3234,6 +3445,7 @@ impl Arsenal {
         let c = self.clips_of(w)?.clone();
         let pick = match phase {
             Phase::Select => c.select.as_ref(),
+            Phase::PreFire => c.prefire.as_ref(),
             Phase::Fire => fire_clip_of(self.alt)(&c),
             Phase::ThrowHold => c.fire.as_ref(),
             Phase::Reload => c.reload.as_ref(),
@@ -3511,6 +3723,74 @@ mod tests {
             table: Some(table()),
             ..ArmsConfig::default()
         })
+    }
+
+    /// CLI-1912: a sensor row (made-up numbers) drawn and fired: the sensor's facts follow the slot, the firing
+    /// state and the sprint; its fire clip (no fire key, as the ROM sensor's) sends no shot.
+    #[test]
+    fn a_drawn_sensor_row_fires_no_shot_and_reports_its_firing_state() {
+        let text = [
+            table_text().as_str(),
+            "[Ammo7]",
+            "Name = \"sen\"",
+            "MaxAmount = 100",
+            "[Weapon12]",
+            "AmmoName0 = \"sen\"",
+            "ShotsPerClip = 30",
+            "InfiniteAmmo = 1",
+            "Guntype = 11",
+            "SensorOption = 0",
+            "ScanDist = 800",
+            "BatteryMaxQuantity = 50",
+            "BatteryRefillQuantity = 2",
+            "BatteryUsingQuantity = 4",
+            "BatteryRefillTime = 500",
+        ]
+        .join("\n");
+        let t = std::sync::Arc::new(WeaponTable::from_doc(&ButeDoc::parse(&text)));
+        let spec = t.rows[&12].sensor.expect("sensor row");
+        assert_eq!((spec.option, spec.scan_dist, spec.max, spec.step_ms), (0, 800, 50, 500));
+        assert_eq!(t.rows[&5].sensor, None);
+        let mut a = Arsenal::new(ArmsConfig {
+            table: Some(t),
+            ..ArmsConfig::default()
+        });
+        let fact = |len_ms: u32| {
+            Some(ClipFact {
+                index: 0,
+                len_ms,
+                marks: Vec::new(),
+            })
+        };
+        a.clips.insert(
+            12,
+            Some((
+                "test".into(),
+                WeaponClips {
+                    select: fact(300),
+                    prefire: fact(160),
+                    fire: fact(1),
+                    postfire: fact(200),
+                    ..WeaponClips::default()
+                },
+            )),
+        );
+        a.on_grant(&grant(0, 12, 7, 100.0));
+        a.on_grant(&grant(1, 5, 1, 9.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 600, |_| fire_cmd(false), &[]);
+        let i = a.sensor_input(false);
+        assert_eq!(i.carried, Some((12, spec)));
+        assert!(i.held && !i.firing && i.alive);
+        let out = run(&mut a, 600, 2000, |_| fire_cmd(true), &[]);
+        assert!(!shells(&out).contains(&up::FIRE), "{:?}", shells(&out));
+        assert!(a.sensor_input(false).firing);
+        run(&mut a, 2000, 2400, |_| fire_cmd(false), &[]);
+        assert!(!a.sensor_input(false).firing);
+        // the other weapon drawn: carried, not held
+        run(&mut a, 2400, 3200, |t| if t == 2400 { pick(1) } else { fire_cmd(false) }, &[]);
+        let i = a.sensor_input(false);
+        assert!(i.carried.is_some() && !i.held);
     }
 
     fn aim() -> Aim {
@@ -3987,6 +4267,221 @@ ModModel0 = 0
         let out = a.step(1400, &fire_cmd(true), &sprint, &[], None);
         assert!(out.iter().all(|m| m.shell != up::FIRE));
         assert!(!a.trigger_flags(1500));
+    }
+
+    /// DSV-613: a mine (the thrown kind, its fire clip with a fire key and no throw key, a reload clip of no length)
+    /// places one round per press: a click spanning three frames and a key held for seconds each send one `UP_FIRE`.
+    #[test]
+    fn a_placed_round_fires_once_per_press() {
+        let mut a = arsenal();
+        a.on_grant(&grant(0, 9, 2, 3.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 600, |_| fire_cmd(false), &[]);
+        a.clips.insert(
+            9,
+            Some((
+                "test".into(),
+                WeaponClips {
+                    fire: Some(ClipFact {
+                        index: 5,
+                        len_ms: 1300,
+                        marks: vec![(0, Mark::Fire)],
+                    }),
+                    reload: Some(ClipFact {
+                        index: 8,
+                        len_ms: 0,
+                        marks: vec![],
+                    }),
+                    ..WeaponClips::default()
+                },
+            )),
+        );
+        assert!(!a.throwable(9) && a.one_per_press(9));
+        let fires = |v: &[(u32, Outgoing)]| v.iter().filter(|m| m.1.shell == up::FIRE).count();
+        // a 50 ms click: one placement (before: three, one per frame, each followed by a reload of no length)
+        let v = run(&mut a, 600, 2400, |t| fire_cmd(t < 650), &[]);
+        assert_eq!(
+            fires(&v),
+            1,
+            "{:?}",
+            v.iter().map(|m| (m.0, m.1.shell)).collect::<Vec<_>>()
+        );
+        assert_eq!(a.held().map(|c| c.total()), Some(2));
+        // held for three seconds: one more
+        let v = run(&mut a, 2400, 5400, |_| fire_cmd(true), &[]);
+        assert_eq!(fires(&v), 1);
+        // released and pressed again: the third
+        run(&mut a, 5400, 5600, |_| fire_cmd(false), &[]);
+        let v = run(&mut a, 5600, 5700, |_| fire_cmd(true), &[]);
+        assert_eq!(fires(&v), 1);
+    }
+
+    /// A made-up claymore pair (numbers ours): weapon 20 lays a mine at its postfire clip's fire key and hands over
+    /// to its controller 21, which hands back after its shot; both order class 5, `HideWhenEmpty`, two rounds each.
+    fn claymore_arsenal() -> Arsenal {
+        let text = [
+            "[Ammo0]",
+            "Name = \"clay\"",
+            "MaxAmount = 2",
+            "[Ammo1]",
+            "Name = \"ctl\"",
+            "MaxAmount = 2",
+            "[Weapon20]",
+            "Name = \"clay\"",
+            "AmmoName0 = \"clay\"",
+            "ShotsPerClip = 1",
+            "ClientWeaponType = 2",
+            "HideWhenEmpty = 1",
+            "SubControlWeaponID = 21",
+            "[Weapon21]",
+            "Name = \"ctl\"",
+            "AmmoName0 = \"ctl\"",
+            "ShotsPerClip = 1",
+            "ClientWeaponType = 2",
+            "HideWhenEmpty = 1",
+            "SubControlleeWeaponID = 20",
+            "[WeaponOrder]",
+            "Class0 = \"P\"",
+            "Class1 = \"S\"",
+            "Class2 = \"M\"",
+            "Class3 = \"T\"",
+            "Class4 = \"X\"",
+            "X0 = \"clay\"",
+            "X1 = \"ctl\"",
+        ]
+        .join(
+            "
+",
+        );
+        let mut a = Arsenal::new(ArmsConfig {
+            table: Some(std::sync::Arc::new(WeaponTable::from_doc(&ButeDoc::parse(
+                &text,
+            )))),
+            ..ArmsConfig::default()
+        });
+        let clip = |index: usize, len_ms: u32, marks: Vec<(u32, Mark)>| {
+            Some(ClipFact {
+                index,
+                len_ms,
+                marks,
+            })
+        };
+        a.clips.insert(
+            20,
+            Some((
+                "test".into(),
+                WeaponClips {
+                    select: clip(1, 500, vec![]),
+                    prefire: clip(4, 1000, vec![(334, Mark::Sound(1))]),
+                    fire: clip(5, 0, vec![]),
+                    postfire: clip(7, 700, vec![(534, Mark::Fire)]),
+                    reload: clip(10, 900, vec![]),
+                    ..WeaponClips::default()
+                },
+            )),
+        );
+        a.clips.insert(
+            21,
+            Some((
+                "test".into(),
+                WeaponClips {
+                    select: clip(1, 500, vec![]),
+                    fire: clip(2, 500, vec![(25, Mark::Fire)]),
+                    reload: clip(13, 900, vec![]),
+                    ..WeaponClips::default()
+                },
+            )),
+        );
+        a
+    }
+
+    /// The weapon a 0x7f names.
+    fn changed_to(o: &Outgoing) -> Option<u16> {
+        let b = wire(o);
+        (o.shell == up::WEAPON_CHANGE && b.len() >= 5).then(|| u16::from_le_bytes([b[3], b[4]]))
+    }
+
+    /// DSV-620: the claymore's round goes at its postfire clip's fire key, after the prefire and the empty fire clip
+    /// (before: no 0x82 at all, its fire clip has no fire key); one per press, the trigger may be up by then.
+    #[test]
+    fn a_claymore_is_laid_at_its_postfire_key_after_the_prefire() {
+        let mut a = claymore_arsenal();
+        a.on_grant(&grant(4, 20, 0, 2.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 600, |_| fire_cmd(false), &[]);
+        assert_eq!(a.held().map(|c| c.weapon), Some(20));
+        assert!(a.fires_in_postfire(20) && !a.fires_in_postfire(21));
+        let t0 = 608;
+        let mut fired = Vec::new();
+        let mut phases = Vec::new();
+        let mut t = t0;
+        while t < t0 + 2000 {
+            for m in a.step(t, &fire_cmd(t < t0 + 50), &aim(), &[], None) {
+                if m.shell == up::FIRE {
+                    fired.push(t);
+                }
+            }
+            phases.push((t - t0, a.phase()));
+            t += 16;
+        }
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        // prefire 1000 ms, the fire clip (1 ms), then the postfire key at 534 ms
+        let due = t0 + 1000 + 1 + 534;
+        assert!(fired[0] >= due && fired[0] < due + 16, "{fired:?}");
+        assert!(phases.iter().any(|p| p.1 == Phase::PreFire));
+        assert!(phases
+            .iter()
+            .filter(|p| p.0 < 1000)
+            .all(|p| p.1 == Phase::PreFire));
+    }
+
+    /// DSV-620: the laid claymore hands the slot over to its controller (drawn at once), the controller's shot hands
+    /// it back (the claymore's empty clip reloads once drawn); each keeps its count, and a controller whose claymore
+    /// has no round left goes the usual empty way.
+    #[test]
+    fn the_claymore_and_its_controller_hand_over_after_each_round() {
+        let mut a = claymore_arsenal();
+        a.on_grant(&grant(4, 20, 0, 2.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 600, |_| fire_cmd(false), &[]);
+        let click = |at: u32| move |t: u32| fire_cmd((at..at + 40).contains(&t));
+        let fires = |v: &[(u32, Outgoing)]| v.iter().filter(|m| m.1.shell == up::FIRE).count();
+        let to = |v: &[(u32, Outgoing)]| {
+            v.iter()
+                .filter_map(|m| changed_to(&m.1))
+                .collect::<Vec<_>>()
+        };
+        // the first claymore: laid, then the controller (clip 1 of its two rounds)
+        let v = run(&mut a, 600, 3000, click(608), &[]);
+        assert_eq!((fires(&v), to(&v)), (1, vec![21]));
+        assert_eq!(
+            a.held().map(|c| (c.slot, c.weapon, c.clip, c.stock)),
+            Some((4, 21, 1, 1))
+        );
+        // the controller's shot at its key (25 ms): back to the claymore, whose empty clip reloads after the draw
+        let v = run(&mut a, 3000, 5000, click(3008), &[]);
+        assert_eq!((fires(&v), to(&v)), (1, vec![20]));
+        assert_eq!(v.iter().filter(|m| m.1.shell == up::RELOAD).count(), 1);
+        assert_eq!(
+            a.held().map(|c| (c.weapon, c.clip, c.stock)),
+            Some((20, 1, 0))
+        );
+        // the second claymore: the controller comes back with its count (empty clip: it reloads)
+        let v = run(&mut a, 5000, 8000, click(5008), &[]);
+        assert_eq!((fires(&v), to(&v)), (1, vec![21]));
+        assert_eq!(v.iter().filter(|m| m.1.shell == up::RELOAD).count(), 1);
+        assert_eq!(
+            a.held().map(|c| (c.weapon, c.clip, c.stock)),
+            Some((21, 1, 0))
+        );
+        // its last shot: no claymore left to hand back to
+        let v = run(&mut a, 8000, 9000, click(8008), &[]);
+        assert_eq!(fires(&v), 1);
+        assert!(!to(&v).contains(&20), "{:?}", to(&v));
+        // a new life gives the slot its claymore back
+        a.on_life(9000, 2);
+        a.on_life(9100, 1);
+        assert_eq!(a.slots.get(&4).map(|c| c.weapon), Some(20));
     }
 
     #[test]
@@ -4865,6 +5360,75 @@ ModModel0 = 0
             fired[1] >= late && fired[1] < late + 20,
             "the press inside the postfire clip fires at once: {fired:?}"
         );
+    }
+
+    /// ROM-gated (DSV-620): the claymore lays one round per press, at its postfire clip's fire key after the prefire
+    /// clip, and hands over to its controller; the controller's shot hands back; the M16 mine still lays one per press
+    /// with no hand-over. Counts only are printed.
+    #[test]
+    fn rom_the_claymore_lays_once_and_hands_over_to_its_controller() {
+        let Some(rom) = dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let t = WeaponTable::open(&rom).expect("weapon table");
+        let clay = t
+            .rows
+            .iter()
+            .find(|(_, r)| r.sub_control.is_some() && r.controllee.is_none())
+            .map(|(w, r)| (*w, r.sub_control.unwrap_or(0), r.ammo.unwrap_or(*w)));
+        let Some((clay, ctl, ammo)) = clay else {
+            println!("skipped: no row names a sub-control weapon");
+            return;
+        };
+        assert_eq!(t.rows.get(&ctl).and_then(|r| r.controllee), Some(clay));
+        assert_eq!(t.order_class(clay), HANDOVER_CLASS);
+        let table = std::sync::Arc::new(t);
+        let mut a = Arsenal::new(ArmsConfig {
+            table: Some(table.clone()),
+            rom: Some(rom.clone()),
+            ..ArmsConfig::default()
+        });
+        a.on_grant(&grant(4, clay, ammo, 2.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 3000, |_| fire_cmd(false), &[]);
+        assert!(a.fires_in_postfire(clay));
+        let click = |at: u32| move |t: u32| fire_cmd((at..at + 50).contains(&t));
+        let v = run(&mut a, 3000, 7000, click(3008), &[]);
+        let fired: Vec<u32> = v
+            .iter()
+            .filter(|m| m.1.shell == up::FIRE)
+            .map(|m| m.0)
+            .collect();
+        let to: Vec<u16> = v.iter().filter_map(|m| changed_to(&m.1)).collect();
+        println!("claymore {clay}: fired at {fired:?}, then drew {to:?}");
+        assert_eq!(fired.len(), 1);
+        assert_eq!(to, vec![ctl]);
+        assert_eq!(a.held().map(|c| c.weapon), Some(ctl));
+        let v = run(&mut a, 7000, 10000, click(7008), &[]);
+        assert_eq!(v.iter().filter(|m| m.1.shell == up::FIRE).count(), 1);
+        assert_eq!(v.iter().filter_map(|m| changed_to(&m.1)).next(), Some(clay));
+        // the M16 mine (weapon 28): one per press, no hand-over
+        let mine = 28u16;
+        if table
+            .rows
+            .get(&mine)
+            .is_some_and(|r| r.client_kind == Some(CLIENT_KIND_THROWN) && r.sub_control.is_none())
+        {
+            let m = mine;
+            let mut b = Arsenal::new(ArmsConfig {
+                table: Some(table.clone()),
+                rom: Some(rom),
+                ..ArmsConfig::default()
+            });
+            b.on_grant(&grant(4, m, m, 3.0));
+            b.on_life(0, 1);
+            run(&mut b, 0, 3000, |_| fire_cmd(false), &[]);
+            assert!(!b.fires_in_postfire(m));
+            let v = run(&mut b, 3000, 6000, click(3008), &[]);
+            assert_eq!(v.iter().filter(|x| x.1.shell == up::FIRE).count(), 1);
+            assert!(v.iter().all(|x| changed_to(&x.1).is_none_or(|w| w == m)));
+        }
     }
 
     #[test]

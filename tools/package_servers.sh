@@ -41,7 +41,7 @@ for b in dc-lobby-server dc-dserver dc-server-rom dc-botclient dc-config dc-host
 done
 cp "$HERE"/tools/vps/*.sh "$HERE"/tools/vps/*.py "$PKG/tools/vps/"
 cp "$HERE"/tools/host/*.sh "$PKG/tools/host/"
-for f in server-vps.toml decombat-lobby.service decombat-lobby@.service decombat-bots.service decombat-host.service decombat.env decombat-hardening.conf decombat-backup.service decombat-backup.timer decombat-health.service decombat-health.timer backup.conf alerts.conf; do
+for f in server-vps.toml decombat-lobby.service decombat-lobby@.service decombat-bots.service decombat-host.service decombat.env decombat-hardening.conf decombat-backup.service decombat-backup.timer decombat-health.service decombat-health.timer decombat-live-games.service decombat-live-games.timer backup.conf alerts.conf; do
   cp "$HERE/examples/$f" "$PKG/examples/"
 done
 {

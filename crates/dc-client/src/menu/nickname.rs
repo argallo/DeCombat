@@ -617,6 +617,7 @@ impl Screen for Nickname {
             place: PLACE,
             rect: PANE_RECT,
             xray: None,
+            showcase: None,
         })
     }
 

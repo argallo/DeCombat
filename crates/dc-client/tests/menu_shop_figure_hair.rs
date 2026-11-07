@@ -32,6 +32,7 @@ fn figure(m: &mut Menu, rom: &std::path::Path, eq: &[i32; 15], pieces: bool) -> 
         place: PLACE,
         rect: PANE_RECT,
         xray: None,
+        showcase: None,
     };
     v.want(Some(req), (2560, 1440), Some(0.0), 0.0);
     v.wait(&mut m.cat.assets, Duration::from_secs(120));

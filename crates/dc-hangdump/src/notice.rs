@@ -11,7 +11,11 @@ pub fn message_box(title: &str, text: &str, error: bool) {
     };
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let (t, c) = (wide(text), wide(title));
-    let icon = if error { MB_ICONERROR } else { MB_ICONINFORMATION };
+    let icon = if error {
+        MB_ICONERROR
+    } else {
+        MB_ICONINFORMATION
+    };
     // SAFETY: both strings are NUL-terminated UTF-16 buffers that outlive the call; no owner window.
     unsafe {
         MessageBoxW(

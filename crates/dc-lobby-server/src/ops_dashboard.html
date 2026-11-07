@@ -129,6 +129,10 @@ form.bform label.f > span { font-weight: 500; }
 form.bform .wide { grid-column: 1 / -1; }
 form.bform .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
 form.bform .row button { margin-top: 0; }
+.picker { display: flex; flex-direction: column; gap: 10px; }
+.pickrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 14px; }
+.picker label.f { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--quiet); }
+.picker label.f > span { font-weight: 500; }
 .chans { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 4px 0; }
 label.chk { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; color: var(--ink); font-size: 14px; }
 /* the Updates tab: the running builds, the commits since, the deploy in progress (deploy.rs) */
@@ -408,7 +412,7 @@ const VIEWS = {
     return $("section", {}, $("h2", {}, "Recent matches"),
       table(["Match", "Started", "Length", "Room", "Mode", "Map", "Server", "Build", "Players", "Bots", "Outcome", "Silent drops"],
         ms.map(m => [mlink(m.id), when(m.started), m.ended ? dur(m.ended - m.started) : "running", m.room, m.mode_key,
-          m.map_world, m.host, m.host_version, m.players, m.bots,
+          m.map_name, m.host, m.host_version, m.players, m.bots,
           m.outcome === "result" || m.outcome === "running" ? m.outcome : $("span", { class: "err" }, m.outcome),
           m.silent_drops ? $("span", { class: "err" }, m.silent_drops) : 0]), [8, 9, 11], "No match recorded yet."));
   },
@@ -418,7 +422,7 @@ const VIEWS = {
     const byAccount = {}, nick = {};
     for (const w of d.net) (byAccount[w.account] = byAccount[w.account] || []).push(w);
     for (const p of d.players) nick[p.account] = p.nick;
-    const head = $("section", {}, $("h2", {}, `Match ${m.id}: room ${m.room}, ${m.mode_key} on ${m.map_world}`),
+    const head = $("section", {}, $("h2", {}, `Match ${m.id}: room ${m.room}, ${m.mode_key} on ${m.map_name}`),
       $("p", { class: "facts" }, `Played on ${m.host} (build ${m.host_version || "unknown"}) port ${m.port}, from ${when(m.started)} to ${when(m.ended)}. ` +
         `Outcome ${m.outcome}, winner ${m.winner} (${m.alpha} to ${m.bravo}). ${plural(m.players, "player")}, ${plural(m.bots, "bot")}, ` +
         `${plural(m.silent_drops, "silent drop")}.`));
@@ -450,7 +454,7 @@ const VIEWS = {
     if (t.other_matches.length) top.append($("p", { class: "quiet" }, "Also found: ",
       t.other_matches.map((o, i) => [i ? ", " : "", plink(o.nick || o.login)])));
     let acct = null;
-    try { acct = accountPanel(await get("/ops/player?account=" + t.account)); }
+    try { acct = accountPanel(await get("/ops/player?account=" + t.account), await loadGuns()); }
     catch (e) { acct = $("section", {}, $("h2", {}, "Account"), $("p", { class: "err" }, "The account did not load: " + e.message)); }
     return [top, acct].concat(await playerHistory(t));
   },
@@ -465,7 +469,7 @@ const VIEWS = {
 async function playerHistory(t) {
   const ms = $("section", {}, $("h2", {}, "Matches"),
     table(["Match", "Joined", "Room", "Mode", "Map", "Server", "Outcome", "Time", "Left by", "Connection", "Round trip", "p95", "Worst", "Input/s", "Longest gap", "Resends"],
-      t.matches.map(p => [mlink(p.match), when(p.joined), p.room, p.mode_key, p.map_world, p.host, p.outcome, dur(p.secs),
+      t.matches.map(p => [mlink(p.match), when(p.joined), p.room, p.mode_key, p.map_name, p.host, p.outcome, dur(p.secs),
         p.how === "bye" || p.how === "end" ? p.how : $("span", { class: "err" }, p.how), health(p.health),
         p.rtt_mean, p.rtt_p95, p.rtt_max, p.input_rate, p.gap_max, p.resends]), [10, 11, 12, 13, 14, 15], "No matches yet."));
   const ev = $("section", {}, $("h2", {}, "Events"), eventTable(t.events, "No events."));
@@ -475,7 +479,7 @@ async function playerHistory(t) {
 // first; the delete needs the login typed. The answer of the last change stays on top of the panel after it redraws.
 let acctSay = null;
 const num = n => Number(n || 0).toLocaleString("en-US");
-function accountPanel(a) {
+function accountPanel(a, guns) {
   const who = a.nick || a.login;
   const flag = (cls, text) => $("span", { class: "flag " + cls }, text);
   const say = $("p", { class: "say", role: "status" });
@@ -526,6 +530,15 @@ function accountPanel(a) {
   rows.push($("div", { class: "arow" }, $("h3", {}, "NX, GP and EXP"), money, amount, mReason,
     $("button", { type: "button", on: give(1), disabled: a.has_character ? null : "" }, "Give"),
     $("button", { type: "button", class: "plain", style: "margin:0", on: give(-1), disabled: a.has_character ? null : "" }, "Take"), capNote));
+  // loadout: the gun lists write the spec `account loadout` takes; the items count from their next login
+  const kit = loadoutPicker(guns || [], "slot:item, like 0:27,1:3");
+  rows.push($("div", { class: "arow" }, $("h3", {}, "Loadout"), kit.el,
+    $("button", { type: "button", disabled: a.has_character ? null : "", on: () => {
+      const spec = kit.get();
+      if (!spec) { say.className = "say err"; say.textContent = "Pick a gun or type a loadout."; return; }
+      act("loadout", { spec }, `Give ${who} the loadout ${spec} and equip it?\n\nThe slots' old items stay in the inventory, unequipped.`);
+    } }, "Equip"),
+    $("p", { class: "quiet" }, "The items are given for good and equipped in their slots; an online player sees them from the next login.")));
   // ban
   const len = $("input", { type: "number", min: "1", step: "1", value: "1", "aria-label": "Length" });
   const unit = $("select", { "aria-label": "Unit" }, $("option", { value: "hours" }, "hours"), $("option", { value: "days", selected: "" }, "days"));
@@ -646,6 +659,43 @@ function eventTable(evs, empty) {
     evs.map(e => [$("span", { title: when(e.at) }, ago(e.at)), e.problem ? $("span", { class: "err" }, e.kind) : e.kind,
       plink(e.nick), mlink(e.match), wrap(e.detail)]), [], empty);
 }
+// ---- the loadout picker of the bot group form and the account panel (OPS-14): one dropdown of gun names per slot writes
+// the spec `account loadout` takes (`0:27,1:3`); the typed field below it stays the truth, for ids the list does not have
+// and for `random`. The names come from GET /ops/guns (the ROM's weapons and the camo variants of the loaded mod sets).
+let gunsPromise = null;
+const loadGuns = () => (gunsPromise = gunsPromise || get("/ops/guns").catch(() => { gunsPromise = null; return []; }));
+const SLOT_NAMES = ["Primary", "Secondary", "Melee", "Throwing"];
+function loadoutPicker(guns, placeholder) {
+  const typed = $("input", { type: "text", maxlength: "200", placeholder: placeholder || "slot:item, like 0:27,1:3", "aria-label": "Loadout as typed" });
+  const parts = () => typed.value.split(",").map(x => x.trim()).filter(Boolean);
+  const picks = SLOT_NAMES.map((label, slot) => {
+    const list = guns.filter(g => g.slot === slot);
+    const sel = $("select", { "aria-label": label + " gun" }, $("option", { value: "" }, "Keep as it is"),
+      list.map(g => $("option", { value: g.id }, `${g.name} (${g.id})`)));
+    sel.addEventListener("change", () => {
+      const rest = parts().filter(p => p.toLowerCase() !== "random" && !p.startsWith(slot + ":"));
+      if (sel.value) rest.push(slot + ":" + sel.value);
+      rest.sort();
+      typed.value = rest.join(",");
+    });
+    return { slot, sel, field: $("label", { class: "f" }, $("span", {}, label), sel) };
+  });
+  const sync = () => {
+    for (const p of picks) {
+      const m = parts().find(x => x.startsWith(p.slot + ":"));
+      const id = m ? m.slice(2).split("+")[0] : "";
+      p.sel.value = [...p.sel.options].some(o => o.value === id) ? id : "";
+    }
+  };
+  typed.addEventListener("input", sync);
+  return {
+    el: $("div", { class: "picker" }, $("div", { class: "pickrow" }, picks.map(p => p.field)),
+      $("label", { class: "f" }, $("span", {}, "Typed loadout, for ids the lists do not have (or random)"), typed),
+      guns.length ? null : $("p", { class: "quiet" }, "The gun list did not load (no ROM item table on this lobby): type the items.")),
+    get: () => typed.value.trim(),
+    set: v => { typed.value = v || ""; sync(); },
+  };
+}
 // ---- the Bots tab: the bot groups this lobby runs as dc-botclient processes (botgroups.rs, botsup.rs, LG-388..LG-391)
 const CSRF = (document.querySelector('meta[name="csrf"]') || {}).content || "";
 async function post(path, body) {
@@ -691,23 +741,31 @@ function groupCard(g, edit, refresh) {
         g.enabled ? $("button", { type: "button", class: "plain", on: () => act("/ops/bots/stop", `Stop the ${plural(g.count, "bot")} of ${g.prefix}?`) }, "Stop")
           : $("button", { type: "button", on: () => act("/ops/bots/start") }, "Start"),
         $("button", { type: "button", class: "plain", on: () => act("/ops/bots/delete", `Delete group ${g.prefix}? Its bots stop.`) }, "Delete"))),
-    g.problem ? $("p", { class: "err" }, g.problem) : null, say, botTable(g));
+    g.problem ? $("p", { class: "err" }, g.problem) : null,
+    // OPS-15: where the followed player is on this lobby and what the bots do about it
+    g.follow ? $("p", { class: g.follow.level === "warn" ? "err" : "quiet", role: "status" }, g.follow.text) : null, say, botTable(g));
 }
-function groupForm(d, saved) {
+function groupForm(d, saved, guns) {
   const field = (label, input, cls) => $("label", { class: "f" + (cls ? " " + cls : "") }, $("span", {}, label), input);
   const title = $("h2", {}, "Add a group");
   let editing = 0;
   const prefix = $("input", { type: "text", maxlength: "12", placeholder: "PlusBot", required: "", pattern: "[A-Za-z][A-Za-z0-9_]*[A-Za-z_]",
     title: "2 to 12 letters, digits or _; a letter first, no digit last. The bots are named PlusBot1, PlusBot2, ..." });
   const count = $("input", { type: "number", min: "1", max: String(d.per_group), value: "3", required: "" });
-  const entry = $("select", {}, d.entries.map(e => $("option", { value: e.id }, `${e.id}: ${e.name}`)));
+  // every entry of this lobby's server list; an entry naming another lobby is listed but cannot be picked: the bots log in here
+  const entry = $("select", {}, d.entries.map(e => $("option", { value: e.id }, `${e.id}: ${e.name}`)),
+    (d.others || []).map(o => $("option", { value: "", disabled: "" }, `${o.name} (another lobby, ${o.lobby}: add its group in that instance's Bots tab, bots log in to one lobby only)`)));
   const chans = $("div", { class: "chans", role: "group", "aria-label": "Channels" });
   const room = $("select", {}, $("option", { value: "any" }, "Any room with a person"),
     $("option", { value: "follow" }, "Follow one player"), $("option", { value: "title" }, "Rooms whose title holds"));
   const roomArg = $("input", { type: "text", maxlength: "30" });
   const roomArgField = field("Player or title text", roomArg);
+  const followHelp = $("p", { class: "quiet wide" }, "A following group goes where that player is on this lobby: to their server entry and " +
+    "channel (all its bots on that channel), into their room unless it has a password; it moves at most every 10 s, and stays " +
+    "where it is while they are offline. A group follows within its own lobby only: to follow a player on another lobby's " +
+    "entries, make the group in that instance's Bots tab.");
   const skill = $("input", { type: "text", maxlength: "7", placeholder: "30-65" });
-  const loadout = $("input", { type: "text", maxlength: "200", placeholder: "keep their guns" });
+  const loadout = loadoutPicker(guns || [], "keep their guns");
   const enabled = $("input", { type: "checkbox", checked: "" });
   const startRow = $("label", { class: "chk" }, enabled, "Start the bots when saved");
   const save = $("button", { type: "submit" }, "Add group");
@@ -715,21 +773,22 @@ function groupForm(d, saved) {
   const msg = $("p", { class: "quiet", role: "status" });
   function drawChans(picked) {
     const e = d.entries.find(x => String(x.id) === entry.value);
-    chans.replaceChildren(...(e ? e.channels : []).map(c => {
+    chans.replaceChildren(...(e ? e.channels : []).map((c, i) => {
       const box = $("input", { type: "checkbox", value: c });
-      box.checked = picked ? picked.includes(c) : true;
+      box.checked = picked ? picked.includes(c) : i === 0;
       return $("label", { class: "chk" }, box, "Channel " + c);
     }));
   }
   function syncRoom() {
     roomArgField.hidden = room.value === "any";
+    followHelp.hidden = room.value !== "follow";
     roomArg.required = room.value !== "any";
     roomArg.placeholder = room.value === "follow" ? "their character name" : "part of the room title";
   }
   function reset() {
     editing = 0; title.textContent = "Add a group"; save.textContent = "Add group"; cancel.hidden = true; startRow.hidden = false;
     prefix.value = ""; count.value = "3"; entry.selectedIndex = 0; room.value = "any"; roomArg.value = ""; skill.value = "";
-    loadout.value = ""; enabled.checked = true; drawChans(null); syncRoom();
+    loadout.set(""); enabled.checked = true; drawChans(null); syncRoom();
   }
   entry.addEventListener("change", () => drawChans(null));
   room.addEventListener("change", syncRoom);
@@ -737,14 +796,14 @@ function groupForm(d, saved) {
   const form = $("form", { class: "bform" },
     field("Name prefix", prefix), field(`Bots (1 to ${d.per_group})`, count), field("Server", entry),
     field("Channels (bot 1 takes the first, bot 2 the next, ...)", chans, "wide"),
-    field("Room", room), roomArgField, field("Skill (0 to 100, or a range)", skill),
-    field("Loadout (random, or slot:item like 0:27)", loadout),
+    field("Room", room), roomArgField, followHelp, field("Skill (0 to 100, or a range)", skill),
+    $("div", { class: "wide" }, $("p", { class: "quiet" }, "Loadout (leave every list on Keep to leave their guns alone)"), loadout.el),
     $("div", { class: "row wide" }, startRow, save, cancel), $("div", { class: "wide" }, msg));
   form.addEventListener("submit", async e => {
     e.preventDefault();
     const channels = [...chans.querySelectorAll("input:checked")].map(b => Number(b.value));
     const body = { prefix: prefix.value.trim(), count: Number(count.value), server_id: Number(entry.value), channels,
-      room: room.value, room_arg: room.value === "any" ? "" : roomArg.value.trim(), skill: skill.value.trim(), loadout: loadout.value.trim() };
+      room: room.value, room_arg: room.value === "any" ? "" : roomArg.value.trim(), skill: skill.value.trim(), loadout: loadout.get() };
     if (editing) body.id = editing; else body.enabled = enabled.checked;
     try {
       const r = await post("/ops/bots/group", body);
@@ -759,7 +818,7 @@ function groupForm(d, saved) {
     edit(g) {
       editing = g.id; title.textContent = "Change " + g.prefix; save.textContent = "Save changes"; cancel.hidden = false; startRow.hidden = true;
       prefix.value = g.prefix; count.value = String(g.count); entry.value = String(g.server_id); drawChans(g.channels);
-      room.value = g.room; roomArg.value = g.room_arg; skill.value = g.skill; loadout.value = g.loadout; syncRoom();
+      room.value = g.room; roomArg.value = g.room_arg; skill.value = g.skill; loadout.set(g.loadout); syncRoom();
       msg.className = "quiet"; msg.textContent = "Saving restarts only the bots whose settings change.";
       title.scrollIntoView({ block: "start" }); prefix.focus({ preventScroll: true });
     },
@@ -780,7 +839,7 @@ VIEWS.bots = async () => {
   async function refresh() {
     try { draw(await get("/ops/bots")); } catch (e) { facts.textContent = "The bot list did not load: " + e.message; }
   }
-  form = groupForm(first, refresh);
+  form = groupForm(first, refresh, await loadGuns());
   draw(first);
   clearInterval(botsTimer);
   botsTimer = setInterval(() => {

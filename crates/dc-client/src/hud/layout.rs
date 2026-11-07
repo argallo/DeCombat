@@ -441,6 +441,8 @@ pub struct HudLayout {
     /// client-scoreboard: the board's place, level icon and header columns ([`super::board`]; filled by
     /// `Hud::from_rom`).
     pub board_columns: super::board::BoardColumns,
+    /// CLI-1910: the clan mark table the board rows' clan marks are drawn from (filled by `Hud::from_rom`).
+    pub clan_marks: crate::menu::clan::ClanMarks,
     /// The chat colours, the chat input element and the system banner ([`super::chat`]; filled by `Hud::from_rom`).
     pub chat_look: super::chat::ChatLook,
 }
@@ -956,6 +958,7 @@ impl HudLayout {
             rank_icons: None,
             board_sound_file: None,
             board_columns: super::board::BoardColumns::default(),
+            clan_marks: Default::default(),
             chat_look: super::chat::ChatLook::fallback(),
         }
     }
@@ -1096,6 +1099,7 @@ impl HudLayout {
             board_sound_file: None,
             // DC-DEFAULT: CLI-382 (proposed) no ROM: no place numbers, level icons or extra header labels
             board_columns: super::board::BoardColumns::default(),
+            clan_marks: Default::default(),
             chat_look: super::chat::ChatLook::fallback(),
         }
     }

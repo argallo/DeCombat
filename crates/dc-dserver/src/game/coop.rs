@@ -2323,7 +2323,12 @@ impl Game {
     }
 
     /// The nearest living AI whose box the shot's ray crosses before `limit`.
-    fn ai_on_ray(&self, origin: [f32; 3], dir: [f32; 3], limit: f32) -> Option<(usize, f32)> {
+    pub(super) fn ai_on_ray(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        limit: f32,
+    ) -> Option<(usize, f32)> {
         let c = self.coop.as_ref()?;
         let fallback = self.cfg.player_dims;
         c.ais

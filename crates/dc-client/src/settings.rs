@@ -851,7 +851,7 @@ pub fn rgba_hex(c: [u8; 4]) -> String {
 }
 
 /// CLI-1852: the graphics API the Windows client opens its device with (the Graphic tab's "Renderer" row).
-// DC-DEFAULT: CLI-1852 (proposed; USER DECISION 2026-11-04)
+// DC-DEFAULT: CLI-1852 (proposed; USER DECISION 2026-11-04, default flipped 2026-11-06)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Renderer {
     Vulkan,
@@ -860,8 +860,9 @@ pub enum Renderer {
 
 /// CLI-1852: the Renderer row's choices, in list order.
 pub const RENDERER_CHOICES: [Renderer; 2] = [Renderer::Vulkan, Renderer::Dx12];
-/// CLI-1852: Vulkan is the default (user decision 2026-11-04: perf on low-end PCs; DirectX 12 is the fallback).
-pub const RENDERER_DEFAULT: Renderer = Renderer::Vulkan;
+/// CLI-1852: DirectX 12 is the default (user decision 2026-11-06, after a Vulkan driver crash at present on a GTX 960,
+/// driver 560.94; it replaced the 2026-11-04 choice of Vulkan). Vulkan is the opt-in for players who want to try it.
+pub const RENDERER_DEFAULT: Renderer = Renderer::Dx12;
 
 impl Renderer {
     /// The profile word (and the `--adapter` word of the same backend).
@@ -1576,6 +1577,24 @@ pub fn take_xray_note() -> Option<XrayStyle> {
     XRAY_NOTE.write().ok().and_then(|mut g| g.take())
 }
 
+/// CLI-1907: the settings the options over the match confirmed (OK) or the Mods tab changed, which the menu has not
+/// taken yet.
+static MATCH_SETTINGS_NOTE: std::sync::Mutex<Option<Settings>> = std::sync::Mutex::new(None);
+
+/// CLI-1907: the options over the match changed the settings to `s` (in effect in the match already): the menu
+/// makes them its settings and saves the profile ([`crate::menu::Menu::store_match_settings`]).
+// DC-DEFAULT: CLI-1907 (proposed) the menu saves what the match's options changed, as it saves the hotkeys' changes
+pub fn note_match_settings(s: Settings) {
+    if let Ok(mut g) = MATCH_SETTINGS_NOTE.lock() {
+        *g = Some(s);
+    }
+}
+
+/// The settings the options over the match changed since the last call.
+pub fn take_match_settings_note() -> Option<Settings> {
+    MATCH_SETTINGS_NOTE.lock().ok().and_then(|mut g| g.take())
+}
+
 /// CLI-1570: the overlay mode the next match starts with (-1: nothing published), the mode a flag or `DC_NET_OVERLAY`
 /// forces (-1: none), and a mode the match changed that the menu has not saved yet (-1: none).
 static NET_OVERLAY: AtomicI32 = AtomicI32::new(-1);
@@ -1788,7 +1807,7 @@ mod tests {
         t.antialias = 4;
         t.fps_cap = 120;
         t.show_fps = true;
-        t.renderer = Renderer::Dx12;
+        t.renderer = Renderer::Vulkan;
         t.bgm = BGM_2009;
         let mut d2 = doc.clone();
         t.to_doc(&mut d2, &table(), &names);
@@ -1813,14 +1832,14 @@ mod tests {
             (4, 120, true),
             "CLI-1594..1596 kept in our own section"
         );
-        assert_eq!(back.renderer, Renderer::Dx12, "CLI-1852 kept in our own section");
-        assert_eq!(s.renderer, Renderer::Vulkan, "CLI-1852: Vulkan without a key");
+        assert_eq!(back.renderer, Renderer::Vulkan, "CLI-1852 kept in our own section");
+        assert_eq!(s.renderer, Renderer::Dx12, "CLI-1852: DirectX 12 without a key");
         assert_eq!(back.bgm, BGM_2009, "CLI-1599 kept in our own section");
         assert_eq!(s.bgm, BGM_CLASSIC, "CLI-1599: Classic without a key");
         assert_eq!(back.effective_music(), 0);
     }
 
-    /// CLI-1852: the Renderer row's profile word: Vulkan by default, DirectX 12 saved, anything else the default.
+    /// CLI-1852: the Renderer row's profile word: DirectX 12 by default, Vulkan saved, anything else the default.
     #[test]
     fn the_renderer_choice_is_saved_and_unknown_values_fall_back() {
         let load = |extra: &str| {
@@ -1829,9 +1848,9 @@ mod tests {
 {extra}");
             Settings::from_doc(&ProfileDoc::parse(&text), &table(), &names)
         };
-        assert_eq!(RENDERER_DEFAULT, Renderer::Vulkan);
-        assert_eq!(Settings::default().renderer, Renderer::Vulkan);
-        assert_eq!(load("").renderer, Renderer::Vulkan, "no key");
+        assert_eq!(RENDERER_DEFAULT, Renderer::Dx12);
+        assert_eq!(Settings::default().renderer, Renderer::Dx12);
+        assert_eq!(load("").renderer, Renderer::Dx12, "no key");
         assert_eq!(load("renderer = dx12
 ").renderer, Renderer::Dx12);
         assert_eq!(load("renderer = \"DX12\"
@@ -1840,13 +1859,13 @@ mod tests {
 ").renderer, Renderer::Vulkan);
         for old in ["metal", "3", "", "dx11"] {
             assert_eq!(load(&format!("renderer = {old}
-")).renderer, Renderer::Vulkan, "{old:?}");
+")).renderer, Renderer::Dx12, "{old:?}");
         }
         let mut doc = ProfileDoc::parse(SAMPLE);
         let mut s = Settings::default();
-        s.renderer = Renderer::Dx12;
+        s.renderer = Renderer::Vulkan;
         s.to_doc(&mut doc, &table(), &names);
-        assert_eq!(doc.own_get(OWN_RENDERER), Some("dx12"));
+        assert_eq!(doc.own_get(OWN_RENDERER), Some("vulkan"));
         assert_eq!((Renderer::Vulkan.label(), Renderer::Dx12.label()), ("Vulkan", "DirectX 12"));
         assert_eq!(Renderer::Dx12.backends(), wgpu::Backends::DX12);
     }

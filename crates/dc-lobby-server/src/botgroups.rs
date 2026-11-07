@@ -39,11 +39,12 @@ CREATE TABLE IF NOT EXISTS bot_loadouts (
 );
 "#;
 
-/// Bots of one group: a room holds 8, one seat stays a person's.
-pub const MAX_PER_GROUP: u32 = 7;
+/// Bots of one group: a room holds up to `room.max_players_cap` (16), one seat stays a person's.
+// DC-DEFAULT: OPS-14 (proposed) 15 bots per group (was 7)
+pub const MAX_PER_GROUP: u32 = 15;
 /// The skill range of a group that names none (as `tools/vps/bots.sh`).
 pub const BOT_SKILL_RANGE: &str = "30-65";
-/// Longest prefix: the names `<prefix>1..7` stay well inside a character name's 16 units.
+/// Longest prefix: the names `<prefix>1..15` stay well inside a character name's 16 units.
 pub const MAX_PREFIX: usize = 12;
 /// Longest room title part.
 pub const MAX_TITLE: usize = 30;
@@ -145,7 +146,7 @@ impl Group {
     }
 }
 
-fn channels_text(v: &[u32]) -> String {
+pub(crate) fn channels_text(v: &[u32]) -> String {
     v.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
 }
 
@@ -280,7 +281,7 @@ fn clean_skill(s: &str) -> Result<String, String> {
 
 /// A loadout spec as `account loadout` takes it (`<slot>:<item>[+<option>],...`, bare item numbers, or `random`);
 /// whether the items exist is known only when it is given to an account (the bot's status shows the answer).
-fn clean_loadout(s: &str) -> Result<String, String> {
+pub(crate) fn clean_loadout(s: &str) -> Result<String, String> {
     let s = s.trim();
     if s.eq_ignore_ascii_case("random") {
         return Ok("random".into());
@@ -325,7 +326,9 @@ pub fn parse(m: &Map<String, Value>, entries: &[Entry]) -> Result<Group, String>
     let prefix = clean_prefix(&text("prefix"))?;
     let count = int("count").unwrap_or(0);
     if !(1..=MAX_PER_GROUP as i64).contains(&count) {
-        return Err(format!("count: 1..{MAX_PER_GROUP} bots (a room holds 8)"));
+        return Err(format!(
+            "count: 1..{MAX_PER_GROUP} bots (a room holds up to 16)"
+        ));
     }
     let server_id = int("server_id").unwrap_or(0);
     let Some(entry) = entries.iter().find(|e| i64::from(e.id) == server_id) else {
@@ -418,6 +421,215 @@ pub fn usable_channels(g: &Group, entries: &[Entry]) -> Result<Vec<u32>, String>
         ));
     }
     Ok(ch)
+}
+
+// ------------------------------------------------------------------------------------------------- following a player
+
+/// OPS-15: the least time between two moves of a following group, so a player hopping channels does not restart its
+/// bots on every hop (a move restarts each bot, 2 s apart).
+// DC-DEFAULT: OPS-15 (proposed) 10 s between two moves of a group
+pub const FOLLOW_MOVE_GAP: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Where a followed player is, as this lobby sees it (it knows its own sessions only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// No character of that name on this lobby.
+    Unknown,
+    /// A character of this lobby, not logged in to it.
+    Offline,
+    /// Logged in, on no channel yet (the server or channel list).
+    NoChannel,
+    /// In the clan lobby: bots do not go there.
+    Clan,
+    /// On `channel` of entry `entry`, in room `room` of that channel (None: on the room list).
+    Channel {
+        entry: u32,
+        channel: u32,
+        room: Option<SeenRoom>,
+    },
+}
+
+/// The followed player's room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeenRoom {
+    pub no: u32,
+    /// The room has a password: the bots know none, so they do not join it.
+    pub locked: bool,
+}
+
+/// The entry and channels a group's bots sit on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spot {
+    pub entry: u32,
+    pub channels: Vec<u32>,
+}
+
+/// Where player `nick` is on this lobby.
+pub fn place_of_player(st: &Core, entries: &[Entry], nick: &str) -> Place {
+    let Some(c) = crate::db::character_by_nick(&st.db, nick, st.rules.names_case_insensitive)
+        .ok()
+        .flatten()
+    else {
+        return Place::Unknown;
+    };
+    let Some(s) = st
+        .sessions
+        .values()
+        .find(|s| s.account == Some(c.user_no) && s.in_lobby && !s.closing)
+    else {
+        return Place::Offline;
+    };
+    let Some(ch) = s.channel else {
+        return Place::NoChannel;
+    };
+    if crate::clan::is_clan_channel(ch) {
+        return Place::Clan;
+    }
+    let Some(e) = entries.iter().find(|e| e.owns(ch)) else {
+        return Place::NoChannel;
+    };
+    let room = s.room.and_then(|k| st.rooms.get(&k)).map(|r| SeenRoom {
+        no: r.key.no,
+        locked: !r.password.is_empty(),
+    });
+    Place::Channel {
+        entry: e.id,
+        channel: ch,
+        room,
+    }
+}
+
+/// OPS-15: where a following group sits next, or None to stay: the player's channel (all bots on it) when the player
+/// is on a channel of this lobby's entries and the group's last move is `FOLLOW_MOVE_GAP` old; anywhere else (offline,
+/// on no channel, in the clan lobby, unknown here) the bots stay where they are.
+pub fn follow_step(
+    current: &Spot,
+    moved: Option<std::time::Instant>,
+    place: &Place,
+    now: std::time::Instant,
+) -> Option<Spot> {
+    let Place::Channel { entry, channel, .. } = place else {
+        return None;
+    };
+    let next = Spot {
+        entry: *entry,
+        channels: vec![*channel],
+    };
+    if next == *current || moved.is_some_and(|t| now < t + FOLLOW_MOVE_GAP) {
+        return None;
+    }
+    Some(next)
+}
+
+/// One following group's steering: its configured spot, where its bots sit now and when they last moved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Steer {
+    pub home: Spot,
+    pub now: Spot,
+    pub moved: Option<std::time::Instant>,
+}
+
+impl Steer {
+    pub fn new(home: Spot) -> Steer {
+        Steer {
+            now: home.clone(),
+            home,
+            moved: None,
+        }
+    }
+
+    /// Takes the player's place seen at `at`; true when the bots move.
+    pub fn step(&mut self, place: &Place, at: std::time::Instant) -> bool {
+        match follow_step(&self.now, self.moved, place, at) {
+            Some(s) => {
+                self.now = s;
+                self.moved = Some(at);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// OPS-15: the status line of a group following `nick`: `(level, text)`, level `ok`, `wait` or `warn`. `others` are
+/// the server list's entries of other lobbies: this lobby cannot see their players.
+pub fn follow_text(
+    nick: &str,
+    place: &Place,
+    entries: &[Entry],
+    others: &[String],
+) -> (&'static str, String) {
+    let elsewhere = if others.is_empty() {
+        " A group follows within its own lobby only.".to_string()
+    } else {
+        format!(
+            " A group follows within its own lobby only: this lobby cannot see who plays on {} (another lobby); to follow \
+             a player there, make the group in that instance's Bots tab.",
+            others.join(", ")
+        )
+    };
+    let name = |id: u32| {
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .map_or_else(|| format!("entry {id}"), |e| e.name.clone())
+    };
+    match place {
+        Place::Unknown => (
+            "warn",
+            format!("{nick} is not a player of this lobby (no character of that name here).{elsewhere}"),
+        ),
+        Place::Offline => (
+            "wait",
+            format!(
+                "Waiting for {nick}: not online on this lobby; the bots stay where they are.{elsewhere}"
+            ),
+        ),
+        Place::NoChannel => (
+            "wait",
+            format!("Waiting for {nick} to pick a channel; the bots stay where they are."),
+        ),
+        Place::Clan => (
+            "wait",
+            format!("{nick} is in the clan lobby: the bots do not go there and stay where they are."),
+        ),
+        Place::Channel {
+            entry,
+            channel,
+            room: None,
+        } => (
+            "ok",
+            format!(
+                "{nick} is on {} channel {channel}, in no room: the bots wait on that channel.",
+                name(*entry)
+            ),
+        ),
+        Place::Channel {
+            entry,
+            channel,
+            room: Some(r),
+        } if r.locked => (
+            "warn",
+            format!(
+                "{nick} is in room {channel}-{} on {} channel {channel}, which has a password: the bots do not join \
+                 it and wait on that channel.",
+                r.no,
+                name(*entry)
+            ),
+        ),
+        Place::Channel {
+            entry,
+            channel,
+            room: Some(r),
+        } => (
+            "ok",
+            format!(
+                "{nick} is in room {channel}-{} on {} channel {channel}: the bots join it while it has a free seat.",
+                r.no,
+                name(*entry)
+            ),
+        ),
+    }
 }
 
 // ------------------------------------------------------------------------------------------------- HTTP
@@ -672,6 +884,13 @@ pub fn status_json(shared: &Shared) -> Value {
         Ok(v) => v,
         Err(e) => return json!({"ok": false, "message": format!("db: {e}")}),
     };
+    let others: Vec<String> = g
+        .opts
+        .other_lobbies
+        .iter()
+        .map(|e| e.name.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
     let mut running = 0;
     let gj: Vec<Value> = groups
         .iter()
@@ -686,7 +905,10 @@ pub fn status_json(shared: &Shared) -> Value {
                     if p.is_some_and(|p| p.pid.is_some()) {
                         running += 1;
                     }
-                    let ch = usable.as_ref().map_or(0, |c| Group::channel_of(c, i as u32 + 1));
+                    // the channel its process runs on (a following group's bots move), else the configured one
+                    let ch = p.map(|p| p.channel).filter(|c| *c != 0).unwrap_or_else(|| {
+                        usable.as_ref().map_or(0, |c| Group::channel_of(c, i as u32 + 1))
+                    });
                     json!({
                         "name": name, "channel": ch,
                         "state": p.map_or(if grp.enabled && g.opts.bots_managed { "waiting" } else { "stopped" }, |p| p.state),
@@ -701,6 +923,12 @@ pub fn status_json(shared: &Shared) -> Value {
             let mut v = grp.json();
             v["entry_name"] = json!(entries.iter().find(|e| e.id == grp.server_id).map(|e| e.name.clone()));
             v["problem"] = json!(usable.err());
+            // OPS-15: where the followed player is and what the bots do about it
+            if let RoomPick::Follow(nick) = &grp.room {
+                let place = place_of_player(&g, &entries, nick);
+                let (level, text) = follow_text(nick, &place, &entries, &others);
+                v["follow"] = json!({"level": level, "text": text});
+            }
             v["bots"] = json!(bots);
             v
         })
@@ -721,6 +949,10 @@ pub fn status_json(shared: &Shared) -> Value {
         "running": running,
         "supervisor": sup.is_some(),
         "entries": entries.iter().map(|e| json!({"id": e.id, "name": e.name, "channels": e.channel_ids().collect::<Vec<_>>()}))
+            .collect::<Vec<_>>(),
+        // OPS-14: the entries naming ANOTHER lobby (`lobby.servers[].lobby`) are no entry of this lobby: its bots log in
+        // here, so a group cannot target them; the form lists them disabled, with the address to run the group on
+        "others": g.opts.other_lobbies.iter().map(|e| json!({"name": e.name.trim(), "lobby": e.lobby.trim()}))
             .collect::<Vec<_>>(),
         "groups": gj,
         "stopping": stopping,

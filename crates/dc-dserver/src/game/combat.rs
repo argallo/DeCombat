@@ -352,14 +352,18 @@ impl Game {
         // DC-DEFAULT: DSV-611 (proposed) a mine (ammunition `Type` 1 whose projectile row names mine class data) is
         // thrown, with or without a hold: before, without a hold it flew as a rocket and blew up where it first met
         // the world (the owner's 2026-11-05 report "mines go off instantly")
-        let throw = held
-            || self.tables.weapons.throws_round(f.weapon_id, f.ammo_id)
-            || self.mine_row(f.weapon_id, f.ammo_id).is_some();
+        // DC-DEFAULT: DSV-619 (proposed) a controller's fire (its row names a controllee) sets off the shooter's mines;
+        // it is never a throw's release
+        let controls = self.tables.weapons.controllee(f.weapon_id);
+        let throw = controls.is_none()
+            && (held
+                || self.tables.weapons.throws_round(f.weapon_id, f.ammo_id)
+                || self.mine_row(f.weapon_id, f.ammo_id).is_some());
         let launched = !throw && self.tables.weapons.fires_projectile(f.weapon_id, f.ammo_id);
         let wall = if throw {
             self.throw_sound(pid, f);
             None
-        } else if launched {
+        } else if launched || controls.is_some() {
             // DC-DEFAULT: DSV-181 (amended, proposed) a launcher's shot record carries no hit (its round is flown)
             self.launch_effect(pid, f);
             None
@@ -395,10 +399,18 @@ impl Game {
             }
             return Some(HitVerdict::Throw);
         }
+        if let Some(weapon) = controls {
+            self.set_off_mines_of(pid, weapon);
+            return Some(HitVerdict::Throw);
+        }
         // DC-DEFAULT: DSV-181 (proposed) a launcher's shot (no hit from the client) is flown by the server
         if launched {
             self.rocket_release(pid, f, now);
             return Some(HitVerdict::Throw);
+        }
+        // DC-DEFAULT: DSV-618 (proposed) a pellet that meets a resting mine before its claimed hit sets it off
+        if self.shoot_mine(pid, f) {
+            return None;
         }
         // co-op: a hit on an AI character (FIRETEAM_2009.md §1.8)
         if self.is_coop() && self.coop_on_fire(pid, f, wall, now) {

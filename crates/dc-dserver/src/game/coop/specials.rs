@@ -1026,4 +1026,66 @@ mod tests {
         g.ai_damage(1, 1, 1000.0, TORSO, 1200);
         assert_eq!(sums(&g.take_out()), [(51, 84)]);
     }
+
+    /// DSV-618 (review): a co-op AI between the shooter and a resting mine takes the pellet (the server's ray hit of
+    /// the AI) and the mine stays; with the AI out of the way the same pellet sets the mine off.
+    #[test]
+    fn an_ai_in_front_of_a_resting_mine_takes_the_shot() {
+        use crate::game::projectile::{Flight, Mine};
+        let mut g = game(&[[0.0; 3]]);
+        assert!(g.coop_spawn_test_ai(b"plain", [0.0, 0.0, 0.0], 100));
+        g.take_out();
+        let ai = g.ai_chars()[0].pos;
+        g.coop.as_mut().unwrap().ais[0].obj = Some(500);
+        let mine_at = [ai[0] - 100.0, ai[1], ai[2]];
+        g.flights.push(Flight {
+            key: 9,
+            owner: 1,
+            owner_obj: 11,
+            owner_team: 1,
+            weapon: 20,
+            ammo: 20,
+            origin: mine_at,
+            pos: mine_at,
+            vel: [0.0; 3],
+            gravity: 0.0,
+            detonate_at: 0,
+            last: 100,
+            resting: true,
+            impact: false,
+            burst: false,
+            mine: Some(Mine {
+                radius: 50.0,
+                arm_ms: 0,
+                armed_at: None,
+                settle_at: 0,
+                sink: 0.0,
+                box_mid: 0.0,
+                box_half: [8.0; 3],
+            }),
+        });
+        // client 1 at 200 units on the other side of the AI, the pellet level along -x through the AI to the mine
+        let pos = [ai[0] + 200.0, ai[1] - 33.0, ai[2]];
+        g.players.get_mut(&1).unwrap().pos = pos;
+        let shot = |g: &mut Game, now: Millis| {
+            let f = crate::up::UpFire {
+                weapon_id: 3,
+                ammo_id: 3,
+                origin: [pos[0], pos[1] + 33.0, pos[2]],
+                dir: [-1.0, 0.0, 0.0],
+                last: true,
+                hit: None,
+                complete: true,
+                ..crate::up::UpFire::default()
+            };
+            g.on_up(1, crate::up::Up::Fire(Box::new(f)), now);
+        };
+        let before = g.ai_chars()[0].health;
+        shot(&mut g, 300);
+        assert!(!g.flights[0].burst, "the AI in front takes the pellet");
+        assert!(g.ai_chars()[0].health < before, "the AI is hit");
+        g.coop.as_mut().unwrap().ais[0].pos = [ai[0], ai[1] + 1000.0, ai[2]];
+        shot(&mut g, 400);
+        assert!(g.flights[0].burst, "nothing in front: the mine goes off");
+    }
 }

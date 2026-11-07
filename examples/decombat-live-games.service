@@ -1,0 +1,16 @@
+[Unit]
+Description=Update the DeCombat live games Discord board
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=decombat-live-board
+StateDirectoryMode=0700
+LoadCredential=webhook:/etc/decombat/live-games.webhook
+ExecStart=/usr/bin/python3 /opt/decombat/tools/live_games.py --source Lobby=/var/lib/decombat-public-games/default.json --state /var/lib/decombat-live-board/board.json --webhook-file ${CREDENTIALS_DIRECTORY}/webhook
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077

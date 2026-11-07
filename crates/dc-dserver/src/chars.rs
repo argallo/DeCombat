@@ -692,7 +692,7 @@ impl Rig {
     }
 }
 
-fn read_entry(vfs: &RezVfs, path: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_entry(vfs: &RezVfs, path: &str) -> Result<Vec<u8>, String> {
     let (rez, entry) =
         archive_of(path).ok_or_else(|| format!("resource path {} has no archive", path.len()))?;
     match vfs.entry(&rez, &entry) {

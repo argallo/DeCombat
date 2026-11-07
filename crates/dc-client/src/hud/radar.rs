@@ -11,8 +11,9 @@
 //!    radar centre so that its top points along the view.
 //! 3. **The entries**: one icon per entry of the element's object list. Players enter that list through the roster
 //!    (kind 0); a team mate is drawn with the friendly icon while his distance on the radar is within the layout
-//!    radius; an enemy only while the radar accessory reveals him (radar pings 0xcd and 0x84 with a range), so never
-//!    in a plain match; a dead player (0x6d) and the own player never.
+//!    radius; an enemy only while the radar accessory reveals him (radar pings 0xcd and 0x84 with a range): in
+//!    DeCombat while the own heartbeat sensor scans ([`super::sensor`], CLI-1914); a dead player (0x6d) and the own
+//!    player never.
 //!
 //! [`RadarKeys`] reads the layout key names from the user's CShell.dll (pinned like dc-ui-data's HUD keys; no key
 //! text is in this tree), [`RadarLayout`] holds the values (or our own no-ROM layout), [`RadarMap`] the per-match
@@ -72,10 +73,16 @@ pub enum RadarKey {
     RimForm,
     /// Pair: the rim image's texel size (drawn 1:1 at the radar place).
     RimSize,
+    /// Text: the enemy / NPC entry icon (the heartbeat sensor's marks).
+    EnemyIcon,
+    /// Text: the second battery form of the rim, a printf form with one `%d` (recharging, empty); read from set 0 only.
+    FillForm,
 }
 
 /// `(key, literal rva, sha16, length, accessor rva)`.
-const PINS: [(RadarKey, u32, &str, usize, u32); 15] = [
+// EVIDENCE: cshell+0x54740 (the enemy icon's accessor), cshell+0xb40a6 (init reads the second battery form from set 0
+// directly, into +0x26c)
+const PINS: [(RadarKey, u32, &str, usize, u32); 17] = [
     (
         RadarKey::BlipOriginX,
         0x3d20f0,
@@ -139,10 +146,24 @@ const PINS: [(RadarKey, u32, &str, usize, u32); 15] = [
     (RadarKey::DiscUsed, 0x3d2174, "e4463ed9830ed7fa", 9, 0x54050),
     (RadarKey::RimForm, 0x3d2264, "7365824dea260bb9", 15, 0x548c0),
     (RadarKey::RimSize, 0x3d218c, "bbd98df9e329b2dd", 9, 0x54130),
+    (
+        RadarKey::EnemyIcon,
+        0x3d223c,
+        "b7125200a1a305ed",
+        13,
+        0x54740,
+    ),
+    (
+        RadarKey::FillForm,
+        0x3d8ef4,
+        "e3a43a12dd7fb569",
+        19,
+        0xb3e30,
+    ),
 ];
 
 impl RadarKey {
-    pub const ALL: [RadarKey; 15] = [
+    pub const ALL: [RadarKey; 17] = [
         RadarKey::BlipOriginX,
         RadarKey::BlipOriginY,
         RadarKey::BlipScale,
@@ -158,6 +179,8 @@ impl RadarKey {
         RadarKey::DiscUsed,
         RadarKey::RimForm,
         RadarKey::RimSize,
+        RadarKey::EnemyIcon,
+        RadarKey::FillForm,
     ];
 
     fn row(self) -> (RadarKey, u32, &'static str, usize, u32) {
@@ -221,6 +244,13 @@ impl RadarKeys {
 pub struct RadarLayout {
     /// The rim image drawn first at `place`, 1:1 from its top-left texels (texture, texel size); `None`: no rim.
     pub rim: Option<(String, [f32; 2])>,
+    /// The two battery forms of the rim (`%d` = the charge), shown instead of `rim` while a heartbeat sensor is
+    /// carried ([`super::sensor`]): the rim form and the second (recharging) form.
+    pub rim_form: Option<String>,
+    pub fill_form: Option<String>,
+    /// The enemy icon (the heartbeat sensor's marks); `None`: a filled square of `enemy_colour`.
+    pub enemy_icon: Option<String>,
+    pub enemy_colour: [u8; 4],
     /// Top-left of the map layer.
     pub place: [f32; 2],
     /// Drawn size of the map layer (also the used texel region of the disc textures).
@@ -277,6 +307,14 @@ impl RadarLayout {
             .zip(pair(RadarKey::RimSize));
         Some(RadarLayout {
             rim,
+            rim_form: text(RadarKey::RimForm),
+            fill_form: table
+                .hud_raw(0, keys.key(RadarKey::FillForm))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            enemy_icon: text(RadarKey::EnemyIcon),
+            enemy_colour: FALLBACK_ENEMY,
             place: pair(RadarKey::Place)?,
             size: pair(RadarKey::DiscUsed)?,
             disc_texels: pair(RadarKey::DiscTexels)?,
@@ -301,6 +339,10 @@ impl RadarLayout {
     pub fn fallback() -> RadarLayout {
         RadarLayout {
             rim: None,
+            rim_form: None,
+            fill_form: None,
+            enemy_icon: None,
+            enemy_colour: FALLBACK_ENEMY,
             place: [844.0, 14.0],
             size: [168.0, 168.0],
             disc_texels: [168.0, 168.0],
@@ -329,6 +371,10 @@ impl RadarLayout {
 /// Team-mate colour of the no-ROM radar (the no-ROM mark colour of CLI-116).
 // DC-DEFAULT: CLI-116 (the no-ROM team-mate colour)
 pub const FALLBACK_MATE: [u8; 4] = [110, 190, 255, 255];
+
+/// Enemy colour of the heartbeat sensor's marks without an icon texture.
+// DC-DEFAULT: CLI-1914 (proposed) the no-ROM enemy mark colour
+pub const FALLBACK_ENEMY: [u8; 4] = [255, 70, 60, 255];
 
 /// The match's radar picture and its mapping, from the 0x45 intro block (fields f..h).
 ///
@@ -410,6 +456,8 @@ pub fn view_turn(yaw: f32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlipKind {
     Mate,
+    /// An enemy the heartbeat sensor shows.
+    Enemy,
 }
 
 /// One entry icon this frame: its top-left in virtual pixels.
@@ -457,24 +505,32 @@ fn own_team(s: &HudState) -> Option<u8> {
         .filter(|t| matches!(t, 1 | 2))
 }
 
-/// The radar of a frame: `own` / `yaw` of the camera, the entries of `remotes` by the 2009 rule.
+/// The radar of a frame: `own` / `yaw` of the camera, the entries of `remotes` by the 2009 rule; `seen` tells whether
+/// a world point is inside the camera's view frustum (the heartbeat sensor's test, [`super::sensor::in_view`]).
 ///
 /// Rule (players, entry kind 0): never the own player; never a player the board lists as dead (0x6d until his next
-/// spawn); a team mate (the own team) with the friendly icon when within the radius; an enemy only while the radar
-/// accessory reveals him, which DeCombat never does (no 0xcd ping, no range): enemies are not drawn.
+/// spawn); a team mate (the own team) with the friendly icon when within the radius; an enemy only while the own
+/// heartbeat sensor scans ([`HudState::sensor`] with a range): within the radius, inside the view frustum (walls do
+/// not count) and with a radar distance (horizontal distance x the character scale) of at most the sensor's range,
+/// with the enemy icon.
 // DISASM: cshell+0xb6277..0xb6299 (an entry with its dead byte +1 set or the own client object is skipped),
 // cshell+0xb75cc..0xb775e (own team -> friendly icon, shown by element +0x1a4 (1 from the ctor); team 0xff -> not
-// shown; another team -> shown only within the accessory range +0x1b0 and with the reveal byte +0x118 or the scan
-// flag +0x1b8); cshell+0x2ce0e (the roster adds every player with kind 0), cshell+0x2db01 (0x6d sets the dead byte)
-// DC-DEFAULT: CLI-142 (proposed) no radar accessory: enemies are never drawn; the own point is the camera's
+// shown; another team -> while the sensor is selected and active the reveal byte +0x118 := the frustum test
+// cshell+0xb5050; shown with the enemy icon +0x188 only within the accessory range +0x1b0 (compared with the radar
+// distance) and with the reveal byte and +0x1b4 >= 0, or the scan flag +0x1b8); cshell+0x2ce0e (the roster adds every
+// player with kind 0), cshell+0x2db01 (0x6d sets the dead byte)
+// DC-DEFAULT: CLI-142 (amended by CLI-1914) enemies only through the heartbeat sensor; the own point is the camera's;
+// CLI-1914 (proposed) without a team (own team not 1 / 2) every other player outside team 0xff is an enemy of the sensor
 pub fn frame(
     l: &RadarLayout,
     s: &HudState,
     remotes: &[RemoteBody],
     own: [f32; 3],
     yaw: f32,
+    seen: &dyn Fn([f32; 3]) -> bool,
 ) -> RadarFrame {
     let team = own_team(s);
+    let range = s.sensor.and_then(|v| v.range);
     let mut blips = Vec::new();
     for r in remotes {
         if Some(r.pid) == s.own_pid {
@@ -485,19 +541,43 @@ pub fn frame(
             continue;
         }
         let t = row.map(|b| b.team).unwrap_or(r.team);
-        if team.is_none() || Some(t) != team {
-            continue;
-        }
+        let kind = if team.is_some() && Some(t) == team {
+            BlipKind::Mate
+        } else {
+            let Some(range) = range else {
+                continue;
+            };
+            let foe = match team {
+                Some(_) => matches!(t, 1 | 2),
+                None => t != NO_TEAM,
+            };
+            // the 2009 range is in radar distance (x the character scale); the game server's reach (DSV-616) is the
+            // same number in world units, so a mark also needs the world distance within it (the ROM's scale is
+            // above 1, where this changes nothing); without a usable scale no enemy is marked
+            // DC-DEFAULT: CLI-1914 (proposed)
+            let (dx, dz) = (r.pos[0] - own[0], r.pos[2] - own[2]);
+            let world = (dx * dx + dz * dz).sqrt();
+            let d = world * l.char_scale;
+            let scale_ok = l.char_scale.is_finite() && l.char_scale > 0.0;
+            if !foe || !scale_ok || d > range || world > range || !seen(r.pos) {
+                continue;
+            }
+            BlipKind::Enemy
+        };
         if let Some(at) = blip_at(l, own, r.pos) {
             blips.push(RadarBlip {
                 pid: r.pid,
                 at,
-                kind: BlipKind::Mate,
+                kind,
             });
         }
     }
     RadarFrame { own, yaw, blips }
 }
+
+/// The team byte of a player outside both teams (never drawn).
+// DISASM: cshell+0xb75cc..0xb775e (team 0xff -> not shown)
+pub const NO_TEAM: u8 = 0xff;
 
 /// Name of the generated map-layer texture (not an archive path).
 pub const MAP_LAYER: &str = "<radar map layer>";
@@ -842,15 +922,30 @@ impl Radar {
             (l.size[1] * sc.sy).ceil().max(1.0) as u32,
         );
         let mut items = Vec::new();
-        // ---- rim (drawn before the layers)
+        // ---- rim (drawn before the layers): with a heartbeat sensor carried, its battery picture
+        // DISASM: cshell+0xb5fa4..0xb5fc3 (the accessory flag +0x3a0 draws image +0x2a4, whose texture the battery steps
+        // set, cshell+0xb5230 / 0xb50b0, and whose alpha the blink sets, cshell+0xb49e0; else image +0x2a8, the form
+        // printed with 0)
         if let Some((tex, size)) = &l.rim {
-            items.push(DrawItem::Image {
-                tex: tex.clone(),
-                src: *size,
-                dst: [l.place[0], l.place[1], size[0], size[1]],
-                tint: [255; 4],
-                turn: None,
-            });
+            let (tex, alpha) = match (s.sensor, &l.rim_form) {
+                (Some(v), Some(charge)) => {
+                    let form = match v.rim.0 {
+                        super::sensor::RimForm::Charge => charge,
+                        super::sensor::RimForm::Recharge => l.fill_form.as_ref().unwrap_or(charge),
+                    };
+                    (form.replacen("%d", &v.rim.1.to_string(), 1), v.rim_alpha)
+                }
+                _ => (tex.clone(), 255),
+            };
+            if alpha > 0 {
+                items.push(DrawItem::Image {
+                    tex,
+                    src: *size,
+                    dst: [l.place[0], l.place[1], size[0], size[1]],
+                    tint: [255, 255, 255, alpha],
+                    turn: None,
+                });
+            }
         }
         // ---- map layer: the disc alpha once per size, the picture window when it moves
         if self.cache.alpha.as_ref().is_none_or(|a| a.0 != (w, h)) {
@@ -958,20 +1053,22 @@ impl Radar {
         // ---- entries: the whole icon texture stretched over the icon size
         // EVIDENCE: cshell+0xb8919..0xb8936 (entry quad: white, uv (0, 0, 1, 1))
         for b in &f.blips {
-            match b.kind {
-                BlipKind::Mate => match l.mate_icon.as_deref().and_then(|t| assets.texture(t)) {
-                    Some(t) => items.push(DrawItem::Image {
-                        tex: l.mate_icon.clone().unwrap_or_default(),
-                        src: [t.width as f32, t.height as f32],
-                        dst: [b.at[0], b.at[1], l.icon[0], l.icon[1]],
-                        tint: [255; 4],
-                        turn: None,
-                    }),
-                    None => items.push(DrawItem::Fill {
-                        rect: [b.at[0], b.at[1], l.icon[0], l.icon[1]],
-                        colour: l.mate_colour,
-                    }),
-                },
+            let (icon, colour) = match b.kind {
+                BlipKind::Mate => (&l.mate_icon, l.mate_colour),
+                BlipKind::Enemy => (&l.enemy_icon, l.enemy_colour),
+            };
+            match icon.as_deref().and_then(|t| assets.texture(t)) {
+                Some(t) => items.push(DrawItem::Image {
+                    tex: icon.clone().unwrap_or_default(),
+                    src: [t.width as f32, t.height as f32],
+                    dst: [b.at[0], b.at[1], l.icon[0], l.icon[1]],
+                    tint: [255; 4],
+                    turn: None,
+                }),
+                None => items.push(DrawItem::Fill {
+                    rect: [b.at[0], b.at[1], l.icon[0], l.icon[1]],
+                    colour,
+                }),
             }
         }
         out.splice(0..0, items);
@@ -986,6 +1083,10 @@ mod tests {
     fn layout() -> RadarLayout {
         RadarLayout {
             rim: None,
+            rim_form: None,
+            fill_form: None,
+            enemy_icon: None,
+            enemy_colour: FALLBACK_ENEMY,
             place: [800.0, 20.0],
             size: [160.0, 160.0],
             disc_texels: [256.0, 256.0],
@@ -1145,14 +1246,131 @@ mod tests {
             remote(3, 1, [-100.0, 0.0, 0.0]),
             remote(4, 1, [0.0, 0.0, 5000.0]),
         ];
-        let f = frame(&l, &s, &remotes, [0.0; 3], 0.3);
+        let f = frame(&l, &s, &remotes, [0.0; 3], 0.3, &|_| true);
         let pids: Vec<u8> = f.blips.iter().map(|b| b.pid).collect();
         // own (0) never, enemy (2) not revealed, dead mate (3) skipped, far mate (4) past the radius
         assert_eq!(pids, vec![1]);
         assert_eq!(f.yaw, 0.3);
         // without a known own team nobody is a mate
         s.own_pid = Some(9);
-        assert!(frame(&l, &s, &remotes, [0.0; 3], 0.0).blips.is_empty());
+        assert!(frame(&l, &s, &remotes, [0.0; 3], 0.0, &|_| true)
+            .blips
+            .is_empty());
+    }
+
+    fn scanning(range: f32) -> Option<super::super::sensor::SensorView> {
+        Some(super::super::sensor::SensorView {
+            rim: (super::super::sensor::RimForm::Charge, 90),
+            rim_alpha: 255,
+            range: Some(range),
+        })
+    }
+
+    #[test]
+    fn the_scanning_sensor_shows_living_enemies_in_view_and_in_range() {
+        // CLI-1914: char scale 2, so a range of 1000 radar units reaches 500 world units
+        let l = layout();
+        let mut s = HudState {
+            own_pid: Some(0),
+            ..HudState::default()
+        };
+        for r in [
+            row(0, 1, false),
+            row(2, 2, false),
+            row(5, 2, false),
+            row(6, 2, true),
+            row(7, 2, false),
+            row(8, 0xff, false),
+        ] {
+            s.roster.insert(r.pid, r);
+        }
+        let remotes = [
+            remote(2, 2, [0.0, 0.0, 400.0]),
+            remote(5, 2, [0.0, 0.0, 600.0]),
+            remote(6, 2, [0.0, 0.0, 300.0]),
+            remote(7, 2, [-300.0, 0.0, 0.0]),
+            remote(8, 0xff, [0.0, 0.0, 100.0]),
+        ];
+        // "in view": ahead (+Z) only
+        let ahead = |p: [f32; 3]| p[2] > 0.0;
+        // not scanning: no enemy
+        assert!(frame(&l, &s, &remotes, [0.0; 3], 0.0, &ahead)
+            .blips
+            .is_empty());
+        s.sensor = scanning(1000.0);
+        let f = frame(&l, &s, &remotes, [0.0; 3], 0.0, &ahead);
+        // 2 in view and range; 5 beyond the range; 6 dead; 7 out of view; 8 outside both teams
+        let got: Vec<(u8, BlipKind)> = f.blips.iter().map(|b| (b.pid, b.kind)).collect();
+        assert_eq!(got, vec![(2, BlipKind::Enemy)]);
+        // without a usable character scale nobody is marked
+        let mut flat = l.clone();
+        flat.char_scale = 0.0;
+        assert!(frame(&flat, &s, &remotes, [0.0; 3], 0.0, &ahead)
+            .blips
+            .iter()
+            .all(|b| b.kind != BlipKind::Enemy));
+        // a scale below 1: the world distance stays within the range too (the server's reach)
+        let mut small = l.clone();
+        small.char_scale = 0.5;
+        small.radius = 1000.0;
+        s.sensor = scanning(450.0);
+        let got: Vec<u8> = frame(&small, &s, &remotes, [0.0; 3], 0.0, &ahead)
+            .blips
+            .iter()
+            .filter(|b| b.kind == BlipKind::Enemy)
+            .map(|b| b.pid)
+            .collect();
+        assert_eq!(got, vec![2], "400 units in, 600 out though 600 x 0.5 = 300 <= 450");
+        s.sensor = scanning(1000.0);
+        // a carried sensor that does not scan shows nobody
+        s.sensor = scanning(1000.0).map(|v| super::super::sensor::SensorView { range: None, ..v });
+        assert!(frame(&l, &s, &remotes, [0.0; 3], 0.0, &ahead)
+            .blips
+            .is_empty());
+    }
+
+    #[test]
+    fn the_rim_shows_the_battery_form_and_the_blink() {
+        let mut l = RadarLayout::fallback();
+        l.rim = Some(("rim_0".into(), [256.0, 256.0]));
+        l.rim_form = Some("charge_%d".into());
+        l.fill_form = Some("fill_%d".into());
+        let mut radar = Radar::new(l);
+        let mut assets = HudAssets::new(
+            Box::new(super::super::NoTextures),
+            super::super::HudFonts::new(None, 18.0, None, 1.0),
+        );
+        let mut s = HudState {
+            life_state: 1,
+            radar: Some(RadarFrame {
+                own: [0.0; 3],
+                yaw: 0.0,
+                blips: Vec::new(),
+            }),
+            ..HudState::default()
+        };
+        let rim = |radar: &mut Radar, s: &HudState, assets: &mut HudAssets| {
+            let mut out = Vec::new();
+            radar.push_items(&mut out, s, assets, (1024, 768));
+            out.iter().find_map(|i| match i {
+                DrawItem::Image { tex, tint, .. } if tex != MAP_LAYER && tex != VIEW_LAYER => {
+                    Some((tex.clone(), tint[3]))
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(rim(&mut radar, &s, &mut assets), Some(("rim_0".into(), 255)));
+        s.sensor = scanning(1600.0);
+        assert_eq!(rim(&mut radar, &s, &mut assets), Some(("charge_90".into(), 255)));
+        s.sensor = Some(super::super::sensor::SensorView {
+            rim: (super::super::sensor::RimForm::Recharge, 40),
+            rim_alpha: 255,
+            range: None,
+        });
+        assert_eq!(rim(&mut radar, &s, &mut assets), Some(("fill_40".into(), 255)));
+        // the blink's dark half draws no rim
+        s.sensor = s.sensor.map(|v| super::super::sensor::SensorView { rim_alpha: 0, ..v });
+        assert_eq!(rim(&mut radar, &s, &mut assets), None);
     }
 
     fn solid(w: u32, h: u32, px: [u8; 4]) -> Tex {

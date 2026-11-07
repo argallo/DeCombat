@@ -1553,6 +1553,12 @@ fn board(out: &mut Vec<DrawItem>, layout: &HudLayout, s: &HudState) {
         ) {
             out.push(text(style(c), [x + p[0], y + p[1]], clan));
         }
+        // CLI-1910: the clan mark (background, then emblem) as the lobby panel draws it; nothing without a clan
+        if let Some((bg, emblem, r)) =
+            super::board::clan_mark_layers(cols, &layout.clan_marks, mark, [x, y])
+        {
+            crate::menu::clanpage::mark_cropped(bg, emblem, r, out);
+        }
         if let Some(p) = cols.mission {
             out.push(centred_text(
                 st,
@@ -2277,6 +2283,7 @@ mod tests {
                 name: n.into(),
                 group_no: g,
                 colour: c,
+                mark: [0; 2],
             }),
             mission: [3, 4, 5],
         }
@@ -2405,6 +2412,80 @@ mod tests {
         let mut out = Vec::new();
         board(&mut out, &l, &s);
         assert!(text_at(&out, "4/5").is_some());
+    }
+
+    #[test]
+    fn board_rows_draw_the_clan_mark_of_clan_members_only() {
+        // CLI-1910 (playtest 2026-11-05: no clan marks on the scoreboard): background then emblem, the art's 51 x 51
+        // texels over 21 x 21 at the row's clan mark point; nothing for a clanless row or a mark of no table entry
+        let mut l = HudLayout::fallback();
+        l.board.window = None;
+        l.board.panel = None;
+        l.board.rows = [10, 100];
+        l.board.row_step = 30;
+        l.board_columns = crate::hud::board::BoardColumns {
+            clan_mark_at: Some([110, 1]),
+            ..Default::default()
+        };
+        l.clan_marks = crate::menu::clan::ClanMarks {
+            emblems: vec![None, Some("e1.dtx".into()), Some("e2.dtx".into())],
+            backgrounds: vec![None, Some("b1.dtx".into())],
+            ..Default::default()
+        };
+        let mut s = HudState {
+            show_board: true,
+            life_state: 1,
+            mode_class: Some(1),
+            ..HudState::default()
+        };
+        for (pid, kills) in [(1u8, 9), (2, 5), (3, 1), (4, 0)] {
+            s.roster.insert(
+                pid,
+                BoardRow {
+                    pid,
+                    name: format!("p{pid}"),
+                    team: 1,
+                    kills,
+                    ..BoardRow::default()
+                },
+            );
+        }
+        let clan = |mark: [u32; 2]| RowMark {
+            clan: Some(ClanTag {
+                name: "Owls".into(),
+                group_no: 7,
+                colour: 0,
+                mark,
+            }),
+            ..RowMark::default()
+        };
+        s.row_marks.insert(1, clan([2, 1]));
+        s.row_marks.insert(2, RowMark::default());
+        s.row_marks.insert(3, clan([0, 9]));
+        s.row_marks.insert(4, clan([1, 0]));
+        let mut out = Vec::new();
+        board(&mut out, &l, &s);
+        let marks: Vec<(&str, [f32; 2], [f32; 4])> = out
+            .iter()
+            .filter_map(|i| match i {
+                DrawItem::Image { tex, src, dst, .. } => Some((tex.as_str(), *src, *dst)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            marks,
+            vec![
+                ("b1.dtx", [51.0, 51.0], [120.0, 101.0, 21.0, 21.0]),
+                ("e2.dtx", [51.0, 51.0], [120.0, 101.0, 21.0, 21.0]),
+                // row 4 (place 4): only the emblem layer resolves, it shows alone (cshell+0x343cc0)
+                ("e1.dtx", [51.0, 51.0], [120.0, 191.0, 21.0, 21.0]),
+            ]
+        );
+        // without the layout point: no mark
+        l.board_columns.clan_mark_at = None;
+        let mut out = Vec::new();
+        board(&mut out, &l, &s);
+        assert!(!out.iter().any(|i| matches!(i, DrawItem::Image { .. })));
     }
 
     #[test]

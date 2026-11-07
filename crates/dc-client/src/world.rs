@@ -891,6 +891,8 @@ pub struct FrameState {
     pub sky: Option<crate::objects::SkyTable>,
     /// The local player's team from the roster (`None`: unknown or a local source).
     pub own_team: Option<u8>,
+    /// The own heartbeat sensor (`None`: none carried, or a local source; [`crate::hud::sensor`]).
+    pub sensor: Option<crate::hud::sensor::SensorView>,
     /// The weapon the own player holds now (`None`: none or a local source); the mover's speed rows follow it.
     // EVIDENCE: cshell+0x5c270 (the speed penalty reads the held weapon's row, slot +0xc0 of the object at VA
     // 0x3759e110)

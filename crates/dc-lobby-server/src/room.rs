@@ -412,6 +412,20 @@ fn on_create(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     Ok(())
 }
 
+/// Logs and records (MON-3) a refused entry into a room from the list. The wire reply stays the 2009 one.
+fn refuse_entry(st: &mut Core, account: u32, key: RoomKey, why: &str) {
+    st.note(&format!(
+        "room {}-{}: account {} refused entry: {}",
+        key.channel, key.no, account, why
+    ));
+    crate::opsmon::event(
+        st,
+        account,
+        crate::opsmon::kind::JOIN_REFUSED,
+        &format!("room {}-{}: entry refused: {}", key.channel, key.no, why),
+    );
+}
+
 fn on_enter(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     let (no, pw) = wire::parse_room_enter(p);
     let (Some(account), Some(channel)) = (
@@ -433,24 +447,40 @@ fn on_enter(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
     let human = crate::lifecycle::is_human(st, account);
     // DC-DEFAULT: CD-26 entry checks: kicked, wrong password, full, playing without the mid-match option
     let refusal = match st.rooms.get(&key) {
-        None => Some(wire::REASON_GENERIC),
-        Some(r) if r.kicked.contains(&account) => Some(wire::REASON_KICKED),
-        Some(r) if !r.password.is_empty() && r.password != pw => Some(wire::REASON_WRONG_PASSWORD),
+        None => Some((wire::REASON_GENERIC, "no such room".to_string())),
+        Some(r) if r.kicked.contains(&account) => Some((wire::REASON_KICKED, "kicked".to_string())),
+        Some(r) if !r.password.is_empty() && r.password != pw => {
+            Some((wire::REASON_WRONG_PASSWORD, "wrong password".to_string()))
+        }
         Some(r)
             if r.members.len() as u32 >= r.max_players
                 && !(human && crate::botpool::seat_can_open(st, key)) =>
         {
-            Some(wire::REASON_GENERIC)
+            Some((
+                wire::REASON_GENERIC,
+                format!(
+                    "full ({}/{}, no bot yields)",
+                    r.members.len(),
+                    r.max_players
+                ),
+            ))
         }
-        Some(r)
-            if r.state != RoomPhase::Waiting && (r.mid_join == 0 || !st.rules.allow_late_join) =>
-        {
-            Some(wire::REASON_GENERIC)
-        }
-        Some(_) if !human && crate::botpool::last_seat_kept(st, key) => Some(wire::REASON_GENERIC),
+        Some(r) if r.state != RoomPhase::Waiting && r.mid_join == 0 => Some((
+            wire::REASON_GENERIC,
+            "playing, join in progress off (room option)".to_string(),
+        )),
+        Some(r) if r.state != RoomPhase::Waiting && !st.rules.allow_late_join => Some((
+            wire::REASON_GENERIC,
+            "playing, late join disabled on this server".to_string(),
+        )),
+        Some(_) if !human && crate::botpool::last_seat_kept(st, key) => Some((
+            wire::REASON_GENERIC,
+            "the last seat is kept for a person".to_string(),
+        )),
         Some(_) => None,
     };
-    if let Some(reason) = refusal {
+    if let Some((reason, why)) = refusal {
+        refuse_entry(st, account, key, &why);
         st.send(sid, wire::room_enter_reply(false, reason, 0));
         return Ok(());
     }
@@ -469,6 +499,16 @@ fn on_enter(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
         .get(&key)
         .is_none_or(|r| r.members.len() as u32 >= r.max_players)
     {
+        let why = match st.rooms.get(&key) {
+            Some(r) => format!(
+                "full ({}/{}, no bot yields)",
+                r.members.len(),
+                r.max_players
+            ),
+            // the bot that made way was the room's last member
+            None => "no such room".to_string(),
+        };
+        refuse_entry(st, account, key, &why);
         st.send(sid, wire::room_enter_reply(false, wire::REASON_GENERIC, 0));
         return Ok(());
     }
@@ -1285,6 +1325,24 @@ fn on_flag(st: &mut Core, sid: Sid, p: &[u8]) -> HResult {
             } else if mid_join != 0 && st.rules.allow_late_join {
                 game::late_join(st, sid, key, account)?;
             } else {
+                let why = if mid_join == 0 {
+                    "join in progress off (room option)"
+                } else {
+                    "late join disabled on this server"
+                };
+                st.note(&format!(
+                    "room {}-{}: account {} late join refused: {}",
+                    key.channel, key.no, account, why
+                ));
+                crate::opsmon::event(
+                    st,
+                    account,
+                    crate::opsmon::kind::JOIN_REFUSED,
+                    &format!(
+                        "room {}-{}: late join refused: {}",
+                        key.channel, key.no, why
+                    ),
+                );
                 st.send(
                     sid,
                     wire::user_flag_reply(

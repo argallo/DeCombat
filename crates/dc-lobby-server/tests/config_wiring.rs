@@ -70,12 +70,25 @@ struct Server {
     child: Child,
 }
 
-/// Removes a test folder on drop (declared first in a test, so it is dropped after the servers).
-struct Dir(PathBuf);
+/// Removes a test folder on drop (declared first in a test, so it is dropped after the servers), and holds the
+/// one-at-a-time lock: every test here starts real servers on ports picked by `free_port`, and two tests running
+/// at once can take each other's port between the pick and the bind (CI on 2026-11-06 saw both faces of it: a
+/// server exiting before it listened, and a broken pipe on a port another test's server had just left).
+struct Dir(PathBuf, Option<std::sync::MutexGuard<'static, ()>>);
+
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl Dir {
+    fn new(p: PathBuf) -> Dir {
+        let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        Dir(p, Some(g))
+    }
+}
 
 impl Drop for Dir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+        self.1.take();
     }
 }
 
@@ -222,7 +235,7 @@ fn probe_max_players(auth_port: u16, lobby_port: u16, probes: &[u32]) -> Vec<boo
 #[test]
 fn toml_rule_override_reaches_the_running_server() {
     let dir = temp("startup");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby, clan, web) = (free_port(), free_port(), free_port(), free_port());
     let cfg = dir.join("server.toml");
     std::fs::write(
@@ -257,7 +270,7 @@ fn toml_rule_override_reaches_the_running_server() {
 #[test]
 fn precedence_flag_then_env_then_toml_then_lobby_json_then_builtin() {
     let dir = temp("prec");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby_cli, lobby_toml, clan, web) = (
         free_port(),
         free_port(),
@@ -327,7 +340,7 @@ fn precedence_flag_then_env_then_toml_then_lobby_json_then_builtin() {
 #[test]
 fn a_report_over_the_socket_is_stored_and_mailed() {
     let dir = temp("report");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby, clan, web) = (free_port(), free_port(), free_port(), free_port());
     let db = dir.join("ca.db");
     let _s = start(
@@ -394,7 +407,7 @@ fn a_report_over_the_socket_is_stored_and_mailed() {
 #[test]
 fn lobby_json_alone_and_no_config_behave_as_before() {
     let dir = temp("legacy");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby, clan, web) = (free_port(), free_port(), free_port(), free_port());
     std::fs::write(dir.join("lobby.json"), r#"{"room.max_players_cap": 3}"#).unwrap();
     let db = dir.join("ca.db");
@@ -458,7 +471,7 @@ fn wait_for(path: &Path, needle: &str) -> String {
 #[test]
 fn vanilla_policy_refuses_mods_and_publishes_the_empty_set_hash() {
     let dir = temp("vanilla");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby, clan, web) = (free_port(), free_port(), free_port(), free_port());
     let mods = dir.join("mods");
     write_mod(&mods, "wiring_mod");
@@ -501,7 +514,7 @@ fn vanilla_policy_refuses_mods_and_publishes_the_empty_set_hash() {
 #[test]
 fn modded_policy_loads_the_set_and_publishes_its_hash() {
     let dir = temp("modded");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby, clan, web) = (free_port(), free_port(), free_port(), free_port());
     let mods = dir.join("mods");
     write_mod(&mods, "wiring_mod");
@@ -580,7 +593,7 @@ fn doctor_args(cfg: &Path, db: &Path, ports: (u16, u16, u16, u16)) -> Vec<String
 #[test]
 fn doctor_prints_the_table_and_exits_zero_on_a_good_setup() {
     let dir = temp("doctor_ok");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let ports = (free_port(), free_port(), free_port(), free_port());
     let mods = dir.join("mods");
     write_mod(&mods, "wiring_mod");
@@ -635,7 +648,7 @@ fn doctor_prints_the_table_and_exits_zero_on_a_good_setup() {
 #[test]
 fn doctor_exits_one_and_names_the_failures() {
     let dir = temp("doctor_bad");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let ports = (free_port(), free_port(), free_port(), free_port());
     let mods = dir.join("mods");
     std::fs::create_dir_all(mods.join("broken")).unwrap();
@@ -680,7 +693,7 @@ fn doctor_exits_one_and_names_the_failures() {
 #[test]
 fn a_bad_config_stops_the_server_with_status_two() {
     let dir = temp("badcfg");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let cfg = dir.join("server.toml");
     std::fs::write(&cfg, "[room]\nmax_players_cap = 999\n").unwrap();
     let args = vec![
@@ -700,7 +713,7 @@ fn a_bad_config_stops_the_server_with_status_two() {
 fn a_declared_mod_with_the_wrong_hash_stops_the_server() {
     // LG-270: the lobby refuses to start rather than run a set its clients could not join
     let dir = temp("badhash");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let mods = dir.join("mods");
     write_mod(&mods, "wiring_mod");
     let cfg = dir.join("server.toml");
@@ -732,7 +745,7 @@ fn a_declared_mod_with_the_wrong_hash_stops_the_server() {
 #[test]
 fn a_vanilla_lobby_with_a_catalogue_keeps_the_empty_set_hash() {
     let dir = temp("vanilla_catalog");
-    let _guard = Dir(dir.clone());
+    let _guard = Dir::new(dir.clone());
     let (auth, lobby, clan, web) = (free_port(), free_port(), free_port(), free_port());
     let mods = dir.join("mods");
     std::fs::create_dir_all(&mods).unwrap();

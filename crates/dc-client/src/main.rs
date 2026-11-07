@@ -137,7 +137,9 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   budget (2 s in the menu and in play, 15 s loading, 10 s teardown) writes a stall dir stall_<pid>_<n> (stall.json,
   threads.txt with every thread's breadcrumbs and stack, events_tail.jsonl, dump1.dmp) next to the --sound-log (or
   into DC_WATCHDOG_DIR); 6 s later a second dump, then the process aborts (DC_WATCHDOG_ABORT=0 keeps it). A panic
-  writes panic_<pid>.txt, an unhandled exception crash_<pid>/ there. DC_FAULT=deadlock_test [DC_FAULT_AT=s]
+  writes panic_<pid>.txt, an unhandled exception crash_<pid>/ there (crash.txt names the module of the faulting
+  address, e.g. nvoglv64.dll+0x1c8a32, and both reports carry a run: line with version, commit, target, profile,
+  adapter and driver). DC_FAULT=deadlock_test [DC_FAULT_AT=s]
   deadlocks the frame thread on purpose. --heartbeat FILE writes one JSON line per second (frame, phase, handles,
   threads, private bytes, voices_looping, corpses) for an external watchdog.
        dc-client --update-from ZIP   (CLI-1867) swaps this install's files for those of a game zip once this run ends:
@@ -1217,6 +1219,7 @@ fn run_window_mode(
         room_hacks: None,
         gun_ladder: Vec::new(),
         reticle: None,
+        prefs: None,
         sound: dc_client::sound::SoundOptions {
             enabled: a.sound,
             log: a.sound_log.clone(),
@@ -1523,6 +1526,7 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
         room_hacks: None,
         gun_ladder: Vec::new(),
         reticle: None,
+        prefs: None,
         sound: dc_client::sound::SoundOptions {
             enabled: a.sound,
             log: a.sound_log.clone(),
@@ -1699,10 +1703,11 @@ fn main() -> ExitCode {
             }
         };
     }
-    // CLI-1906: a double-click (no arguments) of a friend pack's exe whose pack.json names a server: the pack start
+    // CLI-1906: a double-click (no arguments, or only --adapter <x> / --windowed / --no-overlay) of a friend pack's exe whose pack.json names a server: the pack start
     // runs the game as its child (before the leftovers below, which the child's own start handles)
-    if std::env::args_os().len() == 1 {
-        if let Some(code) = dc_client::packstart::run_if_pack() {
+    let pack_args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some(extra) = dc_client::packstart::passthrough(&pack_args) {
+        if let Some(code) = dc_client::packstart::run_if_pack(&extra) {
             return ExitCode::from(if code == 0 { 0 } else { code.clamp(1, 255) as u8 });
         }
     }

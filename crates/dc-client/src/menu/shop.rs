@@ -961,7 +961,11 @@ pub fn draw_detail(
             out.push(image_fit(cat, GAUGE_OUTLINE.0, o, GAUGE_OUTLINE.1));
         }
     }
-    if let Some(a) = art.filter(|a| !a.functions.is_empty()) {
+    if dc_bute::camo_crate::is_camo_crate(i64::from(w.item_no)) {
+        // CRATE-10: the Camo Crate's odds, in the place of a function item's lines
+        let lines = super::storage::camo_crate_lines(&super::storage::camo_crate_contents());
+        draw_function_lines(cat, &lines, DETAIL_AT, DETAIL_FRAME.1[1], out);
+    } else if let Some(a) = art.filter(|a| !a.functions.is_empty()) {
         draw_function_lines(cat, &a.functions, DETAIL_AT, DETAIL_FRAME.1[1], out);
     }
     let desc = art.map(|a| a.description.clone()).unwrap_or_default();
@@ -3250,6 +3254,7 @@ impl Screen for ShopScreen {
             rect: super::modelview::PANE_RECT,
             // CLI-1629: the player's x-ray style previewed on the character (the shop page only)
             xray: data.xray_offered.then_some(data.settings.xray),
+            showcase: None,
         })
     }
     /// CLI-971 / CLI-972: the pane row under the pointer takes its _On image; a backpack slot row under the pointer
@@ -4125,6 +4130,46 @@ impl Screen for ShopScreen {
                         consume == Some(6),
                         std::time::Instant::now(),
                     );
+                    let case_no = opened.map_or(-1, |o| o.item);
+                    if let Some(b) = q.award.as_mut() {
+                        // CRATE-1: the Camo Crate's window says its name
+                        if dc_bute::camo_crate::is_camo_crate(i64::from(case_no)) {
+                            b.own_title = Some(dc_bute::camo_crate::NAME.to_string());
+                        }
+                    }
+                    // CRATE-5: a pack's reel runs over what the case can hold before the window opens (not for GP)
+                    let reel = super::reel::settings().filter(|_| r.gp == 0 && q.award.is_some());
+                    if let (Some(cfg), Some(b)) = (reel, reel.and_then(|_| q.award.take())) {
+                        let pool: Vec<_> = self
+                            .wares
+                            .case_pool(case_no)
+                            .into_iter()
+                            .map(|n| self.wares.reel_cell(n))
+                            .collect();
+                        let award = self.wares.reel_cell(r.award_item as i32);
+                        let title = b
+                            .own_title
+                            .clone()
+                            .unwrap_or_else(|| self.wares.label_of(case_no));
+                        let seed = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_nanos() as u64)
+                            ^ u64::from(r.award_uid);
+                        let now = std::time::Instant::now();
+                        // CRATE-8: the won gun's own third-person model, shown after the stop
+                        let model = ctx
+                            .cat
+                            .rom
+                            .as_deref()
+                            .map(super::figure::FigureTables::cached)
+                            .and_then(|t| t.weapon_model(r.award_item as i32));
+                        q.award = Some(
+                            match super::reel::Reel::new(&pool, award, title, cfg.ms, seed, now) {
+                                Some(reel) => b.with_reel(reel.with_model(model)),
+                                None => b,
+                            },
+                        );
+                    }
                     ctx.popups.push(q);
                     ctx.send(LinkCmd::Inventory);
                 } else if !matches!(r.reason, 0x8b | 0x8c) {

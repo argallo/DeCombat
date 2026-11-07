@@ -330,6 +330,11 @@ pub fn armed() -> bool {
 
 /// The window's adapter (the report's GPU and driver).
 pub fn note_gpu(info: &wgpu::AdapterInfo) {
+    // the `run:` line of a crash or panic report names the adapter
+    dc_hangdump::crash::add_context(&format!(
+        "adapter {} ({:?}, {:?}); driver {} {}",
+        info.name, info.backend, info.device_type, info.driver, info.driver_info
+    ));
     global().gpu = Some(json!({
         "gpu": info.name,
         "driver": info.driver,
@@ -541,10 +546,27 @@ pub fn scan_earlier_runs() {
     }
 }
 
+/// The version of this build (`1.2.3`, `dev` for a development build).
+fn version_words() -> String {
+    crate::clientver::current().map_or("dev".to_string(), |v| format!("{}.{}.{}", v[0], v[1], v[2]))
+}
+
+/// The start of the `run:` line of a crash or panic report: version, commit, target, profile (the adapter is added
+/// by [`note_gpu`]).
+pub fn run_context() -> String {
+    format!(
+        "version {}; commit {}; {} {}",
+        version_words(),
+        option_env!("DC_GIT_COMMIT").unwrap_or("unknown"),
+        env!("DC_TARGET_TRIPLE"),
+        env!("DC_BUILD_PROFILE")
+    )
+}
+
 /// The report's `client` block.
 pub fn client_info() -> Value {
     json!({
-        "version": crate::clientver::current().map_or("dev".to_string(), |v| format!("{}.{}.{}", v[0], v[1], v[2])),
+        "version": version_words(),
         "commit": option_env!("DC_GIT_COMMIT").unwrap_or("unknown"),
         "target": env!("DC_TARGET_TRIPLE"),
         "profile": env!("DC_BUILD_PROFILE"),

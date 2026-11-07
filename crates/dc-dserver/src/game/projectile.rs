@@ -126,11 +126,51 @@ pub(crate) struct Mine {
     pub arm_ms: u32,
     pub armed_at: Option<Millis>,
     pub settle_at: Millis,
+    /// How far the resting mine's drawn position lies below the point it rests on (DSV-614).
+    pub sink: f32,
+    /// The box a shot hits (DSV-618): its centre this far above the drawn position, with these half extents.
+    pub box_mid: f32,
+    pub box_half: [f32; 3],
+}
+
+impl Mine {
+    /// The sink and the shot box of a mine whose model mesh spans `model_box` (model space) at `scale`: the resting
+    /// mine sinks until the mid-height of its mesh lies on the surface (a mesh centred at or below its origin does
+    /// not rise); the box is the mesh's height and, about the vertical axis, its widest reach (the object turns with
+    /// the thrower's yaw). Without a mesh: no sink, the [`MINE_HIT_HALF`] cube centred on the resting point.
+    /// Returns `(sink, box_mid, box_half)`.
+    // DC-DEFAULT: DSV-614 (proposed) the sink; DSV-618 (proposed) the box
+    pub fn look(model_box: Option<([f32; 3], [f32; 3])>, scale: [f32; 3]) -> (f32, f32, [f32; 3]) {
+        let Some((lo, hi)) = model_box else {
+            return (0.0, 0.0, MINE_HIT_HALF);
+        };
+        let s = scale.map(|k| if k.is_finite() && k > 0.0 { k } else { 1.0 });
+        let mid = (lo[1] + hi[1]) * 0.5 * s[1];
+        let reach = [
+            lo[0].abs() * s[0],
+            hi[0].abs() * s[0],
+            lo[2].abs() * s[2],
+            hi[2].abs() * s[2],
+        ]
+        .into_iter()
+        .fold(0.0f32, f32::max);
+        let half = [reach, (hi[1] - lo[1]).abs() * 0.5 * s[1], reach];
+        (mid.max(0.0), mid, half)
+    }
+
+    /// The centre of the shot box of a mine resting at `pos` (the point on the surface).
+    pub fn box_centre(&self, pos: [f32; 3]) -> [f32; 3] {
+        [pos[0], pos[1] - self.sink + self.box_mid, pos[2]]
+    }
 }
 
 /// How long a mine whose projectile row has no `Lifetime` may stay in flight before it counts as resting.
 // DC-DEFAULT: DSV-611 (proposed) 10 s
 pub const MINE_SETTLE_MS: u32 = 10_000;
+
+/// The half extents of a mine's shot box when its row's model gives no mesh.
+// DC-DEFAULT: DSV-618 (proposed) 8 units
+pub const MINE_HIT_HALF: [f32; 3] = [8.0; 3];
 
 /// The distance from `p` to the box centred at `c` with half extents `h` (0 inside it).
 fn box_distance(p: [f32; 3], c: [f32; 3], h: [f32; 3]) -> f32 {
@@ -287,11 +327,20 @@ impl Game {
             .map(|s| (s * 1000.0).round() as u32);
         // DC-DEFAULT: DSV-611 (proposed) a mine still in flight the row's `Lifetime` (else MINE_SETTLE_MS) after its
         // release counts as resting where it is (a mine sliding on a slope or falling to the world box floor)
-        let mine = self.mine_row(f.weapon_id, f.ammo_id).map(|t| Mine {
-            radius: t.radius(),
-            arm_ms: t.arm_ms(),
-            armed_at: None,
-            settle_at: now.wrapping_add(row_life_ms.unwrap_or(MINE_SETTLE_MS)),
+        let mine = self.mine_row(f.weapon_id, f.ammo_id).map(|t| {
+            let (sink, box_mid, box_half) = Mine::look(
+                row.as_ref().and_then(|r| r.model_box),
+                row.as_ref().and_then(|r| r.scale).unwrap_or([1.0; 3]),
+            );
+            Mine {
+                radius: t.radius(),
+                arm_ms: t.arm_ms(),
+                armed_at: None,
+                settle_at: now.wrapping_add(row_life_ms.unwrap_or(MINE_SETTLE_MS)),
+                sink,
+                box_mid,
+                box_half,
+            }
         });
         // DC-DEFAULT: DSV-611 (proposed) a mine is thrown (it bounces and comes to rest), never an impact round
         let impact = impact && mine.is_none();
@@ -433,6 +482,105 @@ impl Game {
             self.out.push(GameOut::ProjectileGone { key: fl.key });
             self.log(format!("client {pid} left: mine {} removed", fl.key));
         }
+    }
+
+    /// A controller's fire (its row's `SubControlleeWeaponID` = `weapon`): every resting mine of `pid` thrown with
+    /// `weapon` goes off in this tick's flight step (armed or not; the DSV-611 blast and team rule). Returns how many.
+    // OBSERVED: ROM table keys WEAPONS.TXT [Weapon<n>] SubControlWeaponID, SubControlleeWeaponID (the claymore row
+    // names its controller, the controller row the claymore), [Ammo<n>] Type (the controller's is 5: its fire is no
+    // traced round, cshell+0x23c041)
+    // EVIDENCE: cshell+0x237180 (at cshell+0x23765d: the client hands the slot from the laid claymore to its
+    // controller and back after the controller's shot; what the 2009 server did on that shot is not in the client)
+    // DC-DEFAULT: DSV-619 (proposed) the controller sets off the shooter's resting mines of its controllee
+    pub(super) fn set_off_mines_of(&mut self, pid: u8, weapon: u16) -> usize {
+        let mut keys = Vec::new();
+        for fl in self.flights.iter_mut().filter(|fl| {
+            fl.owner == pid && fl.weapon == weapon && fl.resting && fl.mine.is_some() && !fl.burst
+        }) {
+            fl.burst = true;
+            keys.push(fl.key);
+        }
+        self.log(format!(
+            "client {pid}: controller sets off {} mine(s) of weapon {weapon} {keys:?}",
+            keys.len()
+        ));
+        keys.len()
+    }
+
+    /// A pellet of `pid` (origin, direction, the claimed hit distance) that meets a resting mine's box before the
+    /// level's walls, before the hit it claims (a player, an AI or a world model) and before a co-op AI or a living
+    /// breakable on its ray sets that mine off: its blast follows in this tick's flight step as a foe's trigger would
+    /// (DSV-611's blast and team rule, the thrower credited). Any player's pellet counts, the thrower's own included,
+    /// armed or not; a mine already set off takes no more pellets. A melee swing reaches the breakables' melee range,
+    /// a shot their ray range. Returns whether a mine took the pellet.
+    // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] Health (both mine rows carry one; the 2009 server's use of it is
+    // not in the allowed sources); EVIDENCE: cshell+0x174d30 (the client's ammunition row reader reads `Health`;
+    // its use is not traced),cshell+0x238eb0 (the client names a hit object only for an object with user
+    // flag 0x01000000, so the server traces the pellet itself, as for the breakables)
+    // DC-DEFAULT: DSV-618 (proposed; the owner's 2026-11-06 request "shoot my own mines to explode them")
+    pub(super) fn shoot_mine(&mut self, pid: u8, f: &UpFire) -> bool {
+        if !self
+            .flights
+            .iter()
+            .any(|fl| fl.resting && fl.mine.is_some())
+        {
+            return false;
+        }
+        let Some(dir) = unit(f.dir) else {
+            return false;
+        };
+        let near = self
+            .players
+            .get(&pid)
+            .is_some_and(|p| len3(sub3(f.origin, p.pos)) <= self.cfg.origin_tolerance);
+        if !near || !finite3(f.origin) {
+            return false;
+        }
+        let melee = self
+            .tables
+            .weapons
+            .damage_type(f.weapon_id, f.ammo_id)
+            .is_some_and(|t| super::destruct::MELEE_DAMAGE_TYPES.contains(&t));
+        let mut reach = if melee {
+            super::destruct::MELEE_BREAK_RANGE
+        } else {
+            super::destruct::BREAK_RAY_RANGE
+        };
+        // a pellet that claims a hit stops there: a mine behind the player, the AI or the world model (a crate, a
+        // drum: a hit without an object) it hit is not set off
+        if let Some((d, _)) = f.hit.filter(|h| h.0.is_finite() && h.0 >= 0.0) {
+            reach = reach.min(d);
+        }
+        let end = add_scaled(f.origin, dir, reach);
+        let first = self
+            .flights
+            .iter()
+            .enumerate()
+            .filter(|(_, fl)| fl.resting && !fl.burst)
+            .filter_map(|(i, fl)| {
+                let m = fl.mine?;
+                segment_box(f.origin, end, m.box_centre(fl.pos), m.box_half).map(|t| (i, t * reach))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((i, at)) = first else {
+            return false;
+        };
+        // only for a mine on the ray: the level's walls, a co-op AI and a living breakable in front of it take the
+        // pellet instead (their own paths judge it)
+        let blocked = self.wall_along(f.origin, dir, at).is_some()
+            || self.ai_on_ray(f.origin, dir, at).is_some()
+            || (self.cfg.destruct.enabled
+                && self
+                    .breakable_on_ray(f.origin, dir, at)
+                    .is_some_and(|(_, d)| d < at));
+        if blocked {
+            return false;
+        }
+        let fl = &mut self.flights[i];
+        fl.burst = true;
+        let key = fl.key;
+        self.log(format!("mine {key} shot by client {pid}"));
+        true
     }
 
     /// Whether a foe of the mine's thrower is near the armed mine `fl`: a living, introduced player other than the
@@ -588,7 +736,8 @@ impl Game {
 
     /// Stream entries of every thrown object from its create to its removal (`-projectile-stream`, on by
     /// default): `(key, position, velocity)` in every tick; a resting object keeps its entry with a zero velocity
-    /// (the stream writes it without the velocity field) until the blast removes it.
+    /// (the stream writes it without the velocity field) until the blast removes it. A resting mine's position is
+    /// its sunk one (DSV-614): the clients draw it partly in the ground; its trigger and blast keep the surface point.
     // SPEC: UDP_SESSION_2009_B.md §3.5.4 (Q6 answered: the reference stack streamed the object in every stream message,
     // `uf` 4, `pos48` with the velocity while it moves and without it at rest, until the removal); §4.3 (entry
     // form, as a player's without rotation and animation)
@@ -604,7 +753,12 @@ impl Game {
             .iter()
             .map(|fl| {
                 let vel = if fl.resting { [0.0; 3] } else { fl.vel };
-                (fl.key, fl.pos, vel)
+                // DC-DEFAULT: DSV-614 (proposed) a resting mine is drawn sunk
+                let pos = match fl.mine {
+                    Some(m) if fl.resting => [fl.pos[0], fl.pos[1] - m.sink, fl.pos[2]],
+                    _ => fl.pos,
+                };
+                (fl.key, pos, vel)
             })
             .collect()
     }

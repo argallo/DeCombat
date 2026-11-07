@@ -1,7 +1,8 @@
 //! The settings page of a local mod (MOD-24): opened by the Settings button of its row on the Mods screen. A colour is
 //! a palette with red, green, blue and opacity sliders, a choice a cycler, a bool a toggle, a number a slider. Rows
 //! stand under the manifest's group headings and scroll when they do not fit. Reset to defaults and a share code
-//! (MOD-26) serve every mod. Values go to the profile at once and reach the mod at the next match load. When the mod's Lua with these values asks for a drawn crosshair, the page previews it through the same code
+//! (MOD-26) serve every mod. Values go to the profile at once and reach the mod at the next match load (CLI-1908: in
+//! a match, through the options' Mods tab, at once). When the mod's Lua with these values asks for a drawn crosshair, the page previews it through the same code
 //! as the HUD, firing a simulated burst.
 //!
 //! Provenance: ORIGINAL (DeCombat's own page; the 2009 client has no mods).
@@ -34,6 +35,8 @@ pub const CMD_PAGE_COLOUR_BASE: i32 = 116_000;
 pub const CELLS_PER_ROW: i32 = 100;
 
 pub const T_APPLIES: &str = "Changes apply at the next match you load.";
+/// CLI-1908: the page's note in a match (the match loads its mods again with each change).
+pub const T_APPLIES_NOW: &str = "Changes apply at once.";
 pub const T_PREVIEW: &str = "Preview: a simulated burst of fire";
 pub const T_RESET: &str = "Reset to defaults";
 pub const T_COPY: &str = "Copy code";
@@ -107,18 +110,30 @@ fn preview_of(id: &str, dir: &std::path::Path, values: &BTreeMap<String, String>
 
 impl SettingsPage {
     pub fn open(m: &crate::mods::LocalMod, stored: Option<&BTreeMap<String, String>>) -> SettingsPage {
-        let values = dc_mod_lua::resolve_settings(&m.settings, stored);
-        let preview = preview_of(&m.id, &m.dir, &values);
-        let code = encode_share_code(&m.id, &m.settings, &values);
+        SettingsPage::of(&m.id, &m.name, &m.dir, &m.settings, stored)
+    }
+
+    /// The page of mod `id` (`name` on the title, its folder `dir`, its declared settings `decl`) with the player's
+    /// `stored` values (CLI-1908: the in-match Mods tab opens the match's loaded mods this way).
+    pub fn of(
+        id: &str,
+        name: &str,
+        dir: &std::path::Path,
+        decl: &[ModSetting],
+        stored: Option<&BTreeMap<String, String>>,
+    ) -> SettingsPage {
+        let values = dc_mod_lua::resolve_settings(decl, stored);
+        let preview = preview_of(id, dir, &values);
+        let code = encode_share_code(id, decl, &values);
         SettingsPage {
             scroll: 0,
             drag: None,
             code,
             message: None,
-            id: m.id.clone(),
-            name: m.name.clone(),
-            dir: m.dir.clone(),
-            decl: m.settings.clone(),
+            id: id.to_string(),
+            name: name.to_string(),
+            dir: dir.to_path_buf(),
+            decl: decl.to_vec(),
             values,
             preview,
         }

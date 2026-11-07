@@ -113,6 +113,8 @@ pub enum Event {
     Crash(String),
     /// `@hisec`: a player picked up a HiSec case (DeCombat addition HS-13 of dc-dserver).
     Hisec(crate::hisec::Pickup),
+    /// CRATE-3: a Camo Crate picked up.
+    Crate(crate::camo_crate::Pickup),
     /// `@net`: one client's link window (DeCombat addition DSV-411 of dc-dserver).
     Net(NetReport),
     /// `@seat_refused <uid> noticket`: a client too old for seat tickets asked for this account's seat (LG-327).
@@ -200,6 +202,10 @@ pub fn parse_event(line: &str) -> Event {
         },
         "@hisec" => match crate::hisec::pickup_from_line(line) {
             Some(p) => Event::Hisec(p),
+            None => Event::Other(line.to_string()),
+        },
+        "@crate" => match crate::camo_crate::pickup_from_line(line) {
+            Some(p) => Event::Crate(p),
             None => Event::Other(line.to_string()),
         },
         _ => Event::Other(line.to_string()),
@@ -1816,9 +1822,16 @@ pub fn late_join(st: &mut Core, sid: Sid, key: RoomKey, account: u32) -> HResult
     if new == MEMBER_PLAYING && ready {
         send_addresses(st, key, Some(account));
     }
+    let tail = if new == MEMBER_PLAYING && !ready {
+        ", address pending (game not ready)"
+    } else if new == MEMBER_STARTING {
+        ", address follows the countdown"
+    } else {
+        ""
+    };
     st.note(&format!(
-        "room {}-{}: account {} joins the running match",
-        key.channel, key.no, account
+        "room {}-{}: account {} joins the running match{}",
+        key.channel, key.no, account, tail
     ));
     Ok(())
 }
@@ -2021,6 +2034,7 @@ pub fn on_line(st: &mut Core, game: u64, line: &str) -> HResult {
         }
         // DC-DEFAULT: HS-6 (proposed) delivery of a picked-up HiSec case
         Event::Hisec(p) => crate::hisec::on_pickup(st, game, &p)?,
+        Event::Crate(p) => crate::camo_crate::on_pickup(st, game, &p)?,
         // DC-DEFAULT: LG-185 (proposed) the newest link window per client, served by `GET /net`
         Event::Net(n) => {
             if let Some(g) = st.games.get_mut(&game) {

@@ -62,6 +62,7 @@ fn rom_the_infected_face_changes_the_head_of_the_figure() {
         place: PLACE,
         rect: PANE_RECT,
         xray: None,
+        showcase: None,
     };
     // CLI-1150: the override row's render styles over the body, as the server's model block names them
     let mut styled = infected.clone();

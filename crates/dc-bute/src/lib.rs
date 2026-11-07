@@ -11,6 +11,7 @@
 //! reads environment variables.
 
 pub mod arms;
+pub mod camo_crate;
 pub mod modpatch;
 pub mod seasonal;
 
@@ -1176,7 +1177,15 @@ impl ShopCatalog {
         })?;
         let mut catalog = Self::from_doc(&doc);
         catalog.add_seasonal();
+        catalog.add_camo_crate();
         Ok(catalog)
+    }
+
+    /// Adds the Camo Crate (CRATE-1): a hidden row and product that only the lobby's drops hand out.
+    pub fn add_camo_crate(&mut self) {
+        let (row, product) = camo_crate::row();
+        self.infos.insert(row.index, row);
+        self.products.insert(product.id, product);
     }
 
     /// Adds the seasonal products (SHOP-2): hidden rows, which only the lobby's list puts on sale.

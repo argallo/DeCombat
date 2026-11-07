@@ -496,7 +496,16 @@ impl Popup {
         }
         // the award window's OK button is disabled until the parts appear
         // EVIDENCE: cshell+0x285b60 (button +0x38 disabled on show), cshell+0x285a80 (enabled after 1000 ms)
-        if self.award.as_ref().is_some_and(|a| !a.revealed) {
+        if let Some(a) = self.award.as_mut().filter(|a| !a.revealed) {
+            // CRATE-5: a click, Enter or Escape during the reel stops the strip at once
+            if matches!(
+                ev,
+                MenuInput::Release(_)
+                    | MenuInput::Key(super::MenuKey::Enter)
+                    | MenuInput::Key(super::MenuKey::Escape)
+            ) {
+                a.skip(Instant::now());
+            }
             return None;
         }
         match ev {
@@ -543,6 +552,11 @@ impl Popup {
     /// crate-result-window: runs the award window's reveal; `true` when the box changed.
     pub fn tick(&mut self, now: Instant) -> bool {
         self.award.as_mut().is_some_and(|a| a.tick(now))
+    }
+
+    /// CRATE-5: the award reel's interface sounds since the last call.
+    pub fn take_sounds(&mut self) -> Vec<super::reel::Sound> {
+        self.award.as_mut().map(|a| a.take_sounds()).unwrap_or_default()
     }
 
     /// The box over the screen.

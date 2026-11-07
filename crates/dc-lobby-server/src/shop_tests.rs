@@ -2145,3 +2145,48 @@ fn a_free_weapon_leaves_its_slot_when_the_pass_ends() {
         .unwrap();
     assert_eq!(rows, 0, "pruned with the repair");
 }
+
+/// LG-428: a refused purchase writes one log line naming the account, the product and the reason with its meaning.
+#[test]
+fn a_refused_purchase_is_logged_with_account_product_and_reason() {
+    let mut st = rom_state();
+    let dir = std::env::temp_dir().join(format!("dc_shoplog_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let logfile = dir.join("lobby.log");
+    st.log = Arc::new(crate::logs::Logger::open(Some(&logfile), None).0);
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    // a product the catalogue does not list: 0x60; too little GP for a listed one: 0x3b
+    assert_eq!(u32_at(&buy(&mut c, &mut st, 99, 0, 0), 0xa) & 0xffff, 0x60);
+    st.db
+        .execute(
+            "UPDATE characters SET gp = 5 WHERE user_no = ?1",
+            [a as i64],
+        )
+        .unwrap();
+    assert_eq!(u32_at(&buy(&mut c, &mut st, 1, 0, 0), 0xa) & 0xffff, 0x3b);
+    let text = std::fs::read_to_string(&logfile).unwrap();
+    for want in [
+        format!("shop: purchase refused for account {a} (Alice): product 99, reason 0x60 (not for sale"),
+        format!("shop: purchase refused for account {a} (Alice): product 1, reason 0x3b (not enough money)"),
+    ] {
+        assert!(text.contains(&want), "{want}\n{text}");
+    }
+    // a sale that goes through logs no refusal
+    st.db
+        .execute(
+            "UPDATE characters SET gp = 100000 WHERE user_no = ?1",
+            [a as i64],
+        )
+        .unwrap();
+    let before = std::fs::read_to_string(&logfile)
+        .unwrap()
+        .matches("purchase refused")
+        .count();
+    assert_eq!(u32_at(&buy(&mut c, &mut st, 1, 0, 0), 6), 1);
+    let after = std::fs::read_to_string(&logfile)
+        .unwrap()
+        .matches("purchase refused")
+        .count();
+    assert_eq!(before, after);
+    let _ = std::fs::remove_dir_all(&dir);
+}
