@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Most bots of one run (a room holds 8: the player and seven).
+/// Most bots of one run (the lobby default of bots.pool_per_ip; a room holds 8: the player and seven).
 pub const MAX_BOTS: usize = 7;
 /// Default number of bots.
 pub const DEFAULT_BOTS: usize = 3;
@@ -24,6 +24,8 @@ pub const STAGGER: Duration = Duration::from_secs(3);
 /// After a bot ended: before its next start, doubled up to [`RESTART_MAX`] while it keeps ending quickly.
 const RESTART_MIN: Duration = Duration::from_secs(10);
 const RESTART_MAX: Duration = Duration::from_secs(120);
+/// With `--follow`: after this long, one hint that the nick may not match (nothing in the bot's output says a room was found).
+const FOLLOW_HINT_AFTER: Duration = Duration::from_secs(180);
 /// A bot that ran this long ended normally.
 const RAN_WELL: Duration = Duration::from_secs(120);
 /// A state file older than this belongs to a command that is gone.
@@ -35,7 +37,7 @@ const DEFAULT_PORT: u16 = 10000;
 
 const USAGE: &str = "usage: dc-botclient swarm [--count <1..7>] [--server <host[:port]>] [--server-id <n>] [--channel <n>]
            [--room <any | part of a room's title>] [--follow <nick>] [--room-password <p>]
-           [--skill <0..100|lo-hi>]
+           [--skill <off|0..100|lo-hi>]
            [--rom <client folder>] [--mod-cache <dir>] [--mod-set-hash <hex>] [--content-hash <hex|0>]
            [--dir <folder>]
        dc-botclient swarm list [--dir <folder>]
@@ -283,6 +285,26 @@ struct Slot {
     next_start: Instant,
     backoff: Duration,
     restarts: u32,
+    /// The last exit reason printed for this seat (BOT-102), so a repeat is not printed again.
+    said: String,
+}
+
+/// The last non-empty line of a bot's log, for the console line of an exit.
+fn last_log_line(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return "(no log)".into();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(4096)));
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map_or_else(|| "(log empty)".into(), |l| l.chars().take(200).collect())
 }
 
 fn now_unix() -> u64 {
@@ -358,26 +380,12 @@ fn start_bot(
         .map_err(|e| format!("cannot start {}: {e}", exe.display()))
 }
 
-/// Ends a bot: its pipe closes, then it gets two seconds.
-fn stop_child(mut c: Child) {
-    drop(c.stdin.take());
-    let end = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < end {
-        if matches!(c.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let _ = c.kill();
-    let _ = c.wait();
-}
-
 fn run(o: Options) -> Result<(), String> {
     let dir = bots_dir(o.dir.as_deref())?;
     make_dir(&dir)?;
     if let Some(v) = live_state(&dir) {
         return Err(format!(
-            "bots already run here (for {}): `dc-botclient swarm stop` first",
+            "bots already run here (for {}): stop them first (bots.bat stop / dc-botclient swarm stop)",
             v["server"].as_str().unwrap_or("?")
         ));
     }
@@ -419,6 +427,7 @@ fn run(o: Options) -> Result<(), String> {
             next_start: t0 + STAGGER * (n as u32 - 1),
             backoff: RESTART_MIN,
             restarts: 0,
+            said: String::new(),
         })
         .collect();
     let stop_file = dir.join("stop");
@@ -430,6 +439,8 @@ fn run(o: Options) -> Result<(), String> {
     );
     let mut said_full = false;
     let mut said_address = false;
+    let mut said_follow = false;
+    let mut last_start = t0 - STAGGER;
     let mut state_at = t0 - Duration::from_secs(60);
     loop {
         if stop_file.exists() {
@@ -454,7 +465,24 @@ fn run(o: Options) -> Result<(), String> {
                                 said_address = true;
                                 println!("this address holds as many bot seats as the lobby allows: the others wait for one to free");
                             }
-                            _ => {}
+                            Some(EXIT_POOL_FULL | EXIT_POOL_ADDRESS) | None => {}
+                            Some(code) => {
+                                let label = seat_label(s.number);
+                                let line = last_log_line(&dir.join("logs").join(format!("{label}.out")));
+                                if s.said != line {
+                                    // the wait printed is the one the next line of this arm computes
+                                    let wait = if s.started.elapsed() >= RAN_WELL {
+                                        RESTART_MIN
+                                    } else {
+                                        (s.backoff * 2).min(RESTART_MAX)
+                                    };
+                                    println!(
+                                        "{label} ended (exit {code}), starts again in {} s: {line}",
+                                        wait.as_secs()
+                                    );
+                                    s.said = line;
+                                }
+                            }
                         }
                         s.child = None;
                         s.restarts += 1;
@@ -467,12 +495,22 @@ fn run(o: Options) -> Result<(), String> {
                     }
                 }
             }
-            if s.child.is_none() && now >= s.next_start {
+            // one start per STAGGER, so a lobby restart is not seven TLS handshakes in one tick (LG-223)
+            if s.child.is_none() && now >= s.next_start && now >= last_start + STAGGER {
                 let label = seat_label(s.number);
                 let c = start_bot(&exe, &dir, &o, &server, known.as_deref(), &label)?;
                 println!("{label} started");
                 s.child = Some(c);
                 s.started = now;
+                last_start = now;
+            }
+        }
+        if let Some(nick) = o.follow.as_deref() {
+            if !said_follow && t0.elapsed() >= FOLLOW_HINT_AFTER {
+                said_follow = true;
+                println!(
+                    "no room with {nick} seen yet (the name must match the in-game name exactly); still looking"
+                );
             }
         }
         if no_pool {
@@ -495,11 +533,23 @@ fn run(o: Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Closes every pipe first, then gives all bots one shared two seconds, then kills the survivors.
 fn stop_all(slots: &mut [Slot]) {
-    for s in slots.iter_mut() {
-        if let Some(c) = s.child.take() {
-            stop_child(c);
+    let mut kids: Vec<Child> = slots.iter_mut().filter_map(|s| s.child.take()).collect();
+    for c in &mut kids {
+        drop(c.stdin.take());
+    }
+    let end = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < end {
+        kids.retain_mut(|c| !matches!(c.try_wait(), Ok(Some(_))));
+        if kids.is_empty() {
+            return;
         }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for mut c in kids {
+        let _ = c.kill();
+        let _ = c.wait();
     }
 }
 
@@ -549,21 +599,26 @@ pub fn main(args: &[String]) -> i32 {
             println!("{USAGE}");
             return 0;
         }
-        Some(cmd @ ("list" | "stop")) => parse_options(&args[1..]).and_then(|o| {
-            let dir = bots_dir(o.dir.as_deref())?;
-            if cmd == "list" {
-                list(&dir)
-            } else {
-                stop(&dir)
-            }
-        }),
-        _ => parse_options(args).and_then(run),
+        Some(cmd @ ("list" | "stop")) => parse_options(&args[1..]).map(|o| (Some(cmd), o)),
+        _ => parse_options(args).map(|o| (None, o)),
+    };
+    // the usage text is for a command line that does not parse; a runtime error stands alone
+    let (cmd, o) = match r {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("dc-botclient swarm: {e}");
+            eprintln!("{USAGE}");
+            return 1;
+        }
+    };
+    let r = match cmd {
+        Some(c) => bots_dir(o.dir.as_deref()).and_then(|dir| if c == "list" { list(&dir) } else { stop(&dir) }),
+        None => run(o),
     };
     match r {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("dc-botclient swarm: {e}");
-            eprintln!("{USAGE}");
             1
         }
     }

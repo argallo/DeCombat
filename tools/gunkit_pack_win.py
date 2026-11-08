@@ -22,7 +22,17 @@ def main() -> int:
     ap.add_argument("--out", default="out_gunkit", help="folder for the zip (default out_gunkit/)")
     ap.add_argument("--name", default="", help="zip base name (default DeCombat-GunKit-win-<commit>)")
     ap.add_argument("--commit", default="", help="commit id for the name and the README (default: git)")
+    ap.add_argument("--examples", default="", help="folder of example packs to ship as examples/ next to the exes "
+                    "(tools/gunkit_examples.py fills one; VAR-13)")
     a = ap.parse_args()
+    examples = []
+    if a.examples:
+        for d in sorted(os.listdir(a.examples)):
+            if os.path.isfile(os.path.join(a.examples, d, "manifest.json")):
+                examples.append(d)
+        if not examples:
+            print(f"no pack folders (manifest.json) under {a.examples}", file=sys.stderr)
+            return 2
     for e in EXES:
         if not os.path.isfile(os.path.join(a.bin_dir, e)):
             print(f"no {e} in {a.bin_dir}: cargo build --release -p dc-gunkit --bins first", file=sys.stderr)
@@ -48,7 +58,7 @@ live from an AI agent. It draws with the game's renderer and paints with the gam
 2. **Choose your Combat Arms folder** when it asks: your own client folder, the one that holds Engine.exe and a Game folder.
    Nothing of the game is in this package, and the folder is only read.
 3. Pick a gun, click a pattern, and drag the gun to turn it. Drop your own PNG on the window to use it: save over the file and the
-   gun updates by itself.
+   gun updates by itself. "Open > Examples" lists the camos in the `examples` folder next to the exes{{EXAMPLES_NOTE}}.
 4. **Save pack** writes a Vanilla++ pack to Documents\\DeCombat Camos and checks it.
 
 ## With an AI agent
@@ -64,12 +74,21 @@ Build {commit}, 64-bit Windows 10 or later.
     zpath = os.path.join(a.out, name + ".zip")
     if os.path.exists(zpath):
         os.remove(zpath)
+    note = f" ({len(examples)} ship with this package)" if examples else " (none ship with this build: add your own packs there)"
+    readme = readme.replace("{EXAMPLES_NOTE}", note)
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for e in EXES:
             z.write(os.path.join(a.bin_dir, e), f"{name}/{e}")
         z.writestr(f"{name}/README.md", readme)
+        for d in examples:
+            root = os.path.join(a.examples, d)
+            for dirpath, _, files in os.walk(root):
+                for f in sorted(files):
+                    full = os.path.join(dirpath, f)
+                    rel = os.path.relpath(full, a.examples).replace(os.sep, "/")
+                    z.write(full, f"{name}/examples/{rel}")
     size = os.path.getsize(zpath) / 1e6
-    print(f"wrote {zpath} ({size:.1f} MB); exes: {' '.join(EXES)}")
+    print(f"wrote {zpath} ({size:.1f} MB); exes: {' '.join(EXES)}; examples: {len(examples)}")
     return 0
 
 

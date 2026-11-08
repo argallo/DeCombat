@@ -47,6 +47,10 @@ use std::time::{Duration, Instant};
 pub const POLL_MS: u64 = 500;
 /// The stall that ends the process lasts this long past the phase's budget (8 s in play).
 pub const FINAL_EXTRA_MS: u64 = 6000;
+/// CLI-1945: the margin instead when the frame thread waits inside the GPU driver (present, acquire, submit): a
+/// driver hang is Windows' to end (TDR notices it after about 2 s and an integrated GPU takes seconds more to
+/// reset), and the client's device-loss recovery then goes on; the 8 s abort threw away matches that came back.
+pub const GPU_WAIT_EXTRA_MS: u64 = 20_000;
 /// Frame events kept for the report.
 pub const EVENTS: usize = 32;
 /// Stall dirs written per process at most (a stall that recovers can come back).
@@ -389,9 +393,33 @@ pub enum Stall {
 pub struct Monitor {
     last: Option<(u64, u64)>,
     level: u8,
+    /// CLI-1945: the frame thread waits on the GPU driver: the final mark is [`GPU_WAIT_EXTRA_MS`] past the budget.
+    gpu_wait: bool,
 }
 
 impl Monitor {
+    /// A stall is going on (the budget passed, the final mark not yet).
+    pub fn in_stall(&self) -> bool {
+        self.level >= 1
+    }
+
+    pub fn gpu_wait(&self) -> bool {
+        self.gpu_wait
+    }
+
+    /// CLI-1945: whether the stalled frame thread waits inside the GPU driver (read each poll while a stall goes on).
+    pub fn set_gpu_wait(&mut self, on: bool) {
+        self.gpu_wait = on;
+    }
+
+    fn final_extra(&self) -> u64 {
+        if self.gpu_wait {
+            GPU_WAIT_EXTRA_MS
+        } else {
+            FINAL_EXTRA_MS
+        }
+    }
+
     /// Feeds the progress key seen at `now_ms` with the phase's budget; reports a stall once per level.
     /// `budget` None (not armed, an unwatched phase) forgets the history.
     pub fn check(&mut self, budget: Option<u64>, progress: u64, now_ms: u64) -> Option<Stall> {
@@ -403,7 +431,7 @@ impl Monitor {
         match self.last {
             Some((p, at)) if p == progress => {
                 let stalled = now_ms.saturating_sub(at);
-                if self.level < 2 && stalled >= budget + FINAL_EXTRA_MS {
+                if self.level < 2 && stalled >= budget + self.final_extra() {
                     self.level = 2;
                     Some(Stall::Final(stalled))
                 } else if self.level < 1 && stalled >= budget {
@@ -463,6 +491,21 @@ fn watch() {
             m.reset();
         }
         last_poll = now;
+        // CLI-1945: a stall whose frame thread sits inside the GPU driver gets the longer final margin
+        if m.in_stall() {
+            let wait = frame_gpu_wait();
+            if wait.is_some() != m.gpu_wait() {
+                if let Some(w) = wait {
+                    log_line(&format!(
+                        "the frame thread waits on the GPU driver (\"{w}\"): the abort waits {} s",
+                        GPU_WAIT_EXTRA_MS / 1000
+                    ));
+                }
+                m.set_gpu_wait(wait.is_some());
+            }
+        } else {
+            m.set_gpu_wait(false);
+        }
         let found = m.check(budget(), progress(), now);
         STALLED_MS.store(m.stalled(now), Relaxed);
         let Some(s) = found else {
@@ -521,6 +564,26 @@ fn watch() {
         }
     }
 }
+
+/// CLI-1945: the GPU-side wait the frame thread is inside right now (its newest breadcrumb is an open wait on the
+/// surface acquire, the queue submit or the present), else `None`.
+fn frame_gpu_wait() -> Option<&'static str> {
+    let tid = FRAME_TID.load(Relaxed);
+    let threads = dc_hangdump::crumb::snapshot();
+    let t = threads.iter().find(|t| t.tid == tid)?;
+    let what = t.waiting()?.what;
+    GPU_WAITS
+        .iter()
+        .any(|w| what.starts_with(w))
+        .then_some(what)
+}
+
+/// The frame-thread crumbs that are waits on the GPU driver (`window.rs`).
+const GPU_WAITS: [&str; 3] = [
+    "frame: present",
+    "frame: acquire the surface texture",
+    "frame: queue submit",
+];
 
 fn log_line(text: &str) {
     if let Some(mut f) = LOG.get() {
@@ -814,6 +877,38 @@ mod tests {
         assert_eq!(m.check(None, 11, 20_000), None);
         assert_eq!(m.check(b, 11, 20_500), None);
         assert_eq!(m.check(b, 11, 22_000), None);
+    }
+
+    /// CLI-1945: with the frame thread inside the GPU driver the final mark moves from 6 s to 20 s past the budget;
+    /// the first report stays where it was, and the wait flag is read fresh each poll.
+    #[test]
+    fn a_gpu_wait_stall_gets_the_longer_final_margin() {
+        let mut m = Monitor::default();
+        let b = Some(2000);
+        assert_eq!(m.check(b, 10, 0), None);
+        assert_eq!(m.check(b, 10, 2000), Some(Stall::First(2000)));
+        assert!(m.in_stall());
+        m.set_gpu_wait(true);
+        assert_eq!(
+            m.check(b, 10, 8000),
+            None,
+            "no abort at 8 s for a driver wait"
+        );
+        assert_eq!(m.check(b, 10, 21_999), None);
+        assert_eq!(m.check(b, 10, 22_000), Some(Stall::Final(22_000)));
+        // the wait ended (the driver came back without progress): the plain margin applies again
+        let mut m = Monitor::default();
+        assert_eq!(m.check(b, 10, 0), None);
+        assert_eq!(m.check(b, 10, 2000), Some(Stall::First(2000)));
+        m.set_gpu_wait(true);
+        assert_eq!(m.check(b, 10, 8000), None);
+        m.set_gpu_wait(false);
+        assert_eq!(m.check(b, 10, 8500), Some(Stall::Final(8500)));
+        assert_eq!(GPU_WAITS.len(), 3);
+        assert!(
+            frame_gpu_wait().is_none(),
+            "this thread is not the frame thread in a wait"
+        );
     }
 
     #[test]

@@ -56,6 +56,8 @@ pub const CMD_TAB_MINE: i32 = 110_007;
 pub const CMD_SETTINGS_BASE: i32 = 117_000;
 pub const CMD_DOWNLOAD_BASE: i32 = 118_000;
 pub const CMD_REMOVE_LOCAL_BASE: i32 = 119_000;
+/// CLI-1943: group `i` of the current tab shown or hidden (`CMD_GROUP_BASE + i`).
+pub const CMD_GROUP_BASE: i32 = 120_000;
 /// The consent prompt's buttons (the login screen routes them).
 pub const CMD_AGREE: i32 = 110_101;
 pub const CMD_DECLINE: i32 = 110_102;
@@ -113,6 +115,22 @@ pub const T_CONSENT_NOTE: &str = "Verified mods are listed in the community dire
 this server and the authors; nothing is downloaded before you accept.";
 pub const T_ACCEPT: &str = "Accept";
 pub const T_CANCEL: &str = "Cancel";
+/// CLI-1943: the camo packages' one row.
+pub const T_CAMOS: &str = "Camo collection";
+pub const T_CAMOS_KIND: &str = "Weapon camos";
+pub const T_SHOW_CAMOS: &str = "Show camos";
+pub const T_HIDE_CAMOS: &str = "Hide camos";
+pub const T_CAMOS_NOTE: &str =
+    "Each camo is a gun with a new look in a row of its own; it plays exactly like its base gun.";
+pub const T_VARIOUS: &str = "various authors";
+/// CLI-1943 (amended): where a row comes from, at the start of its second line.
+pub const T_ORIGIN_YOURS: &str = "Yours";
+pub const T_ORIGIN_SERVER: &str = "Server pack";
+pub const T_ORIGIN_OPTIONAL: &str = "Optional";
+/// CLI-1943: the row id of the camo group (no mod id holds a `+`).
+pub const GROUP_CAMOS: &str = "+camos";
+/// CLI-1943: the manifest tags that put a package into the camo group (dc-gunkit writes both).
+pub const CAMO_TAGS: [&str; 2] = ["camo", "variant"];
 
 /// Badge colours.
 // DC-DEFAULT: CLI-1616 (proposed) green verified / vanilla, orange unverified / modded
@@ -1140,6 +1158,8 @@ pub struct SetRow {
     pub caps: String,
     pub cap_list: Vec<String>,
     pub description: String,
+    /// CLI-1943: the set entry's tags, else the unpacked manifest's.
+    pub tags: Vec<String>,
     /// The first screenshot, when the package is unpacked in the cache.
     pub shot: Option<PathBuf>,
     /// MOD-27: the lobby operator's picture, when it is in the cache.
@@ -1179,7 +1199,13 @@ pub fn set_rows(data: &MenuData, set: &ServerModSet) -> Vec<SetRow> {
             } else {
                 m.screenshots.clone()
             };
+            let tags = if m.tags.is_empty() {
+                man.as_ref().map(|x| x.tags.clone()).unwrap_or_default()
+            } else {
+                m.tags.clone()
+            };
             SetRow {
+                tags,
                 name: pick(
                     &m.name,
                     known.map(|k| k.name.as_str()),
@@ -1319,6 +1345,11 @@ struct ModRow {
     /// Plain notes of the detail panel with their colours, shown only when they matter.
     notes: Vec<(String, u32)>,
     actions: Vec<Action>,
+    /// CLI-1943: a group row stands for this many packages (0: one mod).
+    members: usize,
+    /// CLI-1943 (amended): [`T_ORIGIN_YOURS`] for the player's own folder, [`T_ORIGIN_OPTIONAL`] for a catalogue
+    /// entry not installed yet, else [`T_ORIGIN_SERVER`].
+    origin: &'static str,
 }
 
 /// The indexes of one mod's sources in the screen's lists.
@@ -1353,6 +1384,9 @@ pub struct ModsScreen {
     empty: String,
     /// The consent keys the Revoke trust button clears.
     forget: Vec<Vec<String>>,
+    /// CLI-1943: the group rows of the current tab, in order (`CMD_GROUP_BASE + index`), and the open ones.
+    groups: Vec<String>,
+    open: std::collections::HashSet<String>,
     pub selected: Option<usize>,
     selected_id: Option<String>,
     top: usize,
@@ -1477,6 +1511,8 @@ impl ModsScreen {
             context: (String::new(), MESSAGE_COLOUR),
             empty: String::new(),
             forget: Vec::new(),
+            groups: Vec::new(),
+            open: std::collections::HashSet::new(),
             selected: None,
             selected_id: None,
             top: 0,
@@ -1591,7 +1627,7 @@ impl ModsScreen {
             }
         }
         let mut forget = Vec::new();
-        let rows = ids
+        let plain: Vec<(ModRow, bool)> = ids
             .into_iter()
             .map(|id| {
                 // the package shown first: the loaded one, then one a server needs
@@ -1607,11 +1643,126 @@ impl ModsScreen {
                     set: self.set.iter().position(|r| set_row_id(r) == id),
                     get: self.get.iter().position(|e| e.id == id),
                 };
-                self.mod_row(data, tab, target, id, src, &mut forget)
+                let camo = self.is_camo(&src);
+                (self.mod_row(data, tab, target, id, src, &mut forget), camo)
             })
             .collect();
         self.forget = forget;
+        // CLI-1943: two or more camo packages fold into one row where the first of them stood; its members follow
+        // it only while the group is open
+        let camos: Vec<&ModRow> = plain.iter().filter(|(_, c)| *c).map(|(r, _)| r).collect();
+        if camos.len() < 2 {
+            self.groups = Vec::new();
+            return plain.into_iter().map(|(r, _)| r).collect();
+        }
+        let open = self.open.contains(GROUP_CAMOS);
+        let group = self.group_row(target, &camos, 0, open);
+        self.groups = vec![GROUP_CAMOS.to_string()];
+        let mut rows = Vec::with_capacity(plain.len() + 1);
+        let mut placed = false;
+        for (row, camo) in plain {
+            if camo && !placed {
+                rows.push(group.clone());
+                placed = true;
+            }
+            if !camo || open {
+                rows.push(row);
+            }
+        }
         rows
+    }
+
+    /// CLI-1943: whether the mod with sources `src` is a camo package (a manifest tag of [`CAMO_TAGS`] on its local
+    /// folder, a downloaded package or the selected server's entry; a catalogue entry carries no tags).
+    fn is_camo(&self, src: &Sources) -> bool {
+        let tagged = |tags: &[String]| tags.iter().any(|t| CAMO_TAGS.contains(&t.as_str()));
+        src.local.is_some_and(|i| tagged(&self.local[i].tags))
+            || src.packages.iter().any(|i| tagged(&self.cache[*i].package.tags))
+            || src.set.is_some_and(|i| tagged(&self.set[i].tags))
+    }
+
+    /// CLI-1943: the one row of the camo packages `members` (group `g` of the tab): their count at the right
+    /// edge, the first three names, the first picture, the worst mark, the union of their capabilities and notes,
+    /// the sizes added up, and Show / Hide camos as its action.
+    fn group_row(&self, target: &ModsTarget, members: &[&ModRow], g: usize, open: bool) -> ModRow {
+        let n = members.len();
+        let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+        let description = match names.as_slice() {
+            [a, b, c, rest @ ..] if !rest.is_empty() => format!("{a}, {b}, {c} and {} more", rest.len()),
+            _ => names.join(", "),
+        };
+        let marks: Vec<Mark> = members.iter().filter_map(|m| m.mark).collect();
+        let mark = if marks.is_empty() {
+            None
+        } else if marks.iter().all(|m| *m == Mark::Verified) {
+            Some(Mark::Verified)
+        } else if marks.contains(&Mark::Unverified) {
+            Some(Mark::Unverified)
+        } else {
+            Some(Mark::Accepted)
+        };
+        let author = match members.first().map(|m| m.author.as_str()) {
+            Some(a) if members.iter().all(|m| m.author == a) => a.to_string(),
+            _ => T_VARIOUS.to_string(),
+        };
+        let mut caps: Vec<String> = Vec::new();
+        for c in members.iter().flat_map(|m| m.caps.iter()) {
+            if !caps.contains(c) {
+                caps.push(c.clone());
+            }
+        }
+        let mut notes = vec![(T_CAMOS_NOTE.to_string(), MESSAGE_COLOUR)];
+        let comes_with = format!("It comes with {} when you join.", target.name);
+        for (t, c) in members.iter().flat_map(|m| m.notes.iter()) {
+            let shared = t.starts_with(T_REQUIRED_BY) || *t == comes_with || *t == T_IN_USE;
+            if shared && !notes.iter().any(|(n, _)| n == t) {
+                notes.push((t.clone(), *c));
+            }
+        }
+        let ids: Vec<&str> = members.iter().map(|m| m.id.as_str()).collect();
+        let bytes: u64 = self
+            .cache
+            .iter()
+            .filter(|c| ids.contains(&package_id(c).as_str()))
+            .map(|c| c.package.bytes)
+            .sum();
+        if bytes > 0 {
+            notes.push((format!("{n} camos, {} on this PC.", size_words(bytes)), MESSAGE_COLOUR));
+        }
+        ModRow {
+            id: GROUP_CAMOS.to_string(),
+            name: T_CAMOS.to_string(),
+            description,
+            version: String::new(),
+            author,
+            kind: T_CAMOS_KIND.to_string(),
+            mark,
+            caps,
+            commands: Vec::new(),
+            shot: members.iter().find_map(|m| m.shot.clone()),
+            state: RowState::Words(format!("{n} camos"), MESSAGE_COLOUR),
+            notes,
+            actions: vec![Action {
+                cmd: CMD_GROUP_BASE + g as i32,
+                label: if open { T_HIDE_CAMOS } else { T_SHOW_CAMOS }.into(),
+                on: true,
+            }],
+            members: n,
+            origin: T_ORIGIN_SERVER,
+        }
+    }
+
+    /// CLI-1943: group `g` of the tab opened or closed; the group row stays selected.
+    fn toggle_group(&mut self, g: usize, data: &MenuData) {
+        let Some(id) = self.groups.get(g).cloned() else {
+            return;
+        };
+        if !self.open.remove(&id) {
+            self.open.insert(id.clone());
+        }
+        self.selected_id = Some(id);
+        self.detail_top = 0;
+        self.relayout(data);
     }
 
     fn mod_row(
@@ -1748,6 +1899,12 @@ impl ModsScreen {
         });
         let enabled = m.is_some_and(|x| data.settings.mods_local_enabled.contains(&x.id));
         let switchable = m.is_some_and(|x| !local_blocked(x));
+        // CLI-1943 (amended): the origin word of the row's second line
+        let origin = match (m, e) {
+            (Some(_), _) => T_ORIGIN_YOURS,
+            (None, Some(_)) if packages.is_empty() => T_ORIGIN_OPTIONAL,
+            _ => T_ORIGIN_SERVER,
+        };
 
         let state = match tab {
             ModsTab::Browse => match (get, fetch) {
@@ -1844,7 +2001,23 @@ impl ModsScreen {
             forget.push(accepted);
         }
 
-        ModRow { id, name, description, version, author, kind, mark, caps, commands, shot, state, notes, actions }
+        ModRow {
+            id,
+            name,
+            description,
+            version,
+            author,
+            kind,
+            mark,
+            caps,
+            commands,
+            shot,
+            state,
+            notes,
+            actions,
+            members: 0,
+            origin,
+        }
     }
 
     /// A row's rectangle: `k` rows under the list's top, the list's width less the scroll bar when there is one.
@@ -2136,6 +2309,9 @@ impl ModsScreen {
             c if (CMD_REMOVE_LOCAL_BASE..CMD_REMOVE_LOCAL_BASE + 1000).contains(&c) => {
                 self.remove_local((c - CMD_REMOVE_LOCAL_BASE) as usize, ctx)
             }
+            c if (CMD_GROUP_BASE..CMD_GROUP_BASE + 1000).contains(&c) => {
+                self.toggle_group((c - CMD_GROUP_BASE) as usize, ctx.data)
+            }
             CMD_CLOSE => *ctx.go = Some(Go::Back),
             CMD_CLEAN_UP => self.clean_up(ctx),
             CMD_OPEN_FOLDER => {
@@ -2182,8 +2358,17 @@ impl ModsScreen {
         let tx = rect[0] + ROW_TEXT_DX;
         let room = re - state_w - ROW_PAD - tx;
         let top = rect[1] + (rect[3] - 2 * LINE) / 2;
-        out.push(text(&fit(cat, &r.name, room), [tx, top], if sel { 0xffff_ffff } else { TEXT_COLOUR }));
-        out.push(text(&fit(cat, &r.description, room), [tx, top + LINE], MESSAGE_COLOUR));
+        // CLI-1943: a group row's name in gold, so the collection stands out among the mods
+        let name_colour = match (sel, r.members > 0) {
+            (true, _) => 0xffff_ffff,
+            (false, true) => GOLD,
+            (false, false) => TEXT_COLOUR,
+        };
+        out.push(text(&fit(cat, &r.name, room), [tx, top], name_colour));
+        // CLI-1943 (amended): the origin word first, the description in what is left
+        let ow = measure(cat, r.origin) + 10;
+        out.push(text(r.origin, [tx, top + LINE], TITLE_COLOUR));
+        out.push(text(&fit(cat, &r.description, room - ow), [tx + ow, top + LINE], MESSAGE_COLOUR));
         let mid = rect[1] + rect[3] / 2;
         match &r.state {
             RowState::Get { size, .. } => out.push(right_mid(size, re - GET_BUTTON[0] - ROW_PAD, mid, MESSAGE_COLOUR)),
@@ -2197,11 +2382,16 @@ impl ModsScreen {
         let (ix, iw) = (px + DETAIL_PAD, pw - 2 * DETAIL_PAD);
         // the text below the picture, wrapped, never cut
         let mut lines: Vec<(String, u32)> = Vec::new();
-        let mut head = format!("Version {}", r.version);
+        // a group row has no version of its own (CLI-1943)
+        let mut head = if r.version.is_empty() { String::new() } else { format!("Version {}", r.version) };
         if !r.author.is_empty() {
-            head.push_str(&format!(" by {}", r.author));
+            head.push_str(if head.is_empty() { "By " } else { " by " });
+            head.push_str(&r.author);
         }
-        head.push_str(&format!("  -  {}", r.kind));
+        if !head.is_empty() {
+            head.push_str("  -  ");
+        }
+        head.push_str(&r.kind);
         lines.extend(wrap(cat, &head, iw).into_iter().map(|l| (l, MESSAGE_COLOUR)));
         if !r.description.is_empty() {
             lines.push((String::new(), 0));

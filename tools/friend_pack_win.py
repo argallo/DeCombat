@@ -11,6 +11,13 @@ machine run it alike (.github/workflows/release.yml).
 
 Nothing of the game (ROM) and nothing of the building machine goes in, except the --update-dir path.
 
+The exe is checked before anything is written (CLI-1944): the build stamp build.rs puts into dc-client.exe and
+dc-botclient.exe (`DCSTAMP1;commit=..;version=..;target=..;profile=..;end`) must name the --commit given (prefix
+match, 7 digits at least); --commit is required; an exe with no stamp or `commit=unknown` (a dev build, or one from
+before the stamp) is refused unless --allow-unstamped; --built-after <unix seconds> refuses an exe older than that
+(the time the release build started). The 2026-11-08 incident this prevents: a failed build left the previous exe in
+target/release and it was packed and published under the new commit's name.
+
 pack.json next to the exe names the build and the server ({"commit", "update_dir", "server", "fingerprint"}). With
 --update-dir an update zip is also written into that folder and latest.json ({"commit", "zip"}) there last: a pack
 that names the folder offers "Update now" when the folder holds another build (docs/RELEASES.md, "Friend packs that
@@ -21,10 +28,58 @@ name, and the new build removes it (and the old DeCombat.bat) after the swap.
 import argparse
 import json
 import os
+import re
 import shutil
-import subprocess
 import sys
+import time
 import zipfile
+
+# CLI-1944: the marker crates/dc-client/build.rs and crates/dc-botclient/build.rs put into the exe
+STAMP_RE = re.compile(rb"DCSTAMP1;commit=([0-9A-Za-z._-]{1,64});version=([0-9A-Za-z._-]{1,32});"
+                      rb"target=([0-9A-Za-z._-]{1,64});profile=([0-9A-Za-z._ -]{1,64});end")
+
+
+def find_stamp(blob: bytes):
+    """The build stamp of a dc-client / dc-botclient exe as {commit, version, target, profile}, None without one."""
+    m = STAMP_RE.search(blob)
+    if not m:
+        return None
+    return {k: m.group(i + 1).decode("ascii") for i, k in enumerate(("commit", "version", "target", "profile"))}
+
+
+def same_commit(a: str, b: str) -> bool:
+    """Two commit ids name the same commit when one is a prefix of the other and both have 7 digits at least."""
+    a, b = a.strip().lower(), b.strip().lower()
+    return len(a) >= 7 and len(b) >= 7 and (a.startswith(b) or b.startswith(a))
+
+
+def when(t: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(t))
+
+
+def check_exe(path: str, commit: str, built_after=None, allow_unstamped: bool = False, blob=None, mtime=None):
+    """Why `path` must not be packed as `commit` (CLI-1944), or None when it may. `blob` / `mtime` replace the file
+    for tests."""
+    if not commit:
+        return "--commit is required: the pack is named after the build it holds"
+    if built_after is not None:
+        mt = mtime if mtime is not None else os.path.getmtime(path)
+        if mt < built_after:
+            return (f"{path} was written at {when(mt)}, before --built-after {when(built_after)}: a stale exe "
+                    f"(the build that should have made it did not)")
+    if blob is None:
+        with open(path, "rb") as f:
+            blob = f.read()
+    s = find_stamp(blob)
+    if s is None or s["commit"] == "unknown":
+        if allow_unstamped:
+            return None
+        what = "carries no build stamp (built before CLI-1944, or not a DeCombat exe)" if s is None else             "is a dev build (commit unknown: built without DC_GIT_COMMIT)"
+        return f"{path} {what}; --allow-unstamped packs it anyway"
+    if not same_commit(s["commit"], commit):
+        return (f"{path} is build {s['commit']} ({s['version']}, {s['profile']}) but --commit says {commit}: "
+                f"refusing to pack a stale exe under another build's name")
+    return None
 
 
 def main() -> int:
@@ -35,22 +90,30 @@ def main() -> int:
     ap.add_argument("--fingerprint", default="", help="the lobby's certificate fingerprint (pinned when given)")
     ap.add_argument("--out", default="out_friend", help="folder for the zip (default out_friend/)")
     ap.add_argument("--name", default="", help="zip base name (default DeCombat-win-<commit>)")
-    ap.add_argument("--commit", default="", help="commit id for the name and the README (default: git)")
+    ap.add_argument("--commit", default="", help="commit id of the build (required; the exe's stamp must name it)")
     ap.add_argument("--update-dir", default="", help="folder the pack looks into for newer builds; also gets the update zip and latest.json")
+    ap.add_argument("--built-after", type=float, default=None, help="unix seconds: refuse an exe written before this (the build's start)")
+    ap.add_argument("--allow-unstamped", action="store_true", help="pack an exe with no stamp or a dev (commit unknown) stamp")
     a = ap.parse_args()
     if not os.path.isfile(a.client):
         print(f"no such client: {a.client}", file=sys.stderr)
         return 2
+    if a.botclient and not os.path.isfile(a.botclient):
+        print(f"no such botclient: {a.botclient}", file=sys.stderr)
+        return 2
+    # CLI-1944: the exes must be the build the pack is named after, before anything is written
+    for exe in [a.client] + ([a.botclient] if a.botclient else []):
+        why = check_exe(exe, a.commit, a.built_after, a.allow_unstamped)
+        if why:
+            print(f"refused: {why}", file=sys.stderr)
+            return 2
+        with open(exe, "rb") as f:
+            s = find_stamp(f.read())
+        print(f"{exe}: {'stamp ' + ' '.join(f'{k} {v}' for k, v in s.items()) if s else 'no stamp (allowed)'}")
     server = a.server if ":" in a.server else a.server + ":10000"
     host = server.rsplit(":", 1)[0]
     fingerprint = a.fingerprint.strip()
     commit = a.commit
-    if not commit:
-        try:
-            commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                                    check=True).stdout.strip()
-        except Exception:
-            commit = "unknown"
     name = a.name or f"DeCombat-win-{commit}"
     update_dir = os.path.abspath(a.update_dir) if a.update_dir else ""
     hex_commit = 4 <= len(commit) <= 40 and all(c in "0123456789abcdefABCDEF" for c in commit)
@@ -112,7 +175,7 @@ This is a beta: accounts and progress may be reset before the full launch.
 
 Problems: "Put your Combat Arms folder ..." means the folder is not next to DeCombat.exe or has no Game inside.
 "This server does not offer an encrypted login" or a message about the server's identity: the host updated the
-server; ask for a new package. Logs for the host: %LOCALAPPDATA%\\DeCombat\\logs (no password in them).
+server; ask for a new package. Logs for the host: %LOCALAPPDATA%\\DeCombat\\logs (no password in them). The bots' logs (bots.zip) are in %APPDATA%\\DeCombat\\bots\\logs.
 Client build {commit}, 64-bit Windows 10 or later.
 """
     bots_bat = f"""@echo off
@@ -133,9 +196,18 @@ if not defined ROM (
   exit /b 2
 )
 set "COUNT=3"
-if not "%~1"=="" set "COUNT=%~1"
+if not "%~1"=="" (
+  echo %~1| findstr /r "^[0-9][0-9]*$" >nul
+  if errorlevel 1 (
+    echo Usage: bots.bat [count 1-7] [your nick]
+    pause
+    exit /b 2
+  )
+  set "COUNT=%~1"
+)
 set "FOLLOW="
-if not "%~2"=="" set "FOLLOW=--follow %~2"
+if not "%~2"=="" set FOLLOW=--follow "%~2"
+if "%~2"=="" echo Without your nick the bots sit with the first person found; bots.bat 3 YourNick keeps them with you.
 {("set " + chr(34) + "DC_SERVER_FINGERPRINT=" + fingerprint + chr(34)) if fingerprint else "rem no pinned server certificate"}
 "%BOT%" swarm --server "{server}" --rom "%ROM%" --count %COUNT% %FOLLOW% %3 %4 %5 %6 %7 %8 %9
 if errorlevel 1 pause

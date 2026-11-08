@@ -110,14 +110,15 @@ function showMod(m) {
         : "This pack is built and included in the project. Availability depends on your server; it is not listed in the general verified-mod directory.",
     ),
   );
+  const sourceLink = (p) => (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/tree\/[\w.-]+\/[\w./-]+$/.test(p) ? p : `${repo}/tree/${config.branch}/${p}`);
   const src = m.sourcePath
-    ? `${repo}/tree/${config.branch}/${m.sourcePath}`
+    ? sourceLink(m.sourcePath)
     : safeHttps(m.source_repo) || `${repo}/tree/${config.branch}/examples/mods`;
   detail.append(external(src, "View source on GitHub ↗"));
-  if (/^examples\/mods\/[a-z\d_]+$/.test(m.relatedSourcePath || "")) {
+  if (/^(examples\/mods\/[a-z\d_]+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/tree\/[\w.-]+\/mods\/[a-z\d_]+)$/.test(m.relatedSourcePath || "")) {
     detail.append(
       external(
-        `${repo}/tree/${config.branch}/${m.relatedSourcePath}`,
+        sourceLink(m.relatedSourcePath),
         `${m.relatedName} source ↗`,
         "text-link related-source",
       ),

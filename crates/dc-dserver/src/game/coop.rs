@@ -156,6 +156,19 @@ pub struct CoopTuning {
     // DC-DEFAULT: DSV-599 (proposed) 1000 ms, 96 units
     pub growth_arm_ms: u32,
     pub growth_trigger: f32,
+    /// An AI fires in its weapon row's bursts: a burst's shots `fire_ms` apart, then the row's pause (DSV-640; off,
+    /// or a row without the burst keys: a shot every `fire_ms`).
+    // DC-DEFAULT: DSV-640 (proposed) on
+    pub bursts: bool,
+    /// A ranged AI's shot always hits a human within its attribute row's `FullAccuracyRadius` (DSV-641).
+    // DC-DEFAULT: DSV-641 (proposed) on
+    pub full_accuracy: bool,
+    /// On a mission world a spawn that waits for a free slot takes the slot of a living AI left behind: farther than
+    /// `retire_range` from every human, out of their sight, alive at least `retire_age_ms`, met by a human before
+    /// (or unarmed), its template without a death command (DSV-642; `retire_range` 0: off).
+    // DC-DEFAULT: DSV-642 (proposed) 2000 units (beyond the AI's 1500-unit shot range), 20 s
+    pub retire_range: f32,
+    pub retire_age_ms: u32,
 }
 
 impl Default for CoopTuning {
@@ -187,6 +200,10 @@ impl Default for CoopTuning {
             specials: true,
             growth_arm_ms: 1_000,
             growth_trigger: 96.0,
+            bursts: true,
+            full_accuracy: true,
+            retire_range: 2_000.0,
+            retire_age_ms: 20_000,
         }
     }
 }
@@ -201,7 +218,7 @@ pub enum AiHealthSource {
 }
 
 /// The `-coop` keys.
-pub const COOP_KEYS: [&str; 19] = [
+pub const COOP_KEYS: [&str; 23] = [
     "max_alive",
     "lives",
     "waves",
@@ -221,6 +238,10 @@ pub const COOP_KEYS: [&str; 19] = [
     "growth_arm_ms",
     "growth_trigger",
     "ai_health",
+    "bursts",
+    "full_accuracy",
+    "retire_range",
+    "retire_age_ms",
 ];
 
 impl CoopTuning {
@@ -280,6 +301,22 @@ impl CoopTuning {
             }
             "growth_arm_ms" => self.growth_arm_ms = int()?,
             "growth_trigger" => self.growth_trigger = num()?,
+            "bursts" => {
+                self.bursts = match v {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(bad()),
+                }
+            }
+            "full_accuracy" => {
+                self.full_accuracy = match v {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(bad()),
+                }
+            }
+            "retire_range" => self.retire_range = num()?,
+            "retire_age_ms" => self.retire_age_ms = int()?,
             "ai_health" => {
                 self.ai_health = match v {
                     "rows" => AiHealthSource::Rows,
@@ -341,6 +378,10 @@ pub struct AiSpec {
     pub own_nodes: Option<Vec<chars::HitNode>>,
     /// The weapon table's gear row its own body row names (DSV-604): the damage types a blast cannot hurt it with.
     pub gear: Option<u16>,
+    /// Its weapon row's AI burst (DSV-640; `None` for a melee AI or a row without the keys).
+    pub burst: Option<crate::rom_tables::AiBurst>,
+    /// Its attribute row's `FullAccuracyRadius` (DSV-641).
+    pub full_accuracy: Option<f32>,
 }
 
 /// A blast as the AI take it ([`Game::blast_ais`]): its point, the line-of-sight ray's start, its radius, the damage at
@@ -383,6 +424,10 @@ pub struct AiChar {
     pub template: Option<Vec<u8>>,
     pub target: Option<u8>,
     next_fire: Millis,
+    /// Shots left in its current burst (DSV-640; 0: the next shot starts a new burst).
+    burst_left: u32,
+    /// A living human came within the shot range of it (DSV-642: an AI the players met and left).
+    met: bool,
     /// The last melee strike (its play-once clip runs from here, DSV-589).
     struck_at: Option<Millis>,
     /// It saw a human within its rush distance and runs from then on (DSV-597).
@@ -496,6 +541,8 @@ pub struct Coop {
     pub mission_dropped: u32,
     /// The AI stand still and hold fire (`aifreeze 1`, DSV-572).
     pub frozen: bool,
+    /// When the last AI left behind gave up its slot (DSV-642: at most one per tick).
+    retired_at: Option<Millis>,
     /// The mission goals shown: goal number and state (DSV-574).
     pub goals: Vec<(u32, u8)>,
     /// The world's statements run in this room (a mission world or a round world, DSV-570 / DSV-576): AI deaths run
@@ -635,6 +682,7 @@ impl Coop {
             mission_spawns: 0,
             mission_dropped: 0,
             frozen: false,
+            retired_at: None,
             goals: Vec::new(),
             network: false,
             round_world: false,
@@ -1100,6 +1148,14 @@ impl Game {
             death,
             own_nodes,
             gear,
+            burst: weapon
+                .filter(|_| melee.is_none())
+                .and_then(|(w, _)| self.tables.weapons.ai_burst(w)),
+            full_accuracy: t
+                .as_ref()
+                .and_then(|t| t.body_row.as_deref())
+                .zip(self.coop.as_ref())
+                .and_then(|(n, c)| c.tables.attributes_named(n)?.full_accuracy),
         };
         if let Some(c) = self.coop.as_mut() {
             c.specs.insert(key, Some(spec.clone()));
@@ -1513,10 +1569,27 @@ impl Game {
             let Some((spot, name)) = c.mission_queue.front().cloned() else {
                 return;
             };
+            // DC-DEFAULT: DSV-642 (proposed) a full pool gives the waiting spawn the slot of an AI left behind, once
+            // the spawn's body is known to resolve; a spawn that still fails gives the slot back
+            let mut retired = None;
             if !free {
-                return;
+                if self.ai_spec(spot.template.as_deref()).is_none() {
+                    // the spawn cannot appear: dropped now, as a failed spawn is
+                    if let Some(c) = self.coop.as_mut() {
+                        c.mission_queue.pop_front();
+                        c.mission_dropped += 1;
+                    }
+                    continue;
+                }
+                retired = self.coop_retire_left_behind(now);
+                if retired.is_none() {
+                    return;
+                }
             }
             let ok = self.coop_spawn_ai(None, &spot, Some(name.clone()), now);
+            if let (false, Some(slot)) = (ok, retired) {
+                self.coop_unretire(slot);
+            }
             let Some(c) = self.coop.as_mut() else {
                 return;
             };
@@ -1527,6 +1600,109 @@ impl Game {
                 c.mission_dropped += 1;
             }
         }
+    }
+
+    /// A mission world's pool is full while a spawn waits: the living AI left behind farthest from every human gives
+    /// up its slot. It qualifies when it has lived `retire_age_ms`, a human came within the shot range of it before
+    /// (or it is unarmed: it never fights), its template has no death command (its death may move the mission on),
+    /// it is farther than `retire_range` from every living human (and, while a human waits to spawn again, from
+    /// every open spawn point) and no living human's eye has a clear line to its feet, middle or eye. It leaves the
+    /// world as a corpse's objects do (hidden at the park point, FT-R1) with no death: no death command, drops,
+    /// points or blast. At most one per tick, none while a corpse is about to free a slot. Returns the slot freed.
+    // DC-DEFAULT: DSV-642 (proposed)
+    fn coop_retire_left_behind(&mut self, now: Millis) -> Option<usize> {
+        let range = self.cfg.coop.retire_range;
+        let age = self.cfg.coop.retire_age_ms;
+        let c = self.coop.as_ref()?;
+        if !c.mission
+            || range <= 0.0
+            || c.retired_at == Some(now)
+            || c.ais
+                .iter()
+                .any(|a| matches!(a.state, AiState::Dead { .. }))
+        {
+            return None;
+        }
+        let eyes: Vec<[f32; 3]> = self
+            .living_humans()
+            .into_iter()
+            .map(|(pid, p)| add3(p, [0.0, self.dims_of(pid)[1] * 0.8, 0.0]))
+            .collect();
+        if eyes.is_empty() {
+            return None;
+        }
+        let mut near_points = eyes.clone();
+        let waiting = self
+            .players
+            .values()
+            .any(|p| p.introduced && p.spawns > 0 && p.life != Life::Alive);
+        if waiting {
+            let open = self.spawn_open();
+            near_points.extend(
+                self.spawns
+                    .iter()
+                    .zip(open)
+                    .filter(|(_, o)| *o)
+                    .map(|(s, _)| s.0),
+            );
+        }
+        let fallback = self.cfg.player_dims;
+        let pick = c
+            .ais
+            .iter()
+            .filter(|a| a.state == AiState::Alive && since(now, a.spawned_at) >= age)
+            .filter(|a| a.met || a.spec.unarmed)
+            .filter(|a| {
+                a.template
+                    .as_deref()
+                    .and_then(|t| self.coop_world.template(t))
+                    .is_none_or(|t| t.death_cmd.iter().all(u8::is_ascii_whitespace))
+            })
+            .filter_map(|a| {
+                let near = near_points
+                    .iter()
+                    .map(|e| len3(sub3(*e, a.pos)))
+                    .fold(f32::INFINITY, f32::min);
+                (near > range).then_some((a.slot, near, a.pos, a.dims(fallback)))
+            })
+            .filter(|(_, _, pos, dims)| {
+                let marks = [-0.9f32, 0.0, 0.8].map(|k| add3(*pos, [0.0, dims[1] * k, 0.0]));
+                !eyes
+                    .iter()
+                    .any(|e| marks.iter().any(|m| self.sight_clear(*e, *m)))
+            })
+            .max_by(|x, y| x.1.total_cmp(&y.1));
+        let (slot, near, _, _) = pick?;
+        let c = self.coop.as_mut()?;
+        c.retired_at = Some(now);
+        let a = &mut c.ais[slot];
+        a.state = AiState::Hidden;
+        a.vel = [0.0; 3];
+        a.target = None;
+        c.events.push(format!("retire slot {slot}"));
+        self.out.push(GameOut::AiHidden { slot });
+        self.log(format!(
+            "co-op: AI slot {slot} left behind ({near:.0} u from the nearest human): its slot goes to a waiting spawn"
+        ));
+        Some(slot)
+    }
+
+    /// The waiting spawn did not take the slot an AI left behind gave up: that AI comes back where it stood.
+    // DC-DEFAULT: DSV-642 (proposed)
+    fn coop_unretire(&mut self, slot: usize) {
+        let Some(a) = self
+            .coop
+            .as_mut()
+            .and_then(|c| c.ais.get_mut(slot))
+            .filter(|a| a.state == AiState::Hidden)
+        else {
+            return;
+        };
+        a.state = AiState::Alive;
+        self.out.push(GameOut::AiShow { slot });
+        self.log(format!(
+            "co-op: AI slot {slot} kept its slot (the waiting spawn failed)"
+        ));
     }
 
     /// Living, introduced humans: (pid, position).
@@ -1772,6 +1948,8 @@ impl Game {
             template: want.clone(),
             target: None,
             next_fire: now.wrapping_add(fire_ms),
+            burst_left: 0,
+            met: false,
             struck_at: None,
             rushing: false,
             waypoint: None,
@@ -2108,6 +2286,8 @@ impl Game {
             let dist = len3(sub3(tpos, a.pos));
             let teye = add3(tpos, [0.0, self.dims_of(tpid)[1] * 0.8, 0.0]);
             let los = self.sight_clear(eye, teye);
+            // DC-DEFAULT: DSV-642 (proposed) a human within the shot range has met it
+            new.met = a.met || dist <= cfg.shot_range;
             // DC-DEFAULT: DSV-597 (proposed) a human in sight within the rush distance starts the rush, for good
             new.rushing = a.rushing || a.spec.rush.is_some_and(|r| los && dist <= r);
             if let Some(d) = norm2(sub3(tpos, a.pos)) {
@@ -2120,7 +2300,9 @@ impl Game {
                 None => (cfg.shot_range, cfg.hold_range),
             };
             if !a.spec.unarmed && los && dist <= reach && !later(a.next_fire, now) {
-                new.next_fire = now.wrapping_add(cfg.fire_ms);
+                let (left, wait) = self.ai_fire_wait(&a, cfg.fire_ms, cfg.bursts);
+                new.burst_left = left;
+                new.next_fire = now.wrapping_add(wait);
                 if a.spec.melee.is_some() {
                     new.struck_at = Some(now);
                 }
@@ -2211,6 +2393,33 @@ impl Game {
         }
     }
 
+    /// The wait after an AI's shot and the shots left in its burst (DSV-640): with its weapon row's burst a shot
+    /// that starts a burst draws the burst's size; the burst's shots are `fire_ms` apart and its last one is followed
+    /// by a pause drawn from the row's range (never shorter than `fire_ms`). Without a burst (or with `bursts` off):
+    /// `fire_ms`, no burst.
+    // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] AIMinBurstShots, AIMaxBurstShots, AIMinBurstInterval,
+    // AIMaxBurstInterval (the launcher and bolt rifle rows: one shot, a pause of whole seconds)
+    // DC-DEFAULT: DSV-640 (proposed) uniform draws, the pause at least `fire_ms`
+    fn ai_fire_wait(&mut self, a: &AiChar, fire_ms: u32, bursts: bool) -> (u32, u32) {
+        let Some(b) = a.spec.burst.filter(|_| bursts) else {
+            return (0, fire_ms);
+        };
+        let left = match a.burst_left {
+            0 => {
+                let span = u64::from(b.shots.1 - b.shots.0) + 1;
+                b.shots.0 + (self.next_rand() % span) as u32
+            }
+            n => n,
+        }
+        .saturating_sub(1);
+        if left > 0 {
+            return (left, fire_ms);
+        }
+        let u = (self.next_rand() % 10_001) as f32 / 10_000.0;
+        let pause = b.pause_s.0 + (b.pause_s.1 - b.pause_s.0) * u;
+        (0, ((pause * 1000.0).round() as u32).max(fire_ms))
+    }
+
     /// The floor under a walking AI: a step up of 18 units, a drop of up to the box height (more: a fall of at most
     /// 600 u/s worth of the step is not modelled; the AI keeps its height when no floor is found).
     // DC-DEFAULT: FT-S5 (proposed)
@@ -2255,6 +2464,8 @@ impl Game {
         // DC-DEFAULT: DSV-589 (proposed) a melee strike hits by `melee_hit`, at any distance within the reach
         let chance = match a.spec.melee {
             Some(_) => cfg.melee_hit,
+            // DC-DEFAULT: DSV-641 (proposed) a human within the attribute row's `FullAccuracyRadius` is always hit
+            None if cfg.full_accuracy && a.spec.full_accuracy.is_some_and(|r| dist <= r) => 1.0,
             None => cfg.hit_chance[goal] * falloff,
         };
         let roll = (self.next_rand() % 10_000) as f32 / 10_000.0;

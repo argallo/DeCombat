@@ -46,6 +46,33 @@ struct Ctx<'a> {
     lobby: Option<&'a Lobby>,
 }
 
+/// `n` skill levels in `lo..=hi`, drawn from `seed` and dealt in a snake over the join order (0, 1, 1, 0, 0, 1, ...)
+/// so the two teams the lobby fills alternately get sums within one level of each other.
+pub fn balanced_levels(seed: u64, n: usize, lo: u8, hi: u8) -> Vec<u8> {
+    let mut x = seed ^ 0x9e37_79b9_7f4a_7c15;
+    let mut draw = || {
+        // splitmix64
+        x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        lo + (z % (hi as u64 - lo as u64 + 1)) as u8
+    };
+    let mut sorted: Vec<u8> = (0..n).map(|_| draw()).collect();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let mut out = vec![lo; n];
+    for (rank, level) in sorted.into_iter().enumerate() {
+        // ranks 0,3,4,7,.. go to even slots, 1,2,5,6,.. to odd slots: the snake
+        let pair = rank / 2;
+        let slot = if (rank % 4 == 0) || (rank % 4 == 3) { pair * 2 } else { pair * 2 + 1 };
+        if slot < n {
+            out[slot] = level;
+        }
+    }
+    out
+}
+
 fn nick(sc: usize, k: usize) -> String {
     format!("n{sc:02}b{k:02}")
 }
@@ -174,6 +201,11 @@ fn run_scenario(ctx: &Ctx<'_>, idx: usize, sc: &Scenario) -> Value {
     let max_join = roster.iter().map(|r| r.2).max().unwrap_or(0) as u64;
     let deadline = t0 + Duration::from_secs(secs + max_join + 330);
     let mut slots: Vec<Option<usize>> = vec![None; roster.len()];
+    // ROM rooms: one skill level per bot, drawn from the range once per room and dealt so that the two lobby
+    // teams (the bots join in order and alternate) get the same strength; before, a level came from the nick alone,
+    // so team 1 was always the stronger side (45/37/51/55 against 48/42/31/46) and won 13 of 14 round matches.
+    let levels = (ctx.cfg.rom.is_some() && ctx.lobby.is_some())
+        .then(|| balanced_levels(ctx.cfg.seed ^ (idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15), roster.len(), 30, 65));
     loop {
         let now = Instant::now();
         pending.retain(|&(k, at)| {
@@ -187,6 +219,10 @@ fn run_scenario(ctx: &Ctx<'_>, idx: usize, sc: &Scenario) -> Value {
             } else {
                 member_extra.clone()
             });
+            if let Some(l) = levels.as_ref().and_then(|l| l.get(k)) {
+                args.push("--skill".into());
+                args.push(l.to_string());
+            }
             let seed = ctx
                 .cfg
                 .seed
@@ -528,4 +564,19 @@ pub fn default_out() -> PathBuf {
         .map(|c| if c.is_ascii_digit() { c } else { '-' })
         .collect();
     Path::new("netlab-out").join(stamp)
+}
+
+#[cfg(test)]
+mod level_tests {
+    #[test]
+    fn balanced_levels_give_both_teams_the_same_strength() {
+        for seed in 0..200u64 {
+            let l = super::balanced_levels(seed, 8, 30, 65);
+            assert!(l.iter().all(|&x| (30..=65).contains(&x)));
+            let even: u32 = l.iter().step_by(2).map(|&x| x as u32).sum();
+            let odd: u32 = l.iter().skip(1).step_by(2).map(|&x| x as u32).sum();
+            assert!(even.abs_diff(odd) <= 35, "seed {seed}: {l:?}");
+        }
+        assert_ne!(super::balanced_levels(1, 8, 30, 65), super::balanced_levels(2, 8, 30, 65));
+    }
 }

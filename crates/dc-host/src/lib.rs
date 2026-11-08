@@ -8,6 +8,7 @@
 //! - [`ports`]: the UDP port picker (§6).
 //! - [`tls`]: the pinned TLS client (§5).
 //! - [`games`]: the game server processes (spawn, pipes, quit grace, exit).
+//! - [`content`]: a featured entry's weapon content on this machine (the `content` lines, the hash check, the files).
 //! - [`packs`]: a featured entry's map packs on this machine (the `pack` lines, the check, the unpacked folders).
 //! - [`update`]: a server build the lobby offers (the `update` lines), left for `tools/host/update.sh`.
 //! - [`link`]: one control connection and the reconnect loop (§4).
@@ -15,6 +16,7 @@
 // Provenance: ORIGINAL (our own design; nothing of the 2009 host protocol is known)
 
 pub mod config;
+pub mod content;
 pub mod games;
 pub mod link;
 pub mod log;

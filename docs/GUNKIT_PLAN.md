@@ -210,7 +210,9 @@ as the base drew it. So the pack holds its pattern and some numbers, and no ROM 
 - **Each gun needs its own `keep` circles.** A camo must not cover a scope's lens, and where that sits differs per texture. These
   numbers belong in `dc-gunkit`'s gun list (P2), so an author doesn't have to look for them. A rectangle shape or a mask may be
   needed for guns whose sights are not round.
-- `examples/mods/variant_candy_g36e` is the example. Its pattern is generated from noise, with no game pixels in it.
+- `examples/mods/variant_candy_g36e` is the example. Its pattern is generated from noise, with no game pixels in it. The studio's
+  "Open > Examples" reads the five example packs from an `examples/` folder next to the program (the GunKit package ships it, filled
+  by `tools/gunkit_examples.py`; `DC_GUNKIT_EXAMPLES` overrides), not from bytes built into the binary (VAR-13).
 - **Third person:** other players' gun textures reach the client through the game server's file list, so a variant needs the new game
   server as well as the new client. An older server upper-cases the path and the gun draws black. The owner saw it correct on a bot in a
   local match on 2026-11-02, from the side. The kept circle for `HHSkin0` is a first estimate from the texture, not yet seen from the front.

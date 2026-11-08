@@ -89,6 +89,28 @@ one-time step: any dashboard deploy of a commit that has it installs it (install
 `/opt/decombat/tools`), and no unit changes. Until that deploy the old script deletes the request file unread and the
 button just times out after 90 s.
 
+## Release card (dashboard)
+
+The Updates tab also has a **Public release** card: the state of the release job on the VPS (the public export, its
+push, the public CI, the tag and the GitHub release) and three buttons. Rule: DC_DEFAULTS.md LG-430. The lobby works as
+for deploys: it reads `<[deploy] dir>/release/status.json` (written by the release job; missing means "no release state
+yet") and writes one request file, `release/requests/<unix>-<action>.json` = `{"action", "by", "at"}`, where `by` is the
+label of the signed-in security key (on the loopback port, "the admin port"). The card shows a headline from the job's
+phase and message ("3 commits since v0.5.0-beta6 — ready to prepare", "Pushed 9e10335a, CI running", "Ready to tag
+v0.6.0-beta7 — CI green", "Failed: ..." with the log tail open), when it last changed, the tags, both commits and CI.
+
+- **Check now** (always): the job looks again (new commits since the last tag, the CI run).
+- **Prepare release**: only when the job is idle, published or failed and there are commits since the last tag.
+- **Tag & publish v...**: only when the job says ready (CI green); it asks once more on the card itself before it sends.
+
+The lobby refuses with 409 a second request while one waits (a second Check now is answered without a new file), a
+prepare or a tag the state does not allow, and with 503 when the release folder is missing. Every request is an ops
+event of kind `release` ("release prepare requested by <name>"), and on the admin web also an `admin_web` event with the
+key and the address. The writes have the deploy guard (JSON, the page's `Origin`, the page token; on the loopback port
+also its `--admin-token`), and a further lobby instance's prefix takes no release request. Everything in `status.json`
+is shown as text; only links to `https://github.com/argallo/DeCombat/...` become links. While a request waits or the
+job is at work the card refreshes every 3 seconds, like a deploy.
+
 ## Checking what is running
 
 On the VPS, without the dashboard:
@@ -181,6 +203,177 @@ is older than the installed build.
   `install`, `chown -R` and `systemctl` as root: on that box a compromised agent is root whatever the layout. Run
   dc-host as a user of its own (no sudo; `User=` of `decombat-host.service`, `--agent-user` at the setup) to make the
   root-owned layout count.
+
+## Releases from the dashboard
+
+The same machinery publishes the beta releases: root on the VPS exports master of the working repository (the one the
+deploy mirror `/opt/decombat/src.git` fetches), pushes the export to the public repository's master, waits for its `ci`
+run, and on the owner's go tags it, waits for `release.yml` and writes the release notes. Rule: DC_DEFAULTS.md OPS-25;
+the dashboard side is the Release card above (LG-430).
+Status: implemented and tested on Windows (`bash tools/vps/tests/release_test.sh`, stand-ins for curl and the export
+tool); **not yet run on Linux, under systemd or against GitHub**.
+
+```
+dashboard --> lobby (user decombat) --writes--> /opt/decombat/deploy/release/requests/<unix>-<check|prepare|tag>.json
+decombat-release.path (root) --> release_from_git.sh run --> check / prepare / tag
+decombat-release-check.timer (root, daily 06:00 UTC) --> release_from_git.sh daily: check, then prepare
+                                                          (only with something new and "auto_prepare": 1)
+progress: /opt/decombat/deploy/release/status.json, history.jsonl, logs/<id>.log
+```
+
+### Setup (once, after the deploy setup above)
+
+1. **A token on GitHub**: Settings > Developer settings > Personal access tokens > Fine-grained tokens > Generate new
+   token. Resource owner: the owner of the public repository; Repository access: **Only select repositories**, the
+   public repository alone; Repository permissions: **Contents: Read and write**, **Actions: Read-only** (Metadata:
+   Read-only comes with them); an expiry you will notice (90 days, say). Nothing else.
+2. **The export tool and its word list** are not in this repository. Copy both from the machine you export on to the
+   VPS (`scp` into root's home), together with a current checkout's `tools/vps` scripts (a deploy installs them).
+3. **On the VPS, as root**:
+
+   ```
+   sudo GITHUB_TOKEN=<the token> bash /opt/decombat/tools/release_setup.sh \
+       --export-tool /root/<the export tool> --private-strings /root/<its word list> \
+       --last-tag v0.5.0-beta6 --private-sha <working commit of that beta> --public-sha <public commit it tags>
+   ```
+
+   Without `GITHUB_TOKEN` it asks for the token from the terminal (not shown). It writes
+   `/opt/decombat/deploy/release.conf` (root 0600: `GITHUB_TOKEN=`, `PUBLIC_REPO=` default the DeCombat repository),
+   installs the tool and the word list in `deploy/release/tool/` (root only), clones the public repository into
+   `deploy/public`, seeds `deploy/release/state.json` (`last_tag`, `last_released_private_sha`, `last_public_sha`,
+   `auto_prepare` 1), and installs and enables `decombat-release-check.timer` and `decombat-release.path`. A second run
+   keeps the token (unless a new `GITHUB_TOKEN` is given) and `state.json` (unless `--reseed`); give `--export-tool` /
+   `--private-strings` again to replace those files. Then delete the copies in root's home and restart the lobby once
+   (`sudo systemctl restart decombat-lobby`) so it may write the request folder. `release_setup.sh --check` shows the
+   units and the status.
+
+### The daily check, prepare, ready, tag
+
+- **Check** (the timer at 06:00 UTC, or the dashboard): fetch master; the status says `N commits since <last tag>` or
+  `nothing new since <last tag>` (N counts first-parent commits). A check never changes a prepared or failed release.
+- **Prepare** (the timer when something is new and `auto_prepare` is 1, or the dashboard): the export of master with the
+  public clone as its parent; the scan must report `refusals=0`, else the phase is `failed` with the scan summary and
+  nothing is pushed. The commit message is `Beta <N+1>: <the first-parent subjects, Merge prefixes off, cut to 200
+  characters>`; a subject the export scan would refuse is left out of it. Then the push to the public master (phase
+  `pushed`) and the wait for that commit's `ci` run, every 60 s for at most 60 min (phase `ci_running`): `ready` when
+  every job is green, `failed` with the names and links of the jobs that are not. One prepare at a time and none within
+  10 minutes of the last; a prepare of the commit that is already `ready` is refused (the phase stays `ready`).
+- **Tag** (the dashboard, from `ready` only, and only while the public master is still the prepared commit): the
+  annotated tag `v<MAJOR>.<MINOR+1>.0-beta<N+1>` (the client compares MAJOR.MINOR.PATCH only, so every beta moves MINOR:
+  after v0.5.0-beta6 comes v0.6.0-beta7), pushed (phase `tagging`), then the wait for its `release` run (phase
+  `publishing`, at most 60 min). On success it writes the release body (the notes below, marked pre-release), records the
+  release as the last one in `state.json`, and the phase is `published` with the release page's link. `release.yml`
+  publishes the assets and SHA256SUMS and asks for the website run itself.
+- **Notes**: `sudo bash /opt/decombat/tools/release_from_git.sh notes <from> <to> [tag]` prints them: a header `DeCombat
+  <tag>`, which clients update themselves, the first-parent subjects as bullets grouped by their rule ids (CLI-, VAR-,
+  REN-: Client; DSV-, GMD-: Match servers; LG-, OPS-, CRATE-: Lobby and servers; the rest: Other), a count of the
+  subjects left out because the export scan would refuse them, and the SmartScreen and SHA256SUMS note.
+- By hand on the VPS: `release_from_git.sh check | prepare | tag | status`.
+
+The request (`<unix>-check.json`, `<unix>-prepare.json`, `<unix>-tag.json`) is JSON `{"action": "<the name's action>",
+"by": "<text>"}`; the newest wins, every other entry of the folder is removed unread, and the request file is removed as
+soon as the job picks it up. A request waits while another job runs (a prepare can wait up to an hour for CI).
+
+### When something fails
+
+- **The export scan refused**: the log (`deploy/release/logs/<id>.log`) lists the refusals by file and line. Fix them on
+  master; the next prepare exports the new master.
+- **CI failed**: the status names the failed jobs and links them. A flaky job: re-run it on GitHub, then **Prepare**
+  again: with master unchanged and the public master still the prepared commit, it only waits for CI again (no new
+  export). A real failure: fix it on master and prepare again (a new export on top).
+- **The release run failed**: on GitHub delete the tag (`git push --delete origin <tag>` from a clone, or the tag's page)
+  and any draft release, then **Prepare** (it finds the commit unchanged and green: `ready`) and **Tag** again. Without
+  deleting the tag, Tag again (or `release_from_git.sh tag` by hand) only waits for the release run of the tag that is
+  there, which is what you want after re-running its failed jobs on GitHub.
+- **The public master moved** (someone pushed to it by hand): the tag is refused; prepare again.
+- **A job was cut off** (the machine restarted): the next job marks it `failed` ("interrupted"); prepare or tag again.
+
+### Security
+
+- The lobby can only drop a request; root checks its name and shape as for a deploy (no field reaches a shell). Rate
+  limits on root's side: a check 30 s, a prepare 10 min, a tag 60 s after the last.
+- The token lives only in `deploy/release.conf` (root 0600). It reaches curl in a config on standard input and git
+  through an askpass helper and the environment: never on a command line, in a log, in `status.json` or in the public
+  clone's config. Revoke it on GitHub to stop the job at once.
+- **Threat model**: a stolen admin session or a compromised lobby can make the VPS publish **an export of master**, scanned,
+  with green CI, and tag the prepared commit; nothing else. Master is the trust boundary here too: the export tool scans
+  the tree, and the prepare runs as root with the tool and word list installed at setup.
+
+## Bug reports from Discord
+
+Players post bug reports in a Discord channel. A small job on the VPS reads that channel through Discord's REST API and
+keeps the messages in a file the dashboard's Updates tab lists ("Bug reports", with a Done checkbox), so they can be read
+there or with one `cat` on the VPS instead of being copied by hand. Rule: DC_DEFAULTS.md OPS-26.
+Status: implemented and tested on Windows (`bash tools/vps/tests/triage_test.sh`, a stand-in for curl;
+`cargo test -p dc-lobby-server --bins bug_reports`); **not yet run on Linux, under systemd or against Discord**.
+
+```
+Discord channel <--- decombat-triage.timer (root, every 5 min) --> discord_triage.sh poll
+  /opt/decombat/deploy/triage/reports.jsonl   one JSON object per line, oldest first (id, at, author, content, attachments)
+  /opt/decombat/deploy/triage/state.json      last_id, updated, fetched, ok, message
+  /opt/decombat/deploy/triage/done.json       the reports marked Done on the dashboard (the lobby writes only this file)
+dashboard --> GET /ops/triage (newest 50), POST /ops/triage/done {id, done}
+```
+
+### Setup (once, after the deploy setup above)
+
+1. **A Discord bot** (Discord account that owns or administers the server): open the Developer Portal
+   (discord.com/developers/applications) > **New Application** (any name) > **Bot** in the side menu. Under **Privileged
+   Gateway Intents** switch on **Message Content Intent** (without it the bot gets empty message texts) and save. Under
+   **Token** press **Reset Token** and copy it; it is shown once.
+2. **Invite it to the server**: **OAuth2** > **URL Generator**; scope **bot** only; bot permissions **View Channel** and
+   **Read Message History** only (nothing that sends, manages or reads voice). Open the generated URL, pick the server,
+   authorise. In the server, make sure the bot's role can see the bug-report channel (a private channel needs the bot or its
+   role added to it).
+3. **The channel's number**: Discord Settings > Advanced > **Developer Mode** on; right-click the channel > **Copy
+   Channel ID**.
+4. **Write the conf on the VPS, by hand, over an interactive ssh session** (a terminal you type in; not a shell escape of a chat tool, not a script,
+   not `echo token=... >` on a command line that stays in the shell history):
+
+   ```
+   sudo -e /opt/decombat/deploy/triage.conf     # two lines: token=<the bot token>  channel_id=<the channel number>
+   sudo chown root:root /opt/decombat/deploy/triage.conf && sudo chmod 600 /opt/decombat/deploy/triage.conf
+   ```
+
+5. **On the VPS, as root, from a checkout of the repository** (a deploy installs the same scripts under
+   `/opt/decombat/tools/`):
+
+   ```
+   sudo bash tools/vps/triage_setup.sh
+   ```
+
+   It checks the conf (shape, then one request to Discord: "the bot sees channel ... (#name)"), installs
+   `discord_triage.sh` in `/opt/decombat/tools/`, makes `deploy/triage/` (root:decombat 0750) and an empty `done.json`
+   (decombat 0600), installs and enables `decombat-triage.timer` (every 5 minutes) and the lobby drop-in
+   `22-triage.conf` (`ReadWritePaths=-.../triage/done.json`), and runs one poll. Nothing is enabled when the conf is missing or
+   Discord refuses it. Restart the lobby once so it may write `done.json` (`sudo systemctl restart decombat-lobby`; the next
+   deploy does it too). `triage_setup.sh --check` shows the timer, asks Discord about the channel and prints the state.
+
+### Reading the reports
+
+- The dashboard, Updates tab, card **Bug reports**: the state line (last poll, new messages, or why it failed), the newest 50
+  reports with author, time, text (the first 600 characters, "more" for the rest), attachment links and **Done**.
+- On the VPS: `sudo bash /opt/decombat/tools/discord_triage.sh status`, and `sudo tail -n 20 /opt/decombat/deploy/triage/reports.jsonl`.
+  By hand: `sudo bash /opt/decombat/tools/discord_triage.sh poll` (the timer does the same every 5 minutes).
+- The first poll takes the newest 100 messages of the channel; later polls take what came after the last one seen. A message
+  edited later is not read again. Messages with neither text nor an attachment (joins, pins) are skipped.
+
+### When something fails
+
+- The card's state line says why the last poll failed (and `state.json` keeps the message; reports and `last_id` stay):
+  **HTTP 401**: the token is wrong or was reset: make a new one and rewrite `triage.conf`. **HTTP 403**: the bot lacks View
+  Channel or Read Message History in that channel. **HTTP 404**: wrong `channel_id`, or the bot is not in that server.
+  **Rate limited**: Discord asked for a wait longer than the job waits; the next run tries again.
+- Empty message texts mean the Message Content Intent is off (step 1).
+
+### Security
+
+- The token lives only in `deploy/triage.conf` (root 0600). It reaches curl in a config on standard input: never on a command
+  line, in a log, in `state.json` or in a report. Reset it in the Developer Portal to stop the job at once. The bot can read
+  one server's channels it is allowed into and send nothing.
+- The lobby never sees the token and never calls Discord: it reads `reports.jsonl` and `state.json` and writes `done.json`
+  only. What strangers typed into the channel is untrusted text: control characters become spaces, the dashboard puts it in as
+  text (no HTML), and only links to Discord's file servers are clickable.
 
 ## Not yet proven
 

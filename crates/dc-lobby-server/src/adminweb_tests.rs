@@ -1406,3 +1406,765 @@ fn the_pages_take_their_base_from_the_path() {
     assert!(crate::betaweb::ADMIN_PAGE.contains("a.href = BASE + path"));
     assert!(crate::opsweb::PAGE.contains("<a href=\"#updates\">Updates</a>"));
 }
+
+// ---- LG-430: the Release card (release.rs) behind the admin web
+
+/// A deploy folder with `release/requests/` and, when given, root's `release/status.json`.
+fn release_dir(t: &T, tag: &str, status: Option<Value>) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("dc-release-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("release").join("requests")).unwrap();
+    if let Some(s) = status {
+        std::fs::write(d.join("release").join("status.json"), s.to_string()).unwrap();
+    }
+    crate::net::lock(&t.sh).opts.deploy_dir = Some(d.clone());
+    d
+}
+
+fn release_status(phase: &str, commits: u64) -> Value {
+    json!({"phase": phase, "updated": T0 - 120, "private_sha": "f451b21e0000000000000000000000000000beef",
+           "public_sha": "9e10335a", "last_tag": "v0.5.0-beta6", "next_tag": "v0.6.0-beta7", "commits_since": commits,
+           "ci": {"status": "completed", "conclusion": "success", "url": "https://github.com/argallo/DeCombat/actions/runs/42"},
+           "release_url": "", "message": "CI green on 9e10335a", "log_tail": ["export ok", "push ok"], "ok": null, "by": "Owner key"})
+}
+
+fn request_files(d: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(d.join("release").join("requests"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+fn release_events(t: &T) -> Vec<String> {
+    let g = crate::net::lock(&t.sh);
+    let mut q =
+        g.db.prepare("SELECT detail FROM ops_events WHERE kind = 'release' ORDER BY id")
+            .unwrap();
+    let v = q.query_map([], |r| r.get(0)).unwrap().flatten().collect();
+    v
+}
+
+#[test]
+fn a_release_request_is_a_file_named_for_its_action_with_the_admins_name() {
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "Owner key");
+    let s = t.login(&mut k);
+    let d = release_dir(&t, "request", Some(release_status("idle", 3)));
+    let (st, v) = t.post("/ops/updates/release/prepare", Some(&s), json!({}));
+    assert_eq!(st, 200, "{v}");
+    let name = format!("{T0}-prepare.json");
+    assert_eq!(request_files(&d), vec![name.clone()]);
+    let file: Value = serde_json::from_str(
+        &std::fs::read_to_string(d.join("release").join("requests").join(&name)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        file,
+        json!({"action": "prepare", "by": "Owner key", "at": T0})
+    );
+    assert_eq!(
+        release_events(&t),
+        vec!["release prepare requested by Owner key".to_string()]
+    );
+    let admin: i64 = crate::net::lock(&t.sh)
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM ops_events WHERE kind = 'admin_web' AND detail LIKE 'release request by Owner key with key #%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(admin, 1, "the admin web names the key and the address too");
+    // one request waits at a time; the page shows it and offers no second prepare
+    assert_eq!(
+        t.post("/ops/updates/release/check", Some(&s), json!({})).0,
+        409
+    );
+    let v: Value = serde_json::from_str(&t.get("/ops/updates/release", Some(&s)).body).unwrap();
+    assert_eq!(v["pending"], "prepare");
+    assert_eq!(v["view"]["can_prepare"], false);
+    // root took it; a check lands, and a second press does not add a file
+    std::fs::remove_file(d.join("release").join("requests").join(&name)).unwrap();
+    assert_eq!(
+        t.post("/ops/updates/release/check", Some(&s), json!({})).0,
+        200
+    );
+    let (st, v) = t.post("/ops/updates/release/check", Some(&s), json!({}));
+    assert_eq!(
+        (st, v["message"].as_str()),
+        (200, Some("a check is already requested"))
+    );
+    assert_eq!(request_files(&d), vec![format!("{T0}-check.json")]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn release_requests_need_a_session_the_page_token_and_an_allowed_action() {
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "a");
+    let s = t.login(&mut k);
+    let d = release_dir(&t, "refused", Some(release_status("idle", 3)));
+    let send = |path: &str, cookie: Option<&str>, csrf: Option<&str>, origin: &str, ctype: &str| {
+        let mut r = req("POST", path);
+        r.cookie = cookie;
+        r.csrf = csrf;
+        r.origin = origin;
+        r.ctype = ctype;
+        t.send(&r, &json!({})).status
+    };
+    let ok = |path: &str| {
+        send(
+            path,
+            Some(&s.cookie),
+            Some(&s.csrf),
+            ORIGIN,
+            "application/json",
+        )
+    };
+    let p = "/ops/updates/release/check";
+    let j = "application/json";
+    assert_eq!(send(p, None, None, ORIGIN, j), 401, "no session");
+    assert_eq!(send(p, Some(&s.cookie), None, ORIGIN, j), 403, "no token");
+    assert_eq!(
+        send(p, Some(&s.cookie), Some("wrong"), ORIGIN, j),
+        403,
+        "wrong token"
+    );
+    assert_eq!(
+        send(
+            p,
+            Some(&s.cookie),
+            Some(&s.csrf),
+            "https://evil.example.com",
+            j
+        ),
+        403,
+        "another origin"
+    );
+    assert_eq!(
+        send(p, Some(&s.cookie), Some(&s.csrf), ORIGIN, "text/plain"),
+        415,
+        "a form post"
+    );
+    assert_eq!(
+        t.get("/ops/updates/release", None).status,
+        401,
+        "no state without a session"
+    );
+    // unknown actions, and actions the state does not allow
+    for bad in ["deploy", "Tag", "check/x", "tag.json"] {
+        assert_eq!(ok(&format!("/ops/updates/release/{bad}")), 404, "{bad}");
+    }
+    assert_eq!(
+        ok("/ops/updates/release/tag"),
+        409,
+        "nothing is ready to tag"
+    );
+    let write =
+        |st: Value| std::fs::write(d.join("release").join("status.json"), st.to_string()).unwrap();
+    write(release_status("ci_running", 3));
+    assert_eq!(
+        ok("/ops/updates/release/prepare"),
+        409,
+        "a release is under way"
+    );
+    write(release_status("published", 0));
+    assert_eq!(
+        ok("/ops/updates/release/prepare"),
+        409,
+        "nothing new since the last tag"
+    );
+    assert!(
+        request_files(&d).is_empty(),
+        "no refused request leaves a file"
+    );
+    assert_eq!(release_events(&t).len(), 3, "the state refusals are events");
+    // a further instance's prefix takes no release request (releases are for the whole box)
+    assert_ne!(ok("/i/modded/ops/updates/release/check"), 200);
+    // the loopback port: reading needs nothing more, a request needs its admin token
+    let lo = |head: String, token: Option<&str>| {
+        crate::opsweb::handle_with_body(&t.sh, &head, b"{}", LO, token, true)
+            .unwrap()
+            .0
+    };
+    let post = |tok: &str| {
+        format!(
+            "POST {p} HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nContent-Type: application/json\r\nOrigin: http://127.0.0.1:10090\r\nX-Admin-CSRF: {tok}\r\n\r\n"
+        )
+    };
+    let tok = {
+        let mut g = crate::net::lock(&t.sh);
+        let st = &mut *g;
+        st.beta.csrf(&mut st.keys)
+    };
+    let get = "GET /ops/updates/release HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n";
+    assert_eq!(lo(get.into(), None), 200);
+    assert_eq!(lo(post(&tok), None), 403, "no --admin-token");
+    assert_eq!(lo(post("wrong"), Some("t")), 403, "the port's page token");
+    assert_eq!(lo(post(&tok), Some("t")), 200);
+    let files = request_files(&d);
+    assert!(
+        files.len() == 1 && files[0].ends_with("-check.json"),
+        "{files:?}"
+    );
+    let file: Value = serde_json::from_str(
+        &std::fs::read_to_string(d.join("release").join("requests").join(&files[0])).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(file["by"], "the admin port");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_release_state_is_read_checked_and_turned_into_the_cards_headline_and_buttons() {
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "a");
+    let s = t.login(&mut k);
+    let state = || -> Value {
+        serde_json::from_str(&t.get("/ops/updates/release", Some(&s)).body).unwrap()
+    };
+    // no [deploy] dir, then no release folder, then no status file
+    let v = state();
+    assert_eq!(
+        (v["set_up"].as_bool(), v["status"].is_null()),
+        (Some(false), true)
+    );
+    assert!(v["message"].as_str().unwrap().contains("[deploy] dir"));
+    let d = release_dir(&t, "state", None);
+    std::fs::remove_dir_all(d.join("release")).unwrap();
+    assert_eq!(state()["set_up"], false);
+    std::fs::create_dir_all(d.join("release").join("requests")).unwrap();
+    let v = state();
+    assert_eq!(
+        (v["set_up"].as_bool(), v["status"].is_null()),
+        (Some(true), true)
+    );
+    assert!(v["message"].as_str().unwrap().contains("Check now"));
+    // a ready release: the tag button, the CI link
+    std::fs::write(
+        d.join("release").join("status.json"),
+        release_status("ready", 3).to_string(),
+    )
+    .unwrap();
+    let v = state();
+    assert_eq!(
+        v["view"]["headline"],
+        "Ready to tag v0.6.0-beta7 — CI green"
+    );
+    assert_eq!(v["view"]["level"], "good");
+    assert_eq!(
+        (
+            v["view"]["can_tag"].as_bool(),
+            v["view"]["can_prepare"].as_bool()
+        ),
+        (Some(true), Some(false))
+    );
+    assert_eq!(
+        v["status"]["ci"]["url"]["link"],
+        "https://github.com/argallo/DeCombat/actions/runs/42"
+    );
+    assert_eq!(
+        v["status"]["private_sha"],
+        "f451b21e0000000000000000000000000000beef"
+    );
+    // each phase's headline
+    let head = |phase: &str, n: u64, msg: &str| {
+        let mut st = release_status(phase, n);
+        st["message"] = json!(msg);
+        crate::release::view(&crate::release::clean_status(&st), None)
+    };
+    assert_eq!(
+        head("idle", 0, "")["headline"],
+        "Nothing new since v0.5.0-beta6"
+    );
+    let h = head("idle", 3, "");
+    assert_eq!(
+        h["headline"],
+        "3 commits since v0.5.0-beta6 — ready to prepare"
+    );
+    assert_eq!(
+        (h["can_prepare"].as_bool(), h["can_tag"].as_bool()),
+        (Some(true), Some(false))
+    );
+    assert_eq!(
+        head("idle", 1, "")["headline"],
+        "1 commit since v0.5.0-beta6 — ready to prepare"
+    );
+    let h = head("ci_running", 3, "");
+    assert_eq!(h["headline"], "Pushed 9e10335a, CI running");
+    assert_eq!(
+        (
+            h["level"].as_str(),
+            h["busy"].as_bool(),
+            h["can_prepare"].as_bool()
+        ),
+        (Some("warn"), Some(true), Some(false))
+    );
+    assert_eq!(head("tagging", 3, "")["headline"], "Tagging v0.6.0-beta7…");
+    let mut p = release_status("published", 0);
+    p["last_tag"] = json!("v0.6.0-beta7");
+    assert_eq!(
+        crate::release::view(&crate::release::clean_status(&p), None)["headline"],
+        "Published v0.6.0-beta7"
+    );
+    let h = head("failed", 2, "CI failed on 9e10335a");
+    assert_eq!(
+        (h["headline"].as_str(), h["level"].as_str()),
+        (Some("Failed: CI failed on 9e10335a"), Some("bad"))
+    );
+    assert_eq!(
+        h["can_prepare"], true,
+        "a failed release can be prepared again"
+    );
+    // a waiting request turns the buttons off
+    let c = crate::release::clean_status(&release_status("ready", 3));
+    let h = crate::release::view(&c, Some("tag"));
+    assert_eq!(
+        (h["can_tag"].as_bool(), h["can_check"].as_bool()),
+        (Some(false), Some(false))
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn untrusted_release_fields_are_cut_to_text_and_only_public_repository_urls_are_links() {
+    let mut st = release_status("ready", 3);
+    st["message"] = json!("<img src=x onerror=alert(1)>\u{7}\nline two");
+    st["by"] = json!(42);
+    st["private_sha"] = json!("not-a-sha");
+    st["next_tag"] = json!("v1;rm -rf /");
+    st["ci"]["url"] = json!("javascript:alert(1)");
+    st["release_url"] = json!("https://github.com/argallo/DeCombat.evil.example/releases");
+    st["log_tail"] = json!((0..100)
+        .map(|i| format!("line {i}\u{1b}[31m"))
+        .collect::<Vec<_>>());
+    let c = crate::release::clean_status(&st);
+    assert_eq!(
+        c["message"], "<img src=x onerror=alert(1)>  line two",
+        "kept as text, controls gone"
+    );
+    assert_eq!(c["by"], "");
+    assert_eq!(c["private_sha"], "");
+    assert_eq!(c["next_tag"], "");
+    assert_eq!(
+        c["ci"]["url"],
+        json!({"link": null, "text": "javascript:alert(1)"})
+    );
+    assert!(c["release_url"]["link"].is_null());
+    let tail = c["log_tail"].as_array().unwrap();
+    assert_eq!((tail.len(), tail[0].as_str()), (40, Some("line 60 [31m")));
+    assert_eq!(
+        crate::release::view(&c, None)["can_tag"],
+        false,
+        "no tag name, no tag button"
+    );
+    let mut bad = release_status("<b>ready</b>", 3);
+    bad["commits_since"] = json!(-4);
+    let c = crate::release::clean_status(&bad);
+    assert_eq!(
+        (c["phase"].as_str(), c["commits_since"].is_null()),
+        (Some("unknown"), true)
+    );
+    assert_eq!(crate::release::view(&c, None)["level"], "bad");
+    for (u, ok) in [
+        (
+            "https://github.com/argallo/DeCombat/releases/tag/v0.6.0-beta7",
+            true,
+        ),
+        (
+            "https://github.com/argallo/DeCombat/actions/runs/42?check_suite_focus=true",
+            true,
+        ),
+        ("https://github.com/argallo/DeCombat/", false),
+        ("http://github.com/argallo/DeCombat/releases", false),
+        ("https://github.com/argallo/DeCombatX/releases", false),
+        (
+            "https://github.com/argallo/DeCombat/\"onmouseover=alert(1)",
+            false,
+        ),
+        ("https://github.com/argallo/DeCombat/a b", false),
+        ("https://github.com/argallo/DeCombat/../../evil", false),
+    ] {
+        assert_eq!(crate::release::github_link(u).is_some(), ok, "{u}");
+    }
+    // the card puts every field in as text: the dashboard has no HTML sink
+    let page = crate::opsweb::PAGE;
+    assert!(page.contains("function releaseCard(r)"));
+    for sink in [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+    ] {
+        assert!(!page.contains(sink), "{sink}");
+    }
+    // a state file over its cap is not read
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "a");
+    let s = t.login(&mut k);
+    let mut big = release_status("ready", 3);
+    big["message"] = json!("x".repeat(300 * 1024));
+    let d = release_dir(&t, "big", Some(big));
+    let v: Value = serde_json::from_str(&t.get("/ops/updates/release", Some(&s)).body).unwrap();
+    assert!(v["status"].is_null());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---- OPS-26: the Bug reports card (triage.rs) behind the admin web
+
+/// A deploy folder with `triage/` holding the given report lines (as the poller writes them), a state and a done.json.
+fn triage_dir(t: &T, tag: &str, lines: &[String]) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("dc-triage-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let tr = d.join("triage");
+    std::fs::create_dir_all(&tr).unwrap();
+    std::fs::write(tr.join("reports.jsonl"), lines.join("\n") + "\n").unwrap();
+    std::fs::write(
+        tr.join("state.json"),
+        json!({"last_id": "1010", "updated": T0 - 60, "fetched": 2, "ok": true, "message": "2 new reports"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(tr.join("done.json"), r#"{"done": {}}"#).unwrap();
+    crate::net::lock(&t.sh).opts.deploy_dir = Some(d.clone());
+    d
+}
+
+fn report(id: u64, content: &str) -> String {
+    json!({"id": id.to_string(), "at": T0 - 1000 + id as i64, "author": {"username": "alice", "name": "Alice A"},
+           "content": content, "attachments": []})
+    .to_string()
+}
+
+fn triage_events(t: &T) -> Vec<String> {
+    let g = crate::net::lock(&t.sh);
+    let mut q =
+        g.db.prepare("SELECT detail FROM ops_events WHERE kind = 'triage' ORDER BY id")
+            .unwrap();
+    let v = q.query_map([], |r| r.get(0)).unwrap().flatten().collect();
+    v
+}
+
+#[test]
+fn bug_reports_are_listed_newest_first_checked_and_cut_to_size() {
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "a");
+    let s = t.login(&mut k);
+    let get = || -> Value { serde_json::from_str(&t.get("/ops/triage", Some(&s)).body).unwrap() };
+    // no [deploy] dir
+    let v = get();
+    assert_eq!(
+        (v["set_up"].as_bool(), v["reports"].as_array().map(Vec::len)),
+        (Some(false), Some(0))
+    );
+    assert!(v["message"].as_str().unwrap().contains("[deploy] dir"));
+    let hostile = json!({
+        "id": "1005", "at": T0 - 5, "author": {"username": "<img src=x onerror=alert(1)>", "name": "mallory\u{1b}[31m"},
+        "content": format!("<script>alert(1)</script>\u{7}line two\nline three{}", "x".repeat(6000)),
+        "attachments": [
+            "https://cdn.discordapp.com/attachments/1/2/shot.png?ex=1",
+            "https://cdn.discordapp.com/attachments/1/2/a b",
+            "https://evil.example.com/cdn.discordapp.com/x",
+            "https://cdn.discordapp.com/\"onmouseover=alert(1)",
+            "https://media.discordapp.net/attachments/1/2/../../x",
+            "javascript:alert(1)"
+        ]
+    })
+    .to_string();
+    let mut lines = vec![
+        report(1001, "oldest"),
+        "{ this line is not JSON".to_string(),
+        report(1003, "third"),
+        report(1003, "third again: the same id is listed once"),
+        json!({"id": "not-a-number", "content": "no report"}).to_string(),
+        json!({"content": "no id"}).to_string(),
+        hostile,
+        report(1010, "newest"),
+    ];
+    let d = triage_dir(&t, "list", &lines);
+    let v = get();
+    assert_eq!(v["set_up"], true);
+    let ids: Vec<&str> = v["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["1010", "1005", "1003", "1001"],
+        "newest first, each id once"
+    );
+    assert_eq!(
+        (v["total"].as_u64(), v["open"].as_u64()),
+        (Some(4), Some(4))
+    );
+    assert_eq!(v["state"]["ok"], true);
+    assert_eq!(v["state"]["message"], "2 new reports");
+    let r = &v["reports"][1];
+    let content = r["content"].as_str().unwrap();
+    assert_eq!(content.chars().count(), 4000, "cut to 4000 characters");
+    assert!(
+        content.starts_with("<script>alert(1)</script> line two\nline three"),
+        "{content:?}"
+    );
+    assert_eq!(r["author"]["username"], "<img src=x onerror=alert(1)>");
+    assert_eq!(
+        r["author"]["name"], "mallory [31m",
+        "control characters become spaces"
+    );
+    let links: Vec<(bool, &str)> = r["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["link"].is_string(), a["text"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        links.iter().map(|l| l.0).collect::<Vec<_>>(),
+        [true, false, false, false, false, false],
+        "only plain URLs of the Discord file servers are links: {links:?}"
+    );
+    // the newest 50 of many
+    lines = (1..=60u64).map(|i| report(2000 + i, "r")).collect();
+    std::fs::write(
+        d.join("triage").join("reports.jsonl"),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("triage").join("done.json"),
+        json!({"done": {"2060": {"at": T0, "by": "Owner"}, "2001": {"at": T0, "by": "Owner"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let v = get();
+    let list = v["reports"].as_array().unwrap();
+    assert_eq!(list.len(), 50);
+    assert_eq!(list[0]["id"], "2060");
+    assert_eq!(
+        (list[0]["done"].as_bool(), list[0]["done_by"].as_str()),
+        (Some(true), Some("Owner"))
+    );
+    assert_eq!(list[1]["done"], false);
+    assert_eq!(
+        (v["total"].as_u64(), v["open"].as_u64()),
+        (Some(60), Some(58))
+    );
+    // a poller that failed: the state says so
+    std::fs::write(
+        d.join("triage").join("state.json"),
+        json!({"last_id": "2060", "updated": T0, "fetched": 0, "ok": false, "message": "Discord refused the token (HTTP 401)\u{1b}"}).to_string(),
+    )
+    .unwrap();
+    let v = get();
+    assert_eq!(v["state"]["ok"], false);
+    assert_eq!(
+        v["state"]["message"],
+        "Discord refused the token (HTTP 401)"
+    );
+    // no state file yet
+    std::fs::remove_file(d.join("triage").join("state.json")).unwrap();
+    assert!(get()["state"].is_null());
+    // no folder at all
+    std::fs::remove_dir_all(d.join("triage")).unwrap();
+    let v = get();
+    assert_eq!(v["set_up"], false);
+    assert!(v["message"].as_str().unwrap().contains("not set up"));
+    // the card is in the page, and bug reports are the default lobby's, box-wide
+    assert!(crate::opsweb::PAGE.contains("function triageCard(r)"));
+    assert!(crate::adminfwd::forwardable("/ops/live"));
+    assert!(
+        !crate::adminfwd::forwardable("/ops/triage")
+            && !crate::adminfwd::forwardable("/ops/triage/done")
+    );
+    assert_eq!(
+        t.get("/ops/triage", None).status,
+        401,
+        "no list without a session"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_done_mark_needs_a_session_the_page_token_and_a_stored_report() {
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "Owner key");
+    let s = t.login(&mut k);
+    let p = "/ops/triage/done";
+    let send = |path: &str,
+                cookie: Option<&str>,
+                csrf: Option<&str>,
+                origin: &str,
+                ctype: &str,
+                body: Value| {
+        let mut r = req("POST", path);
+        r.cookie = cookie;
+        r.csrf = csrf;
+        r.origin = origin;
+        r.ctype = ctype;
+        t.send(&r, &body).status
+    };
+    let j = "application/json";
+    let ok = |body: Value| send(p, Some(&s.cookie), Some(&s.csrf), ORIGIN, j, body);
+    let body = json!({"id": "1003", "done": true});
+    // no [deploy] dir
+    assert_eq!(ok(body.clone()), 503, "bug reports not set up");
+    let d = triage_dir(&t, "mark", &[report(1001, "a"), report(1003, "b")]);
+    assert_eq!(
+        send(p, None, None, ORIGIN, j, body.clone()),
+        401,
+        "no session"
+    );
+    assert_eq!(
+        send(p, Some(&s.cookie), None, ORIGIN, j, body.clone()),
+        403,
+        "no token"
+    );
+    assert_eq!(
+        send(p, Some(&s.cookie), Some("wrong"), ORIGIN, j, body.clone()),
+        403,
+        "wrong token"
+    );
+    assert_eq!(
+        send(
+            p,
+            Some(&s.cookie),
+            Some(&s.csrf),
+            "https://evil.example.com",
+            j,
+            body.clone()
+        ),
+        403,
+        "another origin"
+    );
+    assert_eq!(
+        send(
+            p,
+            Some(&s.cookie),
+            Some(&s.csrf),
+            ORIGIN,
+            "text/plain",
+            body.clone()
+        ),
+        415,
+        "a form post"
+    );
+    let done_file = d.join("triage").join("done.json");
+    assert_eq!(
+        std::fs::read_to_string(&done_file).unwrap(),
+        r#"{"done": {}}"#,
+        "no refused request writes"
+    );
+    assert_eq!(
+        ok(json!({"id": "9999", "done": true})),
+        404,
+        "a report that is not stored"
+    );
+    assert_eq!(ok(json!({"id": "10x3", "done": true})), 400, "digits only");
+    assert_eq!(ok(json!({"id": "1003"})), 400, "done must be a boolean");
+    assert_eq!(ok(json!({"id": "1003", "done": "yes"})), 400);
+    assert_eq!(
+        ok(json!({"id": "1003", "done": true, "pad": "x".repeat(2000)})),
+        413
+    );
+    assert_eq!(ok(json!([1])), 400, "no id");
+    // the mark, then the list shows it and counts one less open
+    let (st, v) = t.post(p, Some(&s), body.clone());
+    assert_eq!(st, 200, "{v}");
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&done_file).unwrap()).unwrap();
+    assert_eq!(
+        file,
+        json!({"done": {"1003": {"at": T0, "by": "Owner key"}}})
+    );
+    let list: Value = serde_json::from_str(&t.get("/ops/triage", Some(&s)).body).unwrap();
+    assert_eq!(
+        (list["total"].as_u64(), list["open"].as_u64()),
+        (Some(2), Some(1))
+    );
+    assert_eq!(list["reports"][0]["id"], "1003");
+    assert_eq!(list["reports"][0]["done"], true);
+    assert_eq!(list["reports"][0]["done_by"], "Owner key");
+    // marking twice is the same mark; unmarking removes it and leaves the other marks
+    assert_eq!(ok(json!({"id": "1001", "done": true})), 200);
+    assert_eq!(ok(body), 200);
+    let (st, _) = t.post(p, Some(&s), json!({"id": "1003", "done": false}));
+    assert_eq!(st, 200);
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&done_file).unwrap()).unwrap();
+    assert_eq!(
+        file,
+        json!({"done": {"1001": {"at": T0, "by": "Owner key"}}})
+    );
+    assert_eq!(
+        triage_events(&t),
+        vec![
+            "report 1003 marked done by Owner key",
+            "report 1001 marked done by Owner key",
+            "report 1003 marked done by Owner key",
+            "report 1003 reopened by Owner key",
+        ]
+    );
+    // a done.json that cannot be written is an answer 500 and an event that is a problem
+    std::fs::remove_file(&done_file).unwrap();
+    std::fs::create_dir(&done_file).unwrap();
+    assert_eq!(ok(json!({"id": "1003", "done": true})), 500);
+    let problems: i64 = crate::net::lock(&t.sh)
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM ops_events WHERE kind = 'triage' AND problem = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(problems, 1);
+    // a further instance's prefix takes no mark
+    assert_ne!(
+        send(
+            "/i/modded/ops/triage/done",
+            Some(&s.cookie),
+            Some(&s.csrf),
+            ORIGIN,
+            j,
+            json!({"id": "1003", "done": true})
+        ),
+        200
+    );
+    // the loopback port: reading needs nothing more, a mark needs its admin token
+    let lo = |head: String, token: Option<&str>| {
+        crate::opsweb::handle_with_body(
+            &t.sh,
+            &head,
+            br#"{"id":"1001","done":false}"#,
+            LO,
+            token,
+            true,
+        )
+        .unwrap()
+        .0
+    };
+    let tok = {
+        let mut g = crate::net::lock(&t.sh);
+        let st = &mut *g;
+        st.beta.csrf(&mut st.keys)
+    };
+    let post = |tok: &str| {
+        format!(
+            "POST {p} HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nContent-Type: application/json\r\nOrigin: http://127.0.0.1:10090\r\nX-Admin-CSRF: {tok}\r\n\r\n"
+        )
+    };
+    std::fs::remove_dir_all(&done_file).unwrap();
+    std::fs::write(&done_file, r#"{"done": {}}"#).unwrap();
+    let get = "GET /ops/triage HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n";
+    assert_eq!(lo(get.into(), None), 200);
+    assert_eq!(lo(post(&tok), None), 403, "no --admin-token");
+    assert_eq!(lo(post("wrong"), Some("t")), 403, "the port's page token");
+    assert_eq!(lo(post(&tok), Some("t")), 200);
+    let _ = std::fs::remove_dir_all(&d);
+}

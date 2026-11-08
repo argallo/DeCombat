@@ -19,7 +19,8 @@ A line per finished room goes to `DIR/progress.txt`. The ROM comes from `--rom` 
 the summary / the CSV. `--partial` also scores room folders without `report.json` (a room still running).
 
 Inputs per room: the bots' `<nick>.events.jsonl` (kind in the field `ev`), the game server log `dserver/*.log`
-(lines `<ms> dc-dserver: ...`), `report.json` (mode, map, minutes, per-bot shots) and the bots' `.out` files.
+(lines `<ms> dc-dserver: ...`; a log with several sessions, from a retried room, is scored from the line of its
+last `dc-dserver: world <map> (N bytes, ...` line on), `report.json` (mode, map, minutes, per-bot shots) and the bots' `.out` files.
 
 Time base. Bot events carry `ms`, the bot's session clock from its join request; the server log carries the
 server's clock. A bot's event is placed on the server clock as `ms + <the server's "client N linked" ms>` (the
@@ -98,6 +99,24 @@ STUCK_LONGEST_MAX_S = 20.0
 IDLE_RADIUS_U = 16.0
 IDLE_MIN_S = 15.0
 IDLE_MAX_S = 0.0                # total idle seconds allowed per room ("a human never stands in a corner")
+IDLE_GUARD_KINDS = ("stand", "hold")  # a guard / post: camping a flag or a site 15-30 s is normal CA play
+IDLE_GUARD_MIN_S = 45.0         # ... so a guard counts as idle only when motionless this long
+IDLE_HOLD_MAX_S = 30.0          # one hold per bot per 10 min under this, with an enemy seen in the last CONTACT_S, is allowed
+CONTACT_S = 30.0
+ROUND_COUNTDOWN_S = 20.0        # round modes: the first seconds of a round (the countdown) are not judged for idling
+ROOTED_MIN_S = 20.0             # still (16 u) while the target is in sight: a turret, judged apart from idling
+ROOTED_MAX_PER_BOT_PER_10MIN = 1
+PACE_CELL_U = 128.0             # ledge pacing: within one 128 u circle for >= PACE_MIN_S with the goal > PACE_GOAL_U away
+PACE_MIN_S = 20.0
+PACE_GOAL_U = 300.0
+STUCK_JUMP_PER_MIN_MAX = 2.0    # stuck jumps per bot per alive minute (corner hopping)
+MATE_STACK_U = 36.0             # a team mate within one body width
+MATE_STACK_MAX_SHARE = 0.05     # ... for at most this share of a bot's samples (TDM / CTF)
+REACTION_IQR_MIN_S = 0.10       # a bot's first-sighting reactions must vary (a fixed delay is a tell)
+REACTION_IQR_MIN_N = 8
+WORLD_DEATHS_ROOM_PER_6MIN = 3  # respawn modes: falls per room (8 players do not fall 5 times in 6 min)
+WORLD_DEATHS_ROUND_ROOM = 2     # round modes: one fall loses a player for the round
+ROUND_WIN_SHARE = (0.30, 0.70)  # round modes: either side's share of the round wins
 WORLD_DEATHS_MAX_PER_BOT_PER_10MIN = 1
 ROUTE_RETARGET_U = 1500.0       # a goal jump this large between two samples starts a new goal episode
 ROUTE_GAP_S = 6.0               # goal-less samples (waits) inside one goal episode
@@ -105,8 +124,9 @@ GOAL_REACH_U = 96.0
 ROUTE_MAX_GOAL_U = 2000.0
 ROUTE_MAX_S = 60.0
 ROUTE_LATE_MAX_SHARE = 0.10     # share of judged goals allowed to be late
+ROUTE_SKIP_KINDS = ("hunt",)    # goal kinds that follow a moving enemy: not a route, not judged
 CELL_U = 256.0
-COVERAGE_MIN = 0.60             # per team, TDM
+COVERAGE_MIN = 0.45             # per team, TDM (real teams play lanes)
 KILLS_PER_2MIN_ALIVE_MIN = 0.67       # 1 kill per 3 min alive (a quiet average player on a big map)
 TEAM_KILL_SHARE = (0.35, 0.65)  # TDM / CTF
 FFA_TOP_SHARE_MAX = 0.40
@@ -116,17 +136,28 @@ REACTION_MEDIAN = (0.3, 1.2)    # seconds, measured sight -> first shot
 REACTION_INSTANT_S = 0.15       # "never instantly"
 REACTION_MAX_S = 3.0
 REACTION_OVER_MAX_SHARE = 0.02  # share of measured reactions allowed above REACTION_MAX_S (a lost sighting)
-SND_PLANT_ROUNDS_MIN = 0.70
-SND_DEFUSE_AFTER_PLANT_MIN = 1.0
+SND_PLANT_ROUNDS_MIN = 0.50     # team fights end rounds before a plant
+SND_DEFUSE_AFTER_PLANT_MIN = 0.5  # ... of the plants a defender was alive SND_DEFUSE_ALIVE_S after (BOT-142: the
+                                  # guards now kill half the defenders on their way in, which is the human outcome)
+SND_DEFUSE_ALIVE_S = 10.0
+SND_ATTACKER_WIN_MIN = 0.35     # share of planted rounds the attackers win (a defuse nobody contests is a tell)
+SND_CONTEST_MIN = 0.50          # share of defuse starts with an attacker firing within SND_CONTEST_S
+SND_CONTEST_S = 8.0
 SND_DECIDED_MIN = 0.80          # rounds ended by bomb / defuse / elimination
 SND_SPAWN_LEAVE_U = 512.0       # an attacker "left the spawn" when it got this far from its first round position
-CTF_CAPTURE_EVERY_S = 180.0
+CTF_CAPTURE_EVERY_S = 360.0     # pub CTF with real defenders: 2-4 captures per 10 min
+CTF_TAKE_EVERY_S = 180.0
+CTF_BOTH_OUT_MAX_S = 120.0      # both flags off their bases with no capture or return: a stalemate
 CTF_DROP_RESOLVE_S = 20.0
 SPY_PICKUP_S = 30.0
 SPY_STAGE_MAX_S = 240.0
-QRT_BEFORE_TIMER_MIN = 0.50
+QRT_HUMAN_WIN_SHARE = (0.10, 0.50)  # the 2009 numbers (infected 600 HP, host 1200, 19 per rifle hit, one claw infects)
+                                    # give 8 players' humans about 1 round in 7 even with focus fire (BOT-150)
+QRT_ROUND_MEDIAN_S = (30.0, 150.0)
+QRT_HOST_KILL_MAX_SHARE = 0.25  # rounds won by killing the host with zero infections
 TSV_ELIM_MIN = 0.80
-REFUSAL_SPAM_MAX = 20           # server lines with "refused" per room
+CORPSE_KILL_MAX_SHARE = 0.05    # kills (seen by the bot) after which it still hit the body / kills seen
+CORPSE_TAIL_MAX_S = 1.0         # longest firing at a body after its death was shown (a human stops within a second)
 TIMER_SLACK_S = 1.0
 
 RESPAWN_MODES = ("TDM", "FFA", "CTF", "BNT")
@@ -245,9 +276,12 @@ def dist_xz(a, b):
 
 
 LINE_RE = re.compile(r"^\s*(\d+)\s+(.*)$")
+RE_SESSION_START = re.compile(r"^\s*\d+ dc-dserver: world \S+ \(\d+ bytes")  # first line of a game server session
+RE_SESSION_HITS = re.compile(r"^dc-dserver: session hits: (\d+) claims, \d+ accepted.*?refused (.*)$")
+RE_IN_WORLD = re.compile(r"^dc-dserver: client (\d+): in world, object (\d+)")
 RE = {k: re.compile(v) for k, v in {
     "linked": r"^dc-dserver: client (\d+) linked from",
-    "join": r"^@join (\d+) (\d+) \d+ \d+ (\S+)",
+    "join": r"^@join (\d+) (\d+) \d+ (\d+) (\S+)",
     "spawned": r"^dc-dserver: client (\d+): spawned \(team (\d+)",
     "killed": r"^dc-dserver: client (\d+) killed by (None|Some\((\d+)\)).*?; score (\d+):(\d+)",
     "first_start": r"^dc-dserver: round started \(mode class (\d+), goal (\d+), (\d+) s\)",
@@ -283,18 +317,23 @@ RE = {k: re.compile(v) for k, v in {
     "spy_survived": r"^dc-dserver: spy: the agent \(client (\d+)\) survived stage 2",
     "spy_gone": r"^dc-dserver: spy: the agent \(client (\d+)\) is gone",
     "infect_outbreak": r"^dc-dserver: infect: round (\d+): outbreak",
-    "infect_client": r"^dc-dserver: infect: client (\d+) infected",
+    "infect_client": r"^dc-dserver: infect: client (\d+) infected(?: by client (\d+))?",
 }.items()}
 
 
 def parse_dserver(path):
     """Everything the score needs from one game server log."""
-    d = {"linked": {}, "nick": {}, "uid": {}, "team_at": {}, "kills": [], "rounds": [], "objective": [],
-         "match_over": False, "refused": 0, "mode_class": None, "goal": None, "round_secs": 180, "lines": 0}
+    d = {"linked": {}, "nick": {}, "uid": {}, "team_at": {}, "join_team": {}, "kills": [], "rounds": [],
+         "objective": [], "match_over": False, "refused": 0, "mode_class": None, "goal": None, "round_secs": 180, "lines": 0,
+         "objects": {}}
     cur = None
     warmup_over_pending = False
     with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
+    # a retried room holds two sessions in one log (an aborted run, then the real one): score the last only
+    starts = [i for i, ln in enumerate(lines) if RE_SESSION_START.match(ln)]
+    if starts:
+        lines = lines[starts[-1]:]
     d["lines"] = len(lines)
     last_ms = 0
     recent = []  # (ms, tag) markers that explain a round end
@@ -310,6 +349,13 @@ def parse_dserver(path):
         last_ms = ms
         if "refused" in text:
             d["refused"] += 1
+        rh = RE_SESSION_HITS.match(text)
+        if rh:
+            d["claims"] = int(rh.group(1))
+            d["refused_kinds"] = {k: int(v) for k, v in re.findall(r"(\w+) (\d+)", rh.group(2))}
+        iw = RE_IN_WORLD.match(text)
+        if iw:
+            d["objects"].setdefault(int(iw.group(1)), set()).add(int(iw.group(2)))
         g = None
         for key, rx in RE.items():
             g = rx.match(text)
@@ -322,7 +368,8 @@ def parse_dserver(path):
         elif key == "join":
             c = int(g.group(1))
             d["uid"][c] = int(g.group(2))
-            d["nick"][c] = g.group(3)
+            d["join_team"][c] = int(g.group(3)) + 1  # 0-based on the @join line, 1-based like `spawned`
+            d["nick"][c] = g.group(4)
         elif key == "spawned":
             d["team_at"].setdefault(int(g.group(1)), []).append((ms, int(g.group(2))))
             if cur is not None:
@@ -368,6 +415,12 @@ def parse_dserver(path):
             d["match_over"] = True
         else:
             ev = {"ms": ms, "kind": key, "args": g.groups(), "round": cur["no"] if cur else None}
+            if key == "infect_client" and g.group(2) is not None:
+                # an infection is the infector's kill and the victim's death (not a round-alive change: kept out of
+                # the round's kills); the outbreak's first infection has no infector and is no kill
+                d["kills"].append({"ms": ms, "victim": int(g.group(1)), "killer": int(g.group(2)),
+                                   "round": cur["no"] if cur else None, "warmup": bool(cur and cur["warmup"]),
+                                   "infection": True})
             d["objective"].append(ev)
             if key in ("elim", "forfeit", "ffa_goal", "defused", "exploded", "ctf_capture", "spy_done",
                        "spy_fell", "spy_uploaded", "spy_survived"):
@@ -387,6 +440,9 @@ def parse_dserver(path):
         cur["end"] = last_ms
         cur["how"] = "cut"
     d["last_ms"] = last_ms
+    # Spy Hunt and Quarantine put every player on one game team in `spawned`; the sides then come from `@join`
+    spawn_teams = {tm for rows in d["team_at"].values() for _, tm in rows}
+    d["team_flat"] = len(spawn_teams) <= 1 and len(set(d["join_team"].values())) > 1
     return d
 
 
@@ -410,6 +466,8 @@ def classify_round_end(r, recent, d):
 
 def team_of(ds, client, ms):
     """The client's game team at server time ms (the latest `spawned` before it, else its first)."""
+    if ds.get("team_flat"):
+        return ds["join_team"].get(client)
     rows = ds["team_at"].get(client) or []
     team = rows[0][1] if rows else None
     for t, tm in rows:
@@ -469,22 +527,81 @@ def metric_stuck(segs):
     return eps
 
 
-def metric_idle(segs):
-    """Idle episodes: no goal, the body within IDLE_RADIUS_U of the start for >= IDLE_MIN_S."""
+def in_countdown(s):
+    r = s.get("_round")
+    return bool(r) and s.get("_sms") is not None and s["_sms"] - r["start"] < ROUND_COUNTDOWN_S * 1000
+
+
+def metric_idle(segs, contacts_ms=()):
+    """Idle episodes: no goal, no enemy in sight, the body within IDLE_RADIUS_U of the start for >= IDLE_MIN_S
+    (>= IDLE_GUARD_MIN_S for a guard / post kind), outside a round's countdown. `contact`: an enemy was seen in the
+    CONTACT_S before the episode (a hold with contact may be allowed by the rubric)."""
+    eps = []
+    cms = sorted(contacts_ms)
+    for seg in segs:
+        i = 0
+        while i < len(seg):
+            s0 = seg[i]
+            j = i
+            if s0.get("goal") is None and not s0.get("sight") and not in_countdown(s0):
+                while (j + 1 < len(seg) and seg[j + 1].get("goal") is None and not seg[j + 1].get("sight")
+                       and dist3(seg[j + 1]["pos"], s0["pos"]) <= IDLE_RADIUS_U):
+                    j += 1
+            dur = seg[j]["t"] - s0["t"]
+            need = IDLE_GUARD_MIN_S if s0.get("kind") in IDLE_GUARD_KINDS else IDLE_MIN_S
+            if j > i and dur >= need:
+                t0 = s0["ms"]
+                contact = any(t0 - CONTACT_S * 1000 <= c <= t0 for c in cms)
+                eps.append({"t": round(s0["t"], 1), "secs": round(dur, 1), "pos": [round(v) for v in s0["pos"]],
+                            "kind": s0.get("kind"), "wait": s0.get("wait"), "contact": contact})
+                i = j + 1
+            else:
+                i += 1
+    return eps
+
+
+def metric_rooted(segs):
+    """Rooted while engaged: the target in sight and the body within IDLE_RADIUS_U for >= ROOTED_MIN_S (a turret)."""
     eps = []
     for seg in segs:
         i = 0
         while i < len(seg):
             s0 = seg[i]
             j = i
-            if s0.get("goal") is None:
-                while (j + 1 < len(seg) and seg[j + 1].get("goal") is None
+            if s0.get("sight"):
+                while (j + 1 < len(seg) and seg[j + 1].get("sight")
                        and dist3(seg[j + 1]["pos"], s0["pos"]) <= IDLE_RADIUS_U):
                     j += 1
             dur = seg[j]["t"] - s0["t"]
-            if j > i and dur >= IDLE_MIN_S:
+            if j > i and dur >= ROOTED_MIN_S:
                 eps.append({"t": round(s0["t"], 1), "secs": round(dur, 1), "pos": [round(v) for v in s0["pos"]],
-                            "kind": s0.get("kind"), "wait": s0.get("wait")})
+                            "tgt_dist": round(s0.get("tgt_dist") or 0)})
+                i = j + 1
+            else:
+                i += 1
+    return eps
+
+
+def metric_pacing(segs, stuck):
+    """Ledge pacing the 48 u stuck window misses: within PACE_CELL_U (flat) of a start for >= PACE_MIN_S while the
+    goal stays > PACE_GOAL_U away; episodes that overlap a stuck episode are not counted twice."""
+    eps = []
+    for seg in segs:
+        i = 0
+        while i < len(seg):
+            s0 = seg[i]
+            j = i
+            if s0.get("goal") and dist3(s0["pos"], s0["goal"]) > PACE_GOAL_U:
+                while (j + 1 < len(seg) and seg[j + 1].get("goal")
+                       and dist3(seg[j + 1]["pos"], seg[j + 1]["goal"]) > PACE_GOAL_U
+                       and dist_xz(seg[j + 1]["pos"], s0["pos"]) <= PACE_CELL_U):
+                    j += 1
+            dur = seg[j]["t"] - s0["t"]
+            if j > i and dur >= PACE_MIN_S:
+                t0, t1 = s0["t"], seg[j]["t"]
+                if not any(e["t"] <= t1 and e["t"] + e["secs"] >= t0 for e in stuck):
+                    eps.append({"t": round(t0, 1), "secs": round(dur, 1), "pos": [round(v) for v in s0["pos"]],
+                                "goal": [round(v) for v in s0["goal"]], "kind": "pacing"})
                 i = j + 1
             else:
                 i += 1
@@ -493,12 +610,14 @@ def metric_idle(segs):
 
 def metric_goals(segs):
     """Goal episodes and the route verdict (ok within ROUTE_MAX_S / late / abandoned / unjudged far goals)."""
-    res = {"ok": 0, "late": 0, "abandoned": 0, "far": 0, "by_arrived": 0, "late_list": []}
+    res = {"ok": 0, "late": 0, "abandoned": 0, "far": 0, "moving": 0, "by_arrived": 0, "late_list": []}
 
     def close(ep):
         if ep is None:
             return
-        if ep["d0"] >= ROUTE_MAX_GOAL_U:
+        if ep["kind"] in ROUTE_SKIP_KINDS:
+            res["moving"] += 1
+        elif ep["d0"] >= ROUTE_MAX_GOAL_U:
             res["far"] += 1
         elif ep["reach_t"] is not None and ep["reach_t"] - ep["t0"] <= ROUTE_MAX_S:
             res["ok"] += 1
@@ -572,11 +691,16 @@ def score_bot(nick, evs, client, ds):
             if r is None and ds["rounds"]:
                 continue  # a result pause / between rounds: not "in a running round"
             e["_round"] = r
+            e["_sms"] = e["ms"] + off
             tracks.append(e)
     deaths_ms = [e["ms"] for e in evs if e.get("ev") == "died" and e.get("ms") is not None]
+    contacts = [e["ms"] for e in evs if e.get("ev") in ("target_seen", "reaction") and e.get("ms") is not None]
     segs = life_segments(tracks, deaths_ms)
     stuck = metric_stuck(segs)
-    idle = metric_idle(segs)
+    stuck += metric_pacing(segs, stuck)
+    stuck.sort(key=lambda x: x["t"])
+    idle = metric_idle(segs, contacts)
+    rooted = metric_rooted(segs)
     goals = metric_goals(segs)
     planned, planned_re, measured, measured_re = metric_reaction(evs)
     alive_s = len(tracks) * TRACK_PERIOD_S
@@ -593,6 +717,10 @@ def score_bot(nick, evs, client, ds):
         "tracks": tracks,  # removed before writing
         "stuck": stuck, "stuck_n": len(stuck), "stuck_longest_s": max([s["secs"] for s in stuck] or [0]),
         "idle": idle, "idle_s": round(sum(s["secs"] for s in idle), 1), "idle_by_kind": idle_kinds,
+        "rooted": rooted, "rooted_s": round(sum(s["secs"] for s in rooted), 1),
+        "guard_share": round(sum(1 for s in tracks if s.get("kind") in IDLE_GUARD_KINDS) / len(tracks), 2)
+        if tracks else 0.0,
+        "fire_sms": [e["ms"] + off for e in evs if e.get("ev") == "fire" and e.get("ms") is not None],
         "goals": goals,
         "stuck_jumps": sum(1 for e in evs if e.get("ev") == "stuck_jump"),
         "stuck_jump_per_min": round(sum(1 for e in evs if e.get("ev") == "stuck_jump") / (alive_s / 60.0), 2)
@@ -723,7 +851,7 @@ def score_room(folder, sc):
                 continue
             tk = team_of(ds, k["killer"], k["ms"])
             tv = team_of(ds, k["victim"], k["ms"])
-            if key != "FFA" and tk is not None and tk == tv:
+            if key != "FFA" and not ds.get("team_flat") and not k.get("infection") and tk is not None and tk == tv:
                 kb["team_kills"] += 1
             else:
                 kb["kills"] += 1
@@ -738,7 +866,7 @@ def score_room(folder, sc):
             "refused_lines": ds["refused"]}
     room["totals"] = room_totals(bots, ds, key)
     room["objective"] = objective_metrics(key, ds, bots)
-    room["flow"] = flow_metrics(sdir, bots, ds, sc)
+    room["flow"] = flow_metrics(sdir, bots, ds, sc, evs_of)
     room["rubric"] = rubric(key, minutes, bots, room, ds)
     room["verdict"] = "PASS" if all(l["ok"] for l in room["rubric"] if l["ok"] is not None) else "FAIL"
     for b in bots:
@@ -750,8 +878,9 @@ def score_room(folder, sc):
 
 
 def parse_dserver_empty():
-    return {"linked": {}, "nick": {}, "uid": {}, "team_at": {}, "kills": [], "rounds": [], "objective": [],
-            "match_over": False, "refused": 0, "mode_class": None, "goal": None, "round_secs": 180, "last_ms": 0,
+    return {"linked": {}, "nick": {}, "uid": {}, "team_at": {}, "join_team": {}, "kills": [], "rounds": [],
+            "objective": [], "match_over": False, "refused": 0, "mode_class": None, "goal": None, "round_secs": 180, "last_ms": 0,
+            "objects": {},
             "lines": 0}
 
 
@@ -766,14 +895,48 @@ def real_rounds(ds):
     return [r for r in ds["rounds"] if not r["warmup"] and r["how"] not in ("cut",)]
 
 
+def mate_stacking(bots):
+    """Per bot: the share of its samples with a team mate within MATE_STACK_U (same server second)."""
+    import bisect
+    by_team = {}
+    for b in bots:
+        if b["team"] is None:
+            continue
+        pts = sorted((s["_sms"], s["pos"]) for s in b["tracks"] if s.get("_sms") is not None)
+        by_team.setdefault(b["team"], []).append((b["nick"], [p[0] for p in pts], [p[1] for p in pts]))
+    out = {}
+    for team, members in by_team.items():
+        for nick, ts, ps in members:
+            if not ts:
+                continue
+            hit = 0
+            for t, p in zip(ts, ps):
+                near = False
+                for other, ots, ops in members:
+                    if other == nick or not ots:
+                        continue
+                    k = bisect.bisect_left(ots, t)
+                    for kk in (k - 1, k):
+                        if 0 <= kk < len(ots) and abs(ots[kk] - t) <= 1000 and dist3(ops[kk], p) <= MATE_STACK_U:
+                            near = True
+                            break
+                    if near:
+                        break
+                hit += near
+            out[nick] = round(hit / len(ts), 3)
+    return out
+
+
 def room_totals(bots, ds, key):
-    kills = [k for k in ds["kills"] if not k["warmup"]]
+    kills = [k for k in ds["kills"] if not k["warmup"] and not k.get("infection")]
+    infections = sum(1 for k in ds["kills"] if not k["warmup"] and k.get("infection"))
     team_kills = {1: 0, 2: 0}
-    for k in kills:
-        if k["killer"] is None or k["killer"] == k["victim"]:
+    for k in ds["kills"]:  # kill lines and infections
+        if k["warmup"] or k["killer"] is None or k["killer"] == k["victim"]:
             continue
         tk, tv = team_of(ds, k["killer"], k["ms"]), team_of(ds, k["victim"], k["ms"])
-        if key == "FFA" or tk != tv:
+        # one game team in `spawned` (Spy Hunt, Quarantine): the sides are only the lobby teams, no friendly fire
+        if key == "FFA" or ds.get("team_flat") or tk != tv or k.get("infection"):
             if tk in team_kills:
                 team_kills[tk] += 1
     kds = [b["kd"] for b in bots]
@@ -785,8 +948,10 @@ def room_totals(bots, ds, key):
         cells_team.setdefault(b["team"], set()).update(c)
     planned = [x for b in bots for x in b["reaction_planned_s"]]
     measured = [x for b in bots for x in b["reaction_measured_s"]]
+    stack = mate_stacking(bots)
     return {
-        "kills": sum(b["kills"] for b in bots), "server_kill_lines": len(kills),
+        "kills": sum(b["kills"] for b in bots), "server_kill_lines": len(kills), "infections": infections,
+        "mate_stack": stack, "mate_stack_share_max": max([v for v in stack.values()] or [0.0]),
         "world_deaths": sum(1 for k in kills if k["killer"] is None),
         "team_kills": sum(b["team_kills"] for b in bots),
         "kills_by_team": team_kills,
@@ -822,7 +987,8 @@ def objective_metrics(key, ds, bots):
     o["rounds"] = len(rounds)
     o["round_ends"] = {}
     for r in rounds:
-        o["round_ends"][r["how"]] = o["round_ends"].get(r["how"], 0) + 1
+        how = r["how"] or "other"  # a round the classifier did not place has how None
+        o["round_ends"][how] = o["round_ends"].get(how, 0) + 1
     if key == "TMM":
         o.update(snd_metrics(ds, rounds, bots))
     elif key == "CTF":
@@ -867,8 +1033,38 @@ def snd_metrics(ds, rounds, bots):
         left_spawn.append({"round": r["no"], "attackers_max_u": [round(x) for x in far],
                            "left": any(x >= SND_SPAWN_LEAVE_U for x in far)})
         split.append({"round": r["no"], "defender_holds": sorted(holds)})
+    # post-plant: a defender alive SND_DEFUSE_ALIVE_S after the plant, who won the planted round, contested defuses
+    ev = ds["objective"]
+    defuse_expected = 0
+    defuse_when_alive = 0
+    att_wins = 0
+    contested = 0
+    defuse_starts = 0
+    for r in planted:
+        end = r["end"] or ds["last_ms"]
+        plant = next((e for e in ev if e["kind"] == "planted" and r["start"] <= e["ms"] <= end), None)
+        if plant is None:
+            continue
+        att_team = team_of(ds, int(plant["args"][1]), plant["ms"])
+        defenders = [c for c, tm in r["spawned"].items() if tm != att_team]
+        dead_by = {k["victim"] for k in r["kills"] if k["ms"] <= plant["ms"] + SND_DEFUSE_ALIVE_S * 1000}
+        if any(c not in dead_by for c in defenders):
+            defuse_expected += 1
+            if r["defuse_starts"] > 0:
+                defuse_when_alive += 1
+        if r["how"] == "bomb" or (r["how"] == "elimination" and r.get("win") == att_team):
+            att_wins += 1
+        for e in ev:
+            if e["kind"] == "defuse_start" and r["start"] <= e["ms"] <= end:
+                defuse_starts += 1
+                if any(team_of(ds, b["client"], e["ms"]) == att_team
+                       and any(e["ms"] <= f <= e["ms"] + SND_CONTEST_S * 1000 for f in b["fire_sms"])
+                       for b in bots if b["client"] is not None):
+                    contested += 1
     return {"plant_attempt_rounds": plant_rounds, "planted_rounds": len(planted),
             "defuse_after_plant_rounds": defuse_tried, "decided_rounds": decided,
+            "defuse_expected_rounds": defuse_expected, "defuse_when_alive_rounds": defuse_when_alive,
+            "attacker_wins_planted": att_wins, "defuse_starts": defuse_starts, "defuses_contested": contested,
             "attackers_left_spawn": left_spawn, "defender_split": split}
 
 
@@ -901,7 +1097,25 @@ def ctf_metrics(ds):
                 carries.append({"by": int(carrier), "end": "capture" if f["kind"] == "ctf_capture" else "dropped",
                                 "secs": round((f["ms"] - e["ms"]) / 1000.0, 1)})
                 break
-    return {"captures": len(caps), "drops": drops, "carries": carries,
+    home = {"1": True, "2": True}
+    both_out_since = None
+    both_out_max = 0.0
+    for e in ev:
+        if e["kind"] == "ctf_taken":
+            home[e["args"][0]] = False
+        elif e["kind"] in ("ctf_returned",):
+            home[e["args"][0]] = True
+        elif e["kind"] == "ctf_capture":
+            home[e["args"][1]] = True
+        out = not home["1"] and not home["2"]
+        if out and both_out_since is None:
+            both_out_since = e["ms"]
+        elif not out and both_out_since is not None:
+            both_out_max = max(both_out_max, (e["ms"] - both_out_since) / 1000.0)
+            both_out_since = None
+    if both_out_since is not None:
+        both_out_max = max(both_out_max, (ds["last_ms"] - both_out_since) / 1000.0)
+    return {"captures": len(caps), "drops": drops, "carries": carries, "both_out_max_s": round(both_out_max, 1),
             "taken": sum(1 for e in ev if e["kind"] == "ctf_taken"),
             "returned_by_client": sum(1 for e in ev if e["kind"] == "ctf_returned" and e["args"][1] != "the timer"),
             "returned_by_timer": sum(1 for e in ev if e["kind"] == "ctf_returned" and e["args"][1] == "the timer")}
@@ -952,10 +1166,59 @@ def elim_metrics(ds, rounds):
                 alive[tm] -= 1
         out.append({"round": r["no"], "how": r["how"], "alive_at_end": {str(t): n for t, n in sorted(alive.items())}})
     infected = sum(1 for e in ds["objective"] if e["kind"] == "infect_client")
-    return {"round_alive": out, "infections": infected}
+    # Quarantine: humans (team 1) win by the timer or by killing every infected; a win with zero infections = host kill
+    human_wins = [r for r in rounds if r.get("win") == 1]
+    host_kills = 0
+    for r in human_wins:
+        end = r["end"] or ds["last_ms"]
+        n_inf = sum(1 for e in ds["objective"] if e["kind"] == "infect_client" and r["start"] <= e["ms"] <= end)
+        if n_inf == 0 and r["how"] != "timer":
+            host_kills += 1
+    lengths = sorted((r["end"] - r["start"]) / 1000.0 for r in rounds if r["end"] is not None)
+    wins = rounds[-1]["round_wins"] if rounds and rounds[-1].get("round_wins") else None
+    return {"round_alive": out, "infections": infected, "human_wins": len(human_wins), "host_kill_wins": host_kills,
+            "round_median_s": round(statistics.median(lengths), 1) if lengths else None, "round_wins": wins}
 
 
-def flow_metrics(sdir, bots, ds, sc):
+def corpse_metrics(evs_of, ds):
+    """Firing at a body after its death was shown: for every `kill` event a bot received (any killer; `victim` is the
+    client id) the `fire` events whose `target_obj` is that client's character object within 1.5 s after it, chained
+    while the gaps stay under 1 s. A human stops within a second; the server's `victim_dead` refusals cannot tell
+    this from several players firing at one target at the same time (claims in flight when the kill lands)."""
+    client_of_obj = {o: c for c, objs in ds.get("objects", {}).items() for o in objs}
+    kills_seen = 0
+    corpse_kills = 0
+    tails = []
+    for evs in evs_of.values():
+        fires = [e for e in evs if e.get("ev") == "fire" and e.get("target_obj") in client_of_obj
+                 and e.get("t") is not None]
+        for k in evs:
+            if k.get("ev") != "kill" or k.get("t") is None or k.get("victim") is None:
+                continue
+            kills_seen += 1
+            t0 = k["t"]
+            last = t0
+            tail = 0.0
+            for x in fires:
+                if x["t"] <= t0:
+                    continue
+                if x["t"] > t0 + 1.5 or x["t"] - last > 1.0:
+                    break
+                if client_of_obj[x["target_obj"]] != k["victim"]:
+                    continue
+                last = x["t"]
+                tail = x["t"] - t0
+            if tail > 0:
+                corpse_kills += 1
+                tails.append(tail)
+    tails.sort()
+    return {"kills_seen": kills_seen, "corpse_kills": corpse_kills,
+            "corpse_tail_max_s": round(tails[-1], 2) if tails else 0.0,
+            "corpse_tail_p95_s": round(tails[min(len(tails) - 1, int(len(tails) * 0.95))], 2) if tails else 0.0,
+            "objects_known": bool(client_of_obj)}
+
+
+def flow_metrics(sdir, bots, ds, sc, evs_of=None):
     panics = []
     for p in glob.glob(os.path.join(sdir, "*.out")):
         with open(p, encoding="utf-8", errors="replace") as f:
@@ -966,8 +1229,10 @@ def flow_metrics(sdir, bots, ds, sc):
         for rb in sc.get("bots") or []:
             if rb.get("end") and not str(rb["end"]).startswith("quit") and rb.get("nick") not in drops:
                 drops.append(rb.get("nick"))
-    return {"panics": panics, "drops": drops, "join_failed": sum(b["join_failed"] for b in bots),
-            "refused_lines": ds["refused"]}
+    out = {"panics": panics, "drops": drops, "join_failed": sum(b["join_failed"] for b in bots),
+           "refused_lines": ds["refused"], "claims": ds.get("claims"), "refused_kinds": ds.get("refused_kinds", {})}
+    out.update(corpse_metrics(evs_of or {}, ds))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -994,12 +1259,37 @@ def rubric(key, minutes, bots, room, ds):
     for b in bots:
         for k, v in b["idle_by_kind"].items():
             kinds[k] = round(kinds.get(k, 0) + v, 1)
-    L.append(line("mobility", f"idle (no goal, still >= {IDLE_MIN_S:.0f} s) <= {IDLE_MAX_S:.0f} s",
-                  t["idle_s"] <= IDLE_MAX_S, f"{t['idle_s']} s in {sum(len(b['idle']) for b in bots)} episodes "
-                  + (str(kinds) if kinds else "")))
-    wmax = WORLD_DEATHS_MAX_PER_BOT_PER_10MIN * per10
-    L.append(line("mobility", f"world deaths <= {wmax} per bot", all(b["world_deaths"] <= wmax for b in bots),
+    judged_idle = 0.0
+    allowed_n = 0
+    for b in bots:
+        allow = ROOTED_MAX_PER_BOT_PER_10MIN * per10
+        for ep in sorted(b["idle"], key=lambda e: e["t"]):
+            if allow and ep["secs"] < IDLE_HOLD_MAX_S and ep.get("contact"):
+                allow -= 1
+                allowed_n += 1
+                continue
+            judged_idle += ep["secs"]
+    judged_idle = round(judged_idle, 1)
+    L.append(line("mobility", f"idle (no goal, no enemy in sight, still >= {IDLE_MIN_S:.0f} s, a guard >= "
+                              f"{IDLE_GUARD_MIN_S:.0f} s, one hold < {IDLE_HOLD_MAX_S:.0f} s with contact allowed per bot) "
+                              f"<= {IDLE_MAX_S:.0f} s",
+                  judged_idle <= IDLE_MAX_S, f"{judged_idle} s judged of {t['idle_s']} s in "
+                  f"{sum(len(b['idle']) for b in bots)} episodes ({allowed_n} allowed) " + (str(kinds) if kinds else "")))
+    rooted = [(b["nick"], len(b["rooted"]), b["rooted_s"]) for b in bots
+              if len(b["rooted"]) > ROOTED_MAX_PER_BOT_PER_10MIN * per10]
+    L.append(line("mobility", f"rooted while engaged (still >= {ROOTED_MIN_S:.0f} s with the target in sight) "
+                              f"<= {ROOTED_MAX_PER_BOT_PER_10MIN} per bot per 10 min", not rooted,
+                  f"{sum(len(b['rooted']) for b in bots)} episodes, {sum(b['rooted_s'] for b in bots):.0f} s"
+                  + (f"; over: {rooted}" if rooted else "")))
+    if key in RESPAWN_MODES:
+        wmax = WORLD_DEATHS_ROOM_PER_6MIN * max(1, math.ceil((minutes or 6) / 6.0))
+    else:
+        wmax = WORLD_DEATHS_ROUND_ROOM
+    L.append(line("mobility", f"world deaths <= {wmax} per room", t["world_deaths"] <= wmax,
                   f"{t['world_deaths']} total"))
+    hoppers = [f"{b['nick']} {b['stuck_jump_per_min']}" for b in bots if b["stuck_jump_per_min"] > STUCK_JUMP_PER_MIN_MAX]
+    L.append(line("mobility", f"stuck jumps <= {STUCK_JUMP_PER_MIN_MAX:g} per bot per alive minute", not hoppers,
+                  f"{t['stuck_jumps']} total" + (f"; over: {', '.join(hoppers)}" if hoppers else "")))
     judged = t["goals_ok"] + t["goals_late"]
     L.append(line("mobility", f"goals < {ROUTE_MAX_GOAL_U:.0f} u reached within {ROUTE_MAX_S:.0f} s "
                   f"(late <= {ROUTE_LATE_MAX_SHARE:.0%})",
@@ -1011,12 +1301,20 @@ def rubric(key, minutes, bots, room, ds):
         L.append(line("mobility", f"each team covers >= {COVERAGE_MIN:.0%} of the visited cells",
                       all(v >= COVERAGE_MIN for v in cov.values()) if cov else None,
                       f"{t['cells_all']} cells, by team {cov}"))
+    if key in ("TDM", "CTF"):
+        st = t["mate_stack"]
+        over = [f"{n} {v:.0%}" for n, v in st.items() if v > MATE_STACK_MAX_SHARE]
+        L.append(line("mobility", f"a team mate within {MATE_STACK_U:.0f} u for <= {MATE_STACK_MAX_SHARE:.0%} of a bot's time",
+                      not over if st else None, f"max {t['mate_stack_share_max']:.0%}" + (f"; over: {', '.join(over)}" if over else "")))
     # 2. combat
     if key in RESPAWN_MODES:
-        slow = [b["nick"] for b in bots if b["alive_s"] > 0
+        guards = {b["nick"] for b in bots if key == "CTF" and b["guard_share"] >= 0.5}
+        slow = [b["nick"] for b in bots if b["alive_s"] > 0 and b["nick"] not in guards
                 and b["kills"] / (b["alive_s"] / 120.0) < KILLS_PER_2MIN_ALIVE_MIN]
-        L.append(line("combat", f"each bot >= {KILLS_PER_2MIN_ALIVE_MIN:g} kill per 2 min alive", not slow,
-                      f"below: {', '.join(slow)}" if slow else "all"))
+        # Spy Hunt: the 2009 damage matrix (DSV-453) lets a hunter shoot only the holders, so kills are rare by design
+        L.append(line("combat", f"each bot >= {KILLS_PER_2MIN_ALIVE_MIN:g} kill per 2 min alive (CTF guards exempt, not Spy Hunt)",
+                      (not slow) if key != "BNT" else None, (f"below: {', '.join(slow)}" if slow else "all")
+                      + (f"; guards {sorted(guards)}" if guards else "")))
         silent = [b["nick"] for b in bots if b["targets"] > 0 and not b["shots"]]
         L.append(line("combat", "no bot with 0 shots while it had a target", not silent,
                       f"{', '.join(silent)}" if silent else "none"))
@@ -1047,15 +1345,34 @@ def rubric(key, minutes, bots, room, ds):
                       f"median {med} s of {t['reaction_measured_n']}, instant {t['reaction_measured_instant']}, "
                       f"over {t['reaction_measured_over_max']} (max {t['reaction_measured_max_s']}); planned median "
                       f"{t['reaction_planned_median_s']} s"))
+        flat = []
+        judged_iqr = 0
+        for b in bots:
+            xs = sorted(b["reaction_measured_s"])
+            if len(xs) >= REACTION_IQR_MIN_N:
+                judged_iqr += 1
+                iqr = xs[(3 * len(xs)) // 4] - xs[len(xs) // 4]
+                if iqr < REACTION_IQR_MIN_S:
+                    flat.append(f"{b['nick']} {iqr:.2f}")
+        L.append(line("combat", f"a bot's reactions vary (IQR >= {REACTION_IQR_MIN_S:.2f} s over >= {REACTION_IQR_MIN_N})",
+                      (not flat) if judged_iqr else None, f"{judged_iqr} judged" + (f"; flat: {', '.join(flat)}" if flat else "")))
     # 3. objective
     n = o.get("rounds", 0)
     if key == "TMM":
         L.append(line("objective", f"plant attempted in >= {SND_PLANT_ROUNDS_MIN:.0%} of rounds",
                       (o["plant_attempt_rounds"] / n >= SND_PLANT_ROUNDS_MIN) if n else None,
                       f"{o['plant_attempt_rounds']} of {n}"))
-        L.append(line("objective", "defuse attempted after every plant",
-                      (o["defuse_after_plant_rounds"] / o["planted_rounds"] >= SND_DEFUSE_AFTER_PLANT_MIN)
-                      if o["planted_rounds"] else None, f"{o['defuse_after_plant_rounds']} of {o['planted_rounds']}"))
+        L.append(line("objective", f"defuse attempted after >= {SND_DEFUSE_AFTER_PLANT_MIN:.0%} of the plants a defender was alive {SND_DEFUSE_ALIVE_S:.0f} s after",
+                      (o["defuse_when_alive_rounds"] / o["defuse_expected_rounds"] >= SND_DEFUSE_AFTER_PLANT_MIN)
+                      if o["defuse_expected_rounds"] else None,
+                      f"{o['defuse_when_alive_rounds']} of {o['defuse_expected_rounds']} ({o['defuse_after_plant_rounds']} "
+                      f"of {o['planted_rounds']} plants)"))
+        L.append(line("objective", f"attackers win >= {SND_ATTACKER_WIN_MIN:.0%} of the planted rounds",
+                      (o["attacker_wins_planted"] / o["planted_rounds"] >= SND_ATTACKER_WIN_MIN) if o["planted_rounds"] else None,
+                      f"{o['attacker_wins_planted']} of {o['planted_rounds']}"))
+        L.append(line("objective", f"an attacker fires within {SND_CONTEST_S:.0f} s of >= {SND_CONTEST_MIN:.0%} of the defuse starts",
+                      (o["defuses_contested"] / o["defuse_starts"] >= SND_CONTEST_MIN) if o["defuse_starts"] else None,
+                      f"{o['defuses_contested']} of {o['defuse_starts']}"))
         L.append(line("objective", f">= {SND_DECIDED_MIN:.0%} of rounds end by bomb / defuse / elimination",
                       (o["decided_rounds"] / n >= SND_DECIDED_MIN) if n else None,
                       f"{o['decided_rounds']} of {n}, ends {o['round_ends']}"))
@@ -1070,6 +1387,11 @@ def rubric(key, minutes, bots, room, ds):
         need = max(1, math.floor((minutes or 0) * 60 / CTF_CAPTURE_EVERY_S))
         L.append(line("objective", f">= 1 capture per {CTF_CAPTURE_EVERY_S / 60:.0f} min ({need})",
                       o["captures"] >= need, f"{o['captures']} captures, {o['taken']} takes"))
+        need_t = max(1, math.floor((minutes or 0) * 60 / CTF_TAKE_EVERY_S))
+        L.append(line("objective", f">= 1 flag take per {CTF_TAKE_EVERY_S / 60:.0f} min ({need_t})",
+                      o["taken"] >= need_t, f"{o['taken']} takes"))
+        L.append(line("objective", f"both flags off their bases for <= {CTF_BOTH_OUT_MAX_S:.0f} s at a stretch",
+                      o["both_out_max_s"] <= CTF_BOTH_OUT_MAX_S, f"longest {o['both_out_max_s']} s"))
         dr = o["drops"]
         late = [d for d in dr if not d["resolved"] or d["resolved"]["secs"] > CTF_DROP_RESOLVE_S]
         L.append(line("objective", f"a dropped flag is taken or returned within {CTF_DROP_RESOLVE_S:.0f} s",
@@ -1088,10 +1410,16 @@ def rubric(key, minutes, bots, room, ds):
                       all(x <= SPY_STAGE_MAX_S for x in st) if st else None,
                       f"stage 1 {o['stage1_secs']} s, open {o['stage1_open_s']} s; stage 2 {o['stage2']}"))
     elif key == "QRT":
-        before = sum(v for k, v in o["round_ends"].items() if k != "timer")
-        L.append(line("objective", f">= {QRT_BEFORE_TIMER_MIN:.0%} of rounds end before the timer",
-                      (before / n >= QRT_BEFORE_TIMER_MIN) if n else None,
-                      f"{before} of {n}, ends {o['round_ends']}, {o['infections']} infections"))
+        hw = o["human_wins"]
+        L.append(line("objective", f"humans win {QRT_HUMAN_WIN_SHARE[0]:.0%}..{QRT_HUMAN_WIN_SHARE[1]:.0%} of the rounds",
+                      (QRT_HUMAN_WIN_SHARE[0] <= hw / n <= QRT_HUMAN_WIN_SHARE[1]) if n else None,
+                      f"{hw} of {n}, ends {o['round_ends']}, {o['infections']} infections"))
+        med = o["round_median_s"]
+        L.append(line("objective", f"median round {QRT_ROUND_MEDIAN_S[0]:.0f}..{QRT_ROUND_MEDIAN_S[1]:.0f} s (with the countdown)",
+                      (QRT_ROUND_MEDIAN_S[0] <= med <= QRT_ROUND_MEDIAN_S[1]) if med is not None else None, f"median {med} s"))
+        L.append(line("objective", f"<= {QRT_HOST_KILL_MAX_SHARE:.0%} of the rounds won by killing the host with zero infections",
+                      (o["host_kill_wins"] <= QRT_HOST_KILL_MAX_SHARE * n) if n else None,
+                      f"{o['host_kill_wins']} host kills of {n} rounds"))
     elif key == "TSV":
         el = o["round_ends"].get("elimination", 0)
         L.append(line("objective", f">= {TSV_ELIM_MIN:.0%} of rounds end by elimination",
@@ -1100,13 +1428,28 @@ def rubric(key, minutes, bots, room, ds):
                  and sum(1 for v in x["alive_at_end"].values() if v >= 2) >= 2]
         L.append(line("objective", "no timer end with 2+ alive on both sides", not never if n else None,
                       f"rounds {never}" if never else "none"))
+    if key in ("TMM", "TSV"):
+        rw = next((r["round_wins"] for r in reversed(real_rounds(ds)) if r.get("round_wins")), None)
+        tot = sum(rw) if rw else 0
+        L.append(line("objective", f"round wins {ROUND_WIN_SHARE[0]:.0%}..{ROUND_WIN_SHARE[1]:.0%} per side (>= 5 rounds)",
+                      (ROUND_WIN_SHARE[0] <= rw[0] / tot <= ROUND_WIN_SHARE[1]) if tot >= 5 else None,
+                      f"round wins {rw}" if rw else "no round wins"))
     # 4. flow
     f = room["flow"]
     L.append(line("flow", "no bot drop, no join_failed, no panic",
                   not f["drops"] and not f["join_failed"] and not f["panics"],
                   f"drops {f['drops']}, join_failed {f['join_failed']}, panics {f['panics']}"))
-    L.append(line("flow", f"server refusals <= {REFUSAL_SPAM_MAX}", f["refused_lines"] <= REFUSAL_SPAM_MAX,
-                  f"{f['refused_lines']} lines"))
+    dead = f["refused_kinds"].get("victim_dead", 0)
+    claims = f.get("claims")
+    ks = f.get("kills_seen", 0)
+    ok = None
+    if ks and f.get("objects_known"):
+        ok = f["corpse_kills"] <= CORPSE_KILL_MAX_SHARE * ks and f["corpse_tail_max_s"] <= CORPSE_TAIL_MAX_S
+    L.append(line("flow", f"firing at a body after its death was shown: <= {CORPSE_KILL_MAX_SHARE:.0%} of kills seen, "
+                          f"tail <= {CORPSE_TAIL_MAX_S:.0f} s", ok,
+                  f"{f.get('corpse_kills', 0)} of {ks} kills seen followed by hits on the body (longest tail "
+                  f"{f.get('corpse_tail_max_s', 0)} s, p95 {f.get('corpse_tail_p95_s', 0)} s); server refused "
+                  f"victim_dead {dead} of {claims} claims (several shooters on one target, not judged)"))
     return L
 
 
@@ -1116,7 +1459,7 @@ def rubric(key, minutes, bots, room, ds):
 def objective_summary(room):
     o = room["objective"]
     k = room["mode"]
-    ends = ",".join(f"{a}:{b}" for a, b in sorted(o.get("round_ends", {}).items()))
+    ends = ",".join(f"{a}:{b}" for a, b in sorted(o.get("round_ends", {}).items(), key=lambda kv: str(kv[0])))
     if k == "TMM":
         return f"{o['rounds']} rnd, plant-try {o['plant_attempt_rounds']}, planted {o['planted_rounds']}, " \
                f"defuse-try {o['defuse_after_plant_rounds']}; {ends}"
@@ -1140,7 +1483,8 @@ def room_md(room):
     t = room["totals"]
     w(f"- {room['bots']} bots, {room['minutes']} min{'' if room['complete'] else ' (partial: no report.json)'}, "
       f"verdict **{room['verdict']}**\n")
-    w(f"- kills {t['kills']} (world deaths {t['world_deaths']}, team kills {t['team_kills']}), by team "
+    w(f"- kills {t['kills']} (world deaths {t['world_deaths']}, team kills {t['team_kills']}"
+      f"{', infections ' + str(t['infections']) if t.get('infections') else ''}), by team "
       f"{t['kills_by_team']}, K/D spread {t['kd_spread']}; shots {t['shots']}, hits claimed {t['hit_claims']}\n")
     w(f"- alive {t['alive_min']} bot-min, stuck {t['stuck']} (longest {t['stuck_longest_s']} s), idle {t['idle_s']} s, "
       f"stuck jumps {t['stuck_jumps']}, cells {t['cells_all']} {t['coverage_by_team']}\n")

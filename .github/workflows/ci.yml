@@ -136,6 +136,8 @@ jobs:
       - name: deploy script tests
         run: |
           set -e
+          python3 tools/modrepo.py selftest
+          python3 tools/gunkit_examples.py selftest
           bash tools/ship_servers_test.sh
           bash tools/host/update_test.sh
           bash tools/vps/tests/instance_test.sh
@@ -143,4 +145,8 @@ jobs:
           bash tools/vps/tests/healthcheck_test.sh
           bash tools/vps/tests/migrate_test.sh
           bash tools/vps/tests/deploy_test.sh
+          bash tools/vps/tests/packs_sync_test.sh
+          bash tools/vps/tests/release_test.sh
+          bash tools/vps/tests/triage_test.sh
           python3 -I -m unittest discover -s tools/vps/tests -p test_live_games.py
+          python3 -I -m unittest discover -s tools/tests -p "test_*.py"

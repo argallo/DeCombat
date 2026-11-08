@@ -137,6 +137,7 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
     // the test walks the mission: the AI do not hit the walker
     cfg.game.coop.hit_chance = [0.0; 3];
     cfg.game.coop.melee_hit = 0.0;
+    cfg.game.coop.full_accuracy = false;
     let cap = cfg.game.coop.speed;
     // the walker is moved from box to box: no fall damage
     cfg.game.fall.enabled = false;
@@ -188,6 +189,7 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
     let mut kills = 0u32;
     // DSV-588..DSV-590: the soldiers the statements spawn hold their guns and walk at `coop.speed`
     let mut armed = 0u32;
+    let mut single_shot = 0u32;
     for pass in 0..16 {
         let mut progress = false;
         for &i in &order {
@@ -275,6 +277,17 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
                     a.spec.key
                 );
                 assert_eq!(a.spec.speed, cap, "{}", a.spec.key);
+                // DSV-640 / DSV-641: the soldier's weapon row gives its bursts, its attribute row the full-accuracy
+                // distance (the few templates holding a player row fire every `fire_ms`)
+                if let Some(b) = a.spec.burst {
+                    single_shot += u32::from(b.shots == (1, 1));
+                    assert!(b.pause_s.0 >= 0.0 && b.pause_s.1 >= b.pause_s.0);
+                }
+                assert!(
+                    a.spec.full_accuracy.is_some_and(|r| r > 0.0),
+                    "{}",
+                    a.spec.key
+                );
                 armed += 1;
             }
             // the AI fall: their death commands run (respawns, counters)
@@ -373,6 +386,10 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
         now / 1000
     );
     assert!(armed > 0, "armed soldiers were spawned");
+    assert!(
+        single_shot > 0,
+        "one-shot bursts (the launcher and bolt rifle rows)"
+    );
     let net = &server.world_statements().net;
     println!(
         "counters {:?}, activation boxes locked {:?} fired {:?}, vars {}",
@@ -461,4 +478,123 @@ fn rom_desert_thunder_runs_its_trigger_network_to_the_end() {
         j.missions
     );
     assert!(!looping || plays >= 1, "the looping track to the joiner");
+}
+
+/// DSV-642: the AI the players leave behind do not starve the mission's later spawns. One human walks the boxes once
+/// in the order of their distance from the start, stands 2 s in each and kills only the AI within 1500 units of the
+/// box (the placed AI the file keeps far below the level and the AI of the areas he walks past live on). After the
+/// third checkpoint (the way into the last area) the statements' spawns still appear while he walks 30 boxes on
+/// (without the rule: none, 2026-11-08).
+#[test]
+fn rom_desert_thunder_spawns_go_on_past_the_ai_left_behind() {
+    // long enough a stay for the AI to come to him and for those he passed to age (DSV-642's `retire_age_ms`)
+    let stay = 2_000;
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let (Some(arg), Some(key)) = (world_arg(&rom, "SANDHOG_CP1"), coop_key(&rom)) else {
+        println!("skipped: no co-op mission world");
+        return;
+    };
+    let (tables, _) = RomTables::load(&rom);
+    let w = load_from_rom(&rom, &arg, NameForm::Listed, None).expect("mission world");
+    let mut cfg = ServerTuning::default();
+    cfg.game.move_check = false;
+    cfg.game.coop.hit_chance = [0.0; 3];
+    cfg.game.coop.melee_hit = 0.0;
+    cfg.game.coop.full_accuracy = false;
+    cfg.game.fall.enabled = false;
+    let trig = trig_field(&rom, &key, &w.announce, 0);
+    let mut server = Server::with_tables(cfg, w.clone(), tables, 0);
+    assert!(server.handle_line(
+        0,
+        &format!("room key={key} type=5 goal=0 ff=0 time=1260{trig}")
+    ));
+    assert!(server.handle_line(0, "user 7 3 99 0 120 Dave"));
+    let mut c = SynthConfig::named("Dave");
+    c.box_bounds = Some((w.extent_min, w.extent_max));
+    c.walk_step = 0.0;
+    c.mode_class_hint = Some(5);
+    let mut peers = vec![Peer {
+        addr: 1,
+        client: SynthClient::new(c),
+        up: SimChannel::new(3, Faults::clean(2)),
+        down: SimChannel::new(4, Faults::clean(2)),
+    }];
+    let mut now = 0u32;
+    while now < 30_000 && peers[0].client.life_state() != 1 {
+        step(&mut server, &mut peers, now);
+        now += 5;
+    }
+    let pid = server.game().players().values().next().unwrap().pid;
+    let start = server.game().players()[&pid].pos;
+    let mut order: Vec<usize> = (0..w.triggers.len())
+        .filter(|i| w.triggers[*i].touch && w.triggers[*i].dims.iter().any(|d| *d > 16.5))
+        .collect();
+    let d = |i: &usize| {
+        let p = w.triggers[*i].pos;
+        (p[0] - start[0]).hypot(p[2] - start[2])
+    };
+    order.sort_by(|a, b| d(a).total_cmp(&d(b)));
+    let spawns = |s: &Server<u32>| s.game().coop().unwrap().mission_spawns;
+    let (mut checkpoints, mut after, mut boxes_after) = (0u32, None, 0u32);
+    for &i in &order {
+        let st = server.world_statements();
+        if st.locked[i] || st.fires[i] > 0 {
+            continue;
+        }
+        let t = &w.triggers[i];
+        let (fires, lives) = (st.fires[i], server.game().coop_lives_of(pid));
+        stand_at(&mut server, &mut peers, &mut now, t.pos, stay);
+        stand_at(
+            &mut server,
+            &mut peers,
+            &mut now,
+            [t.pos[0], t.pos[1] + 3000.0, t.pos[2]],
+            50,
+        );
+        if server.world_statements().fires[i] > fires && after.is_some() {
+            boxes_after += 1;
+        }
+        if server.game().coop_lives_of(pid) > lives {
+            checkpoints += 1;
+            if checkpoints == 3 {
+                after = Some(spawns(&server));
+            }
+        }
+        let near: Vec<usize> = server
+            .game()
+            .coop()
+            .unwrap()
+            .ais
+            .iter()
+            .filter(|a| a.state == dc_dserver::game::coop::AiState::Alive)
+            .filter(|a| {
+                (0..3).map(|k| (a.pos[k] - t.pos[k]).powi(2)).sum::<f32>() < 1500.0f32.powi(2)
+            })
+            .map(|a| a.slot)
+            .collect();
+        for s in near {
+            server.harness_kill_ai(now, s, pid);
+        }
+        if peers[0].client.life_state() != 1 {
+            let until = now + 15_000;
+            while now < until && peers[0].client.life_state() != 1 {
+                step(&mut server, &mut peers, now);
+                now += 5;
+            }
+        }
+        if boxes_after >= 30 {
+            break;
+        }
+    }
+    let at3 = after.expect("the third checkpoint was reached");
+    let later = spawns(&server);
+    println!("spawns at the third checkpoint {at3}, {boxes_after} boxes later {later}");
+    assert!(
+        boxes_after >= 30,
+        "{boxes_after} boxes after the checkpoint"
+    );
+    assert!(
+        later >= at3 + 8,
+        "the last area's spawns appear: {at3} -> {later}"
+    );
 }

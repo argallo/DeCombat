@@ -7,7 +7,7 @@
 
 use dc_sim::{
     bits, CollModel, Collider, CollisionWorld, Commands, Container, ContainerVolumes, ConvexPoly,
-    FixedStep, MovementParams, PlayerState, TickInput, SURF_SOLID, V3,
+    FixedStep, GaugeMode, MovementParams, PlayerState, SpeedMods, TickInput, SURF_SOLID, V3,
 };
 
 use std::sync::Arc;
@@ -36,6 +36,62 @@ pub const LADDER_LEVEL_BAND: f32 = 40.0;
 /// "Standing on nothing" value of the trailer's standing ids (-1 / -1).
 // SPEC: MOVEMENT_2009.md §12.2 ([standing:u64] the standing ids or -1 / -1)
 pub const STANDING_NONE: u64 = u64::MAX;
+
+/// BOT-149: the equipment slots and item number bases of the worn gear whose speed rows count (head gear `Hair<n>`,
+/// goggles `Goggle<n>`, backpack `Backpack<n>`; the row is the item number less the base), as the client reads its
+/// own (CLI-1137); no head item = head-gear row 0 (the client's start look).
+// SPEC: PROTOCOL_2009.md §3.3 (0x323 +0x12 item number per equipment slot), §4.5 (item number ranges 4000 / 5000 /
+// 7000)
+pub const SLOT_HEAD: usize = 4;
+pub const SLOT_GOGGLE: usize = 6;
+pub const SLOT_BACKPACK: usize = 9;
+const GEAR_BASES: [(usize, i32); 3] = [
+    (SLOT_HEAD, 4000),
+    (SLOT_GOGGLE, 5000),
+    (SLOT_BACKPACK, 7000),
+];
+
+/// BOT-149: the head-gear, backpack and goggle rows of an equipment list (0x323 item numbers per slot, -1 empty).
+pub fn gear_rows(equipped: &[i32]) -> (Option<u32>, Option<u32>, Option<u32>) {
+    let row = |slot: usize| -> Option<u32> {
+        let base = GEAR_BASES.iter().find(|(s, _)| *s == slot)?.1;
+        let n = *equipped.get(slot)?;
+        (n >= base && n < base + 1000).then(|| (n - base) as u32)
+    };
+    (
+        Some(row(SLOT_HEAD).unwrap_or(0)),
+        row(SLOT_BACKPACK),
+        row(SLOT_GOGGLE),
+    )
+}
+
+/// BOT-149: the speed modifiers of a bot's own loadout from the ROM rows, as the client's mover takes them
+/// (MOVEMENT_2009.md §7, `dc_sim::SpeedTable::mods`): the weapon in hand (`weapon`: the last held, CLI-341; a pistol
+/// or a knife has its own lower `MovePenalty`), body row 0 (the default character, DSV-24 / CLI-340), the worn gear
+/// (`gear` = [`gear_rows`], CLI-1137) and the Quarantine override row (DSV-320, BOT-143); `slowed`: an infected body's
+/// hit slow runs (BOT-143 / CLI-1760). Every stance and the sprint scale by `1 - penalty`.
+// DC-DEFAULT: BOT-149 (proposed) body row 0 (the bots' lobby lines name no character)
+pub fn loadout_mods(
+    rows: &dc_sim::SpeedTable,
+    weapon: Option<u16>,
+    gear: (Option<u32>, Option<u32>, Option<u32>),
+    override_row: Option<u32>,
+    slowed: bool,
+) -> SpeedMods {
+    let mut m = rows.mods(&dc_sim::Loadout {
+        weapon,
+        body: Some(0),
+        body_override: override_row,
+        head: gear.0,
+        backpack: gear.1,
+        goggles: gear.2,
+        ..dc_sim::Loadout::default()
+    });
+    if slowed {
+        m.penalty = 1.0 - (1.0 - m.penalty.clamp(-1.0, 1.0)) * crate::qrt::SHOT_SLOW_FACTOR;
+    }
+    m
+}
 
 /// What the body does.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,6 +129,16 @@ pub struct Body {
     /// to the look yaw); `None` = none. Applied only while the way-finder does not steer (a walk keeps its line),
     /// the jump also while walking.
     pub evade: Option<crate::evade::Move>,
+    /// BOT-128: the walk along `steer` is a step back (the bot faces the other way: back key, back speed).
+    pub backing: bool,
+    /// BOT-143: the speed modifiers of the bot's own loadout (the ROM speed rows: held weapon, body row, the
+    /// Quarantine override row), as the client's mover uses them; the neutral values outside Quarantine.
+    pub mods: SpeedMods,
+    /// BOT-143: the sprint key is held while the body walks forward (the gauge and the server's permission decide
+    /// whether it sprints).
+    pub sprint: bool,
+    /// The server's sprint permission (the last `GS_SPRINT_ALLOWED`).
+    pub sprint_allowed: bool,
     touched: Vec<Container>,
 }
 
@@ -138,6 +204,10 @@ impl Body {
             ladders: None,
             goal_y: None,
             evade: None,
+            backing: false,
+            mods: SpeedMods::default(),
+            sprint: false,
+            sprint_allowed: false,
             touched: Vec::new(),
         }
     }
@@ -162,20 +232,27 @@ impl Body {
         let ev = self.evading();
         // the strafe, the step back and the crouch hold the ground while nothing steers; the jump goes either way
         let side = ev.filter(|_| self.steer.is_none());
+        let back = walk && self.backing && self.steer.is_some();
         TickInput {
             commands: Commands {
-                forward: walk,
-                backward: side.is_some_and(|e| e.back),
+                forward: walk && !back,
+                backward: back || side.is_some_and(|e| e.back),
                 left: side.is_some_and(|e| e.strafe < 0 && !e.back),
                 right: side.is_some_and(|e| e.strafe > 0 && !e.back),
                 jump: ev.is_some_and(|e| e.jump),
                 crouch: side.is_some_and(|e| e.crouch),
                 // the way-finder runs, as players do (control word RUN 0x200, OBSERVED tdm4 0xa01 while walking)
                 run: (self.kind == MotionKind::Hunt && self.steer.is_some()) || side.is_some(),
+                // BOT-143: the sprint key with a forward walk only
+                sprint: self.sprint && walk && !back && self.kind == MotionKind::Hunt,
                 ..Commands::default()
             },
             yaw: match side {
                 Some(e) => e.yaw,
+                // a step back along the walk: the back key with the yaw turned round
+                None if back => self
+                    .steer
+                    .map_or(self.angles[1], |s| s + std::f32::consts::PI),
                 None => self.steer.unwrap_or(self.angles[1]),
             },
             pitch: if walk && self.state.on_ladder {
@@ -184,6 +261,8 @@ impl Body {
                 self.angles[0]
             },
             ctrl_state: 1,
+            mods: self.mods,
+            sprint_allowed: self.sprint_allowed,
             ..TickInput::default()
         }
     }
@@ -252,6 +331,20 @@ impl Body {
         self.state.on_ground
     }
 
+    /// BOT-143: the sprint gauge as (value, full) (`None`: no gauge rule) and what it did last step.
+    pub fn gauge(&self) -> (Option<(f32, i32)>, GaugeMode) {
+        let rates = self.mods.stamina;
+        (
+            self.state.stamina.level(rates).zip(rates.map(|r| r.max)),
+            self.state.stamina.mode,
+        )
+    }
+
+    /// BOT-143: the gauge starts full (a new life, a new round).
+    pub fn refill_gauge(&mut self) {
+        self.state.stamina.refill();
+    }
+
     /// The control word the movement used last (mover+0x24: RUN, ANY_MOVE, ...).
     pub fn controls(&self) -> u32 {
         self.state.controls
@@ -289,6 +382,106 @@ impl Body {
         b.pos()
     }
 
+    /// BOT-116 / BOT-134: the places the body passes in `secs` seconds of a move, simulated on a copy (the movement
+    /// code): walking along `steer` (`None`: no walk) with the evasive move `evade` (its jump on the first step only),
+    /// sampled `samples` times evenly (the last at the end). The danger checks look at every sample, so a move whose
+    /// way crosses a kill volume or a drop is no safe move even when it ends on a floor.
+    // DC-DEFAULT: BOT-134 (proposed)
+    pub fn probe_path(
+        &self,
+        steer: Option<f32>,
+        evade: Option<crate::evade::Move>,
+        secs: f32,
+        samples: usize,
+    ) -> Vec<[f32; 3]> {
+        let mut b = self.clone();
+        b.kind = MotionKind::Hunt;
+        b.frozen = false;
+        b.steer = steer;
+        b.evade = evade;
+        let dt_us = (1e6 / self.clock.hz().max(1) as f32).ceil() as u64;
+        let n = ((secs.max(0.0) * self.clock.hz() as f32).round() as usize).max(1);
+        let every = (n / samples.max(1)).max(1);
+        let mut out = Vec::with_capacity(samples + 1);
+        for i in 0..n {
+            b.advance(dt_us);
+            if let Some(e) = b.evade.as_mut() {
+                e.jump = false;
+            }
+            if (i + 1) % every == 0 || i + 1 == n {
+                out.push(b.pos());
+            }
+        }
+        out
+    }
+
+    /// BOT-159: the places the body passes in `secs` seconds walking along `steer`, jumping once when
+    /// [`Self::escape_jump_due`] says so (`jump`: none, at once, or where the walk is blocked), sampled `samples` times
+    /// evenly (the last at the end), as [`Self::probe_path`].
+    // DC-DEFAULT: BOT-159 (proposed)
+    pub fn probe_escape(
+        &self,
+        steer: f32,
+        jump: crate::evade::EscapeJump,
+        secs: f32,
+        samples: usize,
+    ) -> Vec<[f32; 3]> {
+        let mut b = self.clone();
+        b.kind = MotionKind::Hunt;
+        b.frozen = false;
+        b.steer = Some(steer);
+        b.evade = None;
+        let dt_us = (1e6 / self.clock.hz().max(1) as f32).ceil() as u64;
+        let n = ((secs.max(0.0) * self.clock.hz() as f32).round() as usize).max(1);
+        let every = (n / samples.max(1)).max(1);
+        let mut out = Vec::with_capacity(samples + 1);
+        let mut jumped = false;
+        let hz = self.clock.hz().max(1) as f32;
+        let back = ((crate::evade::ESCAPE_BLOCK_SECS * hz).round() as usize).max(1);
+        let mut seen: Vec<[f32; 3]> = Vec::with_capacity(n + 1);
+        seen.push(b.pos());
+        for i in 0..n {
+            let t = i as f32 / hz;
+            let p = b.pos();
+            let q = seen[seen.len().saturating_sub(back + 1)];
+            let speed = (p[0] - q[0]).hypot(p[2] - q[2]) / crate::evade::ESCAPE_BLOCK_SECS;
+            b.evade = (!jumped && b.escape_jump_due(jump, t, speed)).then(|| {
+                jumped = true;
+                crate::evade::Move {
+                    yaw: steer,
+                    strafe: 0,
+                    back: false,
+                    jump: true,
+                    crouch: false,
+                    note: None,
+                }
+            });
+            b.advance(dt_us);
+            seen.push(b.pos());
+            if (i + 1) % every == 0 || i + 1 == n {
+                out.push(b.pos());
+            }
+        }
+        out
+    }
+
+    /// BOT-159: whether the body walking the way off an island `t` seconds in jumps now: at once, or (where the walk
+    /// is blocked) on the ground after [`crate::evade::ESCAPE_BLOCK_SECS`] with a flat speed (`speed`, the way the
+    /// body made over the last [`crate::evade::ESCAPE_BLOCK_SECS`]) under [`crate::evade::ESCAPE_BLOCK_SPEED`]
+    /// (against a bar or a ledge face).
+    pub fn escape_jump_due(&self, jump: crate::evade::EscapeJump, t: f32, speed: f32) -> bool {
+        use crate::evade::EscapeJump;
+        match jump {
+            EscapeJump::No => false,
+            EscapeJump::Start => true,
+            EscapeJump::Blocked => {
+                t >= crate::evade::ESCAPE_BLOCK_SECS
+                    && self.state.on_ground
+                    && speed < crate::evade::ESCAPE_BLOCK_SPEED
+            }
+        }
+    }
+
     /// Current half extents of the body box.
     pub fn dims(&self) -> [f32; 3] {
         let d = self.state.dims;
@@ -304,7 +497,11 @@ impl Body {
     pub fn update(&self, time: f32) -> MoveReport {
         let mut control = self.state.controls;
         if !self.frozen && (self.kind == MotionKind::Circle || self.steer.is_some()) {
-            control |= bits::FWD;
+            control |= if self.backing && self.steer.is_some() {
+                bits::BACK
+            } else {
+                bits::FWD
+            };
         }
         // BOT-92: the evasive move's own control bits
         if let Some(e) = self.evading() {
@@ -378,6 +575,157 @@ mod tests {
         assert_eq!(b.update(0.0).control & bits::FWD, 0);
         b.frozen = false;
         assert!(b.update(0.0).control & bits::FWD != 0);
+    }
+
+    /// BOT-128: a body backing along its walk moves the walk's way with the back key (and not faster than a
+    /// forward walk).
+    #[test]
+    fn a_backing_body_walks_its_way_with_the_back_key() {
+        let walk = |backing: bool| {
+            let mut b = Body::new(
+                [0.0, 40.0, 0.0],
+                BOT_STAND_DIMS,
+                0.0,
+                MotionKind::Hunt,
+                60,
+                None,
+            );
+            for _ in 0..60 {
+                b.advance(1_000_000 / 60);
+            }
+            let start = b.pos();
+            b.steer = Some(0.0);
+            b.backing = backing;
+            for _ in 0..60 {
+                b.advance(1_000_000 / 60);
+            }
+            let p = b.pos();
+            let c = b.update(0.0).control;
+            ([p[0] - start[0], p[2] - start[2]], c)
+        };
+        let (fwd, cf) = walk(false);
+        let (back, cb) = walk(true);
+        assert!(cf & bits::FWD != 0 && cf & bits::BACK == 0);
+        assert!(cb & bits::BACK != 0 && cb & bits::FWD == 0);
+        let len = |v: [f32; 2]| v[0].hypot(v[1]);
+        assert!(len(back) > 50.0, "{fwd:?} {back:?}");
+        assert!(
+            back[0] * fwd[0] + back[1] * fwd[1] > 0.9 * len(back) * len(fwd),
+            "{fwd:?} {back:?}"
+        );
+        assert!(len(back) <= len(fwd) + 1.0, "{fwd:?} {back:?}");
+    }
+
+    /// BOT-143: an infected body (the override row's MovePenalty -0.18) walking forward outruns a human backing away
+    /// with neutral modifiers, and with the sprint key (and the server's permission) by far; without the permission
+    /// the sprint key runs at run speed. Units per second over 2 s after a 1 s run-up.
+    #[test]
+    fn an_infected_body_outruns_a_backing_human_and_sprints_faster() {
+        let speed = |mods: SpeedMods, backing: bool, sprint: bool, allowed: bool| -> f32 {
+            let mut b = Body::new(
+                [0.0, 40.0, 0.0],
+                BOT_STAND_DIMS,
+                0.0,
+                MotionKind::Hunt,
+                60,
+                None,
+            );
+            for _ in 0..30 {
+                b.advance(1_000_000 / 60);
+            }
+            b.mods = mods;
+            b.steer = Some(0.0);
+            b.backing = backing;
+            b.sprint = sprint;
+            b.sprint_allowed = allowed;
+            for _ in 0..60 {
+                b.advance(1_000_000 / 60);
+            }
+            let a = b.pos();
+            for _ in 0..120 {
+                b.advance(1_000_000 / 60);
+            }
+            let p = b.pos();
+            (p[0] - a[0]).hypot(p[2] - a[2]) / 2.0
+        };
+        let infected = SpeedMods {
+            penalty: -0.18,
+            ..SpeedMods::default()
+        };
+        let human = speed(SpeedMods::default(), true, false, true);
+        let run = speed(infected, false, false, true);
+        let sprint = speed(infected, false, true, true);
+        let refused = speed(infected, false, true, false);
+        assert!(
+            run >= 1.15 * human,
+            "infected {run} u/s vs backing {human} u/s"
+        );
+        assert!(sprint >= 1.3 * run, "sprint {sprint} u/s vs run {run} u/s");
+        assert!((refused - run).abs() < 2.0, "{refused} vs {run}");
+    }
+
+    /// Units per second a body walks forward with `mods` (2 s after a 1 s run-up, 60 Hz, flat floor).
+    fn walk_speed(mods: SpeedMods) -> f32 {
+        let mut b = Body::new(
+            [0.0, 40.0, 0.0],
+            BOT_STAND_DIMS,
+            0.0,
+            MotionKind::Hunt,
+            60,
+            None,
+        );
+        b.mods = mods;
+        b.steer = Some(0.0);
+        for _ in 0..60 {
+            b.advance(1_000_000 / 60);
+        }
+        let a = b.pos();
+        for _ in 0..120 {
+            b.advance(1_000_000 / 60);
+        }
+        let p = b.pos();
+        (p[0] - a[0]).hypot(p[2] - a[2]) / 2.0
+    }
+
+    /// BOT-149: the bots' gear rows come from the 0x323 slots (head 4000+, goggles 5000+, backpack 7000+; no head
+    /// item = head row 0).
+    #[test]
+    fn the_gear_rows_come_from_the_equipment_slots() {
+        let eq = [20, 1, 0, 7, -1, -1, -1, 2000, -1, 7001, -1, -1, -1, -1, -1];
+        assert_eq!(gear_rows(&eq), (Some(0), Some(1), None));
+        let eq = [20, 1, 0, 7, 4003, -1, 5002, 2000, -1, -1];
+        assert_eq!(gear_rows(&eq), (Some(3), None, Some(2)));
+        assert_eq!(gear_rows(&[]), (Some(0), None, None));
+    }
+
+    /// ROM-gated (skipped without CA_ROM), BOT-149: with the bots' lobby loadout (rifle 20, pistol 1, knife 0,
+    /// backpack 7001) a bot walks slower than the neutral body with the rifle in hand, faster with the pistol and
+    /// fastest with the knife, at `(1 - penalty)` of the neutral speed.
+    #[test]
+    fn rom_a_rifle_bot_walks_slower_than_with_its_pistol_or_knife() {
+        let rom = dc_rez::dc_rom::rom_or_skip!();
+        let rows = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
+        let eq = [20, 1, 0, 7, -1, -1, -1, 2000, -1, 7001, -1, -1, -1, -1, -1];
+        let gear = gear_rows(&eq);
+        let neutral = walk_speed(SpeedMods::default());
+        let speed = |w: u16| {
+            let m = loadout_mods(&rows, Some(w), gear, None, false);
+            let v = walk_speed(m);
+            eprintln!(
+                "weapon {w}: penalty {} -> {v:.1} u/s (neutral {neutral:.1})",
+                m.penalty
+            );
+            assert!(
+                (v - neutral * (1.0 - m.penalty)).abs() < 2.0,
+                "{w}: {v} vs {neutral} x (1 - {})",
+                m.penalty
+            );
+            v
+        };
+        let (rifle, pistol, knife) = (speed(20), speed(1), speed(0));
+        assert!(rifle < neutral - 30.0, "rifle {rifle} vs neutral {neutral}");
+        assert!(pistol > rifle + 5.0, "pistol {pistol} vs rifle {rifle}");
+        assert!(knife >= pistol, "knife {knife} vs pistol {pistol}");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! are dropped (§4: nothing is buffered).
 
 use crate::config::HostConfig;
+use crate::content::Contents;
 use crate::log;
 use crate::packs::Packs;
 use crate::ports;
@@ -68,6 +69,8 @@ pub struct Games {
     hub: Arc<Hub>,
     /// MAP-84: the map packs on this machine.
     pub packs: Packs,
+    /// LG-431: the weapon content documents on this machine.
+    pub contents: Contents,
     /// HA-2: the server build the lobby offers, on its way to tools/host/update.sh.
     pub incoming: crate::update::Incoming,
     map: Mutex<BTreeMap<u64, Game>>,
@@ -77,11 +80,13 @@ pub struct Games {
 impl Games {
     pub fn new(cfg: HostConfig, hub: Arc<Hub>) -> Arc<Games> {
         let packs = Packs::new(&cfg.log_dir);
+        let contents = Contents::new(&cfg.log_dir);
         let incoming = crate::update::Incoming::new(&cfg.log_dir);
         Arc::new(Games {
             cfg,
             hub,
             packs,
+            contents,
             incoming,
             map: Mutex::new(BTreeMap::new()),
             serial: AtomicU64::new(1),
@@ -170,6 +175,14 @@ impl Games {
             let file = c.log_dir.join(format!("content-{hash}.json"));
             std::fs::write(&file, &req.content)
                 .map_err(|e| format!("content {}: {e}", file.display()))?;
+            argv.push("-content".into());
+            argv.push(file.into_os_string());
+        } else if !req.content_hash.is_empty() {
+            // LG-431: `failed <gid> content <hash>: ...` tells the lobby it does not hold the document
+            let file = self
+                .contents
+                .path(&req.content_hash)
+                .map_err(|e| format!("content {}: {e}", req.content_hash))?;
             argv.push("-content".into());
             argv.push(file.into_os_string());
         }

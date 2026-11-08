@@ -1268,7 +1268,8 @@ token = \"0123456789abcdef01234567\"
     }
 
     // docs/VPS.md: the VPS unit's command line with examples/server-vps.toml resolves to the documented setup, and
-    // without the advertised address from decombat.env the --public start is refused (LG-31)
+    // without the advertised address from decombat.env the --public start is refused (LG-31); open beta, no invite
+    // code (LG-433)
     #[test]
     fn vps_unit_and_example_config_resolve_to_the_public_setup() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1290,7 +1291,7 @@ token = \"0123456789abcdef01234567\"
         };
         assert_eq!(o.bind, "0.0.0.0");
         assert!(
-            o.public && o.pw_check && !o.auto_create && o.register && !o.register_open && o.dserver
+            o.public && o.pw_check && !o.auto_create && o.register && o.register_open && o.dserver
         );
         assert_eq!(
             (o.lobbyip.as_str(), o.gameip.as_str()),

@@ -254,6 +254,7 @@ pub fn expected_set(s: &ServerEntry) -> crate::mods::ServerModSet {
                 description: None,
                 homepage: None,
                 screenshots: Vec::new(),
+                tags: Vec::new(),
                 commands: Vec::new(),
                 preview: None,
             })

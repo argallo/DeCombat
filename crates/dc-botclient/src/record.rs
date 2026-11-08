@@ -38,6 +38,8 @@ struct Inner {
     log: Option<LogWriter>,
     /// Log lines kept in memory as well (tests read them back), bounded.
     memory: Option<Vec<Value>>,
+    /// BOT-157: per-message transport records (`tcp_open`, `tcp_in`, `tcp_out`) go to the event log only when set.
+    transport: bool,
 }
 
 /// Shared capture + event-log sink.
@@ -72,8 +74,24 @@ pub fn head(b: &[u8]) -> String {
 impl Recorder {
     /// A recorder that writes the capture to `capture` and the event log to `log` (each optional).
     pub fn new(capture: Option<&Path>, log: Option<&Path>, bot: &str) -> io::Result<Recorder> {
+        Self::with_log_max(capture, log, bot, 0)
+    }
+
+    /// [`Recorder::new`] whose event log is moved to `<log>.1` and started over at `log_max` bytes (0: unbounded).
+    pub fn with_log_max(
+        capture: Option<&Path>,
+        log: Option<&Path>,
+        bot: &str,
+        log_max: u64,
+    ) -> io::Result<Recorder> {
         let open = |p: Option<&Path>| -> io::Result<Option<LogWriter>> {
             p.map(LogWriter::create).transpose()
+        };
+        let open_log = |p: Option<&Path>| -> io::Result<Option<LogWriter>> {
+            match (p, log_max) {
+                (Some(p), m) if m > 0 => LogWriter::create_rotating(p, m).map(Some),
+                _ => open(p),
+            }
         };
         let r = Recorder {
             inner: Arc::new(Mutex::new(Inner {
@@ -81,8 +99,9 @@ impl Recorder {
                 seq: 0,
                 next_conn: 0,
                 capture: open(capture)?,
-                log: open(log)?,
+                log: open_log(log)?,
                 memory: None,
+                transport: false,
             })),
             bot: bot.to_string(),
         };
@@ -100,6 +119,7 @@ impl Recorder {
                 capture: None,
                 log: None,
                 memory: None,
+                transport: false,
             })),
             bot: bot.to_string(),
         }
@@ -264,6 +284,20 @@ impl Recorder {
         self.capture_line(m);
     }
 
+    /// Turns the per-message transport records on (`--log-transport`); off by default.
+    pub fn set_log_transport(&self, on: bool) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.transport = on;
+        }
+    }
+
+    /// [`Recorder::event`] for a per-message transport record: dropped unless [`Recorder::set_log_transport`].
+    pub fn transport_event(&self, kind: &str, fields: Value) {
+        if self.inner.lock().is_ok_and(|g| g.transport) {
+            self.event(kind, fields);
+        }
+    }
+
     /// One event-log line: `{"t", "bot", "ev": kind, ...fields}`.
     pub fn event(&self, kind: &str, fields: Value) {
         let Ok(mut g) = self.inner.lock() else {
@@ -323,6 +357,17 @@ impl Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_records_are_off_unless_asked_for() {
+        let r = Recorder::null("Bot1").keep_in_memory();
+        r.transport_event("tcp_in", json!({}));
+        r.event("link_stats", json!({}));
+        assert_eq!(r.memory().len(), 1);
+        r.set_log_transport(true);
+        r.transport_event("tcp_in", json!({}));
+        assert_eq!(r.memory().len(), 2);
+    }
 
     #[test]
     fn capture_lines_follow_format_1() {

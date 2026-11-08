@@ -457,6 +457,10 @@ fn an_agent_says_which_map_packs_it_holds_and_a_failed_pack_is_forgotten() {
     assert!(hello("content=1 packs=1").takes_packs);
     assert!(!hello("content=1").takes_packs);
     assert!(!hello("packs=0").takes_packs);
+    // LG-431: content lines are their own word, not implied by `content=1`
+    assert!(hello("content=1 contentlines=1 packs=1").takes_content_lines);
+    assert!(!hello("content=1 packs=1").takes_content_lines);
+    assert!(!hello("contentlines=0").takes_content_lines);
     let sha = "ab".repeat(32);
     assert_eq!(
         parse_line(&format!("have {sha}")),
@@ -480,6 +484,18 @@ fn an_agent_says_which_map_packs_it_holds_and_a_failed_pack_is_forgotten() {
         "failed 99 pack {sha}: this agent does not hold it"
     ));
     wait_until(&shared, "the failed line", |c| {
+        c.hosts
+            .online
+            .get("us-west")
+            .is_some_and(|x| x.packs.is_empty())
+    });
+    // LG-431: a content document is told and forgotten the same way
+    a.send(&format!("have {sha}"));
+    wait_until(&shared, "the have line again", holds);
+    a.send(&format!(
+        "failed 98 content {sha}: this agent does not hold it"
+    ));
+    wait_until(&shared, "the failed content line", |c| {
         c.hosts
             .online
             .get("us-west")

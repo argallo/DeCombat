@@ -23,6 +23,8 @@ pub struct CachedMod {
     pub author: String,
     pub description: String,
     pub capabilities: Vec<String>,
+    /// CLI-1943: the manifest's tags.
+    pub tags: Vec<String>,
     /// MOD-27: the manifest's command help.
     pub commands: Vec<dc_mod_lua::ModCommand>,
     /// The first screenshot's file inside the unpacked folder, when the manifest names one.
@@ -60,6 +62,7 @@ pub fn list_cache(paths: &ModPaths) -> Vec<CachedMod> {
                     author: m.author.clone(),
                     description: m.description.clone(),
                     capabilities: m.capabilities.clone(),
+                    tags: m.tags.clone(),
                     commands: m.commands.clone(),
                     shot: m
                         .screenshots
@@ -76,6 +79,7 @@ pub fn list_cache(paths: &ModPaths) -> Vec<CachedMod> {
                     author: String::new(),
                     description: "Not unpacked yet: the next join that needs it verifies and unpacks it.".into(),
                     capabilities: Vec::new(),
+                    tags: Vec::new(),
                     commands: Vec::new(),
                     shot: None,
                 },

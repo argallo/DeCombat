@@ -210,7 +210,12 @@ fn real_main(args: &[String]) -> Result<i32, String> {
         matrix: cmd.clone(),
         bins,
         rom,
-        out: out.unwrap_or_else(dc_netlab::default_out),
+        // The lobby starts each game server in the per-room `dserver` folder and hands it this path for its log,
+        // so a relative --out would be resolved against that folder and the log would go missing: make it absolute.
+        out: {
+            let o = out.unwrap_or_else(dc_netlab::default_out);
+            std::path::absolute(&o).unwrap_or(o)
+        },
         parallel,
         seed,
         dserver_args,

@@ -371,7 +371,8 @@ pub fn status(s: &Studio) -> Value {
         "background": s.background,
         "presets": patterns::PRESETS.iter().map(|p| p.0).collect::<Vec<_>>(),
         "backgrounds": BACKGROUNDS.iter().map(|b| b.0).collect::<Vec<_>>(),
-        "examples": pack::EXAMPLES.iter().map(|e| e.0).collect::<Vec<_>>(),
+        "examples": pack::examples().into_iter().map(|e| e.0).collect::<Vec<_>>(),
+        "examples_dir": pack::examples_dir().map(|d| d.display().to_string()),
     })
 }
 

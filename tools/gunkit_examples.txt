@@ -1,0 +1,8 @@
+# The example camos the GunKit package ships next to the program (docs/PACKS_FROM_REPOSITORIES.md section 4, VAR-13):
+# one line per pack, "id version sha256 of <id>-<version>.zip", as the mods repository's release publishes them.
+# tools/gunkit_examples.py fetches and checks them; the packaging scripts take the folder it fills with --examples.
+variant_candy_g36e 0.1.1 b643f95807365094e98bbc485ed3819be2a6422ca6ceb130b4b4d1b679d314d2
+variant_galaxy_g36e 0.1.2 61192887593c95e3589b9eb9a5482a0674a645cc9c3f52c0dc49b53d99e96cc6
+variant_tiger_l96a1 0.1.1 772190d229b2b258d15dfcdaab2bb15cc0e30b9bbea1948c535d818eed955111
+variant_toxic_l96a1 0.1.2 93712d3ecec6478eb8bedc74c563a5ec50a9ea2e31d7b210f6191d0ac0d966f6
+variant_prism_scar 0.2.1 1b7091f27ce0af593d631a1b682b669b702a18f2f3f06bf306467c3888d5e410

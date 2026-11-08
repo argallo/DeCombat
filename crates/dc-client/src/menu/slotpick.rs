@@ -51,23 +51,28 @@ pub const DESC_WRAP: [i32; 2] = [346, 318];
 /// The first backpack equipment slot.
 // EVIDENCE: cshell+0x14baa0 (slot = +0x55a4 + 10)
 pub const FIRST_PACK_SLOT: u32 = 10;
-/// The rows' slot word (string 0x399) after the letters A..D.
-// EVIDENCE: cshell+0x13fed0 (rows "%s %s": the letters (wide literals VA 0x374e3e84 / 80 / 7c / 78, "A".."D"; for a
-// character of type 1 "S1".."S4" at VA 0x374e3e70 / 68 / 60 / 58) and string 0x399; slot count % 5 rows)
-// DC-DEFAULT: CLI-772 (proposed) the letters A..D for every character (the specialist form S1..S4 by the shell's
-// character type, cshell+0x3254d0, is not ported)
+/// The rows' slot word (string 0x399) after the letters A..D, or S1..S4 while the slots are a specialist's special
+/// slots (the slot kind 1, CLI-772 amendment).
+// EVIDENCE: cshell+0x13fed0 (rows "%s %s": the letters (wide literals VA 0x374e3e84 / 80 / 7c / 78, "A".."D"; for the
+// slot kind 1 (cshell+0x2254d0) "S1".."S4" at VA 0x374e3e70 / 68 / 60 / 58) and string 0x399; slot count % 5 rows)
 pub const SLOT_WORD: i32 = 0x399;
 pub const LETTERS: [&str; 4] = ["A", "B", "C", "D"];
+pub const SPECIAL_LETTERS: [&str; 4] = ["S1", "S2", "S3", "S4"];
+/// The special-item check's boxes (titled Notice 0x371): a special item while the slots are not special (0x189e), a
+/// plain item while they are (0x189f).
+// EVIDENCE: cshell+0x148020 (the item's EquipBackpackType against the slot kind: nonzero -> 0x189e, zero -> 0x189f)
+pub const NEEDS_SPECIALIST: (i32, i32) = (0x189e, 0x371);
+pub const NOT_SPECIAL: (i32, i32) = (0x189f, 0x371);
 /// The refusal of the backpack check: the item's own slot is empty (0x39b titled 0x39a).
 pub const NOT_EQUIPPED: (i32, i32) = (0x39b, 0x39a);
 /// Nothing selected (0x3d2, Notice).
 pub const NONE_SELECTED: (i32, i32) = (0x3d2, 0x371);
 
-/// The weapon slots of the equipped backpack (slot 9; 0 without one).
+/// The weapon slots of the equipped backpack (slot 9; 0 without one), or a worn specialist's special slots.
 // EVIDENCE: cshell+0x148020 (shell +0x1b4 +0x2dc below 1 -> no backpack choice), cshell+0x227240 (the count from the
-// equipped backpack's item row)
+// equipped backpack's item row, a specialist's AddSlot and a slot license)
 pub fn pack_slots(store: &Store, wares: &Wares) -> i32 {
-    wares.backpack_slots(store.equipped[super::pane::PACK_SLOT_NO])
+    wares.pack_form(store).slots
 }
 
 /// The melee weapon slot: the backpack takes no melee weapon (CLI-974).
@@ -81,19 +86,29 @@ pub const MELEE_SLOT: u32 = 2;
 // EVIDENCE: cshell+0x148020 (no slot -> 0 without a box; nothing selected -> 0x3d2; the item's slot by type
 // (cshell+0x359f00) 0..3 must already hold an item, else box 0x39b titled 0x39a; slot 3 also asks cshell+0x146640;
 // other types -> 0x39b)
-// DC-DEFAULT: CLI-772 (proposed) the special-item check (0x189e / 0x189f against the shell's character type) and the
-// slot-3 extra check cshell+0x146640 are not ported
+// EVIDENCE: cshell+0x148020 (after the selection: the item's EquipBackpackType (record +0x24) must be the shell's slot
+// kind (cshell+0x2254d0), else box 0x189e (a special item) / 0x189f (a plain one) titled 0x371)
+// DC-DEFAULT: CLI-772 (proposed) the slot-3 extra check cshell+0x146640 is not ported
 pub fn pack_check(
     store: &Store,
     wares: &Wares,
     item_no: Option<u32>,
 ) -> Result<(), Option<(i32, i32)>> {
-    if pack_slots(store, wares) < 1 {
+    let form = wares.pack_form(store);
+    if form.slots < 1 {
         return Err(None);
     }
     let Some(n) = item_no else {
         return Err(Some(NONE_SELECTED));
     };
+    let kind = wares.pack_type(n as i32);
+    if kind != form.kind {
+        return Err(Some(if kind != 0 {
+            NEEDS_SPECIALIST
+        } else {
+            NOT_SPECIAL
+        }));
+    }
     match own_slot(wares, n) {
         Some(MELEE_SLOT) => Err(None),
         Some(s @ 0..=3) if store.equipped[s as usize] != -1 => Ok(()),
@@ -101,11 +116,18 @@ pub fn pack_check(
     }
 }
 
-/// The rows of the slot list.
-pub fn pack_rows(cat: &Catalog, slots: i32) -> Vec<String> {
+/// The rows of the slot list of the slots' form (the letters S1..S4 for special slots).
+pub fn pack_rows(cat: &Catalog, form: dc_bute::PackForm) -> Vec<String> {
     let word = cat.text(SLOT_WORD);
-    (0..(slots.rem_euclid(5) as usize).min(LETTERS.len()))
-        .map(|k| format!("{} {}", LETTERS[k], word))
+    let letters = if form.special() {
+        SPECIAL_LETTERS
+    } else {
+        LETTERS
+    };
+    letters
+        .iter()
+        .take(form.rows())
+        .map(|l| format!("{l} {word}"))
         .collect()
 }
 
@@ -117,6 +139,8 @@ pub struct SlotPick {
     pub item: u32,
     /// Window 7: the backpack is chosen (mode 1) instead of the item's own slot.
     pub to_pack: bool,
+    /// The item sits in backpack slots only (`EquipOnlyBackpack`): window 7 keeps the backpack mode.
+    pub pack_only: bool,
     pub rows: Vec<String>,
     pub row: usize,
     pub drop: Option<Dropdown>,
@@ -138,7 +162,8 @@ impl SlotPick {
             uid,
             item,
             to_pack: window == PACK_WINDOW,
-            rows: pack_rows(cat, pack_slots(store, wares)),
+            pack_only: wares.pack_only(item as i32),
+            rows: pack_rows(cat, wares.pack_form(store)),
             row: 0,
             drop: None,
         };
@@ -169,8 +194,9 @@ impl SlotPick {
 
     /// Window 7's mode: the own slot (field hidden) or the backpack (field shown); the check buttons follow.
     // EVIDENCE: cshell+0x1402f0 (command 9 / 10: check 9 on / off, the field image 0, the arrow 1 and text 8 hidden /
-    // shown)
+    // shown; command 9 for an EquipOnlyBackpack item (cshell+0x35adc0) keeps the backpack)
     pub fn set_mode(&mut self, sheet: &mut Sheet, to_pack: bool) {
+        let to_pack = to_pack || self.pack_only;
         self.to_pack = to_pack;
         self.drop = None;
         let w = self.window;
@@ -252,6 +278,7 @@ mod tests {
             uid: 5,
             item: 4001,
             to_pack: true,
+            pack_only: false,
             rows: vec!["A".into(), "B".into()],
             row: 1,
             drop: None,

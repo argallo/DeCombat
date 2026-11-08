@@ -1,5 +1,5 @@
-//! Search and Destroy for a hunting bot (mode classes 2 / 3): the plant points (type-0x37 zones of kind 5, `z_sub`
-//! 1) of the object stream, whether the bot carries the bomb (server 0x56 names its character), the walk goal (the
+//! Search and Destroy for a hunting bot (mode classes 2 / 3): the plant points (type-0x37 zones of kind 5, `z_sub` 1)
+//! of the object stream, whether the bot carries the bomb (server 0x56 names its character), the walk goal (the
 //! nearest plant point while it carries the bomb and nothing is planted) and the hold to plant there
 //! (`UP_USE_HOLD` 0xd8 phase 1, held until the server's 0x51). A DeCombat bot behaviour, not a 2009 rule.
 // SPEC: GAME_MODES_2009.md §4.3 (zone record order), §4.5 (hold to use), §5.2; GAME_MESSAGES_2009_C2S.md §7.1
@@ -19,6 +19,12 @@ pub const UP_USE_HOLD: u8 = 0xd8;
 /// The bot starts its hold this close to a plant point.
 // DC-DEFAULT: BOT-70 (proposed) 48 units (the sites are at least 96 units round their point, DSV-200)
 pub const PLANT_REACH: f32 = 48.0;
+/// BOT-136: ... and at most this far up or down from it (the server plants only inside the site's zone).
+// DC-DEFAULT: BOT-136 (proposed) 80 units
+pub const PLANT_RISE: f32 = 80.0;
+/// BOT-136: the bomb timer when the 0x51 names none (the server's default, GMD-9).
+// DC-DEFAULT: BOT-136 (proposed) 40 s
+pub const BOMB_SECS_DEFAULT: u32 = 40;
 /// A hold that brought no 0x51 is let go and tried again after this time.
 // DC-DEFAULT: BOT-70 (proposed) 6 s (the plant takes 4 s, GMD-6)
 pub const HOLD_RETRY_MS: u32 = 6000;
@@ -134,8 +140,30 @@ pub struct BombRun {
     pub round: u32,
     /// BOT-103: the sites found out of reach this round.
     pub blocked: Vec<[f32; 3]>,
-    /// BOT-103: the site goal walked to, the best distance to it so far and when it was reached.
-    progress: Option<([f32; 3], f32, u32)>,
+    /// BOT-103: the site goal walked to and the bot's progress to it.
+    progress: Option<SiteProgress>,
+    /// BOT-136: when the planted bomb goes off (the 0x51's timer from its arrival).
+    pub fuse_end: Option<u32>,
+}
+
+/// BOT-103 / BOT-129: the walk to one site: the best straight-line and way distances so far, when one of them last
+/// got [`STALL_GAIN`] shorter, and the time of the last step (a paused clock moves on by the pause).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SiteProgress {
+    goal: [f32; 3],
+    best_flat: f32,
+    best_way: f32,
+    at: u32,
+    last: u32,
+}
+
+/// How a walk step counts for the BOT-103 stall clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteClock {
+    /// The bot walks (or waits behind a teammate still on its way, BOT-129): the clock runs.
+    Runs,
+    /// The bot waits for a reason of its own (its start delay, behind a teammate at the site): the clock stops.
+    Stops,
 }
 
 impl BombRun {
@@ -177,25 +205,53 @@ impl BombRun {
         })
     }
 
-    /// BOT-103: one walk step toward a site goal (`None`: not walking to a site). Returns the goal when it just
-    /// counted as out of reach (it is added to [`BombRun::blocked`]).
-    pub fn walk(&mut self, now: u32, goal: Option<[f32; 3]>, pos: [f32; 3]) -> Option<[f32; 3]> {
+    /// BOT-103: one walk step toward a site goal (`None`: not walking to a site). `way_left` is the length of the
+    /// bot's planned way to it when the way reaches it (BOT-129: progress along a detour that leads away from the
+    /// site at first counts; before, only the straight line did). Returns the goal when it just counted as out of
+    /// reach (it is added to [`BombRun::blocked`]).
+    pub fn walk(
+        &mut self,
+        now: u32,
+        goal: Option<[f32; 3]>,
+        pos: [f32; 3],
+        way_left: Option<f32>,
+        clock: SiteClock,
+    ) -> Option<[f32; 3]> {
         let Some(g) = goal else {
             self.progress = None;
             return None;
         };
         let d = ((g[0] - pos[0]).powi(2) + (g[2] - pos[2]).powi(2)).sqrt();
-        match self.progress {
-            Some((pg, best, at)) if (pg[0] - g[0]).abs() < 1.0 && (pg[2] - g[2]).abs() < 1.0 => {
-                if d < best - STALL_GAIN {
-                    self.progress = Some((g, d, now));
-                } else if now.wrapping_sub(at) >= STALL_MS {
+        let way = way_left.unwrap_or(f32::INFINITY);
+        match self.progress.as_mut() {
+            Some(p) if (p.goal[0] - g[0]).abs() < 1.0 && (p.goal[2] - g[2]).abs() < 1.0 => {
+                let step = now.wrapping_sub(p.last);
+                p.last = now;
+                if clock == SiteClock::Stops {
+                    p.at = p.at.wrapping_add(step);
+                    return None;
+                }
+                let closer = d < p.best_flat - STALL_GAIN;
+                let along = way < p.best_way - STALL_GAIN;
+                if closer || along {
+                    p.best_flat = p.best_flat.min(d);
+                    p.best_way = p.best_way.min(way);
+                    p.at = now;
+                } else if now.wrapping_sub(p.at) >= STALL_MS {
                     self.progress = None;
                     self.blocked.push(g);
                     return Some(g);
                 }
             }
-            _ => self.progress = Some((g, d, now)),
+            _ => {
+                self.progress = Some(SiteProgress {
+                    goal: g,
+                    best_flat: d,
+                    best_way: way,
+                    at: now,
+                    last: now,
+                })
+            }
         }
         None
     }
@@ -292,6 +348,50 @@ mod tests {
         b.round = 3;
         b.reset();
         assert_eq!((b.round, b.hold, b.planted), (3, None, false));
+    }
+
+    /// BOT-103 / BOT-129: a site the bot gets no closer to in 10 s is out of reach; a way that gets shorter is
+    /// progress while the straight line grows (a detour); a stopped clock does not count the wait.
+    #[test]
+    fn a_site_stalls_unless_the_way_or_the_line_gets_shorter() {
+        let site = [1000.0, 0.0, 0.0];
+        let mut b = BombRun::default();
+        let at = [0.0, 0.0, 0.0];
+        assert_eq!(b.walk(0, Some(site), at, None, SiteClock::Runs), None);
+        assert_eq!(
+            b.walk(STALL_MS - 1, Some(site), at, None, SiteClock::Runs),
+            None
+        );
+        assert_eq!(
+            b.walk(STALL_MS, Some(site), at, None, SiteClock::Runs),
+            Some(site)
+        );
+        assert_eq!(b.blocked, vec![site]);
+        // a detour: the line grows, the way left shrinks 100 units a second
+        let mut b = BombRun::default();
+        for s in 0..30u32 {
+            let pos = [-(s as f32) * 50.0, 0.0, 0.0];
+            let way = Some(4000.0 - 100.0 * s as f32);
+            assert_eq!(
+                b.walk(s * 1000, Some(site), pos, way, SiteClock::Runs),
+                None,
+                "{s}"
+            );
+        }
+        // a stopped clock: 20 s of waiting, then 9 s of standing still is not yet a stall
+        let mut b = BombRun::default();
+        b.walk(0, Some(site), at, None, SiteClock::Runs);
+        for s in 1..=20u32 {
+            assert_eq!(
+                b.walk(s * 1000, Some(site), at, None, SiteClock::Stops),
+                None
+            );
+        }
+        assert_eq!(b.walk(29_000, Some(site), at, None, SiteClock::Runs), None);
+        assert_eq!(
+            b.walk(30_000, Some(site), at, None, SiteClock::Runs),
+            Some(site)
+        );
     }
 
     /// BOT-80: the bomb slot's grant is the item; the bot takes it out once; the round reset keeps it, the removal

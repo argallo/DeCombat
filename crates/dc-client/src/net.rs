@@ -2568,6 +2568,8 @@ fn net_main(shared: Arc<Mutex<Shared>>, opts: NetOptions) {
         Ok(r) => r,
         Err(_) => Recorder::null(&opts.name),
     };
+    // CLI-1941: the first event of the match log names the build and the run
+    rec.event("run", crate::diag::run_stamp_json());
     let rom_dir = opts.rom.clone().or_else(|| dc_rom::resolve_rom().ok());
     let rom = rom_dir.as_deref().and_then(|r| RomWorlds::open(r).ok());
     // the ROM weapon table (rows, first-person models) for the weapons; without it the fallback timings apply

@@ -12,6 +12,11 @@ type Routes = Arc<Mutex<BTreeMap<String, (u16, Vec<u8>)>>>;
 
 /// A web port answering GETs from `routes`; a TLS hello is closed at once (the client then speaks plain).
 fn fake_lobby(routes: Routes) -> SocketAddr {
+    fake_lobby_slow(routes, Duration::ZERO)
+}
+
+/// [`fake_lobby`] whose every reply waits `delay` first (a stand-in for the round trips of a far server).
+fn fake_lobby_slow(routes: Routes, delay: Duration) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -39,6 +44,7 @@ fn fake_lobby(routes: Routes) -> SocketAddr {
                     .get(&path)
                     .cloned()
                     .unwrap_or((404, b"No such package.".to_vec()));
+                std::thread::sleep(delay);
                 let _ = s.write_all(
                     format!(
                         "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -830,6 +836,7 @@ fn declared(mods: &[(&str, &str, &str)]) -> ServerModSet {
                 description: None,
                 homepage: None,
                 screenshots: Vec::new(),
+                tags: Vec::new(),
                 commands: Vec::new(),
                 preview: None,
             })
@@ -1490,4 +1497,167 @@ fn the_fragment_carries_the_field_of_view_range_of_a_modded_set_only() {
         assert_eq!(read(none.clone()).fov_range(), None, "{none}");
     }
     assert_eq!(ServerModSet::vanilla().fov_range(), None);
+}
+
+/// `n` tiny packages `m0 .. m{n-1}` with their set entries; the lobby's set hash over them.
+fn many_packs(root: &Path, n: usize) -> (Vec<(Vec<u8>, dc_modkit::ModSetEntry)>, String) {
+    let packs: Vec<_> = (0..n)
+        .map(|i| {
+            dc_modkit::pack_mod_bytes(&mod_dir(&root.join("src"), &format!("m{i}"), "shared"))
+                .unwrap()
+        })
+        .collect();
+    let lines: String = packs
+        .iter()
+        .enumerate()
+        .map(|(i, (_, e))| format!("m{i}@1.0.0:{}
+", e.sha256))
+        .collect();
+    (packs, dc_rom::sha256_hex(lines.as_bytes()))
+}
+
+fn serve_packs(packs: &[(Vec<u8>, dc_modkit::ModSetEntry)], hash: &str) -> Routes {
+    let routes: Routes = Arc::default();
+    let entries: Vec<_> = packs.iter().map(|(_, e)| entry_json(e)).collect();
+    routes.lock().unwrap().insert(
+        "/server_list.json".into(),
+        (200, server_list(&entries, false, hash)),
+    );
+    for (zip, e) in packs {
+        routes
+            .lock()
+            .unwrap()
+            .insert(format!("/mods/{}.zip", e.sha256), (200, zip.clone()));
+    }
+    routes
+}
+
+// CLI-1608 / CLI-1940: a long set downloads several packages at a time and reports one line for the whole fetch
+#[test]
+fn a_long_set_reports_pack_index_count_and_bytes_and_loads_in_the_servers_order() {
+    let root = temp("many");
+    let (packs, hash) = many_packs(&root, 12);
+    let web = fake_lobby(serve_packs(&packs, &hash));
+    let data = root.join("data");
+    let mut cm = ClientMods::new();
+    let mut seen = Vec::new();
+    cm.join(Some(web), None, &cfg(&data), &mut |s| seen.push(s))
+        .unwrap();
+    let want: Vec<String> = (0..12).map(|i| format!("m{i}")).collect();
+    assert_eq!(cm.loaded(), want, "the load order is the set's order");
+    let lines: Vec<(usize, usize, u64, u64)> = seen
+        .iter()
+        .filter_map(|s| match s {
+            ModState::Downloading {
+                index,
+                count,
+                done,
+                total,
+            } => Some((*index, *count, *done, *total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines[0], (1, 12, 0, 0), "the first line names the count");
+    assert!(lines.iter().all(|l| l.1 == 12 && l.0 >= 1 && l.0 <= 12));
+    assert!(
+        lines.windows(2).all(|w| w[0].0 <= w[1].0 && w[0].2 <= w[1].2),
+        "pack index and bytes never go back: {lines:?}"
+    );
+    let bytes: u64 = packs.iter().map(|(z, _)| z.len() as u64).sum();
+    let last = lines.last().unwrap();
+    assert_eq!(last.2, bytes, "every byte is counted at the end: {last:?}");
+    assert_eq!(last.3, bytes, "every size was told: {last:?}");
+    // a second join takes all of them from the cache and shows no download
+    let mut again = Vec::new();
+    let mut cm = ClientMods::new();
+    cm.join(Some(web), None, &cfg(&data), &mut |s| again.push(s))
+        .unwrap();
+    assert!(!again
+        .iter()
+        .any(|s| matches!(s, ModState::Downloading { .. })));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// CLI-1608: one bad package among many refuses the join, is never written, and nothing of the set is unpacked
+#[test]
+fn one_bad_package_among_many_refuses_the_join_and_unpacks_nothing() {
+    let root = temp("manybad");
+    let (packs, hash) = many_packs(&root, 12);
+    let routes = serve_packs(&packs, &hash);
+    let bad = &packs[7].1.sha256;
+    let mut swapped = packs[7].0.clone();
+    let n = swapped.len();
+    swapped[n / 2] ^= 0x55;
+    routes
+        .lock()
+        .unwrap()
+        .insert(format!("/mods/{bad}.zip"), (200, swapped));
+    let web = fake_lobby(routes);
+    let data = root.join("data");
+    let mut cm = ClientMods::new();
+    let err = cm
+        .join(Some(web), None, &cfg(&data), &mut |_| {})
+        .unwrap_err();
+    assert!(err.contains("m7") && err.contains("join refused"), "{err}");
+    let paths = ModPaths::new(&data);
+    assert!(!paths.zip(bad).exists(), "the bad package was written");
+    for (_, e) in &packs {
+        assert!(
+            !paths.unpacked(&e.sha256).exists(),
+            "{} unpacked",
+            e.sha256
+        );
+    }
+    assert!(cm.loaded().is_empty() && cm.status.hash.is_none());
+    assert!(matches!(cm.status.state, ModState::Failed(_)));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// CLI-1608: 65 packs from a server that answers each request after 30 ms (a stand-in for the connection set-up of a
+// far server): the parallel fetch against the same downloads one after the other
+#[test]
+fn sixty_five_packs_download_faster_in_parallel_than_one_after_the_other() {
+    let root = temp("sixtyfive");
+    let (packs, hash) = many_packs(&root, 65);
+    let web = fake_lobby_slow(serve_packs(&packs, &hash), Duration::from_millis(30));
+    let c = cfg(&root.join("seq"));
+    let paths = ModPaths::new(&root.join("seq"));
+    let t = Instant::now();
+    for (_, e) in &packs {
+        let m = ServerMod {
+            id: String::new(),
+            version: "1.0.0".into(),
+            sha256: e.sha256.clone(),
+            ..declared(&[("x", "1.0.0", "")]).mods[0].clone()
+        };
+        download_package(web, &paths, &m, &c, &mut |_, _| {}).unwrap();
+    }
+    let sequential = t.elapsed();
+    let mut cm = ClientMods::new();
+    let t = Instant::now();
+    cm.join(Some(web), None, &cfg(&root.join("par")), &mut |_| {})
+        .unwrap();
+    let parallel = t.elapsed();
+    eprintln!("65 packs, 30 ms per request: one after the other {sequential:?}, joined {parallel:?}");
+    assert_eq!(cm.loaded().len(), 65);
+    assert!(
+        parallel * 2 < sequential,
+        "{parallel:?} is not under half of {sequential:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// CLI-1943: the set fragment's `tags` reach the client and survive a round trip; a fragment without them reads as none.
+#[test]
+fn the_set_fragment_keeps_the_tags() {
+    let frag = serde_json::json!({"policy": "modded", "mods": [
+        {"id": "variant_x", "version": "1.0.0", "sha256": "ab".repeat(32), "kind": "shared", "tags": ["variant", "camo"]},
+        {"id": "plain_y", "version": "1.0.0", "sha256": "cd".repeat(32), "kind": "shared"}
+    ]});
+    let set = ServerModSet::from_fragment(&frag).unwrap();
+    assert_eq!(set.mods[0].tags, vec!["variant".to_string(), "camo".to_string()]);
+    assert!(set.mods[1].tags.is_empty());
+    let again = ServerModSet::from_fragment(&set.to_fragment()).unwrap();
+    assert_eq!(again, set);
+    assert_eq!(again.hash(), set.hash(), "the tags are not part of the set's hash");
 }

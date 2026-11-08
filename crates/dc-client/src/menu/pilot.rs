@@ -355,6 +355,15 @@ impl Pilot {
             self.asked = false;
         }
         if let Some(p) = menu.popup() {
+            // CLI-1942: the login's own error box after the Login click (no lobby, refused, too old, a trust
+            // refusal): the scripted player cannot go on, so the run ends with the reason, not at its time-out
+            if name == "login"
+                && self.asked
+                && self.gave_up.is_none()
+                && p.title == super::popup::text_ids::TITLE_ERROR
+            {
+                self.give_up(format!("login: {}", p.text));
+            }
             // MAP-88: the planned entry's pick ended in an error box: the entry is refused, nothing else is entered
             if let Some(id) = self.entry.filter(|_| {
                 name == "servers"
@@ -1022,6 +1031,42 @@ mod tests {
         assert!(report.end.contains("[1, 2, 3]"), "{}", report.end);
         let last = menu.link_latest_request();
         assert!(!last.starts_with("PickServer"), "nothing was picked: {last}");
+    }
+
+    /// CLI-1942: the login's error box after the Login click ends the run with its text; before the click (a box
+    /// left from somewhere else) and on a plain notice the pilot goes on.
+    #[test]
+    fn a_login_error_box_after_the_click_ends_the_run() {
+        let mut menu = result_menu();
+        menu.open(Go::Login);
+        assert_eq!(menu.screen_name(), "login");
+        let mut pilot = Pilot::new(plan());
+        menu.popups.push(Popup::error("stale".into(), BoxTag::None));
+        std::thread::sleep(ACTION_GAP + Duration::from_millis(50));
+        pilot.next(&menu);
+        assert_eq!(pilot.gave_up(), None, "no Login click yet");
+        menu.popups.clear();
+        // the password (empty here) and the Login click
+        step(&mut menu, &mut pilot);
+        if !pilot.asked {
+            step(&mut menu, &mut pilot);
+        }
+        assert!(pilot.asked, "the Login click went out");
+        menu.popups.push(Popup::ok("a notice".into(), BoxTag::None));
+        std::thread::sleep(ACTION_GAP + Duration::from_millis(50));
+        pilot.next(&menu);
+        assert_eq!(
+            pilot.gave_up(),
+            None,
+            "a notice is dismissed, not a refusal"
+        );
+        menu.popups.clear();
+        menu.popups
+            .push(Popup::error("Login failed.".into(), BoxTag::None));
+        pilot.next(&menu);
+        assert_eq!(pilot.gave_up(), Some("login: Login failed."));
+        let report = run(&mut menu, &mut pilot, &mut |_, _, _| unreachable!());
+        assert_eq!(report.end, "login: Login failed.");
     }
 
     /// MAP-88: an error box after the pick (the entry's refusal, a pack failure) ends the run; a notice does not.

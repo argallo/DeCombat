@@ -93,6 +93,8 @@ pub struct App {
     texture_tex: Option<(u64, TextureHandle)>,
     texture_seen: Option<u64>,
     saved_list: Vec<(String, PathBuf)>,
+    /// VAR-13: the example camos of the examples folder, read when the window opens.
+    examples: Vec<(String, PathBuf)>,
     pending_shots: Vec<std::sync::mpsc::Sender<Result<commands::Reply, String>>>,
     show_agent: bool,
 }
@@ -206,6 +208,7 @@ impl App {
             texture_tex: None,
             texture_seen: None,
             saved_list: pack::saved_camos(),
+            examples: pack::examples(),
             pending_shots: Vec::new(),
             show_agent: false,
         };
@@ -1140,10 +1143,18 @@ impl App {
             .selected_text("A camo...")
             .width(RIGHT_WIDTH - 32.0)
             .show_ui(ui, |ui| {
-                ui.label(RichText::new("Examples").small().color(FAINT));
-                for (name, ..) in pack::EXAMPLES {
-                    if ui.selectable_label(false, *name).clicked() {
-                        example = Some(*name);
+                if self.examples.is_empty() {
+                    ui.label(
+                        RichText::new("No examples folder next to the program")
+                            .small()
+                            .color(FAINT),
+                    );
+                } else {
+                    ui.label(RichText::new("Examples").small().color(FAINT));
+                }
+                for (name, _) in &self.examples {
+                    if ui.selectable_label(false, name).clicked() {
+                        example = Some(name.clone());
                     }
                 }
                 if !self.saved_list.is_empty() {
@@ -1161,7 +1172,7 @@ impl App {
                 }
             });
         if let Some(name) = example {
-            self.take_opened(pack::open_example(name));
+            self.take_opened(pack::open_example(&name));
         }
         if let Some(dir) = saved {
             self.open_pack_dir(&dir);

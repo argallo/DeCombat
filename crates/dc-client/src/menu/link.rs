@@ -2419,6 +2419,8 @@ impl Worker {
     fn new(opts: LinkOptions, out: Sender<LinkEvent>) -> Worker {
         let rec = Recorder::new(opts.capture.as_deref(), opts.log.as_deref(), &opts.name)
             .unwrap_or_else(|_| Recorder::null(&opts.name));
+        // CLI-1941: the first event of the menu log names the build and the run
+        rec.event("run", crate::diag::run_stamp_json());
         Worker {
             opts,
             out,

@@ -146,6 +146,30 @@ pre.tail { margin: 10px 0 0; padding: 10px 12px; background: var(--sheet); borde
 details.older > summary { cursor: pointer; color: var(--ink-2); padding: 10px 12px; }
 .status a.btn { display: inline-block; margin-top: 8px; padding: 7px 13px; border-radius: 4px; background: var(--press);
                 color: var(--press-ink); text-decoration: none; font-weight: 600; }
+/* the Release card of the Updates tab: root's release job, its state and three requests (release.rs, LG-430) */
+.rhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 12px 12px 10px; border-bottom: 1px solid var(--rule); }
+.rhead .h { font: 600 17px/1.25 var(--display); }
+.rhead .h::before { align-self: center; }
+.rhead .quiet { font-size: 13px; }
+dl.rfacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; margin: 0; border-bottom: 1px solid var(--rule); }
+dl.rfacts div { padding: 8px 12px; min-width: 0; }
+dl.rfacts dt { color: var(--quiet); font-size: 12.5px; }
+dl.rfacts dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rel .dform button { padding: 6px 12px; }
+.rel .dform button.plain { margin: 0; }
+.rel .ask { flex: 1 0 100%; margin: 0; font-weight: 600; }
+.rel details { padding: 0 12px 12px; }
+.rel details > summary { cursor: pointer; padding-top: 10px; }
+/* the Bug reports card of the Updates tab: what players post in the Discord channel (triage.rs, OPS-26) */
+.tri .trow { padding: 10px 12px; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: 1fr max-content; gap: 4px 14px; }
+.tri .trow:last-child { border-bottom: 0; }
+.tri .trow.done .ttext, .tri .trow.done .twho b { color: var(--quiet); }
+.tri .twho { font-size: 13px; color: var(--quiet); overflow-wrap: anywhere; }
+.tri .twho b { color: var(--ink); font-weight: 600; }
+.tri .ttext { grid-column: 1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tri .tatt { grid-column: 1; font-size: 13px; overflow-wrap: anywhere; }
+.tri .trow label.chk { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
+.tri button.more { margin: 0 0 0 6px; padding: 1px 8px; font-size: 12.5px; }
 /* the Players tab's account panel and its writes (playeradmin.rs, LG-395..LG-398) */
 .acols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: 16px 28px; align-items: start; }
 .acols > * { min-width: 0; }
@@ -853,6 +877,7 @@ VIEWS.bots = async () => {
 };
 // ---- the Updates tab: deploys from the dashboard (deploy.rs, tools/vps/deploy_from_git.sh, LG-392..LG-394)
 let updWatching = false, updTimer = null, updAsk = null; // updAsk: {from: the `checked` time when "Check now" was pressed, until}
+let relAsk = false, relSay = null; // relAsk: the tag confirmation is open; relSay: the answer of the last release request
 const PHASE = { queued: "Waiting to start", fetching: "Fetching master", building: "Building", packaging: "Packing",
   waiting: "Waiting for the matches to end", installing: "Installing and restarting the lobbies",
   publishing: "Offering the build to the game hosts", done: "Deployed", failed: "Failed" };
@@ -877,13 +902,102 @@ function deployStatus(u) {
       ` (${targetText(s.targets)}, requested by ${s.by || "?"}).`),
     tail ? $("details", u.deploying || !s.ok ? { open: "" } : {}, $("summary", { class: "quiet" }, "Log tail"), $("pre", { class: "tail" }, tail)) : null);
 }
+// the Release card (release.rs, LG-430): root's release job exports, pushes, waits for CI and tags; the card shows its
+// state and drops one request at a time. Every field is root's text: it goes in as text, and only links to the public
+// repository (the lobby checks them) become links.
+function releaseCard(r) {
+  if (!r) return null;
+  const v = r.view || {}, s = r.status;
+  const say = $("span", { class: "err", role: "alert" });
+  if (relSay) { say.className = relSay.ok ? "quiet" : "err"; say.textContent = relSay.text; }
+  relSay = null;
+  async function ask(action) {
+    relAsk = false;
+    try {
+      const out = await post("/ops/updates/release/" + action, {});
+      relSay = { ok: true, text: out.message };
+    } catch (e) { relSay = { ok: false, text: e.message }; }
+    render(true);
+  }
+  const link = (u, text) => u && u.link ? $("a", { href: u.link, rel: "noreferrer noopener", target: "_blank" }, text) : null;
+  const card = kids => $("section", {}, $("h2", {}, "Public release"), $("div", { class: "sheet rel" }, kids));
+  const checkBtn = $("button", { type: "button", class: "plain", on: () => ask("check") }, r.pending === "check" ? "Checking..." : "Check now");
+  if (!r.set_up || !s) {
+    return card([$("div", { class: "rhead" }, $("span", { class: "h" }, r.set_up ? "No release state yet." : "Releases from the dashboard are not set up.")),
+      $("div", { class: "dform" }, $("span", { class: "quiet" }, r.message), r.set_up ? checkBtn : null, say)]);
+  }
+  if (s.phase !== "ready") relAsk = false;
+  const tagName = s.next_tag || "?";
+  const head = $("div", { class: "rhead" }, $("span", { class: "h " + v.level }, v.headline),
+    s.phase === "published" ? link(s.release_url, "Release page") : (s.phase === "ci_running" || s.phase === "pushed" || s.phase === "ready") ? link(s.ci.url, "CI run") : null,
+    $("span", { class: "quiet", title: when(s.updated) }, "updated " + ago(s.updated)));
+  const shaOr = x => x ? $("span", { class: "sha" }, x.slice(0, 8)) : "-";
+  const ci = [s.ci.status, s.ci.conclusion].filter(Boolean).join(", ");
+  const urlText = u => u && u.text && !u.link ? $("span", { class: "quiet" }, " " + u.text) : null;
+  const facts = [["Last tag", s.last_tag || "-"], ["Next tag", s.next_tag || "-"],
+    ["Commits since", s.commits_since == null ? "-" : String(s.commits_since)],
+    ["Private commit", shaOr(s.private_sha)], ["Public commit", shaOr(s.public_sha)],
+    ["CI", [ci || "-", s.ci.url.link ? " " : null, link(s.ci.url, "(run)"), urlText(s.ci.url)]],
+    ["Requested by", s.by || "-"]];
+  const dl = $("dl", { class: "rfacts" }, facts.map(([k, x]) => $("div", {}, $("dt", {}, k), $("dd", {}, x))));
+  const pend = r.pending ? $("span", { class: "quiet" }, `Release ${r.pending} requested; the server picks it up within seconds.`) : null;
+  const prepare = $("button", { type: "button", ...(v.can_prepare ? {} : { disabled: "" }), on: () => ask("prepare") }, "Prepare release");
+  const tagBtn = $("button", { type: "button", ...(v.can_tag ? {} : { disabled: "" }), on: () => { relAsk = true; render(true); } }, "Tag & publish " + tagName);
+  const row = relAsk && v.can_tag
+    ? $("div", { class: "dform" },
+      $("p", { class: "ask" }, `Tag ${tagName} on the public repository and publish the release? Everyone who checks for updates gets it; a tag is not taken back.`),
+      $("button", { type: "button", class: "danger", on: () => ask("tag") }, "Tag & publish " + tagName),
+      $("button", { type: "button", class: "plain", on: () => { relAsk = false; render(true); } }, "Cancel"))
+    : $("div", { class: "dform" }, checkBtn, prepare, tagBtn, pend, say);
+  const tail = (s.log_tail || []).join("\n");
+  return card([head, s.message && s.phase !== "failed" ? $("p", { class: "quiet", style: "margin:0;padding:8px 12px;border-bottom:1px solid var(--rule)" }, s.message) : null,
+    dl, row, tail ? $("details", s.phase === "failed" ? { open: "" } : {}, $("summary", { class: "quiet" }, "Log tail"), $("pre", { class: "tail" }, tail)) : null]);
+}
+// the Bug reports card (triage.rs, OPS-26): the poller's state and the newest reports, each with a Done checkbox. Every
+// field is a stranger's text: it goes in as text, and only Discord's own file servers (checked by the lobby) are links.
+let trSay = null;
+const trMore = new Set(); // report ids whose full text is open
+function triageCard(r) {
+  if (!r) return null;
+  const card = kids => $("section", {}, $("h2", {}, "Bug reports"), $("div", { class: "sheet tri" }, kids));
+  if (!r.set_up) return card($("div", { class: "dform" }, $("span", { class: "quiet" }, r.message)));
+  const s = r.state;
+  const say = $("span", { class: "err", role: "alert" });
+  if (trSay) { say.textContent = trSay; }
+  trSay = null;
+  const level = !s ? "warn" : s.ok === false ? "bad" : "good";
+  const headline = !s ? "No poll yet." : s.ok === false ? "The last poll failed: " + (s.message || "?")
+    : `${r.open} open of ${r.total} report${r.total === 1 ? "" : "s"}.`;
+  const head = $("div", { class: "rhead" }, $("span", { class: "h " + level }, headline),
+    s && s.updated ? $("span", { class: "quiet", title: when(s.updated) }, "polled " + ago(s.updated) + (s.ok ? ` (${s.fetched || 0} new)` : "")) : null, say);
+  const row = x => {
+    const box = $("input", { type: "checkbox", ...(x.done ? { checked: "" } : {}), on: async ev => {
+      const want = ev.target.checked;
+      try { await post("/ops/triage/done", { id: x.id, done: want }); } catch (e) { trSay = e.message; }
+      render(true);
+    } });
+    const long = x.content.length > 600;
+    const open = trMore.has(x.id);
+    const shown = long && !open ? x.content.slice(0, 600) + "…" : x.content;
+    const who = x.author.name && x.author.name !== x.author.username ? `${x.author.name} (${x.author.username})` : (x.author.username || "?");
+    const more = long ? $("button", { type: "button", class: "plain more", on: () => { if (open) trMore.delete(x.id); else trMore.add(x.id); render(true); } }, open ? "less" : "more") : null;
+    const atts = x.attachments.length ? $("div", { class: "tatt" }, "Attachments: ", x.attachments.map((a, i) => [i ? " " : null,
+      a.link ? $("a", { href: a.link, rel: "noreferrer noopener", target: "_blank" }, "file " + (i + 1)) : $("span", { class: "quiet" }, a.text)])) : null;
+    return $("div", { class: "trow" + (x.done ? " done" : "") },
+      $("div", { class: "twho" }, $("b", {}, who), x.at ? ` · ${when(x.at)} (${ago(x.at)})` : "", ` · #${x.id}`,
+        x.done ? ` · done by ${x.done_by || "?"}` : ""),
+      $("label", { class: "chk" }, box, "Done"),
+      $("p", { class: "ttext" }, shown, more), atts);
+  };
+  return card([head, r.reports.length ? r.reports.map(row) : $("div", { class: "dform" }, $("span", { class: "quiet" }, "No reports yet."))]);
+}
 VIEWS.updates = async () => {
-  const u = await get("/ops/updates");
+  const [u, rel, tri] = await Promise.all([get("/ops/updates"), get("/ops/updates/release").catch(() => null), get("/ops/triage").catch(() => null)]);
   const a = u.available || {};
   // "Check now": wait (page polls every 3 s) until available.json's `checked` moves, at most 90 s
   if (updAsk && ((a.checked || 0) !== updAsk.from || Date.now() > updAsk.until)) updAsk = null;
   const checking = !!(updAsk || u.fetching);
-  updWatching = !!(u.deploying || u.pending || checking);
+  updWatching = !!(u.deploying || u.pending || checking || (rel && (rel.pending || (rel.view && rel.view.busy))));
   clearTimeout(updTimer);
   if (updWatching) updTimer = setTimeout(() => { if ((location.hash.slice(1) || "live").startsWith("updates")) render(true); }, 3000);
   const offered = u.host_build;
@@ -899,7 +1013,7 @@ VIEWS.updates = async () => {
       : "No build is offered to the game hosts yet."));
   if (!u.set_up) {
     return [$("div", { class: "status warn", role: "status" }, $("h1", {}, "Deploys from the dashboard are not set up."),
-      $("p", { class: "sum" }, u.message)), builds];
+      $("p", { class: "sum" }, u.message)), builds, triageCard(tri)];
   }
   // the deploy form: targets, and the match switch only while matches run
   const vps = $("input", { type: "checkbox", checked: "" }), hosts = $("input", { type: "checkbox", checked: "" });
@@ -954,7 +1068,7 @@ VIEWS.updates = async () => {
     table(["Finished", "Commit", "To", "Requested by", "Outcome", "Detail"],
       (u.history || []).map(h => [$("span", { title: when(h.finished) }, ago(h.finished)), sha8(h.short || h.sha), targetText(h.targets),
         h.by || "-", okWord(h.ok, "Deployed", "Failed"), wrap(h.message || "")]), [], "No deploy from the dashboard yet."));
-  return [deployStatus(u), builds, commits, hist];
+  return [deployStatus(u), builds, commits, releaseCard(rel), triageCard(tri), hist];
 };
 // every view refreshes on the timer, except while the operator is typing or has changed a field of it (a form would
 // lose its input), the long player list (it would lose the pages it loaded) and a hidden tab

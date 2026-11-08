@@ -67,11 +67,12 @@ dserver_args = ""          # extra arguments for every game server (the lobby's 
 Hello, agent first:
 
 ```
-hello name=<name> token=<token> version=<git short sha or "unknown"> ports=<lo>-<hi> running=<n> content=1 packs=1 update=1
+hello name=<name> token=<token> version=<git short sha or "unknown"> ports=<lo>-<hi> running=<n> content=1 contentlines=1 packs=1 update=1
 ```
 
-`content=1`: the agent takes a `start` request's weapon content. `packs=1`: it takes map packs (below). An agent without
-one of them is refused the matches that need it, with a log line on the lobby; every other match is unchanged.
+`content=1`: the agent takes a `start` request's weapon content. `contentlines=1`: it takes that content as `content`
+lines before the `start` (below), which a document over one line needs. `packs=1`: it takes map packs (below). An agent
+without one of them is refused the matches that need it, with a log line on the lobby; every other match is unchanged.
 `update=1`: it takes the lobby's server build (section "Updates" below); an agent without it is never offered one.
 
 The lobby answers one of:
@@ -91,10 +92,13 @@ start <gid> <json>           # {"port":0,"world":"...","guid":"...","idle":30,"l
                              # optional "content" + "content_hash" (LG-313): a featured entry's weapon content; the
                              # agent writes it to content-<hash>.json in its log folder and passes it as -content.
                              # An agent that takes this says content=1 in its hello; the lobby refuses to start such
-                             # a match on an agent without it, and a request over 16 KiB.
+                             # a match on an agent without it, and a request over 16 KiB. With contentlines=1 the
+                             # request carries "content_hash" alone and the document went as `content` lines.
                              # optional "world_pack" + "world_file" + "announce" (MAP-83): a featured entry's community
                              # map, see "Map packs" below; "world" is then the record's @mod: name, not a path.
 pack <sha> <base64>          # one piece of a map pack, in order (MAP-84); only before the `start` that needs it
+content <hash> <base64>      # one piece of a weapon content document, in order (LG-431); only before the `start` that
+                             # names <hash> as its "content_hash"
 line <gid> <text>            # one stdin line for that game server (verbatim; DSERVER_PIPE.md §3)
 quit <gid>                   # close its stdin, then the grace kill (DSERVER_PIPE.md §2: 5 s)
 ping <n>
@@ -110,7 +114,8 @@ event <gid> <text>           # one stdout line of that game server, verbatim (th
 exited <gid> code=<c>        # the process ended (code -1: killed / no code)
 running <gid> port=<p> pid=<pid>   # after a reconnect: a game server still running from before (the lobby
                              # reattaches when it still knows the gid, else sends quit)
-have <sha>                   # after every `ok`: a complete map pack this agent keeps (MAP-84)
+have <sha>                   # after every `ok`: a complete map pack (MAP-84) or content document (LG-431) this
+                             # agent keeps
 pong <n>
 ```
 
@@ -144,6 +149,33 @@ the message `decombat-host-update 1` / `commit=` / `tarball=` / `sha256=` / `siz
 the key pinned at its setup and `seq` is above the last it took; neither the lobby nor the agent holds that key
 (docs/DEPLOY_FROM_ADMIN.md). While pieces go out, the agent's other lines from the lobby wait behind them; a transfer only
 starts while the host runs no match.
+
+### Weapon content lines (a featured entry's weapon content; DC_DEFAULTS.md LG-431)
+
+A featured entry's weapon content document (LG-313) grows with its set: 65 packs make about 25 KB, over the 16 KiB a line
+may have, so it cannot ride in the `start` line. An agent that said `contentlines=1` gets it the way a map pack travels:
+
+```
+content <hash> <base64>      # <hash> = SHA-256 (64 lower-case hex digits) of the document's bytes
+...
+start 9 {"port":0,"world":"...","guid":"ca","idle":30,"log":"g9.log","args":[],"content_hash":"<hash>"}
+```
+
+The lobby sends the whole document as `content` lines (12000 raw bytes per line, so a line stays under 16 KiB and each
+piece decodes alone; all queued at once, in order, right before the `start`). The `start` then names only the hash, with
+no `content` member. The lobby sends the document once per connection, and not at all after the agent's `have <hash>`
+(it is said after every `ok` for each complete file in the agent's `<log_dir>/content/` folder, in the same line a pack uses; a
+SHA-256 of a document cannot be that of a zip).
+
+The agent keeps the pieces in memory (at most 4 MiB per document); at the `start` it checks that the bytes hash to
+`<hash>`, writes them to `<log_dir>/content/<hash>.json` (a temporary file renamed, so that name is always complete) and
+passes that path as `-content`, exactly as for an inline document. The files stay across starts, reconnects and restarts;
+nothing prunes them yet. A cut-off stream starts over on the next connection. A `start` whose hash the agent lacks, or
+whose bytes do not hash to it, answers `failed <gid> content <hash>: <reason>` (wrong bytes are not kept) and logs the
+same; the lobby then forgets that the agent holds it, the room goes back to waiting, and the next start sends it again.
+
+An agent without `contentlines=1` keeps the inline request: a document that fits one `start` line (16 KiB less 64 bytes
+for the lobby's own check) is sent in it; a larger one is refused with a log line naming `contentlines=1`.
 
 ### Map packs (a featured entry's community maps; DC_DEFAULTS.md MAP-83, MAP-84)
 

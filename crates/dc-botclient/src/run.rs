@@ -389,6 +389,8 @@ pub struct BotConfig {
     pub fire_interval_ms: u32,
     /// Test throws of the slot-3 grenade every this long (`--throw-every <ms>`, shooter only).
     pub throw_every_ms: Option<u32>,
+    /// BOT-147: the chance a skill bot answers a sighting in grenade range with its grenade (`--grenades <0..1>`).
+    pub grenade_chance: f32,
     pub hit_node: u8,
     /// Human-like aiming level 0..=100 (`--skill`, default 50); `None` = instant aim (`--skill off`).
     pub skill: Option<u8>,
@@ -443,6 +445,7 @@ impl BotConfig {
             shooter: false,
             fire_interval_ms: crate::shooter::DEFAULT_FIRE_INTERVAL_MS,
             throw_every_ms: None,
+            grenade_chance: crate::grenade::CHANCE,
             hit_node: crate::shooter::DEFAULT_HIT_NODE,
             skill: Some(crate::skill::STANDARD_LEVEL),
             goal: None,
@@ -477,6 +480,7 @@ impl BotConfig {
         rec.event(
             "shooter",
             json!({"shot_period_ms": self.fire_interval_ms, "throw_every_ms": self.throw_every_ms,
+                   "grenade_chance": if skill.is_some() { self.grenade_chance } else { 0.0 },
                    "hit_node": self.hit_node, "loadout": loadout,
                    "rom_weapons": rom.as_ref().map(|r| r.rows.len()), "cone_table": table.source,
                    "skill": skill.map(|s| json!({"level": s.level, "turn_deg_s": s.turn_deg_s,
@@ -499,6 +503,11 @@ impl BotConfig {
             seed: self.impairment.seed ^ 0x0005_4007,
             skill,
             throw_every_ms: self.throw_every_ms,
+            grenade_chance: if skill.is_some() {
+                self.grenade_chance
+            } else {
+                0.0
+            },
             table: Some(table),
             ..ShooterConfig::default()
         })
@@ -607,6 +616,8 @@ pub fn session_report(c: &BotSession) -> Value {
         "mode_class": o.mode_class, "integrity": o.integrity, "console": o.console,
         "teleports": o.teleports, "kills": o.kills,
         "updates_sent": o.updates_sent, "join_asks": o.join_asks, "app_id_index": o.app_id_index,
+        "jump_inputs": o.jump_inputs, "jumps_taken": o.jumps_taken, "watchdog_trips": o.watchdog_trips,
+        "jumps_skipped": o.jumps_skipped, "escapes": o.escapes,
         "fatal": o.fatal, "parse_notes": o.parse_notes,
         "objects": objects, "players": players,
         "own_pos": c.body().map(|b| b.pos()),
@@ -745,9 +756,15 @@ pub fn run_bot(cfg: &BotConfig, rec: &Recorder) -> BotResult<Value> {
                 addr = a;
             }
             // BOT-84: the players left this room: the filler leaves too and seats itself in the next room
-            Err(e) if e.0 == crate::lobby::FILLER_ALONE => {
+            // BOT-156: a weapon limit set between matches that the loadout fails: the same, through the limit's leave
+            Err(e)
+                if e.0 == crate::lobby::FILLER_ALONE
+                    || (cfg.filler.is_some() && e.0 == crate::lobby::WEAPON_LIMIT_REFUSED) =>
+            {
                 rec.event("next_match_room_left", json!({"after": played}));
-                if l.room.is_some() {
+                if e.0 == crate::lobby::WEAPON_LIMIT_REFUSED {
+                    l.leave_for_weapon_limit()?;
+                } else if l.room.is_some() {
                     l.leave_room()?;
                 }
                 match filler_seat(&mut l, cfg, rec) {
@@ -805,10 +822,20 @@ fn filler_seat(lobby: &mut Lobby, cfg: &BotConfig, rec: &Recorder) -> BotResult<
             if cfg.filler.is_some() && lobby.removed_from_room() {
                 continue;
             }
+            // BOT-156: the loadout fails the room's weapon limit: leave, pass the room over, look elsewhere
+            if cfg.filler.is_some() && e.0 == crate::lobby::WEAPON_LIMIT_REFUSED {
+                lobby.leave_for_weapon_limit()?;
+                lobby.link.pump(Duration::from_millis(500))?;
+                continue;
+            }
             return Err(e);
         }
         match lobby.wait_match_address(cfg.match_wait) {
             Ok(a) => return Ok(a),
+            Err(e) if cfg.filler.is_some() && e.0 == crate::lobby::WEAPON_LIMIT_REFUSED => {
+                lobby.leave_for_weapon_limit()?;
+                lobby.link.pump(Duration::from_millis(500))?;
+            }
             Err(e) if e.0 == crate::lobby::FILLER_ALONE => {
                 rec.event("room_left_waiting", json!({"room": n}));
                 lobby.leave_room()?;

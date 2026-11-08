@@ -49,7 +49,7 @@ use dc_botclient::session::{BotSession, GameConfig};
 
 const USAGE: &str = "usage: dc-botclient swarm --help     (a few bots that join a public lobby with you, docs/BOTS.md)
        dc-botclient (--lobby <host:port> | --udp <host:port>) --name <nick> [--room <n|new|any>]
-       [--walk | --hunt] [--duration <s>] [--log <jsonl>] [--capture <jsonl>] [--report <json>] [--user <id>]
+       [--walk | --hunt] [--duration <s>] [--log <jsonl>] [--log-max <bytes>] [--log-transport] [--capture <jsonl>] [--report <json>] [--user <id>]
        [--start-after <n>] [--password <p>] [--login-password <pw>] [--mod-set-hash <hex>] [--content-hash <hex|0>]
        [--mode <n>] [--title <t>] [--max-players <n>] [--mod-cache <dir>] [--room-title <part>]
        [--parent-pipe] [--known-servers <file>] [--pool]   (--pool: a seat of the lobby's bot pool, no --name needed)
@@ -57,7 +57,7 @@ const USAGE: &str = "usage: dc-botclient swarm --help     (a few bots that join 
        [--force-updates] [--state-form <n>] [--update-hz <f>] [--load-ms <n>] [--rom <dir>] [--no-rom]
        [--match-wait <s>] [--loss <permille>] [--loss-seed <n>] [--drop-over <bytes>] [--net <profile[,k=v..]>] [--no-aim-quat]
        [--join-timeout <s>] [--idle-exit <s>] [--respawn-after <ms>] [--shooter | --hold-fire] [--fire-interval <ms>]
-       [--throw-every <ms>]
+       [--throw-every <ms>] [--grenades <chance 0..1>]
        [--hit-node <n>] [--skill <0..100|lo-hi|off>] [--goal <n|min>] [--gun-game] [--stay-after-result] [--matches <n>]
        [--timeline <file>]   (timeline lines: team, host, setting, sync <nick> [ms], @<ms> <verb>)";
 
@@ -70,6 +70,8 @@ struct Cli {
     udp: Option<SocketAddr>,
     cfg: BotConfig,
     log: Option<PathBuf>,
+    log_max: u64,
+    log_transport: bool,
     capture: Option<PathBuf>,
     report: Option<PathBuf>,
     start_after: usize,
@@ -107,6 +109,8 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
         udp: None,
         cfg: BotConfig::new(placeholder, "Bot1"),
         log: None,
+        log_max: 0,
+        log_transport: false,
         capture: None,
         report: None,
         start_after: 2,
@@ -144,6 +148,8 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
                     Duration::from_secs_f64(num("--match-wait", val("--match-wait")?)?.max(0.0))
             }
             "--log" => c.log = Some(PathBuf::from(val("--log")?)),
+            "--log-max" => c.log_max = num("--log-max", val("--log-max")?)?.max(0.0) as u64,
+            "--log-transport" => c.log_transport = true,
             "--capture" => c.capture = Some(PathBuf::from(val("--capture")?)),
             "--report" => c.report = Some(PathBuf::from(val("--report")?)),
             "--start-after" => {
@@ -200,6 +206,10 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
                 c.cfg.throw_every_ms = Some(
                     num("--throw-every", val("--throw-every")?)?.clamp(500.0, 600_000.0) as u32,
                 )
+            }
+            // BOT-147: the chance a sighting in grenade range is answered with the grenade (0 = never)
+            "--grenades" => {
+                c.cfg.grenade_chance = num("--grenades", val("--grenades")?)?.clamp(0.0, 1.0) as f32
             }
             "--hit-node" => c.cfg.hit_node = num("--hit-node", val("--hit-node")?)? as u8,
             // BOT-91: `<n>`, `off`, or `<lo>-<hi>` (one level per bot, picked from its name once the name is known)
@@ -345,8 +355,16 @@ fn main() {
              stream positions, so the bot holds fire"
         );
     }
-    let rec = match Recorder::new(c.capture.as_deref(), c.log.as_deref(), &c.cfg.nick) {
-        Ok(r) => r,
+    let rec = match Recorder::with_log_max(
+        c.capture.as_deref(),
+        c.log.as_deref(),
+        &c.cfg.nick,
+        c.log_max,
+    ) {
+        Ok(r) => {
+            r.set_log_transport(c.log_transport);
+            r
+        }
         Err(e) => {
             eprintln!("dc-botclient: cannot open the log / capture: {e}");
             std::process::exit(2);
@@ -402,6 +420,12 @@ fn main() {
                     true,
                 )
             }
+            // BOT-158: the bot's own --match-wait ran out with no room to join: a normal end, not a failure
+            Err(e) if e.0.starts_with(dc_botclient::lobby::NO_ROOM_PREFIX) => (
+                serde_json::json!({"bot": c.cfg.nick, "stage": "Closed",
+                    "end": format!("ran its wait: {}", e.0)}),
+                true,
+            ),
             Err(e) => {
                 seat_refused = dc_botclient::lobby::exit_code_of(&e.0);
                 (serde_json::json!({"bot": c.cfg.nick, "error": e.0}), false)

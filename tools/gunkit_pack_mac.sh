@@ -11,16 +11,18 @@
 #                present in both folders is joined with lipo into one universal binary
 # --out DIR      where the zip goes (default out_gunkit/, ignored by git)
 # --name NAME    the zip's base name (default DeCombat-GunKit-mac-<commit>)
+# --examples DIR example packs to ship as examples/ next to the binaries (tools/gunkit_examples.py fills one; VAR-13)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BIN=""; X86=""; OUT="$HERE/out_gunkit"; NAME=""
+BIN=""; X86=""; OUT="$HERE/out_gunkit"; NAME=""; EXAMPLES=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin-dir) BIN=$2; shift 2 ;;
     --x86-dir) X86=$2; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
     --name) NAME=$2; shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    --examples) EXAMPLES=$2; shift 2 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -51,6 +53,17 @@ for b in dc-gunkit dc-gunkit-gui; do
   # the linker's ad-hoc signature does not survive lipo on the arm64 slice: sign each binary ad hoc again
   codesign -s - -f "$MACOS/$b" 2>/dev/null || true
 done
+
+N_EXAMPLES=0
+if [ -n "$EXAMPLES" ]; then
+  for d in "$EXAMPLES"/*/; do
+    [ -f "$d/manifest.json" ] || continue
+    mkdir -p "$MACOS/examples"
+    cp -R "$d" "$MACOS/examples/"
+    N_EXAMPLES=$((N_EXAMPLES + 1))
+  done
+  [ "$N_EXAMPLES" -gt 0 ] || { echo "no pack folders (manifest.json) under $EXAMPLES" >&2; exit 2; }
+fi
 
 ICON_PNG="$HERE/assets/icon/decombat_logo.png"
 ICON_KEY=""

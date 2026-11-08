@@ -48,6 +48,10 @@ pub struct LoadedWorld {
     pub solid: Option<Vec<bool>>,
     /// BOT-111: the world's kill volumes (lower-case name, the region inside the brush's planes).
     pub kill_volumes: Vec<(Vec<u8>, ConvexVolume)>,
+    /// BOT-143: the world's hazard volumes that hurt (a damage property above 0: Warhead's and Two Towers' water),
+    /// as regions. They have no object on the clients and act on the server unless its start scripts switch them
+    /// off (DSV-607), so the bot takes every one as acting.
+    pub hazard_volumes: Vec<ConvexVolume>,
 }
 
 /// A world model an object of the world file links to by name, in the bot's collision set.
@@ -144,6 +148,16 @@ impl LoadedWorld {
     /// The kill volumes the server created (kind 9 with the kill volume code, matched by name), as regions.
     // DC-DEFAULT: BOT-111 (proposed)
     pub fn active_kill_volumes(&self, table: &ObjectTable) -> Vec<ConvexVolume> {
+        let mut v = self.active_deadly_volumes(table);
+        // BOT-143: and the hazard volumes (no object of theirs reaches the client)
+        v.extend(self.hazard_volumes.iter().cloned());
+        v
+    }
+
+    /// BOT-154: [`Self::active_kill_volumes`] without the hazard volumes (the ones that kill; the grid takes the
+    /// hazard volumes apart, `NavGrid::with_hazard_volumes`).
+    // DC-DEFAULT: BOT-111 (proposed)
+    pub fn active_deadly_volumes(&self, table: &ObjectTable) -> Vec<ConvexVolume> {
         let names: Vec<Vec<u8>> = table
             .objects
             .values()
@@ -182,8 +196,30 @@ pub fn world_from_bytes(name: &str, data: &[u8]) -> Result<LoadedWorld, String> 
     let kill_volumes = w
         .objects_with_role(ObjectRole::KillVolume)
         .filter_map(|o| {
-            let v = brush_volume(w.brush_of(o)?)?;
+            let m = w.brush_of(o)?;
+            // BOT-131: the server kills where the body's position lies inside the volume's closed model (a ray
+            // crosses its polygons an odd number of times); a model that encloses no space (Two Towers'
+            // "EndlessFall67": two polygons of one flat plane) kills nobody there, so it is no danger to the bot
+            // either (as planes alone it was a slab across a whole floor that the grid kept out of)
+            if !encloses_space(m) {
+                return None;
+            }
+            let v = brush_volume(m)?;
             Some((o.name()?.to_ascii_lowercase(), v))
+        })
+        .collect();
+    // BOT-143: the hazard volumes that hurt (dc-dserver `killvol::hazard_shapes` reads the same role and property)
+    // SPEC: FMT_DAT85.md §6.2 (the hazard role, brush, name-linked)
+    // DC-DEFAULT: BOT-143 (proposed)
+    let hazard_volumes = w
+        .objects_with_role(ObjectRole::HazardVolume)
+        .filter(|o| {
+            matches!(o.prop_named(&dc_world::names::PROP_DAMAGE).map(|p| p.value),
+                Some(dc_world::FieldValue::Real(r)) if r.is_finite() && r > 0.0)
+        })
+        .filter_map(|o| {
+            let m = w.brush_of(o)?;
+            encloses_space(m).then(|| brush_volume(m)).flatten()
         })
         .collect();
     Ok(LoadedWorld {
@@ -201,7 +237,15 @@ pub fn world_from_bytes(name: &str, data: &[u8]) -> Result<LoadedWorld, String> 
         linked,
         solid: None,
         kill_volumes,
+        hazard_volumes,
     })
+}
+
+/// BOT-131: whether a volume's model encloses space as the server's point-inside test needs it: at least four
+/// polygons and an extent on every axis (a closed model; one flat sheet of polygons holds no point inside).
+// DC-DEFAULT: BOT-131 (proposed) 4 polygons, 0.5 units
+pub fn encloses_space(m: &dc_world::BspModel<'_>) -> bool {
+    m.polygons.len() >= 4 && (0..3).all(|i| m.box_max[i] - m.box_min[i] > 0.5)
 }
 
 /// Loads a world file from disk (tests and local runs against a server started with a world file).

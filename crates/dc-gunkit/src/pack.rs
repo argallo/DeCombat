@@ -460,84 +460,56 @@ pub fn open(dir: &Path) -> Result<Opened, String> {
     })
 }
 
-/// A pack built into the program: its name, manifest, script and files.
-pub type Example = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static [(&'static str, &'static [u8])],
-);
-
-/// The example packs of the repo, built in so the studio can show what a camo can be from its first start.
-pub const EXAMPLES: &[Example] = &[
-    (
-        "G36E Candy",
-        include_str!("../../../examples/mods/variant_candy_g36e/manifest.json"),
-        include_str!("../../../examples/mods/variant_candy_g36e/main.lua"),
-        &[(
-            "assets/candy.dtx",
-            include_bytes!("../../../examples/mods/variant_candy_g36e/assets/candy.dtx"),
-        )],
-    ),
-    (
-        "G36E Galaxy",
-        include_str!("../../../examples/mods/variant_galaxy_g36e/manifest.json"),
-        include_str!("../../../examples/mods/variant_galaxy_g36e/main.lua"),
-        &[(
-            "assets/galaxy.dtx",
-            include_bytes!("../../../examples/mods/variant_galaxy_g36e/assets/galaxy.dtx"),
-        )],
-    ),
-    (
-        "L96A1 Tiger",
-        include_str!("../../../examples/mods/variant_tiger_l96a1/manifest.json"),
-        include_str!("../../../examples/mods/variant_tiger_l96a1/main.lua"),
-        &[(
-            "assets/tiger.dtx",
-            include_bytes!("../../../examples/mods/variant_tiger_l96a1/assets/tiger.dtx"),
-        )],
-    ),
-    (
-        "L96A1 Toxic",
-        include_str!("../../../examples/mods/variant_toxic_l96a1/manifest.json"),
-        include_str!("../../../examples/mods/variant_toxic_l96a1/main.lua"),
-        &[
-            (
-                "assets/toxic_base.dtx",
-                include_bytes!("../../../examples/mods/variant_toxic_l96a1/assets/toxic_base.dtx"),
-            ),
-            (
-                "assets/toxic.dtx",
-                include_bytes!("../../../examples/mods/variant_toxic_l96a1/assets/toxic.dtx"),
-            ),
-        ],
-    ),
-    (
-        "SCAR-L Prism",
-        include_str!("../../../examples/mods/variant_prism_scar/manifest.json"),
-        include_str!("../../../examples/mods/variant_prism_scar/main.lua"),
-        &[(
-            "assets/prism.dtx",
-            include_bytes!("../../../examples/mods/variant_prism_scar/assets/prism.dtx"),
-        )],
-    ),
-];
-
-/// Opens a built-in example by name.
-pub fn open_example(name: &str) -> Result<Opened, String> {
-    let (_, manifest, lua, files) = EXAMPLES
-        .iter()
-        .find(|e| e.0.eq_ignore_ascii_case(name))
-        .ok_or_else(|| format!("no example named {name:?}"))?;
-    let dir = std::env::temp_dir().join(format!("dc-gunkit-example-{}", slug(name)));
-    std::fs::create_dir_all(dir.join("assets")).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("manifest.json"), manifest).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("main.lua"), lua).map_err(|e| e.to_string())?;
-    for (file, bytes) in *files {
-        std::fs::write(dir.join(file), bytes).map_err(|e| e.to_string())?;
+/// Where the example packs are (docs/PACKS_FROM_REPOSITORIES.md section 4): `DC_GUNKIT_EXAMPLES`, else `examples/`
+/// next to the program (the GunKit package ships the five), else, under cargo, the repository's `examples/mods`. The
+/// first folder that exists wins; `None` without one. Nothing is built into the binary any more (VAR-13).
+pub fn examples_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("DC_GUNKIT_EXAMPLES") {
+        let d = PathBuf::from(d);
+        return d.is_dir().then_some(d);
     }
-    let mut opened = open(&dir)?;
-    // an example is a starting point: its files are not the author's to watch
+    let mut dirs = Vec::new();
+    if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        dirs.push(p.join("examples"));
+    }
+    if let Some(m) = std::env::var_os("CARGO_MANIFEST_DIR") {
+        dirs.push(PathBuf::from(m).join("../../examples/mods"));
+    }
+    dirs.into_iter().find(|d| d.is_dir())
+}
+
+/// The example camos of folder `dir`: every pack whose manifest tags hold `camo` or `variant`, by name.
+pub fn examples_in(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(list) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = list
+        .flatten()
+        .filter_map(|e| {
+            let m = ModManifest::from_file(&e.path().join("manifest.json")).ok()?;
+            m.tags
+                .iter()
+                .any(|t| t == "camo" || t == "variant")
+                .then(|| (m.name, e.path()))
+        })
+        .collect();
+    out.sort_by_key(|a| a.0.to_ascii_lowercase());
+    out
+}
+
+/// The example camos of [`examples_dir`] (none without the folder).
+pub fn examples() -> Vec<(String, PathBuf)> {
+    examples_dir().map(|d| examples_in(&d)).unwrap_or_default()
+}
+
+/// Opens the example of folder `dir` named `name` (case does not matter). An example is a starting point: its
+/// files are not the author's to watch.
+pub fn open_example_in(dir: &Path, name: &str) -> Result<Opened, String> {
+    let (_, path) = examples_in(dir)
+        .into_iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("no example named {name:?} in {}", dir.display()))?;
+    let mut opened = open(&path)?;
     for art in [opened.design.paint.as_mut(), opened.design.glow.as_mut()]
         .into_iter()
         .flatten()
@@ -545,8 +517,17 @@ pub fn open_example(name: &str) -> Result<Opened, String> {
         art.source = None;
         art.stamp = None;
     }
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(opened)
+}
+
+/// Opens an example of [`examples_dir`] by name.
+pub fn open_example(name: &str) -> Result<Opened, String> {
+    match examples_dir() {
+        Some(d) => open_example_in(&d, name),
+        None => Err(format!(
+            "no example named {name:?}: no examples folder (DC_GUNKIT_EXAMPLES, or examples/ next to the program)"
+        )),
+    }
 }
 
 /// Which art of a design each layer holds, for a status line.
@@ -780,11 +761,47 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The five example packs (the ones the GunKit package ships) in a folder of their own, else `None` when a
+    /// checkout no longer holds them.
+    fn five_examples() -> Option<PathBuf> {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/mods");
+        let dir = temp("examples");
+        let _ = std::fs::remove_dir_all(&dir);
+        for id in [
+            "variant_candy_g36e",
+            "variant_galaxy_g36e",
+            "variant_tiger_l96a1",
+            "variant_toxic_l96a1",
+            "variant_prism_scar",
+        ] {
+            let from = src.join(id);
+            if !from.join("manifest.json").is_file() {
+                return None;
+            }
+            for sub in ["", "assets"] {
+                let d = dir.join(id).join(sub);
+                std::fs::create_dir_all(&d).unwrap();
+                for e in std::fs::read_dir(from.join(sub)).unwrap().flatten() {
+                    if e.path().is_file() {
+                        std::fs::copy(e.path(), d.join(e.file_name())).unwrap();
+                    }
+                }
+            }
+        }
+        Some(dir)
+    }
+
     #[test]
     fn every_example_opens_and_three_of_them_move() {
+        let Some(dir) = five_examples() else {
+            eprintln!("the five example packs are not in examples/mods: skipped");
+            return;
+        };
+        let list = examples_in(&dir);
+        assert_eq!(list.len(), 5, "{list:?}");
         let mut moving = 0;
-        for (name, ..) in EXAMPLES {
-            let o = open_example(name).unwrap();
+        for (name, _) in &list {
+            let o = open_example_in(&dir, name).unwrap();
             assert!(o.design.paint.is_some(), "{name}");
             assert!([25, 27, 33].contains(&o.row), "{name}");
             // The SCAR-L (row 33) has no sight, so no lens to keep clean.
@@ -792,14 +809,30 @@ mod tests {
                 o.row == 33 || !o.design.keep.is_empty(),
                 "{name} keeps its lens clean"
             );
+            assert!(
+                o.design.paint.as_ref().unwrap().source.is_none(),
+                "{name}: an example's art is not a file to watch"
+            );
             moving += usize::from(o.design.fx.is_some() || o.design.flow.is_some());
         }
         assert_eq!(moving, 3, "Galaxy, Toxic and Prism");
         assert!(
-            open_example("SCAR-L Prism").unwrap().design.flow.is_some(),
-            "Prism flows"
+            open_example_in(&dir, "scar-l prism").unwrap().design.flow.is_some(),
+            "Prism flows, and the name's case does not matter"
         );
-        assert!(open_example("nope").is_err());
+        assert!(open_example_in(&dir, "nope").is_err());
+        // a folder without camo packs lists nothing; a missing folder lists nothing
+        let plain = temp("examples_plain");
+        std::fs::create_dir_all(plain.join("x")).unwrap();
+        std::fs::write(
+            plain.join("x/manifest.json"),
+            r#"{"id": "x", "name": "X", "version": "1.0.0", "kind": "shared", "tags": ["map"]}"#,
+        )
+        .unwrap();
+        assert!(examples_in(&plain).is_empty());
+        assert!(examples_in(&plain.join("nowhere")).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&plain).unwrap();
     }
 
     #[test]

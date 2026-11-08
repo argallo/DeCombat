@@ -11,4 +11,6 @@
 - `drawn_crosshair`: optional cosmetic mod, a drawn crosshair with colour, style and recoil settings (MOD-24, CLI-1633); not part of any mod set, offered through a lobby's `[[mods.catalog]]` (MOD-25).
 - `hacking_mod`: server mod, see players through walls (MOD-22) with chams, nametags, health bars and team mate colours; rooms may add no-recoil (MOD-23).
 
-Pack one with `dc-modkit pack examples/mods/<name> -o <name>-<version>.zip`.
+The other packs of the project (the weapon camos, the Case Reel, the inspect pack) live in their own repository, https://github.com/argallo/DeCombat-mods, built with
+`tools/modrepo.py`; the five camos still here are the ones dc-gunkit shows as its built-in examples. Pack one with
+`dc-modkit pack examples/mods/<name> -o <name>-<version>.zip`.

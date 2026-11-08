@@ -109,6 +109,22 @@ impl LogWriter {
         ))
     }
 
+    /// As [`LogWriter::create`], but the file is moved to `<path>.1` (replacing an older copy) and started over once
+    /// it holds `max` bytes (0: never). The move happens between two bursts, so no line is split across the files.
+    pub fn create_rotating(path: &Path, max: u64) -> io::Result<LogWriter> {
+        if let Some(d) = path.parent() {
+            if !d.as_os_str().is_empty() {
+                std::fs::create_dir_all(d)?;
+            }
+        }
+        let f = Stall::new(Rotating::create(path, max)?);
+        Ok(Self::from_writer(
+            BufWriter::with_capacity(WRITE_BUFFER, f),
+            DEFAULT_RECORDS,
+            DEFAULT_BYTES,
+        ))
+    }
+
     /// A log over any sink (tests use slow or failing sinks).
     pub fn from_writer<W: Write + Send + 'static>(
         w: W,
@@ -241,6 +257,58 @@ fn writer_main<W: Write>(mut w: W, rx: Receiver<Msg>, c: &Counters) {
         timed(&mut || w.flush());
     }
     let _ = w.flush();
+}
+
+/// A file that is moved to `<path>.1` and started over when a flush finds it at `max` bytes or more.
+struct Rotating {
+    path: std::path::PathBuf,
+    file: Option<File>,
+    size: u64,
+    max: u64,
+}
+
+impl Rotating {
+    fn create(path: &Path, max: u64) -> io::Result<Rotating> {
+        Ok(Rotating {
+            path: path.to_path_buf(),
+            file: Some(File::create(path)?),
+            size: 0,
+            max,
+        })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        // closed first: a file that is open cannot be moved on Windows
+        self.file = None;
+        let mut old = self.path.as_os_str().to_owned();
+        old.push(".1");
+        let old = std::path::PathBuf::from(old);
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::rename(&self.path, &old);
+        self.file = Some(File::create(&self.path)?);
+        self.size = 0;
+        Ok(())
+    }
+}
+
+impl Write for Rotating {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        if self.file.is_none() {
+            self.rotate()?;
+        }
+        let n = self.file.as_mut().map_or(Ok(0), |f| f.write(b))?;
+        self.size += n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(f) = self.file.as_mut() {
+            f.flush()?;
+        }
+        if self.max > 0 && self.size >= self.max {
+            self.rotate()?;
+        }
+        Ok(())
+    }
 }
 
 /// Fault injection for hitch measurements (perf-hitch tooling, off unless asked for): with
@@ -391,6 +459,29 @@ mod tests {
         assert!(s.hwm_bytes <= 100);
         assert_eq!(s.dropped, 100 - kept as u64);
         g.release();
+    }
+
+    #[test]
+    fn a_rotating_log_keeps_two_generations_and_whole_lines() {
+        let dir = std::env::temp_dir().join(format!("dc-logrot-{}", std::process::id()));
+        let p = dir.join("a.jsonl");
+        {
+            let w = LogWriter::create_rotating(&p, 200).unwrap();
+            for i in 0..60 {
+                w.push(format!("{{\"i\":{i}}}"));
+                w.flush();
+            }
+        }
+        let cur = std::fs::read_to_string(&p).unwrap();
+        let old = std::fs::read_to_string(dir.join("a.jsonl.1")).unwrap();
+        assert!(!old.is_empty() && cur.len() < 400 && old.len() < 400);
+        assert!(!dir.join("a.jsonl.2").exists());
+        assert!(cur
+            .lines()
+            .chain(old.lines())
+            .all(|l| l.starts_with("{\"i\":") && l.ends_with('}')));
+        assert!(cur.contains("\"i\":59") || old.contains("\"i\":59"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

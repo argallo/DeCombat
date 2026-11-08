@@ -248,8 +248,22 @@ fn cmp_of(w: &[u8]) -> Option<Cmp> {
     })
 }
 
+/// The joiner words of a condition: `and` / `or`, also written `&&` / `||`.
+// OBSERVED: ROM SANDHOG_CP1 (six conditions of its trigger commands join two comparisons with `&&`, the others
+// with `AND` / `OR`; 2026-11-08 scratch run)
+// DC-DEFAULT: DSV-643 (proposed) `&&` reads as `and`, `||` as `or`
+const JOIN_AND_SIGN: &[u8] = b"&&";
+const JOIN_OR_SIGN: &[u8] = b"||";
+
 fn cond_of(nodes: &[Node]) -> Cond {
-    let is = |n: &Node, k: PropHash| matches!(n, Node::Word(w) if word_key(w) == k);
+    let is = |n: &Node, k: PropHash| {
+        let sign = if k == WORD_AND {
+            JOIN_AND_SIGN
+        } else {
+            JOIN_OR_SIGN
+        };
+        matches!(n, Node::Word(w) if word_key(w) == k || w.as_slice() == sign)
+    };
     let split = |k: PropHash| -> Vec<&[Node]> { nodes.split(|n| is(n, k)).collect() };
     if nodes.iter().any(|n| is(n, WORD_OR)) {
         return Cond::Any(split(WORD_OR).into_iter().map(cond_of).collect());
@@ -985,6 +999,22 @@ mod tests {
         assert!(!c("if (A) then (x)"), "an unreadable condition is false");
         let draws: Vec<usize> = (0..30).map(|_| n.draw(3)).collect();
         assert!(draws.iter().all(|d| *d < 3) && draws.iter().any(|d| *d != draws[0]));
+    }
+
+    #[test]
+    fn sign_joiners_read_as_and_or() {
+        // DSV-643: the mission world's `&&` conditions gate its later spawns
+        let mut n = Network::new(MissionObjects::default(), 7);
+        n.set_var(VarOp::Set, b"K", 2.0);
+        n.set_var(VarOp::Set, b"L", 1.0);
+        let c = |n: &Network, t: &str| match &parse_script(t.as_bytes())[0] {
+            Stmt::If { cond, .. } => n.test(cond),
+            s => panic!("{s:?}"),
+        };
+        assert!(c(&n, "if ((K > 0) && (L == 1)) then (msg S (spawn _S))"));
+        assert!(!c(&n, "if ((K > 0) && (L == 0)) then (msg S (spawn _S))"));
+        assert!(c(&n, "if ((K == 0) || (L == 1)) then (x)"));
+        assert!(!c(&n, "if ((K == 0) || (L == 0)) then (x)"));
     }
 
     #[test]

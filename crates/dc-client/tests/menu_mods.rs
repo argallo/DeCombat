@@ -17,8 +17,9 @@ use dc_client::menu::modsettings::{
     CMD_PAGE_STEP_BASE, T_APPLIES, T_COPY, T_PASTE, T_RESET,
 };
 use dc_client::menu::modbrowser::{
-    CMD_AGREE, CMD_CLOSE, CMD_DECLINE, CMD_JOIN, CMD_MODS, CMD_ROW_BASE, CMD_TOGGLE_BASE,
-    T_CONSENT_TITLE,
+    CMD_AGREE, CMD_CLOSE, CMD_DECLINE, CMD_GROUP_BASE, CMD_JOIN, CMD_MODS, CMD_ROW_BASE, CMD_TOGGLE_BASE,
+    T_CAMOS, T_CAMOS_KIND, T_CAMOS_NOTE, T_CONSENT_TITLE, T_HIDE_CAMOS, T_ORIGIN_OPTIONAL, T_ORIGIN_SERVER,
+    T_ORIGIN_YOURS, T_SHOW_CAMOS,
 };
 use dc_client::menu::{login, Menu, MenuInput, MenuOptions};
 use dc_client::hud::items::DrawItem;
@@ -1171,6 +1172,7 @@ fn get_mods_downloads_disabled_settings_persist_and_remove_deletes() {
     let t = texts(&mut m);
     assert!(has(&t, T_BROWSE) && has(&t, "Custom Crosshair") && has(&t, "Version 1.1.0 by DeCombat"), "{t:?}");
     assert!(has(&t, "Install") && has(&t, "KB"), "{t:?}");
+    assert!(has(&t, T_ORIGIN_OPTIONAL) && !has(&t, T_ORIGIN_YOURS), "a catalogue entry not installed yet: {t:?}");
     assert!(!t.iter().any(|x| x.contains("127.0.0.1")), "no address on screen: {t:?}");
     let dir = root.join("mods/local/drawn_crosshair");
     assert!(!dir.exists(), "nothing is installed by itself");
@@ -1182,6 +1184,7 @@ fn get_mods_downloads_disabled_settings_persist_and_remove_deletes() {
     let t = texts(&mut m);
     assert!(has(&t, "Enable") && has(&t, T_SETTINGS) && has(&t, "Remove"), "{t:?}");
     assert!(!t.iter().any(|x| x == "Install" || x == T_DOWNLOAD), "{t:?}");
+    assert!(has(&t, T_ORIGIN_YOURS) && !has(&t, T_ORIGIN_OPTIONAL), "installed: it is the player's own now: {t:?}");
 
     // the page: the style cycler, the recoil toggle, a palette cell; saved in the profile, a reload keeps them
     m.input(MenuInput::Command(CMD_SETTINGS_BASE));
@@ -1689,5 +1692,200 @@ fn the_panel_shows_the_commands_and_the_operators_picture() {
     assert_eq!(rows[0].commands.len(), 4, "from the unpacked manifest");
     set.mods[0].preview = None;
     assert_eq!(dc_client::menu::modbrowser::set_rows(&m.data, &set)[0].preview, None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ------------------------------------------------------------------ CLI-1940: the download shows in the wait box
+
+/// The login's wait box takes the pack download's line (pack count and bytes) while the join works, and gets its own
+/// text back when the join is past the download.
+#[test]
+fn the_login_wait_box_shows_the_pack_download_and_gives_its_text_back() {
+    use dc_client::mods::ModState;
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = menu(None, "127.0.0.1:1".parse().unwrap());
+    m.detach_link();
+    m.update();
+    m.input(MenuInput::Command(login::CMD_LOGIN));
+    let before = texts(&mut m);
+    assert!(
+        !has(&before, "Downloading server packs"),
+        "the plain wait box was expected: {before:?}"
+    );
+    m.feed_event(LinkEvent::Mods(ModState::FetchingSet));
+    m.update();
+    assert!(has(&texts(&mut m), "Reading the server's pack list"));
+    m.feed_event(LinkEvent::Mods(ModState::Downloading {
+        index: 3,
+        count: 65,
+        done: 3 * 1024 * 1024,
+        total: 0,
+    }));
+    m.update();
+    let t = texts(&mut m);
+    assert!(
+        has(&t, "Downloading server packs: 3 of 65 (3.0 MB so far)"),
+        "{t:?}"
+    );
+    m.feed_event(LinkEvent::Mods(ModState::Downloading {
+        index: 4,
+        count: 65,
+        done: 5 * 1024 * 1024,
+        total: 0,
+    }));
+    m.update();
+    assert!(has(&texts(&mut m), "4 of 65 (5.0 MB so far)"));
+    m.feed_event(LinkEvent::Mods(ModState::Verifying));
+    m.update();
+    assert!(has(&texts(&mut m), "Checking the packs"));
+    m.feed_event(LinkEvent::Mods(ModState::Ready));
+    m.update();
+    let after = texts(&mut m);
+    assert!(!has(&after, "packs"), "{after:?}");
+    assert_eq!(after, before, "the box's own text did not come back");
+}
+
+// ------------------------------------------------------------------ CLI-1943: the camo packages fold into one row
+
+/// An in-test weapon camo `test_camo_<n>` ("Test Camo <nn>", kind shared, tags variant + camo, a generated pattern)
+/// packed into the by-hash cache of `root` and unpacked there; its sha256.
+fn cached_camo(root: &Path, n: usize) -> String {
+    let src = root.join(format!("src_test_camo_{n}"));
+    std::fs::create_dir_all(src.join("assets")).unwrap();
+    std::fs::create_dir_all(src.join("screenshots")).unwrap();
+    std::fs::write(
+        src.join("manifest.json"),
+        format!(
+            r#"{{"id": "test_camo_{n}", "name": "Test Camo {n:02}", "version": "1.0.0", "kind": "shared",
+            "requires_client": true, "capabilities": ["content.weapons", "assets"],
+            "description": "A test camo: row {row} is the SCAR-L with a new look and nothing else.",
+            "author": "DeCombat", "tags": ["variant", "camo"], "screenshots": ["screenshots/main.png"]}}"#,
+            row = 510 + n
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("main.lua"),
+        format!(
+            "return function(mod)
+    local art = mod.assets:path(\"assets/pattern.dtx\")
+    mod.content.weapons:register({{
+        id = \"Weapon{row}\",
+        variant_of = 33,
+        variant_name = \"Test Camo {n:02}\",
+        PVSkin1 = \"@camo:paint:33:PVSkin1:\" .. art,
+    }})
+end
+",
+            row = 510 + n
+        ),
+    )
+    .unwrap();
+    let rgba: Vec<u8> = (0..16 * 16).flat_map(|k| [(k * 7 % 256) as u8, 90, 160, 255]).collect();
+    std::fs::write(src.join("assets/pattern.dtx"), dc_tex::write_bgra8(16, 16, &rgba).unwrap()).unwrap();
+    image::RgbaImage::from_pixel(16, 9, image::Rgba([60, 30, 90, 255]))
+        .save(src.join("screenshots/main.png"))
+        .unwrap();
+    let (zip, entry) = dc_modkit::pack_mod_bytes(&src).expect("the camo fixture packs");
+    let paths = dc_client::mods::ModPaths::new(root);
+    std::fs::create_dir_all(paths.by_hash()).unwrap();
+    std::fs::write(paths.zip(&entry.sha256), &zip).unwrap();
+    dc_client::mods::unpack_package(&zip, &paths.unpacked(&entry.sha256), 1 << 24).unwrap();
+    entry.sha256
+}
+
+#[test]
+fn camo_packages_fold_into_one_row_that_opens_to_list_them() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = temp("camos");
+    let xray = cached_example(&root, "hacking_mod");
+    let camos: Vec<String> = (1..=12).map(|n| cached_camo(&root, n)).collect();
+    let mut mods = vec![format!(r#"{{"id": "hacking_mod", "version": "1.1.1", "sha256": "{xray}"}}"#)];
+    for (k, sha) in camos.iter().enumerate() {
+        mods.push(format!(r#"{{"id": "test_camo_{}", "version": "1.0.0", "sha256": "{sha}"}}"#, k + 1));
+    }
+    let doc = parse_community(&format!(
+        r#"{{"schema_version": 1, "updated": "2026-11-08T12:00:00Z",
+        "servers": [
+          {{"id": "vps", "name": "DeCombat VPS", "region": "na", "address": "127.0.0.1:10000",
+            "policy": "vanilla", "mods": []}},
+          {{"id": "camo-land", "name": "Camo Land", "region": "na", "address": "127.0.0.1:11000",
+            "policy": "modded", "mods": [{}]}}
+        ], "known_mods": []}}"#,
+        mods.join(", ")
+    ))
+    .expect("the fixture document is valid");
+    let view = CommunityView {
+        addrs: vec![
+            Some("127.0.0.1:10000".parse().unwrap()),
+            Some("127.0.0.1:11000".parse().unwrap()),
+        ],
+        doc: Some(doc),
+        cached: false,
+        error: None,
+    };
+    let mut m = menu(Some(&root), "127.0.0.1:10000".parse().unwrap());
+    m.load_settings(store(&root));
+    m.feed_event(LinkEvent::Community(view));
+    m.feed_event(LinkEvent::OtherLobbies(vec![other(
+        "Camo Land",
+        "US West",
+        "127.0.0.1:11000".parse().unwrap(),
+    )]));
+    m.feed_event(LinkEvent::Servers(vanilla_list()));
+    m.update();
+
+    // the modded row (after the three entries of this lobby): My Mods lists the Hacking Mod and ONE camo row
+    m.open(dc_client::menu::Go::Servers);
+    for _ in 0..3 {
+        m.input(MenuInput::Key(dc_client::menu::MenuKey::Down));
+    }
+    m.input(MenuInput::Command(CMD_MODS));
+    assert_eq!(m.screen_name(), "mods");
+    let t = texts(&mut m);
+    for want in ["Hacking Mod", T_CAMOS, "12 camos", "Test Camo 01, Test Camo 02"] {
+        assert!(has(&t, want), "missing {want:?} in {t:?}");
+    }
+    // CLI-1943 (amended): both rows come from the server; nothing here is the player's own
+    assert_eq!(t.iter().filter(|s| *s == T_ORIGIN_SERVER).count(), 2, "{t:?}");
+    assert!(!has(&t, T_ORIGIN_YOURS) && !has(&t, T_ORIGIN_OPTIONAL), "{t:?}");
+    for n in 4..=12 {
+        assert!(!has(&t, &format!("Test Camo {n:02}")), "camo {n} listed while the group is closed: {t:?}");
+    }
+
+    // the group's detail: the kind, the shared author, the notes once, the count with the size, Show camos
+    m.input(MenuInput::Command(CMD_ROW_BASE + 1));
+    let all = detail_text(&mut m);
+    for want in [T_CAMOS_KIND, "By DeCombat", T_CAMOS_NOTE, "Test Camo 03 and 9 more", "Required by Camo Land.", "12 camos,", T_SHOW_CAMOS] {
+        assert!(all.contains(want), "missing {want:?} in {all}");
+    }
+    assert!(!all.contains("Version"), "a group has no version: {all}");
+    let once = texts(&mut m).join(" ");
+    assert_eq!(once.matches("Required by Camo Land.").count(), 1, "the shared note once: {once}");
+
+    // Show camos: the camos follow the group row in order, each with its own row; the group stays selected
+    m.input(MenuInput::Command(CMD_GROUP_BASE));
+    let t = texts(&mut m);
+    assert!(has(&t, T_HIDE_CAMOS), "{t:?}");
+    for n in 1..=7 {
+        assert!(has(&t, &format!("Test Camo {n:02}")), "camo {n} not listed while the group is open: {t:?}");
+    }
+    assert!(!has(&t, "Test Camo 08"), "nine rows show at a time: {t:?}");
+    m.input(MenuInput::Command(CMD_ROW_BASE + 2));
+    let all = detail_text(&mut m);
+    for want in ["Test Camo 01", "Version 1.0.0 by DeCombat", "Required by Camo Land.", "Remove"] {
+        assert!(all.contains(want), "missing {want:?} in the camo's own detail: {all}");
+    }
+
+    // Hide camos (from the group row): closed again
+    m.input(MenuInput::Command(CMD_ROW_BASE + 1));
+    m.input(MenuInput::Command(CMD_GROUP_BASE));
+    let t = texts(&mut m);
+    assert!(has(&t, T_SHOW_CAMOS) && !has(&t, "Test Camo 04"), "{t:?}");
+
+    // Browse: everything is on this PC, so the server adds no rows there and no group either
+    m.input(MenuInput::Command(CMD_TAB_BROWSE));
+    let t = texts(&mut m);
+    assert!(!has(&t, T_CAMOS), "{t:?}");
     let _ = std::fs::remove_dir_all(&root);
 }

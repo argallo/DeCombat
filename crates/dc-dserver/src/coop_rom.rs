@@ -380,6 +380,10 @@ pub struct AiAttributeRow {
     // OBSERVED: ROM table key AIBUTES.TXT [AttributeTemplate<n>] HitPoints (every row; the four infected rows differ
     // from each other and from the soldiers' rows, the heavy row the highest; 2026-11-05 scratch run)
     pub hit_points: Option<f32>,
+    /// `FullAccuracyRadius`: a ranged AI's shot at a human this close always hits (DSV-641).
+    // OBSERVED: ROM table key AIBUTES.TXT [AttributeTemplate<n>] FullAccuracyRadius (every row; the soldiers' rows
+    // two values, the heavier kinds the larger one; 2026-11-08 scratch run, values read at run time)
+    pub full_accuracy: Option<f32>,
 }
 
 /// One `[Brain<n>]` row: the upper ends of its ranged and melee attack ranges (`None` = key absent) and its drop
@@ -406,6 +410,8 @@ pub struct AiBrainRow {
 // thrown weapon row of the weapon table and an impact effect row of the effect table), DeathThrowWeapon,
 // DeathThrowWeaponNum (one infected brain: a thrown weapon row and a count); 2026-11-05 scratch run
 pub const KEY_DEATH_BLAST: &str = "DeathExplosion";
+/// The attribute row key of the full-accuracy distance (DSV-641).
+pub const KEY_FULL_ACCURACY: &str = "FullAccuracyRadius";
 pub const KEY_DEATH_THROW: &str = "DeathThrowWeapon";
 pub const KEY_DEATH_THROW_NUM: &str = "DeathThrowWeaponNum";
 pub const KEY_DEATH_FX: &str = "DeathImpactFX";
@@ -518,6 +524,7 @@ impl AiTables {
                     walk_speed: num(Some(sec), "WalkSpeed").filter(|v| *v > 0.0),
                     see_enemy: num(Some(sec), "SeeEnemyDistance").filter(|v| *v > 0.0),
                     hit_points: num(Some(sec), "HitPoints").filter(|v| *v > 0.0),
+                    full_accuracy: num(Some(sec), KEY_FULL_ACCURACY).filter(|v| *v > 0.0),
                 });
             } else if index_of(name, AI_BRAIN_SECTION).is_some() {
                 self.brains.push(AiBrainRow {

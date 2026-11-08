@@ -465,11 +465,16 @@ which sends it only in a room with wallhacks; CLI-1630 / CLI-1631 / DSV-480).
 
 ## 7. How servers deliver mods
 
+Where the zips come from before a server has them, and how our own packs move to repositories of their own, is
+docs/PACKS_FROM_REPOSITORIES.md (pinned releases, hashes checked at install, the client unchanged).
+
 1. A server publishes its **mod set**: for each mod `(id, version, sha256)` of the packed zip, in load order, plus a
    policy (`vanilla` or `modded`, and whether local client-visual mods are allowed). `dc-modkit modset` prints this
    fragment (section 9).
 2. The client compares the set with its cache (`<data>/mods/by-hash/<sha256>.zip`) and downloads what is missing from
    the **server's own HTTP endpoint** (`/mods/<sha256>.zip`, size-capped, with progress).
+   The first join of a curated entry (Vanilla++ has dozens of packs) downloads them, up to four at a time, and the
+   wait box shows "Downloading server packs: 12 of 65" with the megabytes so far; later joins read the cache.
 3. The client verifies the SHA-256 **before unpacking**. A mismatch refuses the join. Operators cannot swap bytes
    silently: the client pins to the hash in the server-list entry.
 4. Mods load into the sandbox in the server's order. The client sends the resulting mod-set hash at login and the
@@ -561,6 +566,11 @@ What the player sees (CLI-1616 .. CLI-1618, LG-272, CLI-1622, CLI-1623):
   toggle takes effect at the next join. When a local mod did not load the screen says why: not `client_visual`, a
   render or HUD hook, a vanilla server (section 10), or a server that does not allow local mods. Mods a server runs
   never go into `mods/local/`: they are downloaded for you and listed in (b).
+  Two or more weapon camos of a server (packages tagged `camo` or `variant`, as `dc-gunkit` writes them) show as one
+  row, **Camo collection**, with their count; **Show camos** lists them one by one under it (CLI-1943), so a curated
+  entry with sixty camos stays readable. Fill in `tags` for that reason too. Every row says where it comes from at the
+  start of its second line: **Yours** (a folder under `mods/local`, a catalogue download included), **Optional** (a
+  catalogue entry not installed yet) or **Server pack** (a server's set, downloaded by hash).
 
 So: fill in `author`, `description`, `github` and `screenshots` (PNG shows on the Mods screen) in the manifest,
 because the player decides on them.
@@ -746,6 +756,19 @@ remote game host (`[[lobby.servers]]` `host`) is refused for them.
 4. A community admin reviews every pack, guns and maps alike. Today the project maintainer is the only admin; later admins may approve as well. A merged row is the acceptance, and the note is rewritten to say what
    was reviewed.
 
+**Your own mod repository.** A pack lives in a repository of its own, not in the game's. `tools/modrepo.py` (Python 3,
+standard library) makes one and keeps it buildable: `modrepo.py init <dir> --github <owner/repo> --decombat-rev <tag>` writes the layout
+(`mods/<id>/` per pack, `generators/<id>/` for the scripts that drew a pack's art, `.gitattributes` so Windows checkouts
+never change a hash, a GitHub workflow that installs `dc-modkit` and packs every mod on each push, and a copy of the tool);
+`modrepo.py add <repo> <mod folder>` copies a pack in from a clean git copy; `modrepo.py build <repo> [--modkit <exe>]
+[--rom <client folder>]` validates, lints and packs every mod into `dist/` with `packs.json` and `SHA256SUMS`;
+`modrepo.py rows <repo> --format vanilla-plus|known-mods|server-toml|catalog-toml` prints the review-list row, the
+known-mods row or the `[[mods.set]]` / `[[mods.catalog]]` blocks; `modrepo.py verify <repo> --against
+community/vanilla_plus.json` says whether what you built still hashes to what was reviewed; `modrepo.py lock` writes
+`packs.lock.json`, which the workflow checks its own build against (the pinned DeCombat tag is what builds `dc-modkit` there). A `v*` tag publishes a
+release with the zips and the rows, so step 2 above is the tag and step 3 is pasting a row. DeCombat's own packs live in
+such repositories too; the game repository keeps only the examples its tests read.
+
 **After a row is merged (for the operator).**
 
 1. Put the zip in the lobby's mods folder as `<sha256>.zip`, and run `dc-config vanilla-plus-lines
@@ -775,7 +798,7 @@ A pack can give a gun an inspect: the player presses their inspect key (I by def
 turns in the hands to show it off. It is drawn on their screen only, changes nothing in play, and firing, reloading, switching
 weapons, sprinting or zooming cancels it at once. A variant has its base gun's inspect, so one inspect for a gun covers
 every camo of it, including camos added later; a variant cannot set its own (the keys are not cosmetic keys). Set these with
-`mod.content.weapons:patch`; `examples/mods/inspect_g36e_l96a1` is a full example, and the rule is CLI-1845 in `DC_DEFAULTS.md`.
+`mod.content.weapons:patch`; the inspect pack in the mods repository (https://github.com/argallo/DeCombat-mods/tree/main/mods/inspect_g36e_l96a1) is a full example, and the rule is CLI-1845 in `DC_DEFAULTS.md`.
 
 | Key | Value |
 |---|---|

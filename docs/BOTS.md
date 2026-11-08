@@ -14,7 +14,9 @@ Windows   bots.bat 3 YourNick          three bots that sit in whatever room Your
 macOS     ./bots.command 3 YourNick    (the same; list and stop too)
 ```
 
-Open a room in the game and the bots come in. Leave it and they leave. At most 7.
+Open a room in the game and the bots come in. Leave it and they leave. At most 7: that is the lobby's
+`bots.pool_per_ip` (default 7), the number of bot seats one address may hold. Without your nick (`bots.bat` alone) the
+bots sit with the first person found.
 
 A bot needs no account. Each one takes a free seat of the lobby's bot pool when it logs in and gives it back when it
 ends. Its name in the game is the seat's: `PoolBot17`.
@@ -23,7 +25,7 @@ ends. Its name in the game is the seat's: `PoolBot17`.
 
 ```text
 dc-botclient swarm --server <host[:port]> --rom <client folder> [--count 1..7] [--server-id N] [--channel N]
-                   [--room any | <part of a title>] [--follow <nick>] [--room-password <p>] [--skill 30-65]
+                   [--room any | <part of a title>] [--follow <nick>] [--room-password <p>] [--skill off | 0..100 | lo-hi, default 30-65]
                    [--mod-cache <dir>] [--mod-set-hash <hex>] [--content-hash <hex|0>] [--dir <folder>]
 dc-botclient swarm list | stop
 ```
@@ -43,7 +45,11 @@ dc-botclient swarm list | stop
 Everything is in `bots` in the DeCombat profile folder (`%APPDATA%\DeCombat`, `~/Library/Application Support/DeCombat`,
 `~/.config/decombat`; `--dir` or `DC_BOT_DIR` to move it):
 
-- `logs/seat<n>.out`: what each bot printed, with the seat it got. Started over above 5 MB.
+- `logs/seat<n>.out`: what each bot printed, with the seat it got. A log above 5 MB is deleted and
+  started over when that bot next starts (the managed bots' logs below keep a `.1` instead). The command prints a line
+  when a bot ends for any other reason than a full pool: `seat2 ended (exit 1), starts again in 20 s: <last log line>`.
+  A bot that ends is started again after 10 s, doubling to 2 min while it keeps ending quickly; starts are 3 s apart.
+  With `--follow`, a hint is printed once after 3 minutes (the name must match the in-game name exactly).
 - `swarm.json`, `last_server.txt`: the running command's state for `list` and `stop`, and the last lobby.
 
 An `accounts.json` from an older build is no longer read. It can be deleted.
@@ -87,6 +93,10 @@ A bot sent away passes over that room for a minute and looks elsewhere, and one 
 room. It keeps its seat and does not reconnect. A person coming in during a match does not wait for the bot: the game
 server has its own, larger limit of `room.max_players_cap`.
 
+A room with a weapon limit its guns fail (a "Sniper Only" room and a bot without a sniper rifle) is left the same way: a
+bot cannot change what it carries, so the first refused ready is the last. It leaves, passes that room over for 5 minutes,
+logs `weapon_limit`, and readies under that limit nowhere else for the rest of its run (BOT-156).
+
 ## A server entry with a pack
 
 A bot can join an entry with a mod set: it repeats the hashes the lobby pushes for that entry (BOT-101). For a room on a
@@ -128,8 +138,8 @@ managed = true            # off by default: a lobby without it starts no bot
 managed_max_total = 21    # most bots of all groups together
 ```
 
-`DC_BOTS__MANAGED=true` works as well. The log then says `bots: managed by this lobby: .../dc-botclient, logs in ...`;
-it says MISSING when `dc-botclient` is not beside `dc-lobby-server` (the server tarball installs both in
+`DC_BOTS__MANAGED=true` works as well. The log then says `bots: managed by this lobby (bots.managed): .../dc-botclient, logs in ..., at most 21 in all`;
+it says `(MISSING: no bot can start)` when `dc-botclient` is not beside `dc-lobby-server` (the server tarball installs both in
 `/opt/decombat/bin`).
 
 **A group** is a set of bots that share their settings:
@@ -174,9 +184,12 @@ What each bot runs: `dc-botclient --parent-pipe --lobby 127.0.0.1:<auth port> --
 featured entries' packs, when there are any), `--mod-set-hash` / `--content-hash` on a modded lobby, `--log` and
 `--known-servers` in the bots' folder. That is what `bots.sh` passed. The output goes to `bots/<name>.out` and
 `bots/<name>.events.jsonl` beside the lobby's log (`/opt/decombat/logs/bots` on the VPS; above 5 MB a file is moved to
-`.1`).
+`.1`: the lobby does it for `.out` at a start, the bot does it for its events file while it runs, `--log-max 5242880`).
+The events file holds the summary events only; the per-message transport records (`tcp_open`, `tcp_in`, `tcp_out`) are
+written only with `--log-transport`, which no managed or swarm bot gets.
 
-A bot that ends starts again 10 s later (one game session lasts an hour, then it starts over); one that keeps ending
+A bot that ends starts again 10 s later (one game session lasts an hour, then it starts over; a bot whose hour passed
+with no room to join exits with code 0 and the Bots tab shows `ran its hour`, a real failure keeps exit code 1); one that keeps ending
 within 2 minutes waits twice as long each time, up to 5 minutes. Starts are 2 s apart. Its stdin is a pipe from the
 lobby: when the lobby ends, also by a crash or a kill, the bots end too. A graceful stop, Stop, Delete or a smaller
 count close the pipe and kill a bot that has not ended 2 s later.

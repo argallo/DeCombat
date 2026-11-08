@@ -60,7 +60,7 @@
       "loop": "assets/galaxy-g36e.gif",
       "imageAlt": "G36E Galaxy animated camo and weapon inspect in DeCombat on Freight Hall",
       "captureLabel": "ANIMATED CAMO + WEAPON INSPECT",
-      "relatedSourcePath": "examples/mods/inspect_g36e_l96a1",
+      "relatedSourcePath": "https://github.com/argallo/DeCombat-mods/tree/main/mods/inspect_g36e_l96a1",
       "relatedName": "Weapon Inspect"
     },
     {
@@ -81,7 +81,7 @@
       "loop": "assets/toxic-l96a1.gif",
       "imageAlt": "L96A1 Toxic animated camo and weapon inspect in DeCombat on Freight Hall",
       "captureLabel": "ANIMATED CAMO + WEAPON INSPECT",
-      "relatedSourcePath": "examples/mods/inspect_g36e_l96a1",
+      "relatedSourcePath": "https://github.com/argallo/DeCombat-mods/tree/main/mods/inspect_g36e_l96a1",
       "relatedName": "Weapon Inspect"
     }
   ]

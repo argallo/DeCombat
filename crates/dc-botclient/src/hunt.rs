@@ -94,6 +94,8 @@ pub struct Hunter {
     side: f32,
     /// Stuck detections (reported as `hunt_stuck`); each one starts a sidestep.
     pub flips: u32,
+    /// BOT-145: the last decision found every heading in danger: the bot stands until the next one.
+    held: bool,
     pub decisions: u32,
 }
 
@@ -101,6 +103,7 @@ impl Hunter {
     /// Stops walking (the target is in sight, or there is none).
     pub fn stop(&mut self) {
         self.yaw = None;
+        self.held = false;
         self.progress_at = None;
         self.best = None;
         self.sidestep = None;
@@ -118,22 +121,37 @@ impl Hunter {
     }
 
     /// The walking direction toward `goal` for a body at `pos`. `probe(yaw)` is where the body would be after
-    /// [`PROBE_SECS`] in that direction (`None` = no world: walk straight).
+    /// [`PROBE_SECS`] in that direction, `None` when the body would end in danger (BOT-111: a kill volume, the void,
+    /// a high drop); no probe = no world: walk straight. BOT-145: `None` (stand) when every heading ends in danger and
+    /// so does the way back; before, the bot then walked straight away from the goal, which on Two Towers' ledges by
+    /// the water was a walk into the fall volume.
+    // DC-DEFAULT: BOT-145 (proposed)
     pub fn steer(
         &mut self,
         now: Millis,
         pos: [f32; 3],
         goal: [f32; 3],
-        probe: Option<&dyn Fn(f32) -> [f32; 3]>,
+        probe: Option<&dyn Fn(f32) -> Option<[f32; 3]>>,
     ) -> Option<f32> {
         let direct = yaw_to(pos, goal);
         let Some(probe) = probe else {
             self.yaw = Some(direct);
             return self.yaw;
         };
-        if self.yaw.is_some() && later(self.next_decision, now) {
+        if (self.yaw.is_some() || self.held) && later(self.next_decision, now) {
             return self.yaw;
         }
+        self.held = false;
+        // BOT-145: a heading whose probe ends in danger moves nowhere; with no heading free the bot walks away from
+        // the goal only where that is safe, else along the first safe heading, else it stands
+        let probe_safe = |y: f32| probe(y).unwrap_or(pos);
+        let back = |cands: &[(f32, [f32; 3], f32)]| {
+            let away = direct + std::f32::consts::PI;
+            if probe(away).is_some() {
+                return Some(away);
+            }
+            cands.iter().find(|c| probe(c.0).is_some()).map(|c| c.0)
+        };
         self.next_decision = now.wrapping_add(DECIDE_MS);
         self.decisions += 1;
         *self.visits.entry(cell(pos)).or_default() += 1;
@@ -185,19 +203,19 @@ impl Hunter {
         let cands: Vec<(f32, [f32; 3], f32)> = (0..DIRECTIONS)
             .map(|k| {
                 let y = base + sign * step * k as f32;
-                let e = probe(y);
+                let e = probe_safe(y);
                 (y, e, flat_dist(e, pos))
             })
             .collect();
         let reach = cands.iter().map(|c| c.2).fold(0.0f32, f32::max);
         if self.sidestep.is_some() {
             let free = (SIDESTEP_FREE * reach).max(PROBE_FREE);
-            self.yaw = Some(
-                cands
-                    .iter()
-                    .find(|c| c.2 >= free)
-                    .map_or(direct + std::f32::consts::PI, |c| c.0),
-            );
+            self.yaw = cands
+                .iter()
+                .find(|c| c.2 >= free)
+                .map(|c| c.0)
+                .or_else(|| back(&cands));
+            self.held = self.yaw.is_none();
             return self.yaw;
         }
         let score = |e: [f32; 3], moved: f32| {
@@ -211,7 +229,7 @@ impl Hunter {
             .min_by(|a, b| a.0.total_cmp(&b.0));
         // keep the current heading unless another is clearly better (no flapping between two headings)
         let keep = self.yaw.and_then(|y| {
-            let e = probe(y);
+            let e = probe_safe(y);
             let moved = flat_dist(e, pos);
             (moved >= PROBE_FREE).then(|| (score(e, moved), y))
         });
@@ -219,7 +237,8 @@ impl Hunter {
             (Some(k), Some(b)) if k.0 <= b.0 + HYSTERESIS => Some(k),
             (_, b) => b.or(keep),
         };
-        self.yaw = Some(pick.map_or(direct + std::f32::consts::PI, |b| b.1));
+        self.yaw = pick.map(|b| b.1).or_else(|| back(&cands));
+        self.held = self.yaw.is_none();
         self.yaw
     }
 }
@@ -257,7 +276,7 @@ pub(crate) mod tests {
             if line_clear(&**w, eye, [goal[0], goal[1] + 20.0, goal[2]]) {
                 return (Some(now), b.pos(), h);
             }
-            let probe = |y: f32| b.probe_walk(y, PROBE_SECS);
+            let probe = |y: f32| Some(b.probe_walk(y, PROBE_SECS));
             b.steer = h.steer(now, b.pos(), goal, Some(&probe));
             if std::env::var("HUNT_DEBUG").is_ok() && step % 24 == 0 {
                 println!(
@@ -294,7 +313,7 @@ pub(crate) mod tests {
         // a body that never moves although every probe says it could (pressed into something the probe misses)
         let pos = [0.0, 40.0, 0.0];
         let goal = [0.0, 40.0, 1000.0];
-        let probe = |y: f32| [pos[0] + 150.0 * y.sin(), pos[1], pos[2] + 150.0 * y.cos()];
+        let probe = |y: f32| Some([pos[0] + 150.0 * y.sin(), pos[1], pos[2] + 150.0 * y.cos()]);
         let mut h = Hunter::default();
         let mut first = None;
         for tick in 0..120u32 {
@@ -343,7 +362,7 @@ pub(crate) mod tests {
                 h.stop();
                 break;
             }
-            let probe = |y: f32| b.probe_walk(y, PROBE_SECS);
+            let probe = |y: f32| Some(b.probe_walk(y, PROBE_SECS));
             b.steer = h.steer(now, b.pos(), goal, Some(&probe));
             b.advance(1_000_000 / 60);
             if std::env::var("HUNT_DEBUG").is_ok() && step % 30 == 0 {
@@ -364,5 +383,32 @@ pub(crate) mod tests {
             p[0].abs() > 380.0 || p[2] > 640.0,
             "it went round the wall: {p:?} at {t} ms"
         );
+    }
+
+    /// BOT-145: with every heading in danger (a probe that ends in danger is `None`) the hunter stands, and does not
+    /// look again before the next decision; a heading out of danger is walked even when it moves little.
+    #[test]
+    fn with_every_heading_in_danger_the_hunter_stands() {
+        let (pos, goal) = ([0.0, 40.0, 0.0], [0.0, 40.0, 1000.0]);
+        let mut h = Hunter::default();
+        let none = |_: f32| None;
+        assert_eq!(h.steer(0, pos, goal, Some(&none)), None);
+        let calls = std::cell::Cell::new(0);
+        let count = |_: f32| {
+            calls.set(calls.get() + 1);
+            None
+        };
+        assert_eq!(h.steer(100, pos, goal, Some(&count)), None);
+        assert_eq!(calls.get(), 0, "no new decision before DECIDE_MS");
+        // only the way straight back is out of danger (a wall everywhere else stops the probes)
+        let mut h = Hunter::default();
+        let back = |y: f32| {
+            let d = (y - std::f32::consts::PI).rem_euclid(std::f32::consts::TAU);
+            (d.min(std::f32::consts::TAU - d) < 0.01).then_some(pos)
+        };
+        let y = h
+            .steer(0, pos, goal, Some(&back))
+            .expect("the safe heading");
+        assert!((y - std::f32::consts::PI).abs() < 0.01, "{y}");
     }
 }

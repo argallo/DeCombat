@@ -45,6 +45,7 @@ pub mod messenger;
 pub mod modbrowser;
 pub mod modcache;
 pub mod modsettings;
+pub mod modwait;
 pub mod moddedrows;
 pub mod modelview;
 pub mod modpanel;
@@ -778,6 +779,8 @@ pub struct Menu {
     drop_pressed: Option<usize>,
     /// Lobby events queued by [`Menu::feed_event`], handled after the link's own at the next update.
     fed_events: Vec<LinkEvent>,
+    /// CLI-1940: the wait box's own text while a mod download line replaces it (put back when the join leaves the download).
+    mod_wait_orig: Option<String>,
     /// w3-clan: the messenger window over the screen.
     messenger: messenger::Messenger,
     /// shop-model: the character view (created when a screen first asks for it; needs the ROM).
@@ -976,6 +979,7 @@ impl Menu {
             hover_part: None,
             drop_pressed: None,
             fed_events: Vec::new(),
+            mod_wait_orig: None,
             messenger: messenger::Messenger::default(),
             figure: None,
             showcase: None,
@@ -2141,6 +2145,9 @@ impl Menu {
                     self.popups.push(Popup::error(t, BoxTag::ToLogin));
                 }
                 other => {
+                    if let LinkEvent::Mods(state) = &other {
+                        self.mod_wait_line(state);
+                    }
                     // lobby20: a new friend request asks the player
                     let request = messenger::new_request(&self.data.friends, &other);
                     // CLI-1901: a clan invitation asks on any screen (one box per clan)
@@ -2248,6 +2255,36 @@ impl Menu {
         if self.outcome.is_none() && self.popups.is_empty() {
             if let Some(cmd) = self.screen.due() {
                 self.with_ctx(|s, ctx| s.click(cmd, usize::MAX, ctx));
+            }
+        }
+    }
+
+    /// CLI-1940: the join's state in the open wait box (the download of a curated entry takes a while); the box's
+    /// own text returns when the join is past the download. No wait box open: nothing changes.
+    fn mod_wait_line(&mut self, state: &crate::mods::ModState) {
+        let Some(wait) = self
+            .popups
+            .iter_mut()
+            .find(|p| p.kind == popup::BoxKind::Wait)
+        else {
+            self.mod_wait_orig = None;
+            return;
+        };
+        match modwait::wait_text(state) {
+            Some(text) => {
+                if self.mod_wait_orig.is_none() {
+                    self.mod_wait_orig = Some(wait.text.clone());
+                }
+                if wait.text != text {
+                    wait.text = text;
+                    self.dirty = true;
+                }
+            }
+            None => {
+                if let Some(orig) = self.mod_wait_orig.take() {
+                    wait.text = orig;
+                    self.dirty = true;
+                }
             }
         }
     }

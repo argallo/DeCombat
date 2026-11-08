@@ -62,7 +62,7 @@ fits):
 | `kind` | `link_lost`, `server_gone`, `stall`, `crash`, `panic`, `gpu_lost`, `join_failed`, `manual`, `bug_report`, `nettest` |
 | `summary` | one line, at most 200 characters |
 | `client` | `version` (release tag or `dev`), `commit`, `target`, `profile` |
-| `system` | `os`, `arch`, `cpu`, `cores`, `ram_mb`, `gpu`, `driver`, `backend` (what the window's adapter reported) |
+| `system` | `os`, `arch`, `cpu`, `cores`, `ram_mb`, `gpu`, `driver`, `backend` (what the window's adapter reported). A report made of an earlier run's files (`summary` "found after the last run") describes the start that sent it; it adds `earlier_run_gpu` (the failed run's `dc-client window: GPU` line) and `gpu_note` |
 | `settings` | display mode and size, frame-rate cap, anti-aliasing, show-FPS, network overlay, consent |
 | `match` | lobby address, game server address, map, mode, how the session ended (when there was a match) |
 | `link` | the match link's last numbers: RTT mean / min / max, jitter, loss in / out, resends, largest datagram |

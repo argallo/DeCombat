@@ -19,7 +19,7 @@ if (form) {
       return;
     }
     if (!document.getElementById("beta-consent").checked) {
-      say("Tick the box so we may store your address for the invite.", false);
+      say("Tick the box so we may store your address for updates.", false);
       return;
     }
     submit.disabled = true;

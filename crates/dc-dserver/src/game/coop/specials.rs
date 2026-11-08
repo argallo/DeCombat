@@ -401,7 +401,7 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::super::super::{GameTuning, RoundPhase};
-    use super::super::AiState;
+    use super::super::{AiState, SpawnSpot};
     use super::*;
     use crate::coop_rom::{AiAttributeRow, AiBodyRow, AiBrainRow};
     use crate::pipe::RoomSettings;
@@ -423,6 +423,11 @@ mod tests {
             "[Ammo22]\nName = \"A22\"\nType = 2\nProgDamage = 8\nProgDamageType = 9\nProgDamageDuration = 6\n",
             "ProgDamageRadius = 180\nProgDamageLifetime = 4\n",
             "[WeaponOrder]\nClass0 = \"P\"\nP0 = \"G3\"\n",
+            // DSV-640: a one-shot tube (pause 1..5 s) and a three-shot burst gun (pause 2 s)
+            "[Weapon4]\nName = \"Tube\"\nAmmoName0 = \"A3\"\nAIMinBurstShots = 1\nAIMaxBurstShots = 1\n",
+            "AIMinBurstInterval = 1.0\nAIMaxBurstInterval = 5.0\n",
+            "[Weapon5]\nName = \"Burst\"\nAmmoName0 = \"A3\"\nAIMinBurstShots = 3\nAIMaxBurstShots = 3\n",
+            "AIMinBurstInterval = 2.0\nAIMaxBurstInterval = 2.0\n",
         ));
         let mut chars = CharTables::default();
         chars.bodies.insert(
@@ -500,6 +505,25 @@ mod tests {
                 t("plain", "Plain", None),
                 t("biter", "Biter", Some("BiterBody")),
                 t("lite", "Plain", Some("LiteBody")),
+                // ranged AI (no brain row): DSV-640 / DSV-641
+                AiTemplate {
+                    right_hand: Some("Tube".into()),
+                    ..t("tube", "Gunner", Some("Shooter"))
+                },
+                AiTemplate {
+                    right_hand: Some("Burst".into()),
+                    ..t("burst", "Gunner", None)
+                },
+                t("rifle", "Gunner", Some("Shooter")),
+                // DSV-642: a death command, an empty hand
+                AiTemplate {
+                    death_cmd: b"sub Count 1;".to_vec(),
+                    ..t("chain", "Gunner", Some("Shooter"))
+                },
+                AiTemplate {
+                    right_hand: None,
+                    ..t("bare", "Gunner", Some("Shooter"))
+                },
             ],
             ..CoopWorld::default()
         };
@@ -538,6 +562,12 @@ mod tests {
             walk_speed: Some(80.0),
             see_enemy: Some(300.0),
             hit_points: None,
+            full_accuracy: None,
+        });
+        tb.attributes.push(AiAttributeRow {
+            name: "Shooter".into(),
+            full_accuracy: Some(128.0),
+            ..AiAttributeRow::default()
         });
         tb.bodies.insert(
             7,
@@ -1089,5 +1119,226 @@ mod tests {
         g.coop.as_mut().unwrap().ais[0].pos = [ai[0], ai[1] + 1000.0, ai[2]];
         shot(&mut g, 400);
         assert!(g.flights[0].burst, "nothing in front: the mine goes off");
+    }
+
+    /// Steps AI slot 0 every 50 ms from `from` to `to` and returns the times it fired.
+    fn shot_times(g: &mut Game, from: Millis, to: Millis) -> Vec<Millis> {
+        let mut at = Vec::new();
+        let mut t = from;
+        while t <= to {
+            let before = g.ai_chars()[0].shots;
+            g.ai_step(0, 0.05, t);
+            if g.ai_chars()[0].shots > before {
+                at.push(t);
+            }
+            t += 50;
+        }
+        at
+    }
+
+    fn gaps(t: &[Millis]) -> Vec<u32> {
+        t.windows(2).map(|w| w[1] - w[0]).collect()
+    }
+
+    /// A shooting AI of `template` at the origin (objects bound) and a human at `d` on the x axis.
+    fn shooter(template: &[u8], d: f32) -> Game {
+        let mut g = game(&[[d, 0.0, 0.0]]);
+        g.cfg.coop.hit_chance = [0.0; 3];
+        assert!(g.coop_spawn_test_ai(template, [0.0, 0.0, 0.0], 100));
+        g.bind_ai(0, 900, Some(901));
+        g
+    }
+
+    /// DSV-640: a launcher-like row (one shot a burst, 1..5 s pause) fires one shot per drawn pause, never `fire_ms`
+    /// apart; a burst row fires its three shots `fire_ms` apart, then waits its pause; a row without the keys, or the
+    /// switch off, keeps a shot every `fire_ms`.
+    #[test]
+    fn an_ai_fires_in_its_weapon_rows_bursts() {
+        let fire = GameTuning::default().coop.fire_ms;
+        let step = fire.div_ceil(50) * 50;
+        let mut g = shooter(b"tube", 300.0);
+        assert!(g.ai_chars()[0].spec.burst.is_some());
+        let gap = gaps(&shot_times(&mut g, 150, 30_150));
+        assert!(gap.len() >= 5 && gap.len() <= 30, "{gap:?}");
+        assert!(gap.iter().all(|d| (1_000..=5_050).contains(d)), "{gap:?}");
+        assert!(gap.iter().any(|d| *d != gap[0]), "drawn pauses: {gap:?}");
+        let mut g = shooter(b"burst", 300.0);
+        let gap = gaps(&shot_times(&mut g, 150, 12_000));
+        assert_eq!(gap[..5], [step, step, 2_000, step, step]);
+        let mut g = shooter(b"rifle", 300.0);
+        assert!(g.ai_chars()[0].spec.burst.is_none());
+        let gap = gaps(&shot_times(&mut g, 150, 6_000));
+        assert!(gap.len() >= 6 && gap.iter().all(|d| *d == step), "{gap:?}");
+        let mut g = shooter(b"tube", 300.0);
+        g.cfg.coop.bursts = false;
+        let gap = gaps(&shot_times(&mut g, 150, 6_000));
+        assert!(gap.len() >= 6 && gap.iter().all(|d| *d == step), "{gap:?}");
+    }
+
+    /// DSV-641: a ranged AI hits every shot at a human within its attribute row's `FullAccuracyRadius` (1 m away),
+    /// and keeps the difficulty's chance beyond it; the switch off: the chance at 1 m too.
+    #[test]
+    fn an_ai_hits_a_human_within_its_full_accuracy_radius() {
+        let run_at = |d: f32, on: bool| {
+            let mut g = shooter(b"rifle", d);
+            g.cfg.coop.hit_chance = GameTuning::default().coop.hit_chance;
+            g.cfg.coop.default_damage = 0.0;
+            g.cfg.coop.full_accuracy = on;
+            assert_eq!(g.ai_chars()[0].spec.full_accuracy, Some(128.0));
+            shot_times(&mut g, 150, 20_000);
+            let a = &g.ai_chars()[0];
+            (a.shots, a.hits)
+        };
+        let (shots, hits) = run_at(100.0, true);
+        assert!(shots >= 20 && hits == shots, "{hits} of {shots} at 1 m");
+        let (shots, hits) = run_at(300.0, true);
+        assert!(shots >= 20 && hits < shots / 2, "{hits} of {shots} at 3 m");
+        let (shots, hits) = run_at(100.0, false);
+        assert!(
+            shots >= 20 && hits < shots / 2,
+            "{hits} of {shots} at 1 m, switch off"
+        );
+    }
+
+    /// A wall across the x axis at `x` (from below the floor to well above the heads), facing both ways.
+    fn wall(x: f32) -> dc_sim::CollisionWorld {
+        use dc_sim::{CollModel, CollisionWorld, ConvexPoly, SURF_SOLID, V3};
+        let mut c = vec![
+            V3::new(x, -200.0, -3000.0),
+            V3::new(x, 800.0, -3000.0),
+            V3::new(x, 800.0, 3000.0),
+            V3::new(x, -200.0, 3000.0),
+        ];
+        let a = ConvexPoly::from_corners(c.clone(), SURF_SOLID);
+        c.reverse();
+        let b = ConvexPoly::from_corners(c, SURF_SOLID);
+        CollisionWorld::from_parts(vec![CollModel::from_polys(&[a, b])], &[])
+    }
+
+    /// When the pool tests tick the mission spawns: past the default `retire_age_ms` after the AI spawned at 100.
+    const PAST_AGE: Millis = 30_000;
+
+    /// A mission room with a pool of two: a `rifle` AI 500 units from the human and an AI of `far` 4000 units away
+    /// (behind a wall at 2000 when `walled`), both met by the human when `met`.
+    fn pool_room(range: f32, walled: bool, far: &[u8], met: bool) -> Game {
+        let mut g = game(&[[0.0, 0.0, 0.0]]);
+        g.cfg.coop.max_alive = 2;
+        g.cfg.coop.retire_range = range;
+        if walled {
+            g.set_trace_world(Some(wall(2_000.0)));
+        }
+        g.coop.as_mut().unwrap().mission = true;
+        assert!(g.coop_spawn_test_ai(b"rifle", [500.0, 0.0, 0.0], 100));
+        assert!(g.coop_spawn_test_ai(far, [4_000.0, 0.0, 0.0], 100));
+        for a in &mut g.coop.as_mut().unwrap().ais {
+            a.met = met;
+        }
+        g.take_out();
+        g
+    }
+
+    /// Queues one statement spawn of `template` named `New`.
+    fn queue(g: &mut Game, template: &[u8]) {
+        g.coop.as_mut().unwrap().mission_queue.push_back((
+            SpawnSpot {
+                pos: [-600.0, 0.0, 0.0],
+                yaw: 0.0,
+                template: Some(template.to_vec()),
+            },
+            b"New".to_vec(),
+        ));
+    }
+
+    /// [`pool_room`] with a `rifle` far away and one `tube` spawn waiting, the mission spawns ticked once at `at`.
+    fn full_pool(range: f32, walled: bool, at: Millis) -> Game {
+        let mut g = pool_room(range, walled, b"rifle", true);
+        queue(&mut g, b"tube");
+        g.coop_tick_mission(at);
+        g
+    }
+
+    /// DSV-642: on a mission world whose pool is full, a waiting spawn takes the slot of the AI left behind (out of
+    /// sight, farther than `retire_range` from the human, met before, old enough): it is hidden without a death and
+    /// the spawn appears; an AI far away in the human's sight keeps its slot; `retire_range` 0: the spawn waits.
+    #[test]
+    fn a_waiting_mission_spawn_takes_the_slot_of_an_ai_left_behind() {
+        let mut g = full_pool(2_000.0, true, PAST_AGE);
+        let out = g.take_out();
+        let ais = g.ai_chars();
+        assert_eq!(ais[0].pos[0], 500.0, "the near AI keeps its slot");
+        assert_eq!(ais[1].state, AiState::Alive);
+        assert_eq!(ais[1].name, b"New".to_vec());
+        assert_eq!(ais[1].pos[0], -600.0);
+        assert!(out
+            .iter()
+            .any(|o| matches!(o, GameOut::AiHidden { slot: 1 })));
+        assert!(
+            !out.iter().any(|o| matches!(o, GameOut::WorldScript(_))),
+            "no death"
+        );
+        let c = g.coop().unwrap();
+        assert_eq!((c.mission_spawns, c.ai_killed), (1, 0));
+        // in sight (no wall), or the rule off: the spawn waits
+        for (range, walled) in [(2_000.0, false), (0.0, true)] {
+            let g = full_pool(range, walled, PAST_AGE);
+            assert_eq!(g.ai_chars()[1].pos[0], 4_000.0);
+            assert_eq!(g.coop().unwrap().mission_spawns, 0);
+        }
+    }
+
+    /// DSV-642: an AI whose template has a death command (a counter, a trigger, a respawn: its death may move the
+    /// mission on) is never retired.
+    #[test]
+    fn an_ai_with_a_death_command_is_never_retired() {
+        let mut g = pool_room(2_000.0, true, b"chain", true);
+        queue(&mut g, b"tube");
+        g.coop_tick_mission(PAST_AGE);
+        assert_eq!(g.ai_chars()[1].state, AiState::Alive);
+        assert_eq!(g.ai_chars()[1].pos[0], 4_000.0);
+        assert_eq!(g.coop().unwrap().mission_spawns, 0, "the spawn waits");
+    }
+
+    /// DSV-642: a young AI, or one no human has met yet (a placed guard far ahead of the players), keeps its slot;
+    /// an unarmed one counts as met; with two AI left behind and two spawns waiting, one retires per tick.
+    #[test]
+    fn only_old_met_ai_retire_one_per_tick() {
+        let g = full_pool(2_000.0, true, 10_000);
+        assert_eq!(
+            g.ai_chars()[1].pos[0],
+            4_000.0,
+            "younger than retire_age_ms"
+        );
+        let mut g = pool_room(2_000.0, true, b"rifle", false);
+        queue(&mut g, b"tube");
+        g.coop_tick_mission(PAST_AGE);
+        assert_eq!(g.ai_chars()[1].pos[0], 4_000.0, "never met");
+        let mut g = pool_room(2_000.0, true, b"bare", false);
+        queue(&mut g, b"tube");
+        g.coop_tick_mission(PAST_AGE);
+        assert_eq!(g.ai_chars()[1].name, b"New".to_vec(), "unarmed: retired");
+        // both AI behind the wall: one retire per tick
+        let mut g = pool_room(2_000.0, true, b"rifle", true);
+        g.coop.as_mut().unwrap().ais[0].pos = [4_500.0, 0.0, 0.0];
+        queue(&mut g, b"tube");
+        queue(&mut g, b"tube");
+        g.coop_tick_mission(PAST_AGE);
+        assert_eq!(g.coop().unwrap().mission_spawns, 1, "one this tick");
+        g.coop_tick_mission(PAST_AGE + 50);
+        assert_eq!(g.coop().unwrap().mission_spawns, 2, "the next tick");
+    }
+
+    /// DSV-642: a waiting spawn whose body does not resolve retires nobody (it is dropped as before).
+    #[test]
+    fn an_unresolved_spawn_retires_nobody() {
+        let mut g = pool_room(2_000.0, true, b"rifle", true);
+        g.coop.as_mut().unwrap().specs.insert("GHOST".into(), None);
+        queue(&mut g, b"ghost");
+        g.coop_tick_mission(PAST_AGE);
+        let out = g.take_out();
+        assert_eq!(g.ai_chars()[1].state, AiState::Alive);
+        assert_eq!(g.ai_chars()[1].pos[0], 4_000.0);
+        assert!(!out.iter().any(|o| matches!(o, GameOut::AiHidden { .. })));
+        let c = g.coop().unwrap();
+        assert_eq!((c.mission_spawns, c.mission_dropped), (0, 1));
     }
 }

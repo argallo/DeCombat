@@ -83,8 +83,10 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   a host waiting for players needs more than its --match-wait);
   --goal sets the room's kill goal as host (min = the ROM mode row's smallest goal); --leave-after S
   leaves the running match S seconds after entering the world (0xbd + lobby 0x394 {0}, then C2S_BYE);
-  --duration S runs headless for at most S seconds (instead of --headless-frames) and leaves at the end; a
-  headless network run ends one second after the server ended the session. After a death the client asks for
+  --duration S runs the headless match for at most S seconds (instead of --headless-frames) and leaves at the end;
+  the menu walk before it is bounded by --match-wait + --load-timeout + 60 s, and a login that fails ends the
+  run at once with the box's text (CLI-1942); a headless network run ends one second after the server ended the
+  session. After a death the client asks for
   its respawn itself (0x89 after the 2009 wait of the room's mode, 7 s in TDM; the 2009 client has no respawn key)
   and shows the death camera until the server places it again. After the result screen (0x3f) the client stays
   --result-hold S seconds (default 1) and leaves it the 2009 way (lobby 0x306 {0xb} and the plain transport bye).
@@ -1742,6 +1744,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // CLI-1941: the run stamp is the first line, so a log cut short (a kill, a power loss) still names its build
+    println!("dc-client run: {}", dc_client::diag::run_stamp());
     // CLI-1470: the trust-on-first-use fingerprints live in the profile folder
     if let Some(d) = dc_client::settings::own_profile_dir() {
         dc_botclient::tls::set_store(d.join(dc_botclient::tls::KNOWN_SERVERS_FILE));

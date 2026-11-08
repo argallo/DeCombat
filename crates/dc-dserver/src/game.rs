@@ -1503,6 +1503,11 @@ pub enum GameOut {
         yaw: f32,
         clip: (u16, u32),
     },
+    /// Co-op: an AI left the world without a death (its slot went to a waiting spawn, DSV-642): its objects are
+    /// hidden at the park point, no corpse.
+    AiHidden {
+        slot: usize,
+    },
     /// Co-op: a reused AI slot gets another body and weapon model (`CF_FILES`).
     AiLook {
         slot: usize,
@@ -13075,6 +13080,276 @@ S0 = \"B\"
         let lost = 100.0 - g.players[&1].health;
         let scale = g.cfg.projectile.blast_damage_scale;
         assert!((lost - 40.0 * scale).abs() < 1e-3, "lost {lost}");
+    }
+
+    /// Synthetic rows in the shape of the user's ROM (made-up numbers): weapon 3 a rocket (`Type` 1, a projectile
+    /// row with no class: the `Type` rule), weapon 5 a grenade launcher (`Type` 2 with an impact-class row and a
+    /// `Lifetime` past the 600 s bound), weapon 6 a frag (`Type` 2, a fused-class row, 2.5 s), weapon 7 a flash
+    /// grenade (`Type` 1, a fused-class row, 1.5 s), weapon 8 a hand-thrown ball (`ClientWeaponType` 2, `Type` 2,
+    /// an impact-class row).
+    fn round_class_tables() -> RomTables {
+        let mut t = tables();
+        let doc = dc_bute::ButeDoc::parse(concat!(
+            "[Weapon3]\nName = \"L\"\nAmmoName0 = \"R\"\n",
+            "[Weapon5]\nName = \"GL\"\nAmmoName0 = \"GS\"\nShotsPerClip = 6\n",
+            "[Weapon6]\nName = \"N\"\nAmmoName0 = \"NA\"\n",
+            "[Weapon7]\nName = \"FB\"\nAmmoName0 = \"FA\"\n",
+            "[Weapon8]\nName = \"SB\"\nAmmoName0 = \"SA\"\nClientWeaponType = 2\nShotsPerClip = 1\n",
+            "[Ammo0]\nName = \"R\"\nType = 1\nAreaDamage = 40\nAreaDamageType = 7\nAreaDamageRadius = 550\n",
+            "ProjectileFXName = \"Missile\"\n",
+            "[Ammo1]\nName = \"GS\"\nType = 2\nAreaDamage = 55\nAreaDamageType = 7\nAreaDamageRadius = 300\n",
+            "ProjectileFXName = \"Shell\"\n",
+            "[Ammo2]\nName = \"NA\"\nType = 2\nAreaDamage = 50\nAreaDamageType = 7\nAreaDamageRadius = 300\n",
+            "ProjectileFXName = \"Nade\"\n",
+            "[Ammo3]\nName = \"FA\"\nType = 1\nAreaDamage = 5\nAreaDamageType = 7\nAreaDamageRadius = 300\n",
+            "ProjectileFXName = \"Flash\"\n",
+            "[Ammo4]\nName = \"SA\"\nType = 2\nAreaDamage = 20\nAreaDamageType = 7\nAreaDamageRadius = 100\n",
+            "ProjectileFXName = \"Ball\"\nMaxAmount = 3\n",
+            "[WeaponOrder]\nClass0 = \"P\"\nP0 = \"L\"\nP1 = \"GL\"\nP2 = \"N\"\nP3 = \"FB\"\nP4 = \"SB\"\n",
+        ));
+        t.weapons = crate::rom_tables::WeaponTable::from_doc(&doc);
+        use crate::rom_tables::RoundFlight::{Launched, Thrown};
+        for (name, flight, gravity, life) in [
+            ("Missile", None, false, 10.0),
+            ("Shell", Some(Launched), true, 10000.0),
+            ("Nade", Some(Thrown), true, 2.5),
+            ("Flash", Some(Thrown), true, 1.5),
+            ("Ball", Some(Launched), true, 10000.0),
+        ] {
+            t.projectiles.rows.insert(
+                dc_bute::fold_latin1(name),
+                crate::rom_tables::ProjectileRow {
+                    gravity: Some(gravity),
+                    gravity_override: gravity.then_some(-1000.0),
+                    lifetime_s: Some(life),
+                    velocity: Some(if gravity { 1550.0 } else { 1300.0 }),
+                    flight,
+                    ..Default::default()
+                },
+            );
+        }
+        t
+    }
+
+    /// The throw callouts (type 0x19 `k` 0x12) from the origin `[0, 33, 0]` in `o`.
+    fn callouts(g: &Game, o: &[GameOut]) -> usize {
+        o.iter()
+            .filter(|x| {
+                g.players.values().any(|p| {
+                    let (a, b, c) = throw_sound_bytes(p.team);
+                    let want = gs::throw_sound(a, u32::from(p.pid), [0.0, 33.0, 0.0], b, c);
+                    matches!(x, GameOut::Unreliable(_, m) if m.as_bytes() == want.as_bytes())
+                })
+            })
+            .count()
+    }
+
+    /// DSV-650: the class of the projectile row decides the flight, not the ammunition `Type`.
+    #[test]
+    fn the_projectile_class_tells_a_launched_round_from_a_thrown_one() {
+        use crate::rom_tables::RoundFlight::{Launched, Thrown};
+        let t = round_class_tables();
+        assert_eq!(
+            t.round_flight(3, 0),
+            Some(Launched),
+            "the rocket: the Type rule"
+        );
+        assert_eq!(
+            t.round_flight(5, 1),
+            Some(Launched),
+            "Type 2 with the impact class"
+        );
+        assert_eq!(t.round_flight(6, 2), Some(Thrown), "the frag");
+        assert_eq!(
+            t.round_flight(7, 3),
+            Some(Thrown),
+            "Type 1 with the fused class"
+        );
+        assert!(t.weapons.throws_round(5, 1), "the launcher's row is Type 2");
+        assert_eq!(crate::rom_tables::class_flight("not a class"), None);
+    }
+
+    /// DSV-650: a grenade launcher's shot (ammunition `Type` 2, an impact-class row) is fired, not thrown: no throw
+    /// callout, the launch record, an object facing its flight, and it bursts on the enemy within a fraction of a
+    /// second (before: the throw callout, a bouncing shell and the grenade fuse), even right after a cancelled hold.
+    #[test]
+    fn a_grenade_launcher_shell_bursts_on_impact_without_the_throw_callout() {
+        let mut g = launcher_game(round_class_tables(), &[[0.0; 3], [300.0, 0.0, 0.0]]);
+        // a hold just before (a grenade drawn and put away) does not make the launcher's shot a throw
+        g.players.get_mut(&0).unwrap().last_throw = Some(3900);
+        let f = shot_at(5, 1, [0.0, 33.0, 0.0], [300.0, 45.0, 0.0]);
+        g.on_up(0, Up::Fire(Box::new(f.clone())), 4000);
+        let o = g.take_out();
+        assert_eq!(callouts(&g, &o), 0, "no throw callout");
+        let rec = o.iter().any(|x| {
+            matches!(x, GameOut::Unreliable(0, m) if m.as_bytes()[1] == gs::FX_SHOT
+                && u16::from_le_bytes([m.as_bytes()[2], m.as_bytes()[3]]) == 0xFFFF)
+        });
+        assert!(rec, "the launch record");
+        let rot = o
+            .iter()
+            .find_map(|x| match x {
+                GameOut::Projectile(p) => Some(p.rot),
+                _ => None,
+            })
+            .expect("the shell object");
+        let fw = forward_of(rot);
+        assert!(
+            (0..3).all(|i| (fw[i] - f.dir[i]).abs() < 1e-4),
+            "faces its flight"
+        );
+        assert_eq!(g.flights_in_air(), 1);
+        assert!(g.flights[0].impact, "an impact flight");
+        let mut t = 4000;
+        while g.flights_in_air() > 0 && t < 8000 {
+            t += 16;
+            g.tick_projectiles(t);
+        }
+        assert!(t < 4600, "burst on the enemy at once, not at a fuse ({t})");
+        assert!(g.players[&1].health < 100.0, "the blast hurt the enemy");
+    }
+
+    /// DSV-650 (amendment): a hand-thrown weapon (`ClientWeaponType` 2) whose row is of the impact class keeps the
+    /// throw's client-side bookkeeping (the callout, no shot record, the count mirror after the release, even without
+    /// a hold) while its flight is an impact one: it bursts on the enemy at once.
+    #[test]
+    fn a_hand_thrown_impact_round_keeps_the_throw_bookkeeping_and_bursts_on_impact() {
+        let mut g = launcher_game(round_class_tables(), &[[0.0; 3], [300.0, 0.0, 0.0]]);
+        assert!(g.tables.weapons.hand_thrown(8));
+        assert!(!g.tables.weapons.hand_thrown(5), "the launcher is not");
+        let f = shot_at(8, 4, [0.0, 33.0, 0.0], [300.0, 45.0, 0.0]);
+        g.on_up(0, Up::Fire(Box::new(f)), 4000);
+        let o = g.take_out();
+        assert!(callouts(&g, &o) > 0, "the throw callout");
+        let records = o
+            .iter()
+            .filter(|x| matches!(x, GameOut::Unreliable(_, m) if m.as_bytes()[1] == gs::FX_SHOT))
+            .count();
+        assert_eq!(records, 0, "no shot record");
+        let w = g.players[&0]
+            .weapons
+            .iter()
+            .find(|w| w.weapon == 8)
+            .expect("the carried ball");
+        let mirror = gs::player_ammo(
+            w.weapon,
+            w.ammo,
+            w.carried() as f32,
+            w.slot,
+            gs::AMMO_EXTRA_THROW,
+        );
+        assert!(
+            o.iter()
+                .any(|x| matches!(x, GameOut::To(0, m) if m.as_bytes() == mirror.as_bytes())),
+            "the count mirror to the thrower"
+        );
+        assert_eq!(g.flights_in_air(), 1);
+        assert!(g.flights[0].impact, "an impact flight");
+        let mut t = 4000;
+        while g.flights_in_air() > 0 && t < 8000 {
+            t += 16;
+            g.tick_projectiles(t);
+        }
+        assert!(t < 4600, "burst on the enemy at once ({t})");
+        assert!(g.players[&1].health < 100.0);
+    }
+
+    /// DSV-650 (amended): a launched round whose row has no `Lifetime` keeps the fuse default (the 10 s bound is only
+    /// for a `Lifetime` past the 600 s bound).
+    #[test]
+    fn a_launched_round_without_a_lifetime_keeps_the_fuse_default() {
+        let mut t = round_class_tables();
+        let row = t
+            .projectiles
+            .rows
+            .get_mut(&dc_bute::fold_latin1("Shell"))
+            .unwrap();
+        row.gravity = Some(false);
+        row.lifetime_s = None;
+        let mut g = launcher_game(t, &[[0.0; 3], [0.0, 0.0, 3000.0]]);
+        g.pbox.min = [-1.0e6; 3];
+        g.pbox.max = [1.0e6; 3];
+        g.on_up(
+            0,
+            Up::Fire(Box::new(shot_at(
+                5,
+                1,
+                [0.0, 33.0, 0.0],
+                [300.0, 33.0, 0.0],
+            ))),
+            4000,
+        );
+        assert!(g.flights[0].impact);
+        let fuse = g.cfg.projectile.fuse_ms;
+        g.tick_projectiles(4000 + fuse - 50);
+        assert_eq!(g.flights_in_air(), 1, "in flight before the fuse default");
+        g.tick_projectiles(4000 + fuse + 16);
+        assert_eq!(
+            g.flights_in_air(),
+            0,
+            "burst at the fuse default, not at 10 s"
+        );
+    }
+
+    /// DSV-650: a launched round that meets nothing bursts at the end of its flight bound (the row's `Lifetime` is
+    /// past the 600 s bound: IMPACT_LIFE_MS), not at the grenade fuse.
+    #[test]
+    fn a_launched_round_without_a_usable_lifetime_flies_to_its_bound() {
+        let mut t = round_class_tables();
+        t.projectiles
+            .rows
+            .get_mut(&dc_bute::fold_latin1("Shell"))
+            .unwrap()
+            .gravity = Some(false);
+        let mut g = launcher_game(t, &[[0.0; 3], [0.0, 0.0, 3000.0]]);
+        g.pbox.min = [-1.0e6; 3];
+        g.pbox.max = [1.0e6; 3];
+        g.on_up(
+            0,
+            Up::Fire(Box::new(shot_at(
+                5,
+                1,
+                [0.0, 33.0, 0.0],
+                [300.0, 33.0, 0.0],
+            ))),
+            4000,
+        );
+        assert_eq!(g.flights_in_air(), 1);
+        g.tick_projectiles(4000 + g.cfg.projectile.fuse_ms + 100);
+        assert_eq!(g.flights_in_air(), 1, "still flying after the grenade fuse");
+        g.tick_projectiles(4000 + projectile::IMPACT_LIFE_MS + 16);
+        assert_eq!(g.flights_in_air(), 0, "burst at the bound");
+    }
+
+    /// DSV-650: the frag still waits for its fuse (with the throw callout), the flash grenade (`Type` 1, fused class)
+    /// is thrown even with no hold (a sprint gap, CLI-573), and the rocket (no class) is unchanged.
+    #[test]
+    fn the_frag_and_the_flash_keep_their_fuse_and_the_rocket_its_impact() {
+        for (weapon, ammo, fuse) in [(6u16, 2u16, 2500u32), (7, 3, 1500)] {
+            let mut g = launcher_game(round_class_tables(), &[[0.0; 3], [300.0, 0.0, 0.0]]);
+            let f = shot_at(weapon, ammo, [0.0, 33.0, 0.0], [300.0, 45.0, 0.0]);
+            g.on_up(0, Up::Fire(Box::new(f)), 4000);
+            let o = g.take_out();
+            assert!(callouts(&g, &o) > 0, "weapon {weapon}: the throw callout");
+            assert_eq!(g.flights_in_air(), 1, "weapon {weapon}");
+            assert!(!g.flights[0].impact, "weapon {weapon}: a thrown flight");
+            g.tick_projectiles(4000 + fuse - 50);
+            assert_eq!(g.flights_in_air(), 1, "weapon {weapon}: waits for its fuse");
+            g.tick_projectiles(4000 + fuse + 16);
+            assert_eq!(g.flights_in_air(), 0, "weapon {weapon}: gone at its fuse");
+        }
+        let mut g = launcher_game(round_class_tables(), &[[0.0; 3], [600.0, 0.0, 0.0]]);
+        g.on_up(
+            0,
+            Up::Fire(Box::new(shot_at(3, 0, [0.0, 33.0, 0.0], [600.0, 0.0, 0.0]))),
+            4000,
+        );
+        let o = g.take_out();
+        assert_eq!(callouts(&g, &o), 0, "the rocket: no callout");
+        assert!(g.flights[0].impact, "the rocket: an impact flight");
+        g.tick_projectiles(4600);
+        assert_eq!(g.flights_in_air(), 0, "the rocket burst on the enemy");
+        assert!(g.players[&1].health < 100.0);
     }
 
     /// DSV-455: a flame bursts on the enemy it reaches without a blast; he burns 30 per second for the row's second

@@ -20,7 +20,9 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "examples/**"
+      # the servers tarball copies the config template, env and units that sit directly under examples/
+      # (tools/package_servers.sh); mod and map folders below it are not release content
+      - "examples/*"
       - "ios/**"
       - "tools/vps/**"
       - "tools/host/**"

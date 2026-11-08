@@ -9,6 +9,7 @@ use super::{
     TODO_DAMAGE_MODE, TODO_DAMAGE_PART, TODO_KILL_KIND, TODO_KILL_RELATION,
 };
 use crate::gs;
+use crate::rom_tables::RoundFlight;
 use crate::up::UpFire;
 use dc_net_engine::time::since;
 use dc_net_engine::Millis;
@@ -372,11 +373,24 @@ impl Game {
         // DC-DEFAULT: DSV-619 (proposed) a controller's fire (its row names a controllee) sets off the shooter's mines;
         // it is never a throw's release
         let controls = self.tables.weapons.controllee(f.weapon_id);
+        // DC-DEFAULT: DSV-650 (proposed; amends DSV-181, DSV-29) the projectile row's class tells a launched round
+        // from a thrown one: a grenade launcher's shell (ammunition `Type` 2 like a frag, the impact class) is fired,
+        // never a throw's release, even after a hold; a hand grenade of `Type` 1 (flash, smoke) is always a throw.
+        // Before, the launcher's `Type` 2 made every shot a throw (the throw voice, a bouncing shell, the grenade
+        // fuse: the 2026-11-08 player report)
+        // DC-DEFAULT: DSV-650 (amendment, proposed) a weapon thrown by hand (`ClientWeaponType` 2) is a throw on the
+        // client's side whatever the class: the callout, no shot record, the count mirror after the release (without
+        // it the 2009 client is left with an empty hand, DSV-39 Q9); the class decides only its flight
+        let flight = self.tables.round_flight(f.weapon_id, f.ammo_id);
+        let mine = self.mine_row(f.weapon_id, f.ammo_id).is_some();
+        let hand = flight.is_some() && self.tables.weapons.hand_thrown(f.weapon_id);
         let throw = controls.is_none()
-            && (held
-                || self.tables.weapons.throws_round(f.weapon_id, f.ammo_id)
-                || self.mine_row(f.weapon_id, f.ammo_id).is_some());
-        let launched = !throw && self.tables.weapons.fires_projectile(f.weapon_id, f.ammo_id);
+            && (mine
+                || hand
+                || (flight != Some(RoundFlight::Launched)
+                    && (held || flight == Some(RoundFlight::Thrown))));
+        let launched = !throw && flight == Some(RoundFlight::Launched);
+        let impact = !mine && flight == Some(RoundFlight::Launched);
         let wall = if throw {
             self.throw_sound(pid, f);
             None
@@ -411,7 +425,7 @@ impl Game {
             return Some(HitVerdict::ConeOff);
         }
         if throw {
-            if self.throw_release(pid, f, now) {
+            if self.throw_release(pid, f, now, impact) {
                 self.throw_count(pid, wi);
             }
             return Some(HitVerdict::Throw);

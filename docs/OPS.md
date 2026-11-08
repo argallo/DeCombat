@@ -59,6 +59,22 @@ ssh decombat-admin@<VPS_IP> sudo bash /opt/decombat/tools/install.sh decombat-se
 Between matches if you can: every lobby instance restarts. `tools/vps/push.sh --host <VPS_IP> --user decombat-admin --build --yes` builds on
 the VPS instead.
 
+## 4a. Packs from a release (`tools/vps/packs_sync.sh`)
+
+Our packs (camos, the Case Reel, the inspect pack, community maps) come from pack repositories, as tagged releases
+(docs/PACKS_FROM_REPOSITORIES.md). To put a release's packs on the box:
+
+```
+sudo bash /opt/decombat/tools/packs_sync.sh argallo/DeCombat-mods v1            # every pack of the release
+sudo bash /opt/decombat/tools/packs_sync.sh argallo/DeCombat-mods v1 --only case_reel --format set
+```
+
+It downloads the release's `SHA256SUMS` and `packs.json`, then every selected zip, checks each against both, and only then
+installs them as `/opt/decombat/data/mods/<sha256>.zip`; one bad zip installs nothing. A zip already there under its hash
+is left alone, so running it again is free. It prints the `mods = [...]` rows (or `[[mods.set]]` blocks with `--format set`)
+to paste into `server.toml`; it never edits the file, so a new release changes nothing until you paste the row and restart
+(`dc-config check --fs` first). A branch name (`main`, `latest`) is refused: a pack is its hash, a branch moves.
+
 ## 5. Rollback
 
 The same deploy with the older `ref`. By hand: `install.sh` with the older tarball. **The database is not rolled back**, and a newer

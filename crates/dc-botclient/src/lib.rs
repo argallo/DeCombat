@@ -24,6 +24,10 @@
 // the session report is one large `json!` literal
 #![recursion_limit = "512"]
 
+/// CLI-1944: the build stamp `tools/friend_pack_win.py` finds in the exe (same form as dc-client's).
+#[used]
+pub static BUILD_STAMP: &str = env!("DC_BUILD_STAMP");
+
 pub mod bombrun;
 pub mod capdecode;
 pub mod clock;
@@ -33,6 +37,7 @@ pub mod evade;
 pub mod flagrun;
 // DC-DEFAULT: BOT-75 (proposed) Spy Hunt: the nearest intel case, then the uplink
 pub mod fx;
+pub mod grenade;
 pub mod hostroom;
 pub mod hunt;
 pub mod lifecycle;
@@ -41,6 +46,7 @@ pub mod logring;
 pub mod motion;
 pub mod nav;
 pub mod objects;
+pub mod qrt;
 pub mod record;
 pub mod roles;
 pub mod romworld;
@@ -50,6 +56,7 @@ pub mod shell;
 pub mod shooter;
 pub mod shotcycle;
 pub mod skill;
+pub mod spread;
 pub mod spyrun;
 pub mod squad;
 pub mod swarm;

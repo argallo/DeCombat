@@ -59,7 +59,7 @@ The service runs as the system user `decombat` (no login shell). It may write on
 config and ROM belong to root and are read-only for it. Backups, alerts, the move away from root's SSH login and the launch-day runbook: [OPS.md](OPS.md).
 
 The unit starts `dc-lobby-server --config /opt/decombat/config/server.toml --public --check-password
---no-auto-create --register "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver
+--no-auto-create --register-open "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver
 --admin 127.0.0.1:10090 --stop-grace 10`: listens on every interface, tells remote players the address from
 `DC_SERVER__ADVERTISE_IP` (refuses to start while that is loopback, LG-31), checks passwords, refuses unknown names,
 serves the invite-only registration page on TCP 18080, starts the `dc-dserver` next to itself per match (LG-126)
@@ -419,6 +419,11 @@ the world. Same lobby, DB, accounts and ports; the lines are in
 sha256sum starter_map-0.1.0.zip
 sudo -u decombat cp starter_map-0.1.0.zip /opt/decombat/data/mods/<sha256>.zip
 
+#    From a pack repository's release instead (docs/PACKS_FROM_REPOSITORIES.md): one command fetches the tagged
+#    release's zips, checks each against SHA256SUMS and the declared hash, installs them under their hash and prints
+#    the rows; a branch name is refused, a re-run changes nothing, server.toml is not touched
+sudo bash /opt/decombat/tools/packs_sync.sh argallo/DeCombat-mods v1 [--only variant_prism_scar,case_reel]
+
 # 2. the lines, from the review list (the map's row in community/vanilla_plus.json, MODDING_GUIDE.md section 12)
 dc-config vanilla-plus-lines community/vanilla_plus.json
 
@@ -431,7 +436,7 @@ mods = [
   { id = "starter_map", version = "0.1.0", sha256 = "<sha256>" },
 ]
 
-# 4. the game host: a remote entry's agent must say `packs=1` in its hello (specs/HOST_AGENT.md); an older agent is
+# 4. the game host: a remote entry's agent must say `packs=1` and `contentlines=1` in its hello (specs/HOST_AGENT.md); an older agent is
 #    updated with the same tools/host/push.sh line that installed it, without --rom (docs/HOST.md), between matches
 
 # 5. check, restart, look (the entry's id is its position among the [[lobby.servers]] entries, from 1; 18080 is the
@@ -493,11 +498,17 @@ Discord message current from those files. Nothing is installed or enabled by a d
 After a one-time setup as root (`tools/vps/deploy_setup.sh`, a read-only GitHub deploy key), the dashboard's Updates tab
 builds and installs a commit of master on this box and offers it to the game hosts: docs/DEPLOY_FROM_ADMIN.md.
 
+## Bug reports from Discord
+
+A small job reads the bug-report channel of the Discord server with a read-only bot and the dashboard's Updates
+tab lists the messages (`tools/vps/triage_setup.sh`, once, after you wrote `deploy/triage.conf` by hand): docs/DEPLOY_FROM_ADMIN.md.
+
 ## Security
 
 - The operator endpoint (`--admin 127.0.0.1:10090`) is loopback only; reach it through an SSH tunnel, never open it
   in a firewall. `--admin-public` would need `--admin-token` (SERVER.md section 4); the unit does not use it.
-- Registration needs an invite code (`--register`), unknown names are refused (`--no-auto-create`) and passwords are
+- Registration is open (`--register-open`, the open beta since 2026-11-08, LG-433; `--register` alone asks for an
+  invite code), unknown names are refused (`--no-auto-create`) and passwords are
   checked (`--check-password`, Argon2id in the DB). Five failed logins lock a name or an address for 60 s.
 - The login (auth port 10000) and the registration page (18080) are TLS-encrypted; the lobby refuses plain logins
   from outside (docs/SERVER.md section 4b). Keep `tls_key.pem` private; if you replace or lose the pair, give the

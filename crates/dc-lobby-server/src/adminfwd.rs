@@ -53,7 +53,9 @@ pub fn split(path: &str) -> Option<(&str, &str)> {
 /// True for the paths an instance serves through the admin web: `/ops` and below, not the deploys.
 pub fn forwardable(inner: &str) -> bool {
     let p = inner.trim_end_matches('/');
-    (p == "/ops" || p.starts_with("/ops/")) && !crate::deploy::handles(p)
+    (p == "/ops" || p.starts_with("/ops/"))
+        && !crate::deploy::handles(p)
+        && !crate::triage::handles(p)
 }
 
 /// The request target for the instance: the raw target of the request line without `/i/<name>`. The path must be

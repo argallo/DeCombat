@@ -326,6 +326,21 @@ fn check(o: &Outcome, want: &[&str], dir: &Path, text: &str) {
             "{f} holds the password"
         );
     }
+    // CLI-1941: both event logs open with the run stamp, before any other event
+    for f in ["menu_events.jsonl", "client_events.jsonl"] {
+        let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        let first = text.lines().next().unwrap_or_default();
+        let ev: serde_json::Value = serde_json::from_str(first).unwrap_or_default();
+        assert_eq!(ev["ev"], "run", "{f} first event: {first}");
+        assert_eq!(
+            ev["pid"],
+            serde_json::json!(std::process::id()),
+            "{f}: {first}"
+        );
+        for key in ["run", "version", "commit", "target", "profile", "started"] {
+            assert!(!ev[key].is_null(), "{f}: {key} missing in {first}");
+        }
+    }
     if o.rom {
         assert!(
             o.report.shots.len() + 2 >= want.len(),

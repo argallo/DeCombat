@@ -708,6 +708,20 @@ fn event(shared: &Shared, problem: bool, detail: &str) {
     g.note(&format!("admin-web: {detail}"));
 }
 
+/// LG-430: the signed-in admin's display name: the label of the session's key, else `key #<id>`.
+fn admin_name(c: &Ctx, s: &Session) -> String {
+    let label = key_by_id(&crate::net::lock(c.shared).db, s.key_id)
+        .ok()
+        .flatten()
+        .map(|k| k.label.trim().to_string())
+        .unwrap_or_default();
+    if label.is_empty() {
+        format!("key #{}", s.key_id)
+    } else {
+        label
+    }
+}
+
 fn key_name(k: &KeyRow) -> String {
     format!("key #{} {:?} (cred {})", k.id, k.label, k.short())
 }
@@ -1223,6 +1237,37 @@ pub fn handle(
                 csrf: s.csrf.clone(),
                 by: format!("the admin web, key #{} from {}", s.key_id, c.ip),
             };
+            // LG-430: a release request names the signed-in admin (the key's label) in its file and its event
+            if crate::release::handles(p) {
+                let name = admin_name(&c, &s);
+                let (status, ctype, out) =
+                    crate::release::serve_at(shared, &req, head, Some(&guard), Some(&name), now);
+                if method == "POST" {
+                    event(
+                        shared,
+                        false,
+                        &format!(
+                            "release request by {name} with key #{} from {} (answer {status})",
+                            s.key_id, c.ip
+                        ),
+                    );
+                }
+                return Resp::new(status, ctype, out);
+            }
+            // OPS-26: a done mark on a bug report names the signed-in admin too
+            if crate::triage::handles(p) {
+                let name = admin_name(&c, &s);
+                let (status, ctype, out) = crate::triage::serve_at(
+                    shared,
+                    &req,
+                    head,
+                    body,
+                    Some(&guard),
+                    Some(&name),
+                    now,
+                );
+                return Resp::new(status, ctype, out);
+            }
             let (status, ctype, mut out) =
                 crate::opsweb::serve(shared, &req, head, body, Some(&guard));
             // LG-394: who asked for a deploy (the request's own event names the admin web only)

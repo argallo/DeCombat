@@ -909,11 +909,10 @@ fn a_curated_entry_publishes_its_field_of_view_range_in_its_document() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The weapon content in the start request of a remote game host, and an agent too old for it.
-#[test]
-fn a_featured_entrys_content_goes_to_its_agent_and_an_old_agent_refuses_the_start() {
-    let dir = temp("agent");
-    let pack_a = pack(&dir, "pack_a", "shared", &["content.weapons"], WEAPON_LUA);
+/// A room of the featured entry 3 on game host `us-west`, in a state whose pack runs `lua`: what a Start sends.
+fn weapon_room(tag: &str, lua: &str) -> (Core, Client, PathBuf) {
+    let dir = temp(tag);
+    let pack_a = pack(&dir, "pack_a", "shared", &["content.weapons"], lua);
     let mut st = featured(&dir, vec![pack_a]);
     st.opts.servers[2].host = "us-west".into();
     st.opts.dserver = true;
@@ -948,49 +947,90 @@ fn a_featured_entrys_content_goes_to_its_agent_and_an_old_agent_refuses_the_star
         ),
         1
     );
-    let start = |st: &mut Core, takes_content: bool| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        st.hosts.online.insert(
-            "us-west".into(),
-            crate::hosts::Agent {
-                conn: 1,
-                tx,
-                address: "203.0.113.9".into(),
-                peer: "test".into(),
-                ports: None,
-                version: "t".into(),
-                takes_content,
-                takes_packs: false,
-                packs: Default::default(),
-                since: std::time::Instant::now(),
-                takes_update: false,
-                offered: None,
-                sending: false,
-                sends: 0,
-            },
-        );
-        let mut flag = 0u32.to_le_bytes().to_vec();
-        flag.extend(2u32.to_le_bytes());
-        let got = l.send(st, ROOM_USER_FLAG, &flag);
-        let ok = u32_at(
-            &got.iter()
-                .find(|(id, _)| *id == ROOM_USER_FLAG_REPLY)
-                .unwrap()
-                .1,
-            6,
-        ) == 1;
-        let sent: Vec<String> = rx
-            .try_iter()
-            .filter_map(|o| match o {
-                crate::hosts::HostOut::Line(t) => Some(t),
-                _ => None,
-            })
-            .collect();
-        (ok, sent)
+    (st, l, dir)
+}
+
+/// What an agent's hello offers, and what it holds already.
+#[derive(Clone, Copy)]
+struct Abilities {
+    content: bool,
+    content_lines: bool,
+    holds_content: bool,
+}
+
+/// A Start with an agent of these abilities: the reply's verdict and the lines it got.
+fn weapon_start(st: &mut Core, l: &Client, h: Abilities) -> (bool, Vec<String>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut packs = std::collections::BTreeSet::new();
+    if h.holds_content {
+        let hash = crate::servers::entry_set_of_channel(st, 7)
+            .map(|e| e.client.content.hash())
+            .unwrap();
+        packs.insert(hash);
+    }
+    st.hosts.online.insert(
+        "us-west".into(),
+        crate::hosts::Agent {
+            conn: 1,
+            tx,
+            address: "203.0.113.9".into(),
+            peer: "test".into(),
+            ports: None,
+            version: "t".into(),
+            takes_content: h.content,
+            takes_content_lines: h.content_lines,
+            takes_packs: false,
+            packs,
+            since: std::time::Instant::now(),
+            takes_update: false,
+            offered: None,
+            sending: false,
+            sends: 0,
+        },
+    );
+    let mut flag = 0u32.to_le_bytes().to_vec();
+    flag.extend(2u32.to_le_bytes());
+    let got = l.send(st, ROOM_USER_FLAG, &flag);
+    let ok = u32_at(
+        &got.iter()
+            .find(|(id, _)| *id == ROOM_USER_FLAG_REPLY)
+            .unwrap()
+            .1,
+        6,
+    ) == 1;
+    let sent: Vec<String> = rx
+        .try_iter()
+        .filter_map(|o| match o {
+            crate::hosts::HostOut::Line(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    (ok, sent)
+}
+
+const OLD: Abilities = Abilities {
+    content: true,
+    content_lines: false,
+    holds_content: false,
+};
+const NEW: Abilities = Abilities {
+    content: true,
+    content_lines: true,
+    holds_content: false,
+};
+
+/// The weapon content in the start request of a remote game host, and an agent too old for it.
+#[test]
+fn a_featured_entrys_content_goes_to_its_agent_and_an_old_agent_refuses_the_start() {
+    let (mut st, l, dir) = weapon_room("agent", WEAPON_LUA);
+    let none = Abilities {
+        content: false,
+        ..OLD
     };
-    let (ok, sent) = start(&mut st, false);
+    let (ok, sent) = weapon_start(&mut st, &l, none);
     assert!(!ok && sent.is_empty(), "{sent:?}");
-    let (ok, sent) = start(&mut st, true);
+    // an agent that takes content but not content lines keeps the inline request when it fits
+    let (ok, sent) = weapon_start(&mut st, &l, OLD);
     assert!(ok, "{sent:?}");
     let line = sent
         .iter()
@@ -1000,7 +1040,102 @@ fn a_featured_entrys_content_goes_to_its_agent_and_an_old_agent_refuses_the_star
         line.contains("content_hash") && line.contains("AmmoDamage"),
         "{line}"
     );
+    assert!(!sent.iter().any(|t| t.starts_with("content ")), "{sent:?}");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A pack that patches enough weapons for its content document to pass one `start` line (LG-431 is for this).
+const BIG_LUA: &str = "return function(mod) for id = 100, 400 do mod.content.weapons:patch(id, {AmmoDamage = 41}) end end";
+
+/// LG-431: content over 16 KiB goes in `content` lines, in order, before a `start` that names only its hash; an agent
+/// without `contentlines=1` gets the error and nothing is sent.
+#[test]
+fn a_big_content_goes_in_lines_and_the_start_carries_the_hash_only() {
+    let (mut st, l, dir) = weapon_room("bigcontent", BIG_LUA);
+    let logfile = dir.join("lobby.log");
+    st.log = Arc::new(Logger::open(Some(&logfile), None).0);
+    let (hash, doc) = {
+        let c = &crate::servers::entry_set_of_channel(&st, 7)
+            .unwrap()
+            .client
+            .content;
+        (c.hash(), c.to_json())
+    };
+    assert!(
+        doc.len() > 16 * 1024,
+        "the fixture must be big: {}",
+        doc.len()
+    );
+    // an agent without the lines: the error, and nothing sent
+    let (ok, sent) = weapon_start(&mut st, &l, OLD);
+    assert!(!ok && sent.is_empty(), "{sent:?}");
+    let text = std::fs::read_to_string(&logfile).unwrap();
+    assert!(
+        text.contains("too large for a start request") && text.contains("contentlines=1"),
+        "{text}"
+    );
+    assert_eq!(
+        st.rooms.values().next().unwrap().state,
+        crate::room::RoomPhase::Waiting
+    );
+    // an agent with them: the whole document in order, then the start with the hash alone
+    let (ok, sent) = weapon_start(&mut st, &l, NEW);
+    assert!(ok, "{sent:?}");
+    let at = sent
+        .iter()
+        .position(|t| t.starts_with("start "))
+        .expect("a start request");
+    assert!(at >= 2, "the document needs more than one line: {at}");
+    assert_eq!(sent[..at], crate::game::content_lines(&hash, &doc)[..]);
+    for t in &sent[..at] {
+        assert!(t.len() <= crate::hosts::MAX_LINE, "{}", t.len());
+    }
+    let json = sent[at].splitn(3, ' ').nth(2).unwrap();
+    assert!(json.len() < 1024, "{}", json.len());
+    let v = dc_mod_lua::JsonValue::parse(json).unwrap();
+    assert_eq!(
+        v.get("content_hash").and_then(|p| p.as_str()),
+        Some(hash.as_str())
+    );
+    assert!(v.get("content").is_none(), "the hash alone");
+    assert!(st.hosts.online["us-west"].packs.contains(&hash));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// LG-431: a document the agent said `have` for is not sent again, and the start still names its hash.
+#[test]
+fn content_the_agent_holds_is_not_sent_again() {
+    let (mut st, l, dir) = weapon_room("heldcontent", BIG_LUA);
+    let held = Abilities {
+        holds_content: true,
+        ..NEW
+    };
+    let (ok, sent) = weapon_start(&mut st, &l, held);
+    assert!(ok, "{sent:?}");
+    assert!(!sent.iter().any(|t| t.starts_with("content ")), "{sent:?}");
+    let start = sent.iter().find(|t| t.starts_with("start ")).unwrap();
+    assert!(
+        start.contains("content_hash") && !start.contains("\"content\""),
+        "{start}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// LG-431: the content lines split a document at the pack chunk size, each decoding alone, the last one short.
+#[test]
+fn content_lines_split_at_the_chunk_size() {
+    let hash = "ab".repeat(32);
+    let doc = "x".repeat(crate::game::PACK_CHUNK * 2 + 5);
+    let lines = crate::game::content_lines(&hash, &doc);
+    assert_eq!(lines.len(), 3);
+    let first = crate::identity::b64std(&doc.as_bytes()[..crate::game::PACK_CHUNK]);
+    assert_eq!(lines[0], format!("content {hash} {first}"));
+    assert_eq!(lines[1], lines[0], "equal bytes, equal line");
+    assert_eq!(
+        lines[2],
+        format!("content {hash} {}", crate::identity::b64std(b"xxxxx"))
+    );
+    assert!(lines.iter().all(|l| l.len() <= crate::hosts::MAX_LINE));
 }
 
 // ------------------------------------------------------------------ community maps on the entry (MAP-80 .. MAP-84)
@@ -1272,6 +1407,7 @@ impl RemoteRoom {
                 ports: None,
                 version: "t".into(),
                 takes_content: true,
+                takes_content_lines: false,
                 takes_packs,
                 packs,
                 since: std::time::Instant::now(),

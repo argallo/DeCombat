@@ -14,6 +14,7 @@
 //!   unit answers with one fetch of the mirror (a fetch request never starts a deploy). 409 while a deploy runs or
 //!   waits (the deploy fetches itself), 429 within [`FETCH_GAP`] seconds of the last check; an ops event of kind `deploy`.
 //! - Host agents (`hosts.rs`, HA-2): [`host_build`] is the build the lobby offers them.
+//! - `/ops/updates/release` and its requests: the Release card, release.rs (LG-430).
 // Provenance: ORIGINAL (DeCombat operator tooling)
 // DC-DEFAULT: LG-392 (proposed) the state files and the request; LG-393 (proposed) the write guard and refusals;
 // LG-394 (proposed) ops events of kind `deploy`; LG-402 (proposed) the fetch request ("Check now")
@@ -495,7 +496,7 @@ pub fn fetch_request(st: &mut Core, by: &str, now: i64) -> Reply {
 }
 
 /// The write guard: a JSON body, an `Origin` that is this very page's, and the page token in `X-Admin-CSRF`.
-fn guard_ok(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
+pub(crate) fn guard_ok(head: &str, origin: &str, csrf: &str) -> Result<(), Reply> {
     let h = |n: &str| crate::betaweb::header(head, n);
     if !h("content-type")
         .unwrap_or("")
@@ -537,6 +538,10 @@ pub fn serve_at(
     now: i64,
 ) -> Reply {
     let path = req.path.trim_end_matches('/');
+    // LG-430: the release card's state and requests (the admin web passes the admin's name itself, adminweb.rs)
+    if crate::release::handles(path) {
+        return crate::release::serve_at(shared, req, head, guard, None, now);
+    }
     let mut g = crate::net::lock(shared);
     let st = &mut *g;
     match (req.method.as_str(), path) {

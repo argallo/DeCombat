@@ -931,6 +931,7 @@ pub fn remote_args(extra_args: &str) -> Vec<String> {
 /// identity token, the idle time, the log name the local path uses, the lobby's extra arguments.
 ///
 /// LG-313: `content` = (hash, document) of a featured entry's weapon content; `None` leaves the request as before.
+/// LG-431: an empty document leaves it out and names the hash alone (the document went as `content` lines).
 /// MAP-83: `pack` = a featured entry's community map; `None` leaves the request as before.
 pub fn start_json(
     world: &str,
@@ -954,7 +955,9 @@ pub fn start_json(
     );
     if let Some((hash, doc)) = content {
         o.insert("content_hash".to_string(), J::String(hash.to_string()));
-        o.insert("content".to_string(), J::String(doc.to_string()));
+        if !doc.is_empty() {
+            o.insert("content".to_string(), J::String(doc.to_string()));
+        }
     }
     if let Some(p) = pack {
         let mut w = BTreeMap::new();
@@ -1034,6 +1037,15 @@ pub fn pack_lines(w: &RemoteWorld) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// LG-431: the `content <hash> <base64>` lines of a weapon content document, in order. Each carries [`PACK_CHUNK`] raw
+/// bytes, so a line stays under the agent's 16 KiB limit (the same size as a `pack` line) and each decodes alone.
+pub fn content_lines(hash: &str, doc: &str) -> Vec<String> {
+    doc.as_bytes()
+        .chunks(PACK_CHUNK)
+        .map(|c| format!("content {hash} {}", crate::identity::b64std(c)))
+        .collect()
+}
+
 /// The most JSON a `start` line carries: an agent drops a line over 16 KiB (HOST_AGENT.md §3).
 // DC-DEFAULT: LG-313 (proposed)
 const START_LINE_ROOM: usize = 16 * 1024 - 64;
@@ -1063,22 +1075,25 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
             }
         },
     };
-    let (tx, address, takes_content, takes_packs) = match st.hosts.online.get(host) {
-        Some(a) => (
-            a.tx.clone(),
-            a.address.clone(),
-            a.takes_content,
-            a.takes_packs,
-        ),
-        None => return Err(format!("game host {host} is offline")),
-    };
+    let (tx, address, takes_content, takes_content_lines, takes_packs) =
+        match st.hosts.online.get(host) {
+            Some(a) => (
+                a.tx.clone(),
+                a.address.clone(),
+                a.takes_content,
+                a.takes_content_lines,
+                a.takes_packs,
+            ),
+            None => return Err(format!("game host {host} is offline")),
+        };
     // DC-DEFAULT: MAP-83 (proposed) as for weapon content: an agent that cannot take the pack is refused before anything
     if pack.is_some() && !takes_packs {
         return Err(format!(
             "game host {host} is too old for this entry's community maps (no packs=1 in its hello); update its agent"
         ));
     }
-    // LG-313: a featured entry's weapon content goes in the start request (the agent's machine has no lobby data folder)
+    // LG-313: a featured entry's weapon content reaches the agent's machine (it has no lobby data folder), LG-431: as
+    // `content` lines before the `start` when the agent takes them, else in the request
     let content = crate::servers::entry_set_of_channel(st, key.channel)
         .map(|e| &e.client.content)
         .filter(|c| !c.is_empty())
@@ -1115,12 +1130,17 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
         st.opts.dserver_idle,
         &format!("dserver_c{}_r{}_g{}.log", key.channel, key.no, id),
         &args,
-        content.as_ref().map(|(h, d)| (h.as_str(), d.as_str())),
+        content.as_ref().map(|(h, d)| {
+            (
+                h.as_str(),
+                if takes_content_lines { "" } else { d.as_str() },
+            )
+        }),
         pack.as_ref(),
     );
     if json.len() > START_LINE_ROOM {
         return Err(format!(
-            "this entry's weapon content is too large for a start request ({} bytes)",
+            "this entry's weapon content is too large for a start request ({} bytes); game host {host} takes it only as lines (no contentlines=1 in its hello): update its agent",
             json.len()
         ));
     }
@@ -1146,6 +1166,31 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
             "host {host}: map pack {} ({} bytes) sent in {n} line(s)",
             p.sha256, p.size
         ));
+    }
+    // DC-DEFAULT: LG-431 (proposed) the weapon content goes like a pack: once per connection unless the agent said
+    // `have <hash>`, queued here under the state lock so the lines reach the agent whole and before this `start`
+    if let Some((hash, doc)) = content.as_ref().filter(|_| takes_content_lines) {
+        if !st
+            .hosts
+            .online
+            .get(host)
+            .is_some_and(|a| a.packs.contains(hash))
+        {
+            let lines = content_lines(hash, doc);
+            let n = lines.len();
+            for l in lines {
+                if tx.send(crate::hosts::HostOut::Line(l)).is_err() {
+                    return Err(format!("game host {host} is offline"));
+                }
+            }
+            if let Some(a) = st.hosts.online.get_mut(host) {
+                a.packs.insert(hash.clone());
+            }
+            st.note(&format!(
+                "host {host}: weapon content {hash} ({} bytes) sent in {n} line(s)",
+                doc.len()
+            ));
+        }
     }
     if tx
         .send(crate::hosts::HostOut::Line(format!("start {id} {json}")))

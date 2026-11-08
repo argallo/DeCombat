@@ -10,7 +10,7 @@
 // SPEC: PROTOCOL_2009.md §1.2 (framing), §2, §3, §7
 // HARNESS: lobby_harness::login, lobby_harness::lobby, lobby_harness::test_main_suite
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -155,7 +155,7 @@ impl TcpLink {
     ) -> TcpLink {
         let _ = stream.tcp().set_nodelay(true);
         let conn = rec.open_conn(port, "tcp", &addr.to_string());
-        rec.event(
+        rec.transport_event(
             "tcp_open",
             json!({"port": port, "conn": conn, "addr": addr.to_string(), "tls": stream.is_tls()}),
         );
@@ -175,7 +175,7 @@ impl TcpLink {
     pub fn send(&mut self, w: &PktWriter) -> BotResult<()> {
         let frame = w.to_frame();
         self.rec.tcp_frame(self.conn, self.port, "c2s", &frame);
-        self.rec.event(
+        self.rec.transport_event(
             "tcp_out",
             json!({"port": self.port, "id": format!("0x{:x}", w.id()), "len": frame.len() - 8,
                    "head": head(&frame[8..])}),
@@ -198,7 +198,7 @@ impl TcpLink {
         .to_vec();
         out.extend_from_slice(&p);
         self.rec.tcp_frame(self.conn, self.port, "c2s", &out);
-        self.rec.event(
+        self.rec.transport_event(
             "tcp_out",
             json!({"port": self.port, "id": format!("0x{:x}", w.id()), "frame": format!("0x{:x}", frame),
                    "len": p.len(), "head": head(&p)}),
@@ -254,7 +254,7 @@ impl TcpLink {
                 .tcp_frame(self.conn, self.port, "s2c", &self.buf[off..off + flen]);
             off += flen;
             let id = fid as u16;
-            self.rec.event(
+            self.rec.transport_event(
                 "tcp_in",
                 json!({"port": self.port, "id": format!("0x{id:x}"), "len": payload.len(),
                        "head": head(&payload)}),
@@ -406,6 +406,9 @@ impl LoginOptions {
 pub const EXIT_NO_POOL: i32 = 5;
 pub const EXIT_POOL_FULL: i32 = 3;
 pub const EXIT_POOL_ADDRESS: i32 = 4;
+
+/// The start of the error of a bot whose `--match-wait` passed with no room to join (BOT-158: a normal end).
+pub const NO_ROOM_PREFIX: &str = "lobby: no room appeared within";
 
 /// LG-318: the exit code of a bot's error text, when it is a refusal of a seat.
 pub fn exit_code_of(error: &str) -> Option<i32> {
@@ -781,6 +784,8 @@ pub struct Lobby {
     /// BOT-84: rooms a filler left for want of a player or was refused, with the end of the wait; `find_room` passes
     /// them over till then.
     skipped: BTreeMap<u32, Instant>,
+    /// BOT-156: the weapon limits the lobby refused this bot's ready under; the bot readies under none of them again.
+    refused_limits: BTreeSet<u32>,
     /// LG-319: the lobby took this bot out of its room, and it has not sat down since.
     removed: bool,
     /// LG-327: the seat ticket the menu's connection read before it handed this lobby over.
@@ -796,6 +801,17 @@ pub const REMOVED_FROM_ROOM: &str = "lobby: removed from the room";
 
 /// The error text a filler bot's waits end with when its room holds no player (BOT-84).
 pub const FILLER_ALONE: &str = "filler: no player in the room";
+
+/// BOT-156: the error text of a ready the room's weapon limit refuses (or would refuse: a limit refused before).
+pub const WEAPON_LIMIT_REFUSED: &str = "lobby: the equipped weapons fail the room's weapon limit";
+/// BOT-156: how long a bot passes over a room whose weapon limit its loadout fails.
+pub const WEAPON_LIMIT_ROOM_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// BOT-156: whether a 0x393 reply refuses the flag for the room's weapon limit (LG-342's reason).
+// SPEC: PROTOCOL_2009.md §3.7 (0x393: +6 u32 ok, +0xa u16 reason)
+fn weapon_limit_refusal(d: &[u8]) -> bool {
+    u32_at(d, 6) == 0 && u16_at(d, 0xa) == dc_wire::flagrefusal::REASON_WEAPON_LIMIT
+}
 
 /// BOT-84: whether `members` hold a player: a member other than `my_id` whose name does not start with `prefix`
 /// (ASCII case-insensitive; the bots of one launcher share a prefix, e.g. `VpsBot1`, `VpsBot2`).
@@ -929,6 +945,7 @@ impl Lobby {
             filler: None,
             room_title: None,
             skipped: BTreeMap::new(),
+            refused_limits: BTreeSet::new(),
             removed: false,
             seat_ticket: None,
         })
@@ -998,6 +1015,10 @@ impl Lobby {
     /// Leaves the room (0x386 / 0x387) and forgets the seat; the bot is back in the lobby's room list.
     // SPEC: PROTOCOL_2009.md §3.7 (0x386 header only, 0x387 +6 u32 ok -> room = -1, lobby state 15)
     pub fn leave_room(&mut self) -> BotResult<()> {
+        self.leave_room_why("no player in the room")
+    }
+
+    fn leave_room_why(&mut self, why: &str) -> BotResult<()> {
         // LG-319: the lobby took this bot out already
         if self.room.is_none() {
             return Ok(());
@@ -1007,10 +1028,8 @@ impl Lobby {
         let d = self.link.recv_until(ROOM_LEAVE_REPLY, self.timeout)?;
         let ok = u32_at(&d, 6) != 0;
         self.room = None;
-        self.rec.event(
-            "room_left",
-            json!({"room": number, "ok": ok, "why": "no player in the room"}),
-        );
+        self.rec
+            .event("room_left", json!({"room": number, "ok": ok, "why": why}));
         if !ok {
             return Err(bot_err!("lobby: leave refused"));
         }
@@ -1082,7 +1101,7 @@ impl Lobby {
                 return Ok(n);
             }
             if Instant::now() >= end {
-                return Err(bot_err!("lobby: no room appeared within {wait:?}"));
+                return Err(bot_err!("{NO_ROOM_PREFIX} {wait:?}"));
             }
             self.link.pump(Duration::from_millis(400))?;
         }
@@ -1270,10 +1289,51 @@ impl Lobby {
         Ok((u32_at(&d, 6) != 0, u32_at(&d, 0xa)))
     }
 
-    /// Guest: ready on.
+    /// BOT-156: the room's weapon limit is one the lobby refused this bot's ready under before. The bot cannot change
+    /// what it carries (a pool seat may not send 0x324 / 0x326, and the lobby already stands an owned passing primary
+    /// in for a failing one, LG-67), so a refusal holds for every room of that limit.
+    fn limit_refused(&self) -> bool {
+        self.room
+            .as_ref()
+            .is_some_and(|r| r.weapon_limit != 0 && self.refused_limits.contains(&r.weapon_limit))
+    }
+
+    /// BOT-156: notes a weapon-limit refusal of the ready in the current room; the error the wait ends with.
+    fn note_limit_refusal(&mut self) -> BotError {
+        if let Some(r) = &self.room {
+            self.refused_limits.insert(r.weapon_limit);
+        }
+        bot_err!("{WEAPON_LIMIT_REFUSED}")
+    }
+
+    /// BOT-156: leaves the room whose weapon limit the loadout fails (no ready is sent), passes it over for
+    /// [`WEAPON_LIMIT_ROOM_COOLDOWN`] and logs `weapon_limit` once.
+    // DC-DEFAULT: BOT-156 (proposed)
+    pub fn leave_for_weapon_limit(&mut self) -> BotResult<()> {
+        let Some((number, limit)) = self.room.as_ref().map(|r| (r.number, r.weapon_limit)) else {
+            return Ok(());
+        };
+        self.skip_room_for(number, WEAPON_LIMIT_ROOM_COOLDOWN);
+        self.rec.event(
+            "weapon_limit",
+            json!({"room": number, "limit": limit,
+                   "reason": "the equipped weapons fail the room's weapon limit; a bot seat cannot change them",
+                   "pass_over_s": WEAPON_LIMIT_ROOM_COOLDOWN.as_secs()}),
+        );
+        self.leave_room_why("weapon limit")
+    }
+
+    /// Guest: ready on. BOT-156: under a weapon limit refused before nothing is sent; a weapon-limit refusal ends
+    /// with [`WEAPON_LIMIT_REFUSED`].
     pub fn ready(&mut self) -> BotResult<()> {
+        if self.limit_refused() {
+            return Err(bot_err!("{WEAPON_LIMIT_REFUSED}"));
+        }
         self.send_flag(flag::READY)?;
         let d = self.link.recv_until(ROOM_USER_FLAG_REPLY, self.timeout)?;
+        if weapon_limit_refusal(&d) {
+            return Err(self.note_limit_refusal());
+        }
         if u32_at(&d, 6) == 0 {
             return Err(bot_err!(
                 "lobby: ready refused, reason 0x{:x}",
@@ -1338,7 +1398,7 @@ impl Lobby {
             if let Some((_, d)) = self.link.take_ids(&[MATCH_ADDRESS_PUSH]).pop() {
                 break d;
             }
-            let _ = self.link.take_ids(&[ROOM_USER_FLAG_REPLY]);
+            let replies = self.link.take_ids(&[ROOM_USER_FLAG_REPLY]);
             let fx = self.absorb_effects();
             // BOT-84: a filler bot waits only with a player in the room
             if let Some(e) = self.seat_gone() {
@@ -1346,6 +1406,14 @@ impl Lobby {
             }
             let now = Instant::now();
             let guest = self.room.as_ref().is_some_and(|r| !r.host);
+            // BOT-156: a re-ready the weapon limit refused, or a limit change to one refused before, ends the wait
+            // (the caller leaves the room): no ready is sent again under that limit
+            if guest && replies.iter().any(|(_, d)| weapon_limit_refusal(d)) {
+                return Err(self.note_limit_refusal());
+            }
+            if guest && self.limit_refused() {
+                return Err(bot_err!("{WEAPON_LIMIT_REFUSED}"));
+            }
             if guest {
                 watch.on_effects(&fx, now);
                 match watch.poll(now, self.own_state()) {
@@ -1497,6 +1565,7 @@ impl Lobby {
             filler: None,
             room_title: None,
             skipped: BTreeMap::new(),
+            refused_limits: BTreeSet::new(),
             removed: false,
             seat_ticket: None,
         }
@@ -1802,6 +1871,7 @@ mod tests {
             filler: None,
             room_title: None,
             skipped: BTreeMap::new(),
+            refused_limits: BTreeSet::new(),
             removed: false,
             seat_ticket: None,
         }
@@ -1912,6 +1982,143 @@ mod tests {
         assert_eq!(t.join().unwrap(), Ok(()));
         let a = r.expect("second match address");
         assert_eq!((a.ip.as_str(), a.port), ("127.0.0.1", 29988));
+    }
+
+    /// The frames of one read on the fake lobby's socket (empty on a timeout).
+    fn read_frames(s: &mut TcpStream) -> Vec<(i32, Vec<u8>)> {
+        let mut buf = [0u8; 512];
+        match s.read(&mut buf) {
+            Ok(n) if n > 0 => parse_tcp_frames(&buf[..n]).unwrap().0,
+            _ => Vec::new(),
+        }
+    }
+
+    fn limit_refusal() -> Vec<u8> {
+        PktWriter::new(0x393)
+            .u32(0)
+            .u32(dc_wire::flagrefusal::REASON_WEAPON_LIMIT as u32)
+            .to_frame()
+    }
+
+    /// BOT-156: only a 0x393 refusal with LG-342's weapon-limit reason counts as a weapon-limit refusal.
+    #[test]
+    fn the_weapon_limit_refusal_is_told_by_its_reason() {
+        let body = |f: Vec<u8>| parse_tcp_frames(&f).unwrap().0.remove(0).1;
+        assert!(weapon_limit_refusal(&body(limit_refusal())));
+        let other = PktWriter::new(0x393).u32(0).u32(0).to_frame();
+        assert!(!weapon_limit_refusal(&body(other)));
+        let ok = PktWriter::new(0x393)
+            .u32(1)
+            .u32(dc_wire::flagrefusal::REASON_WEAPON_LIMIT as u32)
+            .to_frame();
+        assert!(!weapon_limit_refusal(&body(ok)));
+    }
+
+    /// BOT-156: in a "Sniper Only" room (limit 6) the lobby refuses the bot's ready: the bot leaves without readying
+    /// again, passes the room over for the long wait, readies in a "Shotguns Only" room (limit 7) its loadout passes,
+    /// and in another limit-6 room sends no ready at all.
+    #[test]
+    fn a_weapon_limit_refusal_is_not_repeated() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let t = std::thread::spawn(move || -> Result<(), &'static str> {
+            let (mut s, _) = l.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let is_ready = |f: &[(i32, Vec<u8>)]| {
+                f.iter()
+                    .any(|(id, p)| *id == 0x392 && u32_at(p, 6) == 0 && u32_at(p, 0xa) == 1)
+            };
+            if !is_ready(&read_frames(&mut s)) {
+                return Err("no first ready");
+            }
+            s.write_all(&limit_refusal()).unwrap();
+            // the leave, nothing before it
+            let f = read_frames(&mut s);
+            if f.len() != 1 || f[0].0 != i32::from(ROOM_LEAVE) {
+                return Err("a second message in the refused room instead of the leave");
+            }
+            s.write_all(&PktWriter::new(ROOM_LEAVE_REPLY).u32(1).to_frame())
+                .unwrap();
+            // the limit-7 room: a ready, accepted
+            if !is_ready(&read_frames(&mut s)) {
+                return Err("no ready in the room the loadout passes");
+            }
+            s.write_all(&PktWriter::new(0x393).u32(1).u32(0).to_frame())
+                .unwrap();
+            // the second limit-6 room: nothing
+            s.set_read_timeout(Some(Duration::from_millis(400)))
+                .unwrap();
+            if !read_frames(&mut s).is_empty() {
+                return Err("a ready under a limit refused before");
+            }
+            Ok(())
+        });
+        let rec = Recorder::null("t");
+        let mut me = lobby_for_test(addr, &rec);
+        me.room.as_mut().unwrap().weapon_limit = dc_bute::arms::SNIPER_ONLY;
+        assert_eq!(me.ready().unwrap_err().0, WEAPON_LIMIT_REFUSED);
+        assert_eq!(
+            me.ready().unwrap_err().0,
+            WEAPON_LIMIT_REFUSED,
+            "no second ready sent"
+        );
+        me.leave_for_weapon_limit().unwrap();
+        assert!(me.room.is_none());
+        assert!(
+            me.skipped[&1] > Instant::now() + YIELDED_ROOM_COOLDOWN,
+            "the long pass-over"
+        );
+        me.room = Some(RoomSeat {
+            number: 2,
+            weapon_limit: dc_bute::arms::SHOTGUNS_ONLY,
+            ..RoomSeat::default()
+        });
+        me.ready().unwrap();
+        me.room = Some(RoomSeat {
+            number: 3,
+            weapon_limit: dc_bute::arms::SNIPER_ONLY,
+            ..RoomSeat::default()
+        });
+        assert_eq!(me.ready().unwrap_err().0, WEAPON_LIMIT_REFUSED);
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+
+    /// BOT-156: the host sets "Sniper Only" after the bot readied: the lobby resets it, its re-ready is refused, and
+    /// the wait ends with the weapon-limit error (the caller leaves) without a second ready.
+    #[test]
+    fn a_limit_set_while_waiting_ends_the_wait_after_one_refusal() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let t = std::thread::spawn(move || -> Result<(), &'static str> {
+            let (mut s, _) = l.accept().unwrap();
+            let mut f = PktWriter::new(0x3035)
+                .u32(1)
+                .u32(WEAPON_LIMIT_FIELD)
+                .u32(dc_bute::arms::SNIPER_ONLY)
+                .u32(0)
+                .to_frame();
+            f.extend(push_state(9, 0));
+            s.write_all(&f).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            if !read_frames(&mut s).iter().any(|(id, _)| *id == 0x392) {
+                return Err("no re-ready");
+            }
+            s.write_all(&limit_refusal()).unwrap();
+            // a further settings push: no ready follows
+            s.write_all(&push_state(9, 0)).unwrap();
+            s.set_read_timeout(Some(Duration::from_millis(1500)))
+                .unwrap();
+            if !read_frames(&mut s).is_empty() {
+                return Err("a second ready after the refusal");
+            }
+            Ok(())
+        });
+        let rec = Recorder::null("t");
+        let mut me = lobby_for_test(addr, &rec);
+        let e = me.wait_match_address(Duration::from_secs(5)).unwrap_err();
+        assert_eq!(e.0, WEAPON_LIMIT_REFUSED);
+        assert!(me.refused_limits.contains(&dc_bute::arms::SNIPER_ONLY));
+        assert_eq!(t.join().unwrap(), Ok(()));
     }
 
     /// Scripted host: a settings change resets the bot to state 0, and the match address goes only to a bot

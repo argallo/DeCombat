@@ -164,6 +164,7 @@ fn run(
     cfg.game.fall.enabled = false;
     cfg.game.coop.hit_chance = [0.0; 3];
     cfg.game.coop.melee_hit = 0.0;
+    cfg.game.coop.full_accuracy = false;
     cfg.game.coop.nav = nav;
     let hold = cfg.game.coop.hold_range;
     let trig = if w.coop.mission {

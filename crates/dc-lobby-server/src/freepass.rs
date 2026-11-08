@@ -78,11 +78,9 @@ fn fits(st: &Core, account: u32, item_no: i64, slot: i64) -> rusqlite::Result<bo
         return Ok(false);
     };
     Ok(if slot == own {
-        (0..4).contains(&own)
+        (0..4).contains(&own) && loadout::own_slot_ok(st, item_no)
     } else {
-        loadout::BACKPACK_SLOTS.contains(&slot)
-            && st.rules.shop.backpack_kinds.contains(&own)
-            && slot - loadout::BACKPACK_SLOTS.start() < loadout::capacity(st, account)?
+        loadout::pack_fits(st, account, item_no, own, slot)?
     })
 }
 

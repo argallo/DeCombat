@@ -2252,9 +2252,13 @@ impl ShopScreen {
         (self.tab == storage::TAB_WEAPONS && self.pack_count > 0).then_some((at, self.pack_count))
     }
 
-    /// The open drawer button under `p` (backpack row, button).
+    /// The open drawer button under `p` (backpack row, button); a specialist's special rows have no drawer.
+    // EVIDENCE: cshell+0xd9ad0 (only the list item mode 1 builds the drawer; special rows are mode 4)
     fn drawer_button_at(&self, data: &MenuData, p: [f32; 2]) -> Option<(usize, usize)> {
         let (at, n) = self.pack_rows(data)?;
+        if self.wares.pack_form(&data.store).special() {
+            return None;
+        }
         pane::drawer_button_at(at, n, &self.look, p)
     }
 
@@ -2406,6 +2410,26 @@ impl ShopScreen {
         // the window is modal: other commands do nothing while it is up
         // DC-DEFAULT: CLI-772 (proposed) presses outside an open slot choice window do nothing
         true
+    }
+
+    /// CLI-772 amendment: a special item goes into a special slot: the backpack check (the slot kind must be the
+    /// item's), then window 6 with the rows S1..; without slots the box that a specialist is needed (0x189e).
+    // EVIDENCE: cshell+0x148020 (the check and its boxes), cshell+0x142b60 (window 6 filled by cshell+0x13fed0)
+    // DC-DEFAULT: CLI-772 (amended) with no slot at all the 0x189e box shows (the 2009 check shows none, its Equip
+    // button being hidden for such an item)
+    fn special_pick(&mut self, uid: u32, item: u32, ctx: &mut Ctx) {
+        match slotpick::pack_check(&ctx.data.store, &self.wares, Some(item)) {
+            Ok(()) => {
+                self.pick_pass = None;
+                self.open_slot_pick(slotpick::PACK_WINDOW, uid, item, ctx);
+            }
+            Err(e) => {
+                let (text, title) = e.unwrap_or(slotpick::NEEDS_SPECIALIST);
+                let mut q = Popup::ok(ctx.cat.text(text), BoxTag::None);
+                q.title = title;
+                ctx.popups.push(q);
+            }
+        }
     }
 
     /// The storage page's Backpack (1009): the backpack check, then window 6 for the selected item.
@@ -3125,6 +3149,17 @@ impl ShopScreen {
             }
             return;
         }
+        // CLI-772 amendment: Equip on a special item (EquipOnlyBackpack) outside a drawer row asks for its special slot
+        // (window 6 with the rows S1..); the 2009 page hides Equip for it and offers Backpack (cshell+0x147470)
+        // DC-DEFAULT: CLI-772 (amended) Equip takes the Backpack button's way for such an item (our black market tab
+        // shows no Backpack button)
+        if ctx.data.store.slot_of(&r).is_none()
+            && self.pack_target.is_none()
+            && self.wares.pack_only(r.item_no as i32)
+        {
+            self.special_pick(r.uid, r.item_no, ctx);
+            return;
+        }
         // DC-DEFAULT: CLI-547 Equip on an equipped item unequips it (0x326 with its slot); the 2009
         // unequip gesture (cshell+0x145ed0 -> sender cshell+0x18af30) is not traced
         match (ctx.data.store.slot_of(&r), own_slot(&self.wares, r.item_no)) {
@@ -3274,11 +3309,16 @@ impl Screen for ShopScreen {
             Some((at, 0)) => (inside(pane::pack_row_rect(at, 0), p).then_some(0), None),
             Some((at, n)) => (
                 pane::pack_row_at(at, n, &self.look, p),
-                pane::drawer_button_at(at, n, &self.look, p),
+                self.drawer_button_at(data, p),
             ),
             None => (None, None),
         };
-        let slots = self.pack_rows(data).map_or(0, |(_, n)| n);
+        // CLI-772 amendment: special rows keep no drawer
+        let slots = if self.wares.pack_form(&data.store).special() {
+            0
+        } else {
+            self.pack_rows(data).map_or(0, |(_, n)| n)
+        };
         self.pack_count = slots;
         for (i, d) in self.look.drawers.iter_mut().enumerate() {
             if pack == Some(i) && i < slots {
@@ -3795,6 +3835,11 @@ impl Screen for ShopScreen {
                 return;
             }
             BoxTag::EquipBought { uid, item } => {
+                // CLI-772 amendment: a special item asks for its special slot (window 6), never its own slot
+                if yes && self.wares.pack_only(item as i32) {
+                    self.special_pick(uid, item, ctx);
+                    return;
+                }
                 // storage-functions: a weapon whose slot is filled while the backpack has weapon slots asks in window
                 // 7 (cshell+0x14f830 0x3f8 on the weapons tab: cshell+0x148020(0) -> cshell+0x14f180(1)); a type-7 item
                 // is equipped at once (cshell+0x14f180 -> cshell+0x14ed50)

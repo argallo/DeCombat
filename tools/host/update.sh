@@ -103,7 +103,7 @@ offer_message() {
 secure_layout() {
   local a=$1 g d
   g=$(id -gn "$a")
-  mkdir -p "$ROOT/tools/host" "$STATE" "$ROOT/logs" "$ROOT/packs" "$ROOT/incoming"
+  mkdir -p "$ROOT/tools/host" "$STATE" "$ROOT/logs" "$ROOT/logs/content" "$ROOT/packs" "$ROOT/incoming"
   chown root:root "$ROOT" && chmod 0755 "$ROOT"
   for d in bin config tools update rom; do
     [ -e "$ROOT/$d" ] || continue

@@ -360,7 +360,7 @@ the provider's firewall and the host's own (`ufw`) both need them.
 Community maps ride the Vanilla++ server entry of a vanilla lobby, with no second instance:
 a map pack is a curated pack, one `<sha256>.zip` in `paths.mods_dir` and one line in the entry's `mods = [...]`
 (LG-313). The recipe is [docs/VPS.md](VPS.md) "Several instances on one box" > "vanilla++", the lines
-[examples/server-vanilla-plus.toml](../examples/server-vanilla-plus.toml). A remote entry's agent needs `packs=1` in its
+[examples/server-vanilla-plus.toml](../examples/server-vanilla-plus.toml). A remote entry's agent needs `packs=1` and `contentlines=1` in its
 hello ([specs/HOST_AGENT.md](../specs/HOST_AGENT.md)). `GET /entry_mods/<entry id>.json` on the web port lists the maps
 the entry offers (`community_map_base`, `maps`). On this machine `dc-mapkit play <project>` starts that shape with the
 project's own export (a vanilla lobby with the entry "Vanilla++", game server and client on 127.0.0.1, logs under the

@@ -37,20 +37,90 @@ pub fn function_slot_reply(id: u16, ok: bool, uid: u32) -> Vec<u8> {
     w.into_frame()
 }
 
-/// Extra weapon slots of the equipped backpack (ROM `MultyInvenSlot`).
-pub fn capacity(st: &Core, account: u32) -> rusqlite::Result<i64> {
-    let bp: Option<i64> = st
+/// The equipment slot of the worn character (mercenary or specialist).
+pub const SLOT_CHARACTER: i64 = 14;
+
+fn equipped_no(st: &Core, account: u32, slot: i64) -> rusqlite::Result<i32> {
+    let no: Option<i64> = st
         .db
         .query_row(
             "SELECT item_no FROM items WHERE user_no = ?1 AND equip_slot = ?2 ORDER BY uid DESC LIMIT 1",
-            params![account as i64, SLOT_BACKPACK],
+            params![account as i64, slot],
             |r| r.get(0),
         )
         .optional()?;
-    Ok(match (bp, st.rom.items.as_ref()) {
-        (Some(no), Some(t)) => t.backpack_slot_count(no as i32).max(0) as i64,
-        _ => 0,
+    Ok(no.map_or(-1, |n| n as i32))
+}
+
+/// The function list's item numbers in the client's order: the items of the function slots (slot order), then the
+/// other function items in use whose row has no `IsCanUnEquip`.
+// EVIDENCE: cshell+0x2292e0 (the slots' records first, then every record of type 0x15 in use whose row +0x241 is 0)
+pub fn function_list(st: &Core, account: u32) -> rusqlite::Result<Vec<i32>> {
+    let mut out: Vec<i32> = function_slots(&st.db, account)?
+        .into_iter()
+        .filter(|n| *n >= 0)
+        .collect();
+    for it in db::items(&st.db, account)? {
+        if it.used != 0
+            && live(&it)
+            && (9000..10000).contains(&it.item_no)
+            && !itemuse::slot_item(st, it.item_no)
+        {
+            out.push(it.item_no as i32);
+        }
+    }
+    Ok(out)
+}
+
+/// The backpack slots' form: the equipped backpack's weapon slots (ROM `MultyInvenSlot`), or a worn specialist's
+/// special slots (its `AddSlot`, kind 1) plus a slot license in the function list (CLI-772 amendment).
+// DC-DEFAULT: LG-432 (proposed) the lobby counts the slots as the 2009 client does (cshell+0x227240,
+// dc_bute::ItemsTable::pack_form); without the ROM item table there are none
+pub fn pack_form(st: &Core, account: u32) -> rusqlite::Result<dc_bute::PackForm> {
+    let Some(t) = st.rom.items.as_ref() else {
+        return Ok(dc_bute::PackForm::default());
+    };
+    Ok(t.pack_form(
+        equipped_no(st, account, SLOT_BACKPACK)?,
+        equipped_no(st, account, SLOT_CHARACTER)?,
+        function_list(st, account)?,
+    ))
+}
+
+/// The backpack slot kind item `item_no` goes into (`EquipBackpackType`; 0 without the ROM) and whether it sits in
+/// backpack slots only (`EquipOnlyBackpack`).
+fn pack_kind_of(st: &Core, item_no: i64) -> (i32, bool) {
+    st.rom.items.as_ref().map_or((0, false), |t| {
+        (t.pack_type(item_no as i32), t.pack_only(item_no as i32))
     })
+}
+
+/// Backpack slot `slot` (10..13) takes item `item_no` of own slot `own`: a kind the backpack takes, a slot within
+/// the form's count, and the item's slot kind is the form's (a special item only in a specialist's special slots, a
+/// plain weapon never there).
+// EVIDENCE: cshell+0x148020 (the client's check: the item's EquipBackpackType equals the slot kind, else box 0x189e /
+// 0x189f)
+// DC-DEFAULT: LG-432 (proposed) the lobby refuses (0x325 ok = 0) what the client's check refuses
+pub fn pack_fits(
+    st: &Core,
+    account: u32,
+    item_no: i64,
+    own: i64,
+    slot: i64,
+) -> rusqlite::Result<bool> {
+    if !BACKPACK_SLOTS.contains(&slot) || !st.rules.shop.backpack_kinds.contains(&own) {
+        return Ok(false);
+    }
+    let form = pack_form(st, account)?;
+    Ok(slot - BACKPACK_SLOTS.start() < form.slots.max(0) as i64
+        && pack_kind_of(st, item_no).0 == form.kind)
+}
+
+/// Item `item_no` may stand in its own weapon slot: not a backpack-only item (a specialist's special item).
+// DC-DEFAULT: LG-432 (proposed, OWNER REPORT 2026-11-08 "I can just equip it in the First Weapon Slot") the lobby
+// refuses the own slot for an `EquipOnlyBackpack` item, as the client offers none (cshell+0x147470, cshell+0x1402f0)
+pub fn own_slot_ok(st: &Core, item_no: i64) -> bool {
+    !pack_kind_of(st, item_no).1
 }
 
 fn clear_backpack_slots(st: &Core, account: u32) -> rusqlite::Result<()> {
@@ -73,11 +143,24 @@ fn clear_backpack_slots(st: &Core, account: u32) -> rusqlite::Result<()> {
 // CD-82 (proposed) function slots of items that are gone are freed; CD-81 (proposed) the name colour returns to 0
 // when no colour item is in use (only checked when the ROM item table is known)
 pub fn repair(st: &Core, account: u32) -> rusqlite::Result<()> {
-    let cap = capacity(st, account)?;
+    let form = pack_form(st, account)?;
     st.db.execute(
         "UPDATE items SET equip_slot = -1 WHERE user_no = ?1 AND equip_slot BETWEEN ?2 AND ?3 AND equip_slot - ?2 >= ?4",
-        params![account as i64, *BACKPACK_SLOTS.start(), *BACKPACK_SLOTS.end(), cap],
+        params![account as i64, *BACKPACK_SLOTS.start(), *BACKPACK_SLOTS.end(), form.slots.max(0) as i64],
     )?;
+    // DC-DEFAULT: LG-432 (proposed) an item whose slot kind is not the form's leaves its backpack slot (a specialist
+    // taken off, or put on over backpack weapons), and a backpack-only item leaves its own weapon slot
+    for it in db::items(&st.db, account)? {
+        let (kind, only) = pack_kind_of(st, it.item_no);
+        let wrong = if BACKPACK_SLOTS.contains(&it.slot) {
+            kind != form.kind
+        } else {
+            only && (0..4).contains(&it.slot)
+        };
+        if wrong {
+            db::set_slot(&st.db, it.uid, -1)?;
+        }
+    }
     st.db.execute(
         "DELETE FROM function_slots WHERE user_no = ?1 AND uid NOT IN (SELECT uid FROM items WHERE user_no = ?1)",
         [account as i64],
@@ -273,7 +356,8 @@ pub fn parse_slot_request(p: &[u8]) -> (u32, u32, i64) {
 }
 
 // DC-DEFAULT: CD-77 (proposed) the slot is the item's own slot by type (cshell+0x259f00), or a backpack slot
-// 10..13 within the equipped backpack's MultyInvenSlot for items whose own slot is in inventory.backpack_kinds;
+// 10..13 within the equipped backpack's MultyInvenSlot for items whose own slot is in inventory.backpack_kinds
+// (LG-432: or a specialist's special slots for its special items, never their own slot);
 // the occupant of the target slot is unequipped; any change of slot 9 empties slots 10..13; CD-52 runs after
 pub fn equip(st: &Core, account: u32, uid: u32, item_no: u32, slot: i64) -> rusqlite::Result<bool> {
     let Some(it) = owned(st, account, uid, item_no)?.filter(|i| live(i) && i.parent_uid == 0)
@@ -284,11 +368,9 @@ pub fn equip(st: &Core, account: u32, uid: u32, item_no: u32, slot: i64) -> rusq
         return Ok(false);
     };
     let fits = if slot == own {
-        true
-    } else if BACKPACK_SLOTS.contains(&slot) && st.rules.shop.backpack_kinds.contains(&own) {
-        slot - BACKPACK_SLOTS.start() < capacity(st, account)?
+        own_slot_ok(st, it.item_no)
     } else {
-        false
+        pack_fits(st, account, it.item_no, own, slot)?
     };
     if !fits {
         return Ok(false);
@@ -396,6 +478,10 @@ pub fn on_function_slot(st: &mut Core, sid: Sid, id: u16, p: &[u8]) -> HResult {
         }
         None => false,
     };
+    // LG-432: a slot license taken out (or put back) changes a specialist's special slots at once
+    if let Some(a) = account_of(st, sid).filter(|_| ok) {
+        repair(st, a)?;
+    }
     st.send(sid, function_slot_reply(reply_id, ok, uid));
     Ok(())
 }

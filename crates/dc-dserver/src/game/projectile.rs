@@ -53,6 +53,12 @@ pub const BLAST_INNER_FRACTION: f32 = 0.25;
 // DC-DEFAULT: DSV-92 (proposed; project decision pending V-BLAST-LOS)
 pub const BLAST_LOS: bool = true;
 
+/// Longest flight of a launched round whose projectile row's `Lifetime` is past the 600 s bound (it bursts at the
+/// end).
+// OBSERVED: ROM table key FX.TXT [ProjectileFX<k>] Lifetime (the rocket row's value, read at run time 2026-11-08)
+// DC-DEFAULT: DSV-650 (proposed) 10 s
+pub const IMPACT_LIFE_MS: u32 = 10_000;
+
 /// The surface byte of a launcher's shot record ([`Game::launch_effect`]): the sky value, for which the client draws no
 /// impact.
 // DISASM: cshell+0x2c8dbb (surface 0x6e skips the impact effect, mark, surface effect and sound unless the impact row
@@ -350,12 +356,14 @@ impl Game {
     // GravityOverride, Lifetime, ModelScale
     // SPEC: CAPTURE_tdm2_TWOPLAYER_VALIDATION.md §3.4 (the create 31 ms after the 0x82, `pos48` with a velocity;
     // removal and blast 2.5 s later; REFERENCE, ACCEPTED)
-    // DC-DEFAULT: DSV-39 (proposed)
-    pub(super) fn throw_release(&mut self, pid: u8, f: &UpFire, now: Millis) -> bool {
-        self.launch(pid, f, now, false)
+    // DC-DEFAULT: DSV-39 (proposed); DSV-650 (amendment, proposed) `impact`: the round's projectile row is of the
+    // impact class (a hand-thrown round that bursts where it lands); the release stays a throw on the client's side
+    pub(super) fn throw_release(&mut self, pid: u8, f: &UpFire, now: Millis, impact: bool) -> bool {
+        self.launch(pid, f, now, impact)
     }
 
-    /// A launcher's shot (ammunition `Type` 1, [`crate::rom_tables::WeaponTable::fires_projectile`]): the client
+    /// A launcher's shot (a launched round, [`crate::rom_tables::RomTables::round_flight`]: the rockets' and the
+    /// grenade launcher's shells, DSV-650): the client
     /// sends it without a hit, so the server flies the rocket from the shot's origin along its direction with the
     /// projectile row's speed, gravity and lifetime, and blows it up where it first meets the world or a player
     /// (or at the end of its lifetime) with the ammunition row's area damage, as a grenade's blast.
@@ -428,11 +436,15 @@ impl Game {
                 .unwrap_or(pt.gravity),
             None => pt.gravity,
         };
-        let fuse_ms = row
-            .as_ref()
-            .and_then(|r| r.lifetime_s)
-            .filter(|s| s.is_finite() && *s > 0.0 && *s < 600.0)
-            .map_or(pt.fuse_ms, |s| (s * 1000.0).round() as u32);
+        // DC-DEFAULT: DSV-650 (amended, proposed) a launched round whose row's `Lifetime` is past the 600 s bound (the
+        // grenade launcher's shell row) flies at most IMPACT_LIFE_MS, not the grenade fuse; a missing or unusable
+        // `Lifetime` keeps the fuse default, as before
+        let life_s = row.as_ref().and_then(|r| r.lifetime_s);
+        let fuse_ms = match life_s {
+            Some(s) if s.is_finite() && s > 0.0 && s < 600.0 => (s * 1000.0).round() as u32,
+            Some(s) if impact && s >= 600.0 => IMPACT_LIFE_MS,
+            _ => pt.fuse_ms,
+        };
         let scale = row.as_ref().and_then(|r| r.scale).unwrap_or([1.0; 3]);
         let vel = [dir[0] * speed, dir[1] * speed, dir[2] * speed];
         let key = self.next_flight;

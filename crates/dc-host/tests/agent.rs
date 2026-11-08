@@ -240,6 +240,7 @@ fn the_agent_runs_game_servers_for_the_lobby() {
     assert!(!field(&hello, "version").is_empty());
     assert_eq!(field(&hello, "content"), "1");
     assert_eq!(field(&hello, "packs"), "1");
+    assert_eq!(field(&hello, "contentlines"), "1");
     c.send("ok name=us-west lobby=test");
 
     // start: the first port of the range, the lobby's args filtered, the stub's lines come back as events
@@ -371,6 +372,104 @@ fn a_bad_map_pack_fails_the_start_and_names_the_pack() {
     assert!(!seen.iter().any(|l| l.starts_with("started ")), "{seen:?}");
     let packs = dir.join("packs");
     assert!(!packs.join(&sha).exists() && !packs.join(format!("{sha}.zip")).exists());
+}
+
+fn b64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::new();
+    for c in data.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        s.push(T[(n >> 18) as usize & 63] as char);
+        s.push(T[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        s.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    s
+}
+
+/// LG-431 over the real stream: a weapon content document over the 16 KiB line limit arrives as `content` lines, a
+/// `start` that names only its hash gets `-content <file>` of the verified bytes, the file is offered again as `have
+/// <hash>` after a reconnect, and a hash nobody sent (or wrong bytes) fails that start naming the content.
+#[test]
+fn weapon_content_arrives_as_lines_and_a_start_names_its_hash_only() {
+    let dir = tmpdir("contentlines");
+    let lobby = Lobby::new();
+    let cfg = write_config(&dir, &lobby.addr(), &lobby.fingerprint, port_range());
+    let _agent = agent(&cfg);
+    let mut c = lobby.accept(T);
+    assert!(c.line(T).expect("hello").starts_with("hello "));
+    c.send("ok name=us-west lobby=test");
+    let mut seen = Vec::new();
+    let rows: Vec<String> = (0..1500)
+        .map(|i| format!("{{\"weapon\":{i},\"op\":\"patch\"}}"))
+        .collect();
+    let doc = format!(
+        "{{\"version\":1,\"weapons\":[{}],\"ammo\":[]}}",
+        rows.join(",")
+    )
+    .into_bytes();
+    assert!(doc.len() > 30_000, "{}", doc.len());
+    let hash = dc_rom::sha256_hex(&doc);
+    for piece in doc.chunks(12_000) {
+        let line = format!("content {hash} {}", b64(piece));
+        assert!(line.len() <= dc_host::proto::MAX_LINE, "{}", line.len());
+        c.send(&line);
+    }
+    c.send(&format!(
+        r#"start 5 {{"world":"W","content_hash":"{hash}"}}"#
+    ));
+    c.expect("started 5 ", T, &mut seen);
+    let args = c.expect("event 5 @args ", T, &mut seen);
+    let file = dir
+        .join("logs")
+        .join("content")
+        .join(format!("{hash}.json"));
+    assert!(
+        args.contains(&format!("|-content|{}", file.display())),
+        "{args} vs {}",
+        file.display()
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), doc);
+    // a hash that was never sent, and one whose bytes are wrong
+    let none = "cd".repeat(32);
+    c.send(&format!(
+        r#"start 6 {{"world":"W","content_hash":"{none}"}}"#
+    ));
+    let f = c.expect("failed 6 ", T, &mut seen);
+    assert!(
+        f.starts_with(&format!("failed 6 content {none}: ")) && f.contains("does not hold"),
+        "{f}"
+    );
+    c.send(&format!("content {none} {}", b64(b"not it")));
+    c.send(&format!(
+        r#"start 7 {{"world":"W","content_hash":"{none}"}}"#
+    ));
+    let f = c.expect("failed 7 ", T, &mut seen);
+    assert!(
+        f.starts_with(&format!("failed 7 content {none}: ")) && f.contains("hash"),
+        "{f}"
+    );
+    assert!(!dir
+        .join("logs")
+        .join("content")
+        .join(format!("{none}.json"))
+        .exists());
+    // the next connection: what the agent holds is said again, so the lobby need not resend it
+    drop(c);
+    let mut c = lobby.accept(T);
+    assert!(c.line(T).expect("hello again").starts_with("hello "));
+    c.send("ok name=us-west lobby=test");
+    c.expect(&format!("have {hash}"), T, &mut seen);
 }
 
 #[test]

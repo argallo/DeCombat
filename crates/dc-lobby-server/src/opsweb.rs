@@ -116,7 +116,10 @@ pub fn handle_with_body(
     }
     // LG-393: a deploy from the loopback port needs the admin token (`--admin-token` / DC_ADMIN_TOKEN), checked
     // above; a port without one may read the Updates tab but not deploy (the admin web deploys behind its key)
-    if req.method == "POST" && crate::deploy::handles(path) && token.is_none() {
+    if req.method == "POST"
+        && (crate::deploy::handles(path) || crate::triage::handles(path))
+        && token.is_none()
+    {
         return Some(err(
             403,
             "deploys on the admin port need its --admin-token; use the admin web, or start the lobby with a token",
@@ -147,6 +150,18 @@ pub fn serve(
     // LG-395..LG-398: the Players tab's account panel and its writes (playeradmin.rs)
     if crate::playeradmin::handles(path) {
         return crate::playeradmin::serve(shared, req, head, body, guard);
+    }
+    // OPS-26: the Updates tab's bug reports (triage.rs): the list and the done mark
+    if crate::triage::handles(path) {
+        return crate::triage::serve_at(
+            shared,
+            req,
+            head,
+            body,
+            guard,
+            None,
+            crate::clock::unix_now(),
+        );
     }
     // LG-392: the Updates tab (deploys from the dashboard) has its own write
     if crate::deploy::handles(path) {

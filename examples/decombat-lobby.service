@@ -26,7 +26,7 @@ User=decombat
 Group=decombat
 WorkingDirectory=/opt/decombat
 EnvironmentFile=/opt/decombat/config/decombat.env
-ExecStart=/opt/decombat/bin/dc-lobby-server --config /opt/decombat/config/server.toml --public --check-password --no-auto-create --register "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver --admin 127.0.0.1:10090 --stop-grace 10
+ExecStart=/opt/decombat/bin/dc-lobby-server --config /opt/decombat/config/server.toml --public --check-password --no-auto-create --register-open "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver --admin 127.0.0.1:10090 --stop-grace 10
 # LG-130: SIGTERM runs the graceful stop. Only the lobby gets it (KillMode=mixed): the lobby ends each match through
 # its game server's pipe (`quit`, the result is stored); whatever is still running after the lobby exits gets
 # SIGKILL. With the default KillMode=control-group the game servers would get SIGTERM too and die without a result.

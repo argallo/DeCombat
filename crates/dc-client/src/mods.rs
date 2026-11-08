@@ -24,6 +24,7 @@
 
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -73,6 +74,9 @@ pub struct ServerMod {
     pub description: Option<String>,
     pub homepage: Option<String>,
     pub screenshots: Vec<String>,
+    /// CLI-1943: the manifest's tags as the set entry carries them (the lobby writes them with the description);
+    /// the Mods screen folds the packages tagged `camo` or `variant` into one row.
+    pub tags: Vec<String>,
     /// MOD-27: the manifest's command help as the set entry carries it.
     pub commands: Vec<dc_mod_lua::ModCommand>,
     /// MOD-27: SHA-256 of the lobby operator's picture (`/mods/<it>.png`).
@@ -238,6 +242,15 @@ impl ServerModSet {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    tags: m
+                        .get("tags")
+                        .and_then(|c| c.as_array())
+                        .map(|c| {
+                            c.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     commands: commands_of(m),
                     preview: preview_of(m),
                     id,
@@ -276,6 +289,7 @@ impl ServerModSet {
                     "requires_client": m.requires_client, "capabilities": m.capabilities,
                     "source_repo": m.source_repo, "name": m.name, "author": m.author,
                     "description": m.description, "homepage": m.homepage, "screenshots": m.screenshots,
+                    "tags": m.tags,
                     "commands": m.commands.iter()
                         .map(|c| serde_json::json!({"command": c.command, "description": c.description}))
                         .collect::<Vec<_>>(),
@@ -1048,33 +1062,32 @@ pub fn prune_cache(
     removed
 }
 
-/// The package of `m`, from the cache when its bytes still hash to the name, else from the server; the bytes are
-/// hashed before they are written under their name.
-fn fetch_package(
-    web: Option<SocketAddr>,
+/// The cached package of `m` when its bytes still hash to the name (a damaged or replaced file is removed).
+fn cached_package(paths: &ModPaths, m: &ServerMod, cfg: &ModConfig) -> Option<Vec<u8>> {
+    let file = paths.zip(&m.sha256);
+    let b = std::fs::read(&file).ok()?;
+    if b.len() as u64 <= cfg.max_mod_bytes && dc_rom::sha256_hex(&b) == m.sha256 {
+        touch(&file);
+        return Some(b);
+    }
+    // damaged or replaced on disk: fetched again
+    let _ = std::fs::remove_file(&file);
+    None
+}
+
+/// Makes every `.part` name of this process different (two downloads never share a file).
+static PART_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// One package from the server into the cache: the bytes are hashed before they are written under their name
+/// (CLI-1608). `progress(done, total)` follows the body bytes. Returns the verified bytes.
+fn download_package(
+    web: SocketAddr,
     paths: &ModPaths,
     m: &ServerMod,
     cfg: &ModConfig,
-    index: usize,
-    count: usize,
-    progress: &mut dyn FnMut(ModState),
+    progress: &mut dyn FnMut(u64, u64),
 ) -> Result<Vec<u8>, String> {
     let file = paths.zip(&m.sha256);
-    if let Ok(b) = std::fs::read(&file) {
-        if b.len() as u64 <= cfg.max_mod_bytes && dc_rom::sha256_hex(&b) == m.sha256 {
-            touch(&file);
-            return Ok(b);
-        }
-        // damaged or replaced on disk: fetched again
-        let _ = std::fs::remove_file(&file);
-    }
-    let web = web.ok_or("the server's web port is not known")?;
-    progress(ModState::Downloading {
-        index,
-        count,
-        done: 0,
-        total: 0,
-    });
     let target = format!("/mods/{}.zip", m.sha256);
     let r = web_get(
         web,
@@ -1082,14 +1095,7 @@ fn fetch_package(
         cfg.max_mod_bytes.min(DOWNLOAD_MAX_BYTES),
         cfg.timeout,
         DOWNLOAD_DEADLINE,
-        &mut |done, total| {
-            progress(ModState::Downloading {
-                index,
-                count,
-                done,
-                total,
-            })
-        },
+        progress,
     )
     .map_err(|e| format!("mod '{}': download failed: {e}", m.id))?;
     if r.status != 200 {
@@ -1098,7 +1104,6 @@ fn fetch_package(
             m.id, r.status
         ));
     }
-    progress(ModState::Verifying);
     let got = dc_rom::sha256_hex(&r.body);
     if got != m.sha256 {
         return Err(format!(
@@ -1108,10 +1113,158 @@ fn fetch_package(
     }
     std::fs::create_dir_all(paths.by_hash())
         .map_err(|e| format!("{}: {e}", paths.by_hash().display()))?;
-    let part = file.with_extension("part");
+    let part = file.with_extension(format!("part{}", PART_SEQ.fetch_add(1, Ordering::Relaxed)));
     std::fs::write(&part, &r.body).map_err(|e| format!("{}: {e}", part.display()))?;
     std::fs::rename(&part, &file).map_err(|e| format!("{}: {e}", file.display()))?;
     Ok(r.body)
+}
+
+/// CLI-1608: how many packages download at the same time. The lobby closes a connection after its reply, so a long
+/// set costs one TLS connection (and its round trips) per package; four at a time hide most of that.
+pub const DOWNLOAD_PARALLEL: usize = 4;
+
+/// What a download worker tells the joining thread.
+enum Fetched {
+    /// Package `slot` has `done` of `total` bytes (`total` 0 = not known yet).
+    Bytes { slot: usize, done: u64, total: u64 },
+    /// Package `slot` is in the cache, or failed.
+    End {
+        slot: usize,
+        result: Result<(), String>,
+    },
+}
+
+/// CLI-1608: downloads the packages of `needed` that are not in the cache yet, up to [`DOWNLOAD_PARALLEL`] at a
+/// time, each verified before it is written. The progress is one line for the whole fetch: `index` = packages
+/// finished + 1, `count` = packages to fetch, `done` = bytes received so far over all of them, `total` = the sum of
+/// their sizes once every one of them has told its size (else 0). The first failure in set order is the error; no
+/// new package starts after a failure.
+fn prefetch_packages(
+    web: Option<SocketAddr>,
+    paths: &ModPaths,
+    needed: &[&ServerMod],
+    cfg: &ModConfig,
+    progress: &mut dyn FnMut(ModState),
+) -> Result<(), String> {
+    let mut missing: Vec<&ServerMod> = Vec::new();
+    for m in needed {
+        if !missing.iter().any(|x| x.sha256 == m.sha256) && cached_package(paths, m, cfg).is_none()
+        {
+            missing.push(m);
+        }
+    }
+    let count = missing.len();
+    if count == 0 {
+        return Ok(());
+    }
+    let web = web.ok_or("the server's web port is not known")?;
+    progress(ModState::Downloading {
+        index: 1,
+        count,
+        done: 0,
+        total: 0,
+    });
+    let next = AtomicUsize::new(0);
+    let abort = AtomicBool::new(false);
+    let (tx, rx) = std::sync::mpsc::channel::<Fetched>();
+    let mut results: Vec<Option<Result<(), String>>> = vec![None; count];
+    std::thread::scope(|scope| {
+        for _ in 0..DOWNLOAD_PARALLEL.min(count) {
+            let tx = tx.clone();
+            let (next, abort, missing) = (&next, &abort, &missing);
+            scope.spawn(move || loop {
+                if abort.load(Ordering::Relaxed) {
+                    break;
+                }
+                let slot = next.fetch_add(1, Ordering::Relaxed);
+                let Some(m) = missing.get(slot) else { break };
+                let mut last = Instant::now();
+                let result = download_package(web, paths, m, cfg, &mut |done, total| {
+                    // at most one report per 100 ms, and the last one of the body
+                    if last.elapsed() >= Duration::from_millis(100) || (total > 0 && done >= total)
+                    {
+                        last = Instant::now();
+                        let _ = tx.send(Fetched::Bytes { slot, done, total });
+                    }
+                })
+                .map(|_| ());
+                if result.is_err() {
+                    abort.store(true, Ordering::Relaxed);
+                }
+                let _ = tx.send(Fetched::End { slot, result });
+            });
+        }
+        drop(tx);
+        let mut done = vec![0u64; count];
+        let mut total = vec![0u64; count];
+        let mut finished = 0;
+        for msg in rx {
+            match msg {
+                Fetched::Bytes {
+                    slot,
+                    done: d,
+                    total: t,
+                } => {
+                    done[slot] = d;
+                    total[slot] = t;
+                }
+                Fetched::End { slot, result } => {
+                    finished += 1;
+                    if result.is_ok() {
+                        done[slot] = done[slot].max(total[slot]);
+                    }
+                    results[slot] = Some(result);
+                }
+            }
+            progress(ModState::Downloading {
+                index: (finished + 1).min(count),
+                count,
+                done: done.iter().sum(),
+                total: if total.iter().all(|t| *t > 0) {
+                    total.iter().sum()
+                } else {
+                    0
+                },
+            });
+        }
+    });
+    for r in results.into_iter().flatten() {
+        r?;
+    }
+    Ok(())
+}
+
+/// The package of `m`, from the cache when its bytes still hash to the name, else from the server (the joining
+/// loop reaches this after [`prefetch_packages`], so it is normally a cache read).
+fn fetch_package(
+    web: Option<SocketAddr>,
+    paths: &ModPaths,
+    m: &ServerMod,
+    cfg: &ModConfig,
+    index: usize,
+    count: usize,
+    progress: &mut dyn FnMut(ModState),
+) -> Result<Vec<u8>, String> {
+    if let Some(b) = cached_package(paths, m, cfg) {
+        return Ok(b);
+    }
+    let web = web.ok_or("the server's web port is not known")?;
+    progress(ModState::Downloading {
+        index,
+        count,
+        done: 0,
+        total: 0,
+    });
+    let bytes = download_package(web, paths, m, cfg, &mut |done, total| {
+        progress(ModState::Downloading {
+            index,
+            count,
+            done,
+            total,
+        })
+    })?;
+    progress(ModState::Verifying);
+    Ok(bytes)
 }
 
 /// The mod set the client asks the lobby for, and what it falls back to.
@@ -1675,6 +1828,7 @@ impl ClientMods {
         if self.curated && needed.len() != set.mods.len() {
             return Err("a curated set names a mod the client would not load".to_string());
         }
+        prefetch_packages(web, &paths, &needed, cfg, progress)?;
         let mut dirs = Vec::with_capacity(needed.len());
         for (i, m) in needed.iter().enumerate() {
             let bytes = fetch_package(web, &paths, m, cfg, i + 1, needed.len(), progress)?;
@@ -1768,6 +1922,8 @@ pub struct LocalMod {
     pub description: String,
     pub capabilities: Vec<String>,
     pub screenshots: Vec<String>,
+    /// CLI-1943: the manifest's tags.
+    pub tags: Vec<String>,
     /// MOD-27: the manifest's command help.
     pub commands: Vec<dc_mod_lua::ModCommand>,
     /// Why the manifest does not parse (the mod cannot load at all).
@@ -1805,6 +1961,7 @@ pub fn list_local(paths: &ModPaths) -> Vec<LocalMod> {
                     description: m.description.clone(),
                     capabilities: m.capabilities.clone(),
                     screenshots: m.screenshots.clone(),
+                    tags: m.tags.clone(),
                     commands: m.commands.clone(),
                     broken: None,
                     settings: m.settings.clone(),
@@ -1820,6 +1977,7 @@ pub fn list_local(paths: &ModPaths) -> Vec<LocalMod> {
                     description: String::new(),
                     capabilities: Vec::new(),
                     screenshots: Vec::new(),
+                    tags: Vec::new(),
                     commands: Vec::new(),
                     broken: Some(e),
                     settings: Vec::new(),

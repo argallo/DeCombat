@@ -21,6 +21,12 @@
 
 #![forbid(unsafe_code)]
 
+/// CLI-1944: the build stamp `tools/friend_pack_win.py` finds in the exe
+/// (`DCSTAMP1;commit=<sha|unknown>;version=<tag|dev>;target=<triple>;profile=<debug|release>;end`), written by
+/// build.rs from `DC_GIT_COMMIT` / `DC_RELEASE_VERSION`; kept in the binary and shown in the `run` log event.
+#[used]
+pub static BUILD_STAMP: &str = env!("DC_BUILD_STAMP");
+
 pub mod aim;
 pub mod anims;
 pub mod arms;

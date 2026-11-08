@@ -1,7 +1,9 @@
 # Beta signup by e-mail
 
-People type their address on the website, confirm it with a mailed link, and you pick who gets an invite code. Rules and
-numbers: DC_DEFAULTS.md LG-370 .. LG-379, LG-381.
+The beta is open (since 2026-11-08, LG-433): anyone registers on the game's Sign up screen or at
+`https://beta.decombat.com/register` without a code. The e-mail list stays as an updates list: people type their address
+on the website and confirm it with a mailed link; you may still mail an invite code (it works, it is just not needed).
+Rules and numbers: DC_DEFAULTS.md LG-370 .. LG-379, LG-381, LG-433.
 
 ```
 decombat.com (Firebase) --fetch--> https://beta.decombat.com (Cloudflare, proxied) --TLS, port 18080--> lobby web port
@@ -11,8 +13,9 @@ decombat.com (Firebase) --fetch--> https://beta.decombat.com (Cloudflare, proxie
 
 ## 0. What a tester sees
 
-A mailed invite code is used on the registration page, `https://beta.decombat.com/register` (the game's Sign up screen takes
-the same code). Notes for the people you invite:
+Players register on the game's Sign up screen or on `https://beta.decombat.com/register`; neither asks for an invite
+code since the open beta (a mailed code still works, and is required on a lobby run with `--register`). Notes for new
+players:
 
 - The registration makes the **login**. The **in-game name** is chosen at the first sign-in, on the game's nickname screen.
   It must differ from the login (ignoring case) and be 4 to 12 characters long; the lobby refuses a name that is taken.
@@ -43,8 +46,9 @@ global_per_hour = 60                        # signup requests per hour in all
 ```
 
 `DC_BETA__ENABLED=true` etc. work as environment overrides. `dc-config check /opt/decombat/config/server.toml` validates
-the origins and the reply address. Then `sudo systemctl restart decombat-lobby`. The registration must stay invite-only
-(`--register` without `--register-open`, as the live unit runs it): the invite codes are what the beta list hands out.
+the origins and the reply address. Then `sudo systemctl restart decombat-lobby`. The live unit runs the open beta
+(`--register-open`, LG-433). To go back to invite-only, run the lobby with `--register` instead: the invite codes are
+then what the beta list hands out.
 
 ## 2. Cloudflare
 

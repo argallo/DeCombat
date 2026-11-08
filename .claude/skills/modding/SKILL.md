@@ -45,6 +45,9 @@ Read `docs/MODDING_GUIDE.md` once per session: section 1 (kinds), 4 (capabilitie
 - Keep the 2009 feel: handling, sounds, look and names.
 - Submission is one row in `community/vanilla_plus.json` with the source repository and the zip's `sha256`.
   `dc-config check-vanilla-plus community/vanilla_plus.json` must pass, and a person reviews every pack.
+- The pack's home is its own repository, never a folder in this one: `python tools/modrepo.py init <dir> --github
+  <owner/repo>`, `add`, `build`, then `rows --format vanilla-plus` prints the row (guide section 12, "Your own mod
+  repository"). `examples/mods/` holds only the examples the tests read.
 
 ## Commands at a glance
 

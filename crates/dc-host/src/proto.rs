@@ -20,6 +20,8 @@ pub enum FromLobby {
     Start { gid: u64, json: String },
     /// `pack <sha> <base64>`: one piece of a map pack (MAP-84).
     Pack { sha: String, data: String },
+    /// `content <hash> <base64>`: one piece of a featured entry's weapon content document (LG-431).
+    Content { hash: String, data: String },
     /// `line <gid> <text>`: the text after the one space following the gid, verbatim (may be empty).
     Line { gid: u64, text: String },
     /// `quit <gid>`
@@ -79,6 +81,17 @@ pub fn parse(line: &str) -> FromLobby {
             if crate::packs::sha_ok(sha) && !data.is_empty() {
                 FromLobby::Pack {
                     sha: sha.to_string(),
+                    data: data.to_string(),
+                }
+            } else {
+                bad()
+            }
+        }
+        "content" => {
+            let (hash, data) = word(rest);
+            if crate::packs::sha_ok(hash) && !data.is_empty() {
+                FromLobby::Content {
+                    hash: hash.to_string(),
                     data: data.to_string(),
                 }
             } else {
@@ -147,10 +160,11 @@ pub mod out {
         hi: u16,
         running: usize,
     ) -> String {
-        // `content=1`: this agent takes the `start` request's weapon content (LG-313); `packs=1`: its map packs (MAP-83);
+        // `content=1`: this agent takes the `start` request's weapon content (LG-313); `contentlines=1`: it takes
+        // that content as `content` lines before the `start` (LG-431); `packs=1`: its map packs (MAP-83);
         // `update=1`: the lobby's server build offers (HA-2)
         format!(
-            "hello name={name} token={token} version={version} ports={lo}-{hi} running={running} content=1 packs=1 update=1"
+            "hello name={name} token={token} version={version} ports={lo}-{hi} running={running} content=1 contentlines=1 packs=1 update=1"
         )
     }
 
@@ -177,7 +191,7 @@ pub mod out {
         format!("running {gid} port={port} pid={pid}")
     }
 
-    /// A map pack this agent keeps from before (MAP-84); the lobby does not send it again.
+    /// A map pack (MAP-84) or a content document (LG-431) this agent keeps from before; the lobby does not send it again.
     pub fn have(sha: &str) -> String {
         format!("have {sha}")
     }
@@ -263,7 +277,8 @@ pub struct StartReq {
     #[serde(default)]
     pub args: Vec<String>,
     /// LG-313: a featured entry's weapon content document (MOD-21) and its hash: written to `content-<hash>.json` in the
-    /// log folder and passed as `-content`. Empty: none.
+    /// log folder and passed as `-content`. Empty: none. LG-431: a hash without a document names one that came as
+    /// `content` lines (or stays from before): checked and passed from the agent's `content/` folder.
     #[serde(default)]
     pub content: String,
     #[serde(default)]
@@ -466,6 +481,26 @@ mod tests {
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[test]
+    fn content_lines_parse_and_a_bad_name_is_bad() {
+        assert_eq!(
+            parse(&format!("content {SHA} Zm9v")),
+            FromLobby::Content {
+                hash: SHA.into(),
+                data: "Zm9v".into()
+            }
+        );
+        assert!(matches!(parse("content ../x Zm9v"), FromLobby::Bad(_)));
+        assert!(matches!(
+            parse(&format!("content {}", SHA.to_uppercase())),
+            FromLobby::Bad(_)
+        ));
+        assert!(matches!(
+            parse(&format!("content {SHA}")),
+            FromLobby::Bad(_)
+        ));
+    }
+
+    #[test]
     fn pack_lines_parse_and_a_bad_name_is_bad() {
         assert_eq!(
             parse(&format!("pack {SHA} Zm9v")),
@@ -628,7 +663,7 @@ mod tests {
     fn agent_lines_are_written_as_the_spec_shows() {
         assert_eq!(
             out::hello("us-west", "T", "abc1234", 27888, 27899, 2),
-            "hello name=us-west token=T version=abc1234 ports=27888-27899 running=2 content=1 packs=1 update=1"
+            "hello name=us-west token=T version=abc1234 ports=27888-27899 running=2 content=1 contentlines=1 packs=1 update=1"
         );
         assert_eq!(
             out::started(7, 27888, 4242),

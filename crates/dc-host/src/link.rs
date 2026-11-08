@@ -155,6 +155,7 @@ pub fn session(cfg: &HostConfig, games: &Arc<Games>, hub: &Arc<Hub>) -> End {
     let mut s = Stream { t };
     // MAP-84: a pack stream the last connection cut off starts over; HA-2: a build transfer too
     games.packs.reset();
+    games.contents.reset();
     games.incoming.reset();
     let hello = out::hello(
         &cfg.name,
@@ -211,8 +212,13 @@ pub fn session(cfg: &HostConfig, games: &Arc<Games>, hub: &Arc<Hub>) -> End {
                                 return End::Late(e);
                             }
                         }
-                        // MAP-84: what the lobby need not send again
-                        for sha in games.packs.cached() {
+                        // MAP-84 / LG-431: what the lobby need not send again
+                        for sha in games
+                            .packs
+                            .cached()
+                            .into_iter()
+                            .chain(games.contents.cached())
+                        {
                             if let Err(e) = s.send(&out::have(&sha)) {
                                 return End::Late(e);
                             }
@@ -239,6 +245,11 @@ pub fn session(cfg: &HostConfig, games: &Arc<Games>, hub: &Arc<Hub>) -> End {
                 FromLobby::Pack { sha, data } => {
                     if let Err(e) = games.packs.chunk(&sha, &data) {
                         log!("pack {sha}: {e}");
+                    }
+                }
+                FromLobby::Content { hash, data } => {
+                    if let Err(e) = games.contents.chunk(&hash, &data) {
+                        log!("content {hash}: {e}");
                     }
                 }
                 FromLobby::Line { gid, text } => {

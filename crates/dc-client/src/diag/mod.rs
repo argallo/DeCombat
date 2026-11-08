@@ -570,6 +570,62 @@ pub fn run_context() -> String {
     )
 }
 
+/// The run stamp (CLI-1941): [`run_context`] plus the process id and the UTC start time. The first line dc-client
+/// prints (`dc-client run: ...`) and the text of the `run` event that opens the `--net-log` files, so a log of a run
+/// that never wrote its exit report (killed, power loss) still names its build.
+pub fn run_stamp() -> String {
+    format!(
+        "{}; pid {}; started {}",
+        run_context(),
+        std::process::id(),
+        utc_text(unix_now())
+    )
+}
+
+/// The `run` event of the event logs (CLI-1941): the stamp's pieces as fields, `run` the whole text.
+pub fn run_stamp_json() -> Value {
+    json!({
+        "run": run_stamp(),
+        "version": version_words(),
+        "commit": option_env!("DC_GIT_COMMIT").unwrap_or("unknown"),
+        "target": env!("DC_TARGET_TRIPLE"),
+        "profile": env!("DC_BUILD_PROFILE"),
+        "pid": std::process::id(),
+        "started": unix_now(),
+        // CLI-1944: the same marker the pack tool reads out of the exe
+        "stamp": crate::BUILD_STAMP,
+    })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` of a unix time (proleptic Gregorian, the usual days-to-civil arithmetic; no dependency).
+pub fn utc_text(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // shift the epoch to 0000-03-01 so that leap days fall at the end of a year and a 400-year era is 146 097 days
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
+}
+
 /// The report's `client` block.
 pub fn client_info() -> Value {
     json!({
@@ -691,13 +747,26 @@ pub fn build(f: &Failure) -> (Vec<u8>, Option<SocketAddr>) {
     if let Some(t) = token() {
         r.add_secret(&t);
     }
+    let mut system = system_info();
+    // CLI-1946: the system block is this start's adapter; a report made of an earlier run's files names that run's
+    // adapter too, from the GPU line its dc-client.prev.out logged (CLI-1931), so a failure is not pinned on the
+    // backend the next start happened to pick
+    if !f.artifacts.is_empty() {
+        if let Some(gpu) = cfg.logs_dir.as_deref().and_then(earlier_run_gpu) {
+            system["earlier_run_gpu"] = json!(gpu);
+        }
+        system["gpu_note"] = json!(
+            "gpu, driver and backend are this start's adapter; the failed run's is earlier_run_gpu \
+             (the GPU line of its dc-client.prev.out), when that run logged one"
+        );
+    }
     let parts = bundle::Parts {
         id: f.id.clone(),
         created: f.created,
         kind: f.kind.name(),
         summary: f.summary.clone(),
         client: client_info(),
-        system: system_info(),
+        system,
         settings,
         match_info: f.match_info.clone(),
         link: f.link.clone(),
@@ -707,6 +776,17 @@ pub fn build(f: &Failure) -> (Vec<u8>, Option<SocketAddr>) {
         files: gather_files(&cfg, &f.artifacts),
     };
     (bundle::pack(&parts, &r), lobby.and_then(web_of))
+}
+
+/// CLI-1946: the adapter the previous run logged (`dc-client window: GPU <name> (<backend>, <type>); driver ...`,
+/// CLI-1931) in `logs_dir/dc-client.prev.out`, the last such line; `None` without the file or the line.
+pub fn earlier_run_gpu(logs_dir: &Path) -> Option<String> {
+    const PREFIX: &str = "dc-client window: GPU ";
+    let text = bundle::tail(&logs_dir.join("dc-client.prev.out"), bundle::OUT_TAIL)?;
+    text.lines()
+        .rev()
+        .find_map(|l| l.trim_end().strip_prefix(PREFIX))
+        .map(|s| s.chars().take(200).collect())
 }
 
 /// The last connection test's results (for a report that has none of its own).
@@ -842,6 +922,65 @@ pub fn start_probe(targets: Vec<probe::Target>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CLI-1941: the stamp is the reports' `run:` text plus the pid and the start time; the event carries the pieces.
+    #[test]
+    fn the_run_stamp_extends_the_run_context() {
+        let stamp = run_stamp();
+        let ctx = run_context();
+        assert!(stamp.starts_with(&ctx), "{stamp}");
+        let rest = &stamp[ctx.len()..];
+        assert!(
+            rest.starts_with(&format!("; pid {}; started ", std::process::id())),
+            "{stamp}"
+        );
+        assert!(rest.ends_with('Z') && rest.len() > 30, "{stamp}");
+        let ev = run_stamp_json();
+        assert_eq!(ev["pid"], json!(std::process::id()));
+        assert_eq!(
+            ev["run"].as_str().map(|s| &s[..ctx.len()]),
+            Some(ctx.as_str())
+        );
+        for key in ["version", "commit", "target", "profile", "started"] {
+            assert!(!ev[key].is_null(), "{key} missing in {ev}");
+        }
+        assert!(ev["started"].as_u64().unwrap_or(0) > 1_700_000_000);
+        assert_eq!(ev["commit"], json!(option_env!("DC_GIT_COMMIT").unwrap_or("unknown")));
+        let stamp = ev["stamp"].as_str().unwrap_or_default();
+        assert!(stamp.starts_with("DCSTAMP1;commit=") && stamp.ends_with(";end"), "{stamp}");
+        assert!(stamp.contains(&format!(";commit={};", ev["commit"].as_str().unwrap_or_default())), "{stamp}");
+    }
+
+    /// CLI-1946: the previous run's GPU line is found (the last one), and nothing is invented without it.
+    #[test]
+    fn earlier_run_gpu_reads_the_previous_outputs_gpu_line() {
+        let d = std::env::temp_dir().join(format!("dc-diag-gpu-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(earlier_run_gpu(&d), None, "no file");
+        std::fs::write(
+            d.join("dc-client.prev.out"),
+            "dc-client menu: ROM menu\ndc-client window: GPU Intel(R) UHD Graphics (Dx12, IntegratedGpu); driver 31.0.101.2145\n\
+             dc-client: GPU device lost\ndc-client window: GPU Intel(R) UHD Graphics (Vulkan, IntegratedGpu); driver Intel\n",
+        )
+        .unwrap();
+        assert_eq!(
+            earlier_run_gpu(&d).as_deref(),
+            Some("Intel(R) UHD Graphics (Vulkan, IntegratedGpu); driver Intel")
+        );
+        std::fs::write(d.join("dc-client.prev.out"), "dc-client menu: ROM menu\n").unwrap();
+        assert_eq!(earlier_run_gpu(&d), None, "no GPU line");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn utc_text_is_iso_8601_at_second_precision() {
+        assert_eq!(utc_text(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_text(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc_text(951_868_799), "2000-02-29T23:59:59Z");
+        assert_eq!(utc_text(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(utc_text(1_794_166_206), "2026-11-08T19:30:06Z");
+        assert_eq!(utc_text(4_102_444_800), "2100-01-01T00:00:00Z");
+    }
 
     #[test]
     fn consent_round_trips_and_parses() {

@@ -9,7 +9,7 @@ An export that changes master is what starts a run.
 | workflow | when | what |
 |---|---|---|
 | `ci.yml` | pull requests, pushes to master, by hand | `test (windows-x86_64)`, `test (windows-i686)`, `test (ubuntu-x86_64)`, `test (macos-aarch64)`, `test (linux-x86_64 servers)`, `community directory` (`dc-config check-directory community/community.json`), and `lint (fmt, clippy, clean-room gate)`: `cargo fmt --check` and clippy `-D warnings` on the crates already clean, `tools/assetcheck.py` (the clean-room gate in public mode) and the deploy script tests |
-| `release.yml` | a tag `v*`; pushes to master that touch the code (artifacts only); by hand | `game download (Windows x86_64)`, `game download (macOS, universal)`, `MapKit package (Windows x86_64)`, `MapKit package (macOS, universal)`, `GunKit package (Windows x86_64)`, `GunKit package (macOS, universal)`, `servers (linux x86_64)`, `iOS package (.ipa)` (tags and by hand only); on a tag, `publish the GitHub Release` |
+| `release.yml` | a tag `v*` (always, every job); pushes to master that touch what a package is built from (artifacts only): `crates/`, `Cargo.toml`, `Cargo.lock`, `ios/`, the files directly under `examples/` (the server config template, env and units the servers tarball copies; not the mod and map folders below it), `tools/vps/`, `tools/host/`, the `tools/ci_*.sh`, packaging and notarisation scripts, `assets/icon/` and the workflow file itself; a push that only changes docs, the website, the community lists, `examples/mods/` or `examples/mapkit/` builds nothing; by hand | `game download (Windows x86_64)`, `game download (macOS, universal)`, `MapKit package (Windows x86_64)`, `MapKit package (macOS, universal)`, `GunKit package (Windows x86_64)`, `GunKit package (macOS, universal)`, `servers (linux x86_64)`, `iOS package (.ipa)` (tags and by hand only); on a tag, `publish the GitHub Release` |
 | `website.yml` | pushes to master that touch `web/landing/`, `web/beta/` or `community/community.json`; a release published, edited or deleted; by hand | `validate` (tests and build of the site), then `deploy` (decombat.com) when `DC_WEBSITE_DEPLOY_ENABLED` is `true` |
 | `netlab.yml` | nightly; by hand | the network lab without a ROM (docs/NETLAB.md) |
 | `deploy-servers.yml` | by hand only | moves the VPS and the game hosts to a commit; the by-hand route, see "Deploying the servers" |
@@ -18,6 +18,10 @@ A release does not touch a server, and a deploy does not publish a release. The 
 Updates tab (docs/DEPLOY_FROM_ADMIN.md), not a workflow.
 
 ## Cutting a release
+
+The normal way is the dashboard: the VPS exports master, pushes it, waits for `ci`, and on **Tag** cuts the next beta tag
+(`v<MAJOR>.<MINOR+1>.0-beta<N+1>`), waits for this workflow and writes the release notes (docs/DEPLOY_FROM_ADMIN.md
+"Releases from the dashboard"). By hand, as before:
 
 On the public repository, on the commit of master you want (the export must have landed and `ci` should be green):
 
@@ -140,7 +144,7 @@ Rolling back is the same run with an older `ref`. Game hosts are set up once on 
 
 What the lobby does today (`crates/dc-lobby-server/src/hosts.rs`): it records the version in an agent's hello and logs it, and
 never compares it. There is no version refusal. An agent is refused only for a wrong name or token or a second connection, and a
-match only if it needs what the agent's hello does not offer (`content=1`, `packs=1`), with a log line.
+match only if it needs what the agent's hello does not offer (`content=1`, `contentlines=1`, `packs=1`), with a log line.
 
 So in a rollout with `targets: all`, the order is lobby first and host second, as `tools/ship_servers.sh` has it, and:
 
@@ -185,6 +189,14 @@ when a newer release exists or the lobby needs one, shows a box with **Update no
 
 Development builds never offer an update from the lobby. `dc-client --update-from <zip>` runs the same swap from a zip
 on disk (no restart; `dc-update\result.txt` says how it went).
+
+### The pack is checked against its exe
+
+`friend_pack_win.py` refuses to write anything when the exe's build stamp (a `DCSTAMP1;commit=..;version=..;...;end`
+marker `build.rs` puts into `dc-client.exe` and `dc-botclient.exe`) does not name the `--commit` given, when
+`--commit` is missing, when the exe carries no stamp or a dev stamp (`commit=unknown`; `--allow-unstamped` overrides),
+or when it is older than `--built-after <unix seconds>` (pass the time the build started). A failed build then
+cannot publish the previous exe under the new name.
 
 ### Friend packs that update themselves
 

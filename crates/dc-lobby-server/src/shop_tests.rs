@@ -271,6 +271,24 @@ Available_ItemID0=110
 [Option0]
 ItemID=1
 ItemType=17
+[WeaponItem0]
+ItemID=171
+ItemType=29
+EquipOnlyBackpack=1
+EquipBackpackType=1
+[Character0]
+ItemID=22
+ItemType=30
+AddSlot=1
+SlotType=1
+[Character1]
+ItemID=4
+ItemType=22
+[UseItem30]
+ItemID=136
+SubType=18
+AddSlot=1
+IsCanUnEquip=1
 ";
 
 fn rom_state() -> Core {
@@ -287,6 +305,7 @@ fn rom_state() -> Core {
         (110, 0),
         (111, 0),
         (112, 2),
+        (171, 0x1d),
     ] {
         rom.weapon_kinds.insert(no, kind);
     }
@@ -1334,6 +1353,66 @@ fn a_built_in_suppressor_refuses_a_muzzle_option() {
 /// CD-77 for the worn gear: each kind goes to its own slot by item number range (cshell+0x259f00: head 4, goggle 6,
 /// uniform 7, vest 8, character 14), never to another kind's slot or a backpack slot; equipping replaces the slot's
 /// occupant and unequipping empties it.
+/// LG-432 (CLI-772 amendment): a specialist's special item goes into the special slots 10.. (one from the specialist,
+/// a second with a slot license in its function slot), never into its own weapon slot; plain weapons stay out of the
+/// special slots; taking the specialist off or the license out empties what no longer fits.
+#[test]
+fn specialist_items_take_the_special_slots_the_licence_adds_one() {
+    let mut st = rom_state();
+    let (mut c, a) = player(&mut st, 1, "a", "Alice");
+    let eq = |c: &mut Client, st: &mut Core, uid: i64, no: u32, slot: u32| {
+        c.send(st, EQUIP, &u32s(&[uid as u32, no, slot]));
+        u32_at(&c.take(EQUIP_REPLY), 6)
+    };
+    let g1 = give(&st, a, 171, 0, 0);
+    let g2 = give(&st, a, 171, 0, 0);
+    let gun = give(&st, a, 110, 0, 0);
+    let scorpion = give(&st, a, 10022, 0, 0);
+    let merc = give(&st, a, 10004, 0, 0);
+    let lic = give(&st, a, 9136, 3, 10);
+    assert_eq!(eq(&mut c, &mut st, g1, 171, 0), 0, "never the primary slot");
+    // the starter backpack takes plain weapons only
+    assert_eq!(eq(&mut c, &mut st, g1, 171, 10), 0, "not a backpack slot");
+    assert_eq!(eq(&mut c, &mut st, gun, 110, 10), 1);
+    // a specialist: one special slot (S1); the backpack gun leaves it
+    assert_eq!(eq(&mut c, &mut st, scorpion, 10022, 14), 1);
+    assert_eq!(
+        slots(&mut c, &mut st)[10],
+        -1,
+        "a plain gun leaves the special slot"
+    );
+    assert_eq!(eq(&mut c, &mut st, gun, 110, 10), 0);
+    assert_eq!(eq(&mut c, &mut st, g1, 171, 10), 1);
+    assert_eq!(
+        eq(&mut c, &mut st, g2, 171, 11),
+        0,
+        "one slot without a license"
+    );
+    // the license in use (function slot 4 by SubType 18): a second slot
+    use_window(&mut c, &mut st, lic, "", 0, 0, 0, 0);
+    assert_eq!(eq(&mut c, &mut st, g2, 171, 11), 1);
+    assert_eq!(eq(&mut c, &mut st, g2, 171, 12), 0);
+    let s = slots(&mut c, &mut st);
+    assert_eq!((s[0], s[10], s[11], s[14]), (101, 171, 171, 10022));
+    // the license taken out of its function slot: S2 empties
+    c.send_framed(
+        &mut st,
+        EQUIP as i32,
+        FUNCTION_UNEQUIP,
+        &u32s(&[9136, lic as u32]),
+    );
+    assert_eq!(u32_at(&c.take(FUNCTION_UNEQUIP_REPLY), 6), 1);
+    let s = slots(&mut c, &mut st);
+    assert_eq!((s[10], s[11]), (171, -1));
+    // a mercenary instead: the special item leaves, the backpack takes guns again
+    assert_eq!(eq(&mut c, &mut st, merc, 10004, 14), 1);
+    assert_eq!(slots(&mut c, &mut st)[10], -1);
+    assert_eq!(eq(&mut c, &mut st, gun, 110, 10), 1);
+    // a stale row (an older lobby put the special item in slot 0) is repaired
+    db::set_slot(&st.db, g1, 0).unwrap();
+    assert_eq!(slots(&mut c, &mut st)[0], 101);
+}
+
 #[test]
 fn gear_items_equip_into_their_own_slot_only() {
     let mut st = rom_state();

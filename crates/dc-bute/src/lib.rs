@@ -1430,6 +1430,43 @@ pub struct ItemsTable {
     backpack_slots: HashMap<i32, i32>,
     option_kinds: HashMap<i32, i32>,
     weapon_types: HashMap<i32, i32>,
+    /// Weapon item number -> (`EquipBackpackType`, `EquipOnlyBackpack`).
+    weapon_packs: HashMap<i32, (i32, bool)>,
+    /// Specialist (`ItemType` 30, 10000 + `ItemID`) or backpack (7000 + `ItemID`) item number -> (`AddSlot`,
+    /// `SlotType`).
+    slot_forms: HashMap<i32, (i32, i32)>,
+}
+
+/// The weapon slot form of the backpack slots 10..13: how many there are and the kind of item they take (0 the
+/// backpack's weapons, [`SPECIAL_SLOT_KIND`] a specialist's special items, the letters S1..S4).
+// EVIDENCE: cshell+0x227240 (the shell's slot count +0x2dc and slot kind +0x2e0), cshell+0x2254d0 (the kind's reader)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PackForm {
+    pub slots: i32,
+    pub kind: i32,
+}
+
+/// The slot kind of a specialist's special slots (`SlotType` 1 of the ROM's specialist rows).
+// EVIDENCE: cshell+0x227240 (kind 1 adds the slot license), cshell+0x13fed0 (kind 1: rows "S1".."S4")
+pub const SPECIAL_SLOT_KIND: i32 = 1;
+/// The function item kind (`SubType`) of a specialist slot license.
+// EVIDENCE: cshell+0x227240 (the function list's first record whose row +0x14 (`SubType`) is 0x12)
+pub const SUB_SLOT_LICENSE: i32 = 18;
+
+impl PackForm {
+    /// The slots take special items (a specialist is worn).
+    pub fn special(&self) -> bool {
+        self.kind == SPECIAL_SLOT_KIND
+    }
+
+    /// The slots that can be used (the 2009 lists show `slots % 5` rows, at most four).
+    pub fn rows(&self) -> usize {
+        if self.slots < 1 {
+            0
+        } else {
+            (self.slots % 5) as usize
+        }
+    }
 }
 
 impl ItemsTable {
@@ -1438,9 +1475,26 @@ impl ItemsTable {
         let mut backpack_slots = HashMap::new();
         let mut option_kinds = HashMap::new();
         let mut weapon_types = HashMap::new();
+        let mut weapon_packs = HashMap::new();
+        let mut slot_forms = HashMap::new();
+        // EVIDENCE: cshell+0x25dd60 (AddSlot -> record +0x28, SlotType -> +0x2c of the item rows; a record is filed in
+        // the list of its ItemType, so a specialist's is found in type 0x1e's list only)
+        let form = |d: &SectionMap| {
+            let n = |k: &str| d.get(k).and_then(|s| plain_i32(s)).unwrap_or(0);
+            (n("AddSlot"), n("SlotType"))
+        };
 
         for (tag, d) in doc.iter() {
-            if tag.starts_with("UseItem") {
+            if tag.starts_with("Character") {
+                let kind = d.get("ItemType").and_then(|s| plain_i32(s));
+                let id = d
+                    .get("ItemID")
+                    .and_then(|s| plain_i32(s))
+                    .and_then(|id| id.checked_add(10000));
+                if let (Some(no), Some(0x1e)) = (id, kind) {
+                    slot_forms.insert(no, form(d));
+                }
+            } else if tag.starts_with("UseItem") {
                 // ItemID must be all ASCII digits ("+5", "-1", "5 " are rejected).
                 if let Some(no) = d
                     .get("ItemID")
@@ -1459,6 +1513,9 @@ impl ItemsTable {
                 if let (Some(no), Some(slots)) = (id, slots) {
                     backpack_slots.insert(no, slots);
                 }
+                if let Some(no) = id {
+                    slot_forms.insert(no, form(d));
+                }
             } else if tag.starts_with("Option") {
                 if let Some(no) = d
                     .get("ItemID")
@@ -1472,6 +1529,9 @@ impl ItemsTable {
                 if let Some(id) = d.get("ItemID").and_then(|s| plain_i32(s)) {
                     let wt = d.get("ItemType").and_then(|s| plain_i32(s)).unwrap_or(-1);
                     weapon_types.insert(id, wt);
+                    // EVIDENCE: cshell+0x25dd60 (EquipBackpackType -> record +0x24, EquipOnlyBackpack -> +0x240)
+                    let n = |k: &str| d.get(k).and_then(|s| plain_i32(s)).unwrap_or(0);
+                    weapon_packs.insert(id, (n("EquipBackpackType"), n("EquipOnlyBackpack") != 0));
                 }
             }
         }
@@ -1482,6 +1542,8 @@ impl ItemsTable {
             backpack_slots,
             option_kinds,
             weapon_types,
+            weapon_packs,
+            slot_forms,
         }
     }
 
@@ -1521,6 +1583,62 @@ impl ItemsTable {
     /// Returns `ItemType` of `[WeaponItem<n>]` with `ItemID == item_no`, or `-1`.
     pub fn weapon_class_code(&self, item_no: i32) -> i32 {
         self.weapon_types.get(&item_no).copied().unwrap_or(-1)
+    }
+
+    /// The backpack slot kind weapon `item_no` goes into (`EquipBackpackType`; 0 for a plain weapon or an unknown
+    /// row): only slots of the same kind take it.
+    // EVIDENCE: cshell+0x148020 (the item's record +0x24 must equal the shell's slot kind, else box 0x189e / 0x189f)
+    pub fn pack_type(&self, item_no: i32) -> i32 {
+        self.weapon_packs.get(&item_no).map_or(0, |p| p.0)
+    }
+
+    /// Weapon `item_no` sits in backpack slots only (`EquipOnlyBackpack`: the specialists' special items), never in
+    /// its own weapon slot.
+    // EVIDENCE: cshell+0x147470 (the storage page's Equip button hidden for such a record outside a drawer row),
+    // cshell+0x1402f0 (window 7 refuses the own-slot choice for it)
+    pub fn pack_only(&self, item_no: i32) -> bool {
+        self.weapon_packs.get(&item_no).is_some_and(|p| p.1)
+    }
+
+    /// The backpack slots' form for the equipped backpack (`backpack`, -1 none), the worn character (`character`, -1
+    /// none) and the function list's item numbers in their order: the backpack's slot count (`MultyInvenSlot`) and
+    /// kind (`SlotType`); a specialist's nonzero `SlotType` and `AddSlot` replace them; with kind 1 the first slot
+    /// license (`SubType` 18) of the list adds its `AddSlot`.
+    // EVIDENCE: cshell+0x227240 (count and kind from the equipped backpack's row (type 0x10), then from the worn
+    // character's row in type 0x1e's list (cshell+0x35aeb0 +0x2c, cshell+0x35ae60 +0x28, each only when nonzero); kind
+    // 1: cshell+0x327070(0x12), the function list's first record of SubType 0x12, adds its row's +0x28)
+    pub fn pack_form(
+        &self,
+        backpack: i32,
+        character: i32,
+        function_list: impl IntoIterator<Item = i32>,
+    ) -> PackForm {
+        let mut f = PackForm {
+            slots: self.backpack_slot_count(backpack),
+            kind: self.slot_forms.get(&backpack).map_or(0, |s| s.1),
+        };
+        if let Some(&(add, kind)) = self
+            .slot_forms
+            .get(&character)
+            .filter(|_| character >= 10000)
+        {
+            if kind != 0 {
+                f.kind = kind;
+            }
+            if add != 0 {
+                f.slots = add;
+            }
+        }
+        if f.kind == SPECIAL_SLOT_KIND {
+            let licence = function_list.into_iter().find_map(|n| {
+                let row = self.use_item_info(n)?;
+                let sub = row.get("SubType").and_then(|s| plain_i32(s));
+                (sub == Some(SUB_SLOT_LICENSE))
+                    .then(|| row.get("AddSlot").and_then(|s| plain_i32(s)).unwrap_or(0))
+            });
+            f.slots += licence.unwrap_or(0);
+        }
+        f
     }
 
     /// Returns the `Available_ItemID<n>` reward pool for a Supply Case (`item_no = 8000 + n`), ordered by the
@@ -1894,6 +2012,36 @@ Name=X
         assert!(t.use_item_info(8997).is_none());
         assert!(t.use_item_info(9004).is_none());
         assert_eq!(t.use_items.len(), 1); // i32::MAX + 9000 overflows and is skipped
+    }
+
+    /// CLI-772 amendment: a specialist's special slots (1 from its row, 2 with a slot license in the function list);
+    /// a mercenary or a plain backpack keeps the backpack's form; special items are marked by their weapon row.
+    #[test]
+    fn a_specialist_has_special_slots_and_a_licence_adds_one() {
+        let t = ItemsTable::from_doc(ButeDoc::parse(
+            "[WeaponItem0]\nItemID=171\nItemType=29\nEquipOnlyBackpack=1\nEquipBackpackType=1\n\
+             [WeaponItem1]\nItemID=20\nItemType=0\n\
+             [BackpackItem0]\nItemID=1\nMultyInvenSlot=2\n\
+             [Character0]\nItemID=4\nItemType=22\n\
+             [Character1]\nItemID=22\nItemType=30\nAddSlot=1\nSlotType=1\n\
+             [UseItem0]\nItemID=36\nItemType=21\nSubType=18\nAddSlot=1\n\
+             [UseItem1]\nItemID=5\nItemType=21\nSubType=13\nAddSlot=3\n",
+        ));
+        assert_eq!((t.pack_type(171), t.pack_only(171)), (1, true));
+        assert_eq!((t.pack_type(20), t.pack_only(20)), (0, false));
+        let plain = PackForm { slots: 2, kind: 0 };
+        assert_eq!(t.pack_form(7001, -1, []), plain);
+        assert_eq!(t.pack_form(7001, 10004, [9036]), plain);
+        let one = t.pack_form(-1, 10022, [9005]);
+        assert_eq!(
+            (one, one.special(), one.rows()),
+            (PackForm { slots: 1, kind: 1 }, true, 1)
+        );
+        assert_eq!(
+            t.pack_form(-1, 10022, [9005, 9036]),
+            PackForm { slots: 2, kind: 1 }
+        );
+        assert_eq!(t.pack_form(-1, -1, []).rows(), 0);
     }
 
     #[test]

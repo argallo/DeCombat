@@ -62,7 +62,7 @@ say() { printf '%s\n' "$*"; }
 
 # ---- folders (root once; then the user's)
 say "== folders under $ROOT on $TARGET"
-"${SSH[@]}" "$TARGET" "sudo -n /usr/bin/mkdir -p $ROOT/bin $ROOT/config $ROOT/logs $ROOT/rom && sudo -n /usr/bin/chown -R $USER_NAME:$USER_NAME $ROOT"
+"${SSH[@]}" "$TARGET" "sudo -n /usr/bin/mkdir -p $ROOT/bin $ROOT/config $ROOT/logs $ROOT/logs/content $ROOT/rom && sudo -n /usr/bin/chown -R $USER_NAME:$USER_NAME $ROOT"
 
 # ---- build on the machine
 if [ $BUILD -eq 1 ]; then
@@ -122,7 +122,7 @@ say "== systemd unit decombat-host.service"
 # --from-lobby made them so; the first step above handed them to this user for the copy); only logs, packs and incoming
 # stay this user's, host.toml readable by its group (docs/DEPLOY_FROM_ADMIN.md, "The home game host")
 "${SSH[@]}" "$TARGET" "if grep -qx 'SOURCE=lobby' $ROOT/config/update.conf 2>/dev/null; then
-  chmod 0640 $ROOT/config/host.toml && sudo -n /usr/bin/mkdir -p $ROOT/logs $ROOT/packs $ROOT/incoming \
+  chmod 0640 $ROOT/config/host.toml && sudo -n /usr/bin/mkdir -p $ROOT/logs $ROOT/logs/content $ROOT/packs $ROOT/incoming \
   && sudo -n /usr/bin/chown -R root:root $ROOT && sudo -n /usr/bin/chown -R $USER_NAME:$USER_NAME $ROOT/logs $ROOT/packs $ROOT/incoming \
   && sudo -n /usr/bin/chown -R root:$USER_NAME $ROOT/config/host.toml && echo 'root-owned layout restored (update.sh lobby mode)'; fi"
 say "done: journalctl -u decombat-host -f on the machine shows the agent's log"

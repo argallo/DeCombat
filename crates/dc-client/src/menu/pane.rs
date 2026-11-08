@@ -9,6 +9,7 @@ use super::catalog::Catalog;
 use super::link::InvRecord;
 use super::sheet::{image_fit, list_row, place_text, Part, ALIGN_LEFT};
 use super::storage::{Store, Wares};
+use dc_bute::PackForm;
 use crate::hud::items::DrawItem;
 use dc_ui_data::pages::Align;
 
@@ -49,6 +50,24 @@ pub const BACKPACK_SLOT_ON_IMAGES: [&str; 4] = [
     "UI_SCR_Page_Shop\\Inven\\Backpack_Slot_C_ON.dtx",
     "UI_SCR_Page_Shop\\Inven\\Backpack_Slot_D_ON.dtx",
 ];
+/// CLI-772 amendment: a specialist's special slot rows (the slot kind 1) take the Special_Slot_S1..S4 images and the
+/// list item mode 4: an arrow image (Special_Slide_Arrow, 8 x 0x31) at the row's end and no drawer.
+// EVIDENCE: cshell+0x1425d0 (slot kind 1 (cshell+0x2254d0): the Special_Slot_S<n>_OFF / _ON images, mode 4; else the
+// Backpack_Slot images, mode 1), cshell+0xd9ad0 (mode 4: the arrow Special_Slide_Arrow 8 x 0x31; only mode 1 builds
+// the slide image and the Primary / Secondary / Throw buttons)
+pub const SPECIAL_SLOT_IMAGES: [&str; 4] = [
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S1_OFF.dtx",
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S2_OFF.dtx",
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S3_OFF.dtx",
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S4_OFF.dtx",
+];
+pub const SPECIAL_SLOT_ON_IMAGES: [&str; 4] = [
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S1_ON.dtx",
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S2_ON.dtx",
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S3_ON.dtx",
+    r"UI_SCR_Page_Shop\Inven\Special_Slot_S4_ON.dtx",
+];
+pub const SPECIAL_ARROW: &str = r"UI_SCR_Page_Shop\Inven\Special_Slide_Arrow.dtx";
 pub const BACKPACK_ROW_SIZE: [i32; 2] = [0x9f, 0x31];
 /// The backpack rows' pitch: the row's height and the list's spacing.
 pub const BACKPACK_PITCH: i32 = 0x31 + 3;
@@ -380,7 +399,8 @@ pub fn row_image(weapons: bool, i: usize, hot: bool) -> Option<&'static str> {
 }
 
 /// The image of backpack row `i` for a backpack of `slots` extra slots (`hot`: its _On image).
-pub fn backpack_row_image(slots: i32, i: usize, hot: bool) -> Option<&'static str> {
+pub fn backpack_row_image(form: PackForm, i: usize, hot: bool) -> Option<&'static str> {
+    let slots = form.slots;
     if slots < 1 {
         return (i == 0).then_some(if hot {
             BACKPACK_ROW_ON_IMAGE
@@ -391,25 +411,24 @@ pub fn backpack_row_image(slots: i32, i: usize, hot: bool) -> Option<&'static st
     if i >= (slots % 5) as usize {
         return None;
     }
-    if hot {
-        BACKPACK_SLOT_ON_IMAGES.get(i).copied()
-    } else {
-        BACKPACK_SLOT_IMAGES.get(i).copied()
-    }
+    let set = match (form.special(), hot) {
+        (true, true) => &SPECIAL_SLOT_ON_IMAGES,
+        (true, false) => &SPECIAL_SLOT_IMAGES,
+        (false, true) => &BACKPACK_SLOT_ON_IMAGES,
+        (false, false) => &BACKPACK_SLOT_IMAGES,
+    };
+    set.get(i).copied()
 }
 
 /// The backpack list's row images for a backpack of `slots` extra slots.
 // EVIDENCE: cshell+0x1425d0 (count = +0x2dc; < 1: one Backpack_Default row; else count % 5 rows of the slot images)
-// DC-DEFAULT: CLI-740 (proposed) the slot rows use the Backpack_Slot_A..D images (the Special_Slot_S1..S4 form for
-// the shell's +0x2e0 == 1 is not ported; the items in the backpack slots 10.. are not drawn on the rows)
-pub fn backpack_rows(slots: i32) -> Vec<&'static str> {
-    if slots < 1 {
+// (CLI-772 amendment: the Special_Slot_S1..S4 images while the slot kind is 1)
+pub fn backpack_rows(form: PackForm) -> Vec<&'static str> {
+    if form.slots < 1 {
         return vec![BACKPACK_ROW_IMAGE];
     }
-    BACKPACK_SLOT_IMAGES
-        .iter()
-        .take((slots % 5) as usize)
-        .copied()
+    (0..form.rows())
+        .filter_map(|i| backpack_row_image(form, i, false))
         .collect()
 }
 
@@ -460,11 +479,12 @@ pub fn draw_rows(
         ));
     }
     if let Some(at) = backpack.filter(|_| weapons) {
-        let slots = wares.backpack_slots(store.equipped[PACK_SLOT_NO]);
-        for i in 0..backpack_rows(slots).len() {
+        let form = wares.pack_form(store);
+        let slots = form.slots;
+        for i in 0..backpack_rows(form).len() {
             let r = pack_row_rect(at, i);
             let y = r[1];
-            if let Some(t) = backpack_row_image(slots, i, look.pack == Some(i)) {
+            if let Some(t) = backpack_row_image(form, i, look.pack == Some(i)) {
                 out.push(image_fit(cat, t, [at[0], y], BACKPACK_ROW_SIZE));
             }
             // CLI-891: the weapon in backpack slot 10 + i shows its slot image on the row (no name)
@@ -490,7 +510,17 @@ pub fn draw_rows(
                         [x[2], x[3]],
                     ));
                 }
-                draw_drawer(cat, r, &look.drawers[i.min(3)], look.button, i, out);
+                if form.special() {
+                    let a = SLIDE_ARROW_AT;
+                    out.push(image_fit(
+                        cat,
+                        SPECIAL_ARROW,
+                        [r[0] + a[0], r[1] + a[1]],
+                        [a[2], a[3]],
+                    ));
+                } else {
+                    draw_drawer(cat, r, &look.drawers[i.min(3)], look.button, i, out);
+                }
             }
         }
     }

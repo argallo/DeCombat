@@ -75,7 +75,29 @@ pub struct Skill {
     /// BOT-123: the chance that the first shot of a sighting beyond [`SNIPER_FAR_RANGE`] goes wide (a clean miss).
     // DC-DEFAULT: BOT-123 (proposed) 0.40 at 0 .. 0.20 at 100 (0.30 at 50)
     pub sniper_far_miss: f32,
+    /// BOT-135: the close-range error floor: the per-shot aim error is never below this many units at the target
+    /// (one standard deviation on each axis across the aim): the size of the skill's angular error (BOT-23) at
+    /// [`FLOOR_RANGE`], so the floor rules exactly where the target is nearer than that, at every skill, units.
+    // DC-DEFAULT: BOT-135 (proposed) 48.9 u at 0 .. 4.9 u at 100 (26.9 at 50, 35.7 at 30, 20.3 at 65)
+    pub close_floor_u: f32,
+    /// BOT-135: the close-range floor grows by this share for every shot already fired in the burst (spray).
+    // DC-DEFAULT: BOT-135 (proposed) 0.08 at 0 .. 0.03 at 100 (0.055 at 50), capped at SPRAY_CAP
+    pub spray_step: f32,
 }
+
+/// BOT-135: the distance up to which the close-range floor holds (the skill's angular error there), units.
+// DC-DEFAULT: BOT-135 (proposed) 700 units (seven body heights)
+pub const FLOOR_RANGE: f32 = 700.0;
+/// BOT-135: the floor is this many times larger while the bot itself moves (walks, strafes, is airborne).
+// DC-DEFAULT: BOT-135 (proposed) 1.15
+pub const FLOOR_MOVING: f32 = 1.15;
+/// BOT-135: the floor grows by this share at a target crossing the line of sight at [`CROSSING_FULL`] (strafing).
+// DC-DEFAULT: BOT-135 (proposed) 0.25 at 285 u/s (the run speed), linear below, capped there
+pub const FLOOR_CROSSING: f32 = 0.25;
+pub const CROSSING_FULL: f32 = 285.0;
+/// BOT-135: the spray growth of the floor never exceeds this factor.
+// DC-DEFAULT: BOT-135 (proposed) 1.4
+pub const SPRAY_CAP: f32 = 1.4;
 
 /// BOT-123: a scoped sniper rifle's first shot of a sighting may go wide beyond this distance to the target, units.
 // DC-DEFAULT: BOT-123 (proposed) 1500 units (fifteen body heights)
@@ -91,6 +113,26 @@ pub const RECOIL_TAU_MS: u32 = 260;
 /// A line loss longer than this makes the next sighting a new one (full reaction delay).
 // DC-DEFAULT: BOT-22 (proposed) 2000 ms
 pub const REACQUIRE_WINDOW_MS: u32 = 2000;
+
+/// BOT-146: the spread of a first sighting's reaction delay, the sigma of a log-normal around the skill's delay
+/// (p10 0.70x, median 1.06x, p90 1.60x of `reaction_ms`; right-skewed like a person's: mostly near the median,
+/// some slow ones when surprised).
+// DC-DEFAULT: BOT-146 (proposed) sigma 0.32, median factor 1.06
+pub const REACTION_SIGMA: f32 = 0.32;
+pub const REACTION_MEDIAN_FACTOR: f32 = 1.06;
+/// BOT-146: the spread of a re-acquire delay (the enemy was expected), log-normal sigma around `reacquire_ms`.
+// DC-DEFAULT: BOT-146 (proposed) sigma 0.18
+pub const REACQUIRE_SIGMA: f32 = 0.18;
+/// BOT-146: a first sighting never reacts faster than this (or the skill's own delay when that is shorter), ms.
+// DC-DEFAULT: BOT-146 (proposed) 250 ms
+pub const REACTION_FLOOR_MS: u32 = 250;
+/// BOT-146: a re-acquire never reacts faster than this, ms (a human's least reaction to a cue).
+// DC-DEFAULT: BOT-146 (proposed) 150 ms
+pub const REACQUIRE_FLOOR_MS: u32 = 150;
+/// BOT-146: no drawn delay is longer than this many times the skill's delay, nor than [`REACTION_CAP_MS`].
+// DC-DEFAULT: BOT-146 (proposed) 2.5x, 2500 ms
+pub const REACTION_CAP: f32 = 2.5;
+pub const REACTION_CAP_MS: u32 = 2500;
 
 impl Skill {
     pub fn new(level: u8) -> Self {
@@ -117,7 +159,44 @@ impl Skill {
             sniper_sigma_mult: lerp(2.0, 1.2, t),
             sniper_settle_ms: lerp(400.0, 100.0, t).round() as u32,
             sniper_far_miss: lerp(0.40, 0.20, t),
+            close_floor_u: lerp(4.0, 0.4, t).to_radians() * FLOOR_RANGE,
+            spray_step: lerp(0.08, 0.03, t),
         }
+    }
+
+    /// BOT-146: one first sighting's reaction delay, drawn around `reaction_ms` (log-normal, [`REACTION_SIGMA`]),
+    /// floored at [`REACTION_FLOOR_MS`] (or the skill's delay when shorter), capped at [`REACTION_CAP`], ms.
+    pub fn draw_reaction_ms(&self, rng: &mut AimRng) -> u32 {
+        let base = self.reaction_ms as f32;
+        let d = base * REACTION_MEDIAN_FACTOR * (REACTION_SIGMA * rng.normal()).exp();
+        let floor = REACTION_FLOOR_MS
+            .min(self.reaction_ms)
+            .max(REACQUIRE_FLOOR_MS) as f32;
+        let cap = (base * REACTION_CAP).min(REACTION_CAP_MS as f32).max(floor);
+        d.clamp(floor, cap).round() as u32
+    }
+
+    /// BOT-146: one re-acquire delay, drawn around `reacquire_ms` (log-normal, [`REACQUIRE_SIGMA`]), floored at
+    /// [`REACQUIRE_FLOOR_MS`], never above the skill's full delay, ms.
+    pub fn draw_reacquire_ms(&self, rng: &mut AimRng) -> u32 {
+        let d = self.reacquire_ms as f32 * (REACQUIRE_SIGMA * rng.normal()).exp();
+        let floor = REACQUIRE_FLOOR_MS as f32;
+        d.clamp(floor, (self.reaction_ms as f32).max(floor)).round() as u32
+    }
+
+    /// BOT-135: the least per-shot aim error (degrees, one axis) at a target `dist` units away: the close-range
+    /// floor in units, grown while the bot moves, while the target crosses the line at `crossing` u/s and with the
+    /// `in_burst` shots already fired in the burst. The shot's error is the larger of this and the angular error
+    /// (BOT-23 / BOT-90): the floor rules near the target (the hit chance no longer climbs to certainty as the
+    /// target comes closer), the angular error from a few hundred units on, so far shots are as they were and the
+    /// error in units never shrinks with the distance.
+    pub fn close_floor_deg(&self, dist: f32, moving: bool, crossing: f32, in_burst: u32) -> f32 {
+        let motion = if moving { FLOOR_MOVING } else { 1.0 }
+            + FLOOR_CROSSING * (crossing.max(0.0) / CROSSING_FULL).min(1.0);
+        let spray = (1.0 + self.spray_step * in_burst as f32).min(SPRAY_CAP);
+        (self.close_floor_u * motion * spray / dist.max(1.0))
+            .atan()
+            .to_degrees()
     }
 
     /// BOT-91: the skill of `--skill <n>` or `--skill <lo>-<hi>`: a range gives every bot its own level, picked
@@ -340,6 +419,46 @@ mod tests {
         assert_eq!(Skill::new(250).level, 100);
     }
 
+    // BOT-146: the drawn reaction delays spread around the skill's delay (p10 ~0.7x, p90 ~1.6x), never under the
+    // floors, the same for the same seed
+    #[test]
+    fn reaction_delays_vary_per_sighting_within_the_floors() {
+        let q = |v: &mut Vec<u32>, p: f32| {
+            v.sort_unstable();
+            v[((v.len() - 1) as f32 * p) as usize] as f32
+        };
+        for level in [0u8, 30, 50, 65, 100] {
+            let s = Skill::new(level);
+            let mut r = AimRng::new(7);
+            let mut full: Vec<u32> = (0..4000).map(|_| s.draw_reaction_ms(&mut r)).collect();
+            let mut re: Vec<u32> = (0..4000).map(|_| s.draw_reacquire_ms(&mut r)).collect();
+            let base = s.reaction_ms as f32;
+            assert!(
+                full.iter().all(|&d| (150..=REACTION_CAP_MS).contains(&d)),
+                "{level}"
+            );
+            assert!(re
+                .iter()
+                .all(|&d| d >= REACQUIRE_FLOOR_MS && d <= s.reaction_ms.max(150)));
+            if level <= 65 {
+                assert!(full.iter().all(|&d| d >= REACTION_FLOOR_MS), "{level}");
+                let (p10, p50, p90) = (q(&mut full, 0.1), q(&mut full, 0.5), q(&mut full, 0.9));
+                assert!((0.64..0.76).contains(&(p10 / base)), "{level} p10 {p10}");
+                assert!((1.0..1.12).contains(&(p50 / base)), "{level} p50 {p50}");
+                assert!((1.5..1.7).contains(&(p90 / base)), "{level} p90 {p90}");
+                let iqr = q(&mut full, 0.75) - q(&mut full, 0.25);
+                assert!(iqr >= 100.0, "{level} iqr {iqr}");
+                let (r10, r90) = (q(&mut re, 0.1), q(&mut re, 0.9));
+                assert!(r90 / r10 < 1.9 && r90 > r10, "{level} {r10}..{r90}");
+            }
+        }
+        let s = Skill::new(50);
+        let (mut a, mut b) = (AimRng::new(99), AimRng::new(99));
+        for _ in 0..50 {
+            assert_eq!(s.draw_reaction_ms(&mut a), s.draw_reaction_ms(&mut b));
+        }
+    }
+
     // BOT-90 / BOT-91: the feel parameters scale with the skill; a range picks one level per seed, the same each time
     #[test]
     fn feel_parameters_scale_and_a_skill_range_picks_a_stable_level() {
@@ -387,6 +506,29 @@ mod tests {
             Skill::parse_level("65-30", 7),
             Skill::parse_level("30-65", 7)
         );
+    }
+
+    // BOT-135: the close-range floor is the skill's angular error at FLOOR_RANGE, grown by motion and spray
+    #[test]
+    fn close_floor_scales_with_the_skill_and_the_distance() {
+        let (s30, s50, s65) = (Skill::new(30), Skill::new(50), Skill::new(65));
+        assert!(
+            (s50.close_floor_u - 26.9).abs() < 0.1,
+            "{}",
+            s50.close_floor_u
+        );
+        assert!(s30.close_floor_u > s50.close_floor_u && s50.close_floor_u > s65.close_floor_u);
+        // at FLOOR_RANGE the floor is the angular error itself; nearer it is larger, farther smaller
+        let at = |sk: &Skill, d: f32| sk.close_floor_deg(d, false, 0.0, 0);
+        assert!((at(&s50, FLOOR_RANGE) - s50.aim_sigma_deg).abs() < 0.01);
+        assert!(at(&s50, 300.0) > at(&s50, 600.0) && at(&s50, 1500.0) < s50.aim_sigma_deg);
+        let base = at(&s50, 300.0);
+        assert!((s50.close_floor_deg(300.0, true, 0.0, 0) / base - FLOOR_MOVING).abs() < 0.02);
+        let cross = s50.close_floor_deg(300.0, false, 2.0 * CROSSING_FULL, 0) / base;
+        assert!((cross - (1.0 + FLOOR_CROSSING)).abs() < 0.02, "{cross}");
+        let spray = s50.close_floor_deg(300.0, false, 0.0, 100) / base;
+        assert!((spray - SPRAY_CAP).abs() < 0.02, "{spray}");
+        assert!(s50.close_floor_deg(300.0, false, 0.0, 2) > base);
     }
 
     #[test]

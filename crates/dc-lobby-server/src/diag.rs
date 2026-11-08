@@ -302,7 +302,16 @@ pub fn parse_report(raw: &[u8]) -> Result<Meta, Reject> {
         version: text_at(&v, &["client", "version"], 40),
         commit: text_at(&v, &["client", "commit"], 40),
         os: text_at(&v, &["system", "os"], 80),
-        gpu: text_at(&v, &["system", "gpu"], 120),
+        // CLI-1946: a report of an earlier run's files names that run's adapter beside this start's
+        gpu: {
+            let now = text_at(&v, &["system", "gpu"], 120);
+            let earlier = text_at(&v, &["system", "earlier_run_gpu"], 160);
+            if earlier.is_empty() {
+                now
+            } else {
+                format!("{now} (this start); the failed run: {earlier}")
+            }
+        },
         login: text_at(&v, &["login"], 64),
         link: link_line(&v),
         files,

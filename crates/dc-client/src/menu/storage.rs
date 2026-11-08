@@ -886,6 +886,44 @@ impl Wares {
         self.items.as_ref().map_or(0, |t| t.backpack_slot_count(n))
     }
 
+    /// CLI-772 amendment: the backpack slots' form of the character's equipment: the equipped backpack's weapon
+    /// slots (letters A..D), or a worn specialist's special slots (kind 1, letters S1..S4) with a slot license of the
+    /// function list adding its `AddSlot`.
+    // EVIDENCE: cshell+0x227240 (the shell's count +0x2dc and kind +0x2e0 from the backpack, the worn character in
+    // type 0x1e's list and the function list's first SubType 0x12 record), cshell+0x1425d0 / cshell+0x13fed0 (rebuilt
+    // with the pane and the slot list)
+    pub fn pack_form(&self, store: &Store) -> dc_bute::PackForm {
+        let Some(t) = self.items.as_ref() else {
+            return dc_bute::PackForm::default();
+        };
+        let list: Vec<i32> = self
+            .function_list(store)
+            .iter()
+            .map(|r| r.item_no as i32)
+            .collect();
+        t.pack_form(
+            store.equipped[super::pane::PACK_SLOT_NO],
+            store.equipped[CHARACTER_SLOT],
+            list,
+        )
+    }
+
+    /// The backpack slot kind item `n` goes into (`EquipBackpackType`; 0 for plain weapons and unknown rows).
+    // EVIDENCE: cshell+0x148020 (record +0x24 against the shell's slot kind)
+    pub fn pack_type(&self, n: i32) -> i32 {
+        self.items
+            .as_ref()
+            .map_or(0, |t| t.pack_type(crate::camo::art_row(n)))
+    }
+
+    /// Item `n` sits in backpack (special) slots only, never in its own weapon slot (`EquipOnlyBackpack`).
+    // EVIDENCE: cshell+0x147470 (Equip hidden for such a record outside a drawer row), cshell+0x1402f0
+    pub fn pack_only(&self, n: i32) -> bool {
+        self.items
+            .as_ref()
+            .is_some_and(|t| t.pack_only(crate::camo::art_row(n)))
+    }
+
     /// The type of item number `n` (the client's item number ranges; weapons and options by the item table).
     // SPEC: PROTOCOL_2009.md §4.5 (< 1000 weapons by the item table, 1000s options 0x11..0x13, 2000 0xe, 3000 0xf,
     // 4000 0xb, 5000 0xc, 6000 0xd, 7000 0x10, 8000 0x14, 9000 0x15, 10000s 0x1e, 11000 0x17, 12000 0x18, 13000 0x19)

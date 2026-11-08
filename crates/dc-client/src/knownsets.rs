@@ -142,6 +142,7 @@ mod tests {
                 description: Some("d".into()),
                 homepage: None,
                 screenshots: vec!["s.png".into()],
+                tags: vec!["demo".into()],
                 commands: vec![dc_mod_lua::ModCommand { command: "/x".into(), description: "does x".into() }],
                 preview: Some("cd".repeat(32)),
             }],

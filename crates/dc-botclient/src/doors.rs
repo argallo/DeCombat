@@ -315,6 +315,7 @@ impl DoorMind {
 
     /// One tick. `alive`: the bot plays and lives; `path`: the way it walks (its waypoints, else its goal; empty
     /// when it does not walk); `views`: [`door_views`]; `on`: false = only the statistic (doors as walls, as before).
+    #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
         now: Millis,
@@ -475,6 +476,7 @@ mod tests {
             }],
             solid: Some(vec![true]),
             kill_volumes: Vec::new(),
+            hazard_volumes: Vec::new(),
         }
     }
 

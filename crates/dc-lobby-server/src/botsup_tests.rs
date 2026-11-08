@@ -333,6 +333,7 @@ fn each_bot_gets_the_flags_of_bots_sh_and_its_groups_channel_round_robin() {
         assert_eq!(flag(p2, k), Some(v), "{k} in {p2:?}");
     }
     assert!(p2.contains(&"--shooter".to_string()) && p2.contains(&"--hunt".to_string()));
+    assert_eq!(flag(p2, "--log-max"), Some("5242880"));
     assert!(flag(p2, "--log")
         .unwrap()
         .ends_with("PlusBot2.events.jsonl"));

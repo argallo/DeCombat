@@ -70,9 +70,12 @@ pub struct Agent {
     pub version: String,
     /// LG-313: its hello says it takes weapon content (`content=1`).
     pub takes_content: bool,
+    /// LG-431: its hello says it takes that content as `content` lines (`contentlines=1`).
+    pub takes_content_lines: bool,
     /// MAP-83: its hello says it takes map packs (`packs=1`).
     pub takes_packs: bool,
-    /// MAP-84: the packs it has: said by `have`, or sent on this connection.
+    /// MAP-84 / LG-431: the packs and content documents it has (both are named by a SHA-256, so one set): said by
+    /// `have`, or sent on this connection.
     pub packs: std::collections::BTreeSet<String>,
     pub since: Instant,
     /// HA-2: its hello says it takes the lobby's server build (`update=1`).
@@ -102,6 +105,8 @@ pub struct Hello {
     pub running: u32,
     /// LG-313: `content=1` in the hello.
     pub takes_content: bool,
+    /// LG-431: `contentlines=1` in the hello.
+    pub takes_content_lines: bool,
     /// MAP-83: `packs=1` in the hello.
     pub takes_packs: bool,
     /// HA-2: `update=1` in the hello.
@@ -134,6 +139,7 @@ pub fn parse_hello(line: &str) -> Option<Hello> {
         ports,
         running: m.get("running").and_then(|n| n.parse().ok()).unwrap_or(0),
         takes_content: m.get("content") == Some(&"1"),
+        takes_content_lines: m.get("contentlines") == Some(&"1"),
         takes_packs: m.get("packs") == Some(&"1"),
         takes_update: m.get("update") == Some(&"1"),
     })
@@ -388,6 +394,7 @@ pub fn serve<R: Read, S: Sink>(shared: &Shared, reader: R, mut sink: S, peer: So
                         ports: h.ports,
                         version: h.version.clone(),
                         takes_content: h.takes_content,
+                        takes_content_lines: h.takes_content_lines,
                         takes_packs: h.takes_packs,
                         packs: Default::default(),
                         since: Instant::now(),
@@ -590,9 +597,11 @@ fn on_agent_line(shared: &Shared, g: &mut Core, name: &str, tx: &Sender<HostOut>
             g.note(&format!("host {name}: has map pack {sha}"));
         }
         AgentLine::Failed { gid, reason } => {
-            // MAP-84: `failed <gid> pack <sha>: ...`: the agent does not hold that pack, the next start sends it again
+            // MAP-84 / LG-431: `failed <gid> pack <sha>: ...` or `failed <gid> content <hash>: ...`: the agent does not
+            // hold that pack or document, the next start sends it again
             let lost = reason
                 .strip_prefix("pack ")
+                .or_else(|| reason.strip_prefix("content "))
                 .and_then(|r| r.split(':').next());
             if let (Some(sha), Some(a)) = (lost, g.hosts.online.get_mut(name)) {
                 a.packs.remove(sha);

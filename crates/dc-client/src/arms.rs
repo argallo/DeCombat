@@ -167,6 +167,9 @@ pub mod key {
     pub const ZOOM_TIME: &str = "ZoomTime";
     pub const GUN_TYPE: &str = "Guntype";
     pub const RELOAD_AFTER_FIRE: &str = "ReloadAfterFire";
+    // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] ReloadPerBullet (read at run time)
+    // DISASM: cshell+0x17ce6e..0x17ce95 (`ReloadPerBullet` -> row +0x250 as a flag)
+    pub const RELOAD_PER_SHELL: &str = "ReloadPerBullet";
     // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] DotSightName (a HUD picture on the knife rows)
     // DISASM: cshell+0x17c14e (`DotSightName` -> row +0xc8)
     pub const DOT_SIGHT: &str = "DotSightName";
@@ -284,6 +287,9 @@ pub struct WeaponRow {
     pub gun_type: Option<u32>,
     /// `ReloadAfterFire` (row +0x200): the bolt cycles after each shot; the zoom key is refused while it fires.
     pub reload_after_fire: bool,
+    /// `ReloadPerBullet` (row +0x250): the reload loads one round per pass of the reload clip ([`ReloadPart`]).
+    // DISASM: cshell+0x23a3aa..0x23a3b7 (the reload state's step takes the shell-wise path when row +0x250 is set)
+    pub reload_per_shell: bool,
     /// `DotSightName` (row +0xc8): the picture the aim element draws at the screen centre (the knife's red X).
     pub dot_sight: Option<String>,
     /// `CameraSway*` (row +0x3f0..+0x3fc): the scope sway ([`crate::zoom::CameraSway`]).
@@ -469,6 +475,7 @@ impl WeaponTable {
                     zoom_time: num(sec.get(key::ZOOM_TIME)),
                     gun_type: u(key::GUN_TYPE),
                     reload_after_fire: u(key::RELOAD_AFTER_FIRE).is_some_and(|v| v != 0),
+                    reload_per_shell: u(key::RELOAD_PER_SHELL).is_some_and(|v| v != 0),
                     dot_sight: text(sec.get(key::DOT_SIGHT)),
                     sway: crate::zoom::CameraSway::of_section(
                         sec,
@@ -612,6 +619,13 @@ pub const CLIP_SPRINT_ENTER: NameKey = ([0x0f, 0x52, 0x62, 0x81, 0x83, 0x95, 0x5
 pub const CLIP_SPRINT_LOOP: NameKey = ([0x2d, 0x1f, 0xd0, 0x08, 0x69, 0x34, 0xac, 0xa9], 4);
 pub const CLIP_SPRINT_EXIT: NameKey = ([0x1c, 0x74, 0x5e, 0x8f, 0x16, 0xf2, 0x5f, 0x6a], 8);
 
+/// Name keys of the clips before and after the reload clip of a shell-wise reload (row `ReloadPerBullet`).
+// DISASM: cshell+0x233f50..0x233fe6 (InitAnimations: the clip names of the table cshell+0x456b64..0x456b70 into
+// +0xf8 = the reload clip, +0xfc = its second form, +0x100 = the clip before it, +0x104 = the clip after it);
+// cshell+0x23a26f..0x23a27f (the reload state's step reads +0x100 / +0x104)
+pub const CLIP_PRE_RELOAD: NameKey = ([0xcf, 0x11, 0xa7, 0x60, 0x6f, 0x3a, 0xb7, 0x28], 9);
+pub const CLIP_POST_RELOAD: NameKey = ([0x2d, 0x67, 0xd0, 0xee, 0xd8, 0xe1, 0x40, 0x99], 10);
+
 /// Name key of the first-person dry-fire clip (the out-of-ammunition state's clip).
 // EVIDENCE: cshell+0x233ec0 (the weapon's clip indices by name: +0x108 = the dry-fire clip), cshell+0x237e20 (the
 // out-of-ammunition state 10 plays clip +0x108)
@@ -633,6 +647,9 @@ pub struct WeaponClips {
     /// The alternate-fire clip (the right button of a melee weapon, CLI-1350).
     pub alt_clip: Option<ClipFact>,
     pub reload: Option<ClipFact>,
+    /// The clips before and after the passes of a shell-wise reload ([`CLIP_PRE_RELOAD`], [`CLIP_POST_RELOAD`]).
+    pub pre_reload: Option<ClipFact>,
+    pub post_reload: Option<ClipFact>,
     pub prefire: Option<ClipFact>,
     pub postfire: Option<ClipFact>,
     pub idle: Option<ClipFact>,
@@ -682,6 +699,10 @@ impl WeaponClips {
                 &mut out.alt_clip
             } else if k == CLIP_RELOAD {
                 &mut out.reload
+            } else if k == CLIP_PRE_RELOAD {
+                &mut out.pre_reload
+            } else if k == CLIP_POST_RELOAD {
+                &mut out.post_reload
             } else if k == CLIP_PREFIRE {
                 &mut out.prefire
             } else if k == CLIP_POSTFIRE {
@@ -1053,6 +1074,27 @@ pub enum Phase {
     PostFire,
 }
 
+/// The part of the reload state that plays. A row without `ReloadPerBullet` plays its reload clip once and fills the
+/// clip at its end (`Whole`). A `ReloadPerBullet` row (the pump shotguns) plays the clip before the reload (`Pre`),
+/// then the reload clip once per round (`Shell`: each pass that ends puts one round from the stock into the clip and
+/// starts the next pass while the clip has room and the stock a round), then the clip after it (`Post`); a shot the
+/// trigger asks for ends the sequence with the rounds loaded so far.
+// DISASM: cshell+0x23a210 (the reload state's step; with row +0x250 set: no current reload clip -> the clip +0x100;
+// +0x100 ended -> the reload clip and `0x76 [3][1][+0xe8]`; the reload clip ended -> clip +0xe4 := +0xe8, the count
+// booked, then while +0xe4 < the clip size (slot +0x128) and < the slot's count: +0xe8 += 1 and the reload clip from
+// its start, else the clip +0x104; +0x104 ended -> the state ends), cshell+0x2399e0 (the reload start: one 0x83, with
+// row +0x250 the target +0xe8 := +0xe4 + 1), cshell+0x23b0b8 (the fire handler in the reload state calls the step with
+// 1: the shell-wise step then books the count and ends the state, cshell+0x23a3bd..0x23a44e; the handler goes on to
+// the firing state 3)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReloadPart {
+    #[default]
+    Whole,
+    Pre,
+    Shell,
+    Post,
+}
+
 impl Phase {
     pub fn label(&self) -> &'static str {
         match self {
@@ -1186,6 +1228,8 @@ pub struct Arsenal {
     held: Option<u8>,
     phase: Phase,
     phase_at: u32,
+    /// The part of the reload that plays while `phase` is [`Phase::Reload`].
+    reload_part: ReloadPart,
     /// Keys of the playing clip already handled (times up to this, ms into the clip).
     marks_done: Option<u32>,
     /// The plant / defuse hold's clip keys already played (ms into the hold, CLI-1530).
@@ -1300,6 +1344,7 @@ impl Arsenal {
             held: None,
             phase: Phase::Idle,
             phase_at: 0,
+            reload_part: ReloadPart::Whole,
             marks_done: None,
             hold_marks_done: None,
             alive: false,
@@ -2361,13 +2406,133 @@ impl Arsenal {
             return true;
         }
         self.stats.reloads += 1;
+        // one 0x83 per reload, a shell-wise one included (its passes send none)
+        // DISASM: cshell+0x239b79..0x239bdc (the start sends the only 0x83), cshell+0x23a210 (no 0x83 in the step)
         out.push(Outgoing {
             shell: up::RELOAD,
             body: reload_body(c.ammo_id),
         });
-        self.reload_event_at = Some((now + RELOAD_EVENT_DELAY_MS, size.min(u8::MAX as u32) as u8));
         self.start(now, Phase::Reload);
+        self.reload_part = ReloadPart::Whole;
+        if self.shell_wise(c.weapon) {
+            // the event follows the clip before the reload ([`Arsenal::reload_step`])
+            self.reload_part = ReloadPart::Pre;
+        } else {
+            self.reload_event_at =
+                Some((now + RELOAD_EVENT_DELAY_MS, size.min(u8::MAX as u32) as u8));
+        }
         true
+    }
+
+    /// Whether `weapon` reloads one round per pass of its reload clip (row `ReloadPerBullet`).
+    fn shell_wise(&self, weapon: u16) -> bool {
+        self.row(weapon).is_some_and(|r| r.reload_per_shell)
+    }
+
+    /// One round from the stock into the clip of the held weapon (a pass of a shell-wise reload that ended).
+    fn load_shell(&mut self) {
+        if let Some(c) = self.held.and_then(|s| self.slots.get_mut(&s)) {
+            let size = c.clip_size.unwrap_or(c.clip);
+            if c.clip < size && c.stock > 0 {
+                c.clip += 1;
+                c.stock -= 1;
+            }
+        }
+    }
+
+    /// The reload state of `weapon` at `now`: the clip of the playing part, its sound keys, and the part's end (the
+    /// next part from the exact end time, so several short parts may end in one frame). Returns at the reload's end.
+    fn reload_step(&mut self, now: u32, w: u16, aim: &Aim, out: &mut Vec<Outgoing>) {
+        // every part plays at the magazine mod's rate: its sound keys and its end move with it
+        // EVIDENCE: cshell+0x23a210 (every clip of the reload state is played at 1 + the mods' Reloadanirate)
+        let rate = self.anim_rate(w, false);
+        // a part that ends at once (a missing clip) still moves on: at most one pass per round of the clip
+        for _ in 0..512 {
+            let part = self.reload_part;
+            let (len, marks) = match part {
+                ReloadPart::Whole | ReloadPart::Shell => {
+                    let dflt: Vec<(u32, Mark)> = fallback::RELOAD_SOUNDS
+                        .iter()
+                        .map(|(at, n)| (*at, Mark::Sound(*n)))
+                        .collect();
+                    (
+                        self.clip_len(w, |c| c.reload.as_ref(), fallback::RELOAD_MS),
+                        self.clip_marks(w, |c| c.reload.as_ref(), &dflt),
+                    )
+                }
+                // DC-DEFAULT: CLI-1934 (proposed) a missing clip before / after the passes is a part of no length
+                ReloadPart::Pre => (
+                    self.clips_of(w)
+                        .and_then(|c| c.pre_reload.as_ref())
+                        .map_or(0, |c| c.len_ms.max(1)),
+                    self.clip_marks(w, |c| c.pre_reload.as_ref(), &[]),
+                ),
+                ReloadPart::Post => (
+                    self.clips_of(w)
+                        .and_then(|c| c.post_reload.as_ref())
+                        .map_or(0, |c| c.len_ms.max(1)),
+                    self.clip_marks(w, |c| c.post_reload.as_ref(), &[]),
+                ),
+            };
+            let marks = at_rate(marks, rate);
+            for m in self.due_marks(now, &marks) {
+                if let Mark::Sound(n) = m {
+                    self.sound(out, n, aim);
+                }
+            }
+            let len = ms_at_rate(len, rate);
+            if now.saturating_sub(self.phase_at) < len {
+                return;
+            }
+            let end = self.phase_at + len;
+            let full = self.held().is_none_or(|c| {
+                c.stock == 0 || c.clip >= c.clip_size.unwrap_or(c.clip)
+            });
+            let next = match part {
+                ReloadPart::Whole => {
+                    self.finish_reload();
+                    None
+                }
+                ReloadPart::Pre => {
+                    // the reload clip starts and the notice carries the clip with its first round
+                    // DISASM: cshell+0x23a473..0x23a538 (`0x76 [3][1][+0xe8]` when the clip +0x100 ended)
+                    if let Some(c) = self.held() {
+                        let v = (c.clip + 1).min(c.clip_size.unwrap_or(c.clip + 1));
+                        out.push(Outgoing {
+                            shell: up::WEAPON_EVENT,
+                            body: reloaded_event_body(v.min(u8::MAX as u32) as u8),
+                        });
+                    }
+                    Some(if full {
+                        ReloadPart::Post
+                    } else {
+                        ReloadPart::Shell
+                    })
+                }
+                ReloadPart::Shell => {
+                    self.load_shell();
+                    let full = self.held().is_none_or(|c| {
+                        c.stock == 0 || c.clip >= c.clip_size.unwrap_or(c.clip)
+                    });
+                    Some(if full {
+                        ReloadPart::Post
+                    } else {
+                        ReloadPart::Shell
+                    })
+                }
+                ReloadPart::Post => None,
+            };
+            match next {
+                Some(p) => {
+                    self.start(end, Phase::Reload);
+                    self.reload_part = p;
+                }
+                None => {
+                    self.start(now, Phase::Idle);
+                    return;
+                }
+            }
+        }
     }
 
     fn finish_reload(&mut self) {
@@ -2972,25 +3137,20 @@ impl Arsenal {
                 }
             }
             Phase::Reload => {
-                let dflt: Vec<(u32, Mark)> = fallback::RELOAD_SOUNDS
-                    .iter()
-                    .map(|(at, n)| (*at, Mark::Sound(*n)))
-                    .collect();
-                // the reload clip plays at the magazine mod's rate: its sound keys and its end move with it
-                // EVIDENCE: cshell+0x23a210
-                let rate = self.anim_rate(w, false);
-                let marks = at_rate(self.clip_marks(w, |c| c.reload.as_ref(), &dflt), rate);
-                for m in self.due_marks(now, &marks) {
-                    if let Mark::Sound(n) = m {
-                        self.sound(&mut out, n, aim);
-                    }
-                }
-                if t >= ms_at_rate(
-                    self.clip_len(w, |c| c.reload.as_ref(), fallback::RELOAD_MS),
-                    rate,
-                ) {
-                    self.finish_reload();
+                // a shot the trigger asks for ends a shell-wise reload with the rounds loaded so far (none in the
+                // playing pass), then fires at once
+                // DISASM: cshell+0x23b0b8 (fire handler, reload state: step(1)), cshell+0x23a3bd..0x23a44e (the
+                // shell-wise step with 1: the count booked, the state ended), cshell+0x23b12f..0x23b13a (then the
+                // firing state)
+                // DC-DEFAULT: CLI-1934 (proposed) only with a round in the clip, and only a fire the trigger would
+                // give from the ready state (a one-per-press weapon needs a new press)
+                let shot = self.trigger && (self.pressed || !self.one_per_press(w));
+                if self.reload_part != ReloadPart::Whole && shot && c.clip > 0 {
+                    // a reload key pressed during the sequence is spent (the reload state refuses it)
+                    self.reload_wanted = false;
                     self.start(now, Phase::Idle);
+                } else {
+                    self.reload_step(now, w, aim, &mut out);
                 }
             }
             Phase::PreFire => {
@@ -3468,7 +3628,11 @@ impl Arsenal {
             Phase::PreFire => c.prefire.as_ref(),
             Phase::Fire => fire_clip_of(self.alt)(&c),
             Phase::ThrowHold => c.fire.as_ref(),
-            Phase::Reload => c.reload.as_ref(),
+            Phase::Reload => match self.reload_part {
+                ReloadPart::Pre => c.pre_reload.as_ref(),
+                ReloadPart::Post => c.post_reload.as_ref(),
+                ReloadPart::Whole | ReloadPart::Shell => c.reload.as_ref(),
+            },
             Phase::ThrowPre => c.prefire.as_ref(),
             Phase::ThrowRelease => c.postfire.as_ref(),
             Phase::DryFire => c.dry_fire.as_ref().or(c.idle.as_ref()),
@@ -5451,6 +5615,66 @@ ModModel0 = 0
         }
     }
 
+    /// ROM-gated (DSV-650): the grenade launcher 171 fires like a gun (one `UP_FIRE` per press from its fire clip, no
+    /// `UP_THROW_HOLD`, no wind-up): its row is not of the thrown kind and its fire clip has no throw key. The frag 7
+    /// still takes the throw path (holds, then the release). Counts only are printed.
+    #[test]
+    fn rom_the_grenade_launcher_fires_like_a_gun_and_the_frag_is_thrown() {
+        let Some(rom) = dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let table = std::sync::Arc::new(WeaponTable::open(&rom).expect("weapon table"));
+        let arsenal = || {
+            Arsenal::new(ArmsConfig {
+                table: Some(table.clone()),
+                rom: Some(rom.clone()),
+                ..ArmsConfig::default()
+            })
+        };
+        let gl = 171u16;
+        let row = table.rows.get(&gl).expect("the launcher row");
+        assert_ne!(row.client_kind, Some(CLIENT_KIND_THROWN));
+        let ammo = row.ammo.unwrap_or(gl);
+        let mut a = arsenal();
+        a.on_grant(&grant(0, gl, ammo, 6.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 3000, |_| fire_cmd(false), &[]);
+        assert_eq!(a.held().map(|c| c.weapon), Some(gl));
+        assert!(!a.throwable(gl), "no throw key in the fire clip");
+        let click = |at: u32| move |t: u32| fire_cmd((at..at + 50).contains(&t));
+        let mut phases = Vec::new();
+        let mut v = Vec::new();
+        let mut t = 3000;
+        while t < 5000 {
+            v.extend(a.step(t, &click(3008)(t), &aim(), &[], None));
+            phases.push(a.phase());
+            t += 16;
+        }
+        let fired = v.iter().filter(|m| m.shell == up::FIRE).count();
+        let holds = v.iter().filter(|m| m.shell == up::THROW_HOLD).count();
+        println!("launcher {gl}: {fired} shots, {holds} holds");
+        assert_eq!((fired, holds), (1, 0));
+        assert!(phases
+            .iter()
+            .all(|p| !matches!(p, Phase::ThrowPre | Phase::ThrowHold | Phase::ThrowRelease)));
+        // the snow gun (weapon 100, the other `Type` 2 row of the impact class) is a gun too, not a hand throw
+        assert_ne!(
+            table.rows.get(&100).and_then(|r| r.client_kind),
+            Some(CLIENT_KIND_THROWN)
+        );
+        assert!(!a.throwable(100), "no throw key in the snow gun's fire clip");
+        // the frag (weapon 7, ammunition 9): the throw path
+        let mut b = arsenal();
+        b.on_grant(&grant(3, 7, 9, 2.0));
+        b.on_life(0, 1);
+        run(&mut b, 0, 3000, |_| fire_cmd(false), &[]);
+        assert!(b.throwable(7));
+        let v = run(&mut b, 3000, 6000, |t| fire_cmd(t < 4500), &[]);
+        assert!(v.iter().any(|m| m.1.shell == up::THROW_HOLD), "the frag is held");
+        assert_eq!(v.iter().filter(|m| m.1.shell == up::FIRE).count(), 1, "one release");
+    }
+
     #[test]
     fn rom_clips_match_the_observed_timing() {
         let Some(rom) = dc_rom::test_rom() else {
@@ -6655,6 +6879,169 @@ RapidFireCount = 0
         // square texels on the 16:9 target
         assert!((dst[2] * 1280.0 / 1024.0 - dst[3] * 720.0 / 768.0).abs() < 0.5);
         assert_eq!(scope_items(&mut hud, &state).len(), 1);
+    }
+
+    /// CLI-1934: a `ReloadPerBullet` row (made-up numbers: weapon 3, clip 3, one shot per press, clips of our own
+    /// lengths) reloads one round per pass of its reload clip after the clip before it, plays the clip after it once
+    /// the clip is full, sends one 0x83 for the whole sequence and its notice when the first pass starts; a press with
+    /// an empty clip does not end it, a press with a round in the clip ends it (the playing pass loads nothing) and
+    /// fires at once.
+    #[test]
+    fn a_shell_wise_reload_loads_one_round_per_pass_and_a_shot_ends_it() {
+        let text = table_text().replace("[Weapon3]
+", "[Weapon3]
+ReloadPerBullet = 1
+");
+        let mut a = Arsenal::new(ArmsConfig {
+            table: Some(std::sync::Arc::new(WeaponTable::from_doc(&ButeDoc::parse(
+                &text,
+            )))),
+            ..ArmsConfig::default()
+        });
+        assert!(a.shell_wise(3) && !a.shell_wise(5));
+        let fact = |len_ms: u32, marks: Vec<(u32, Mark)>| {
+            Some(ClipFact {
+                index: 0,
+                len_ms,
+                marks,
+            })
+        };
+        a.clips.insert(
+            3,
+            Some((
+                "test".into(),
+                WeaponClips {
+                    select: fact(300, vec![]),
+                    fire: fact(100, vec![(0, Mark::Fire)]),
+                    pre_reload: fact(200, vec![(50, Mark::Sound(1))]),
+                    reload: fact(400, vec![(100, Mark::Sound(2))]),
+                    post_reload: fact(300, vec![(150, Mark::Sound(3))]),
+                    ..WeaponClips::default()
+                },
+            )),
+        );
+        a.on_grant(&grant(0, 3, 0, 9.0));
+        a.on_life(0, 1);
+        run(&mut a, 0, 400, |_| fire_cmd(false), &[]);
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((3, 6)));
+        // the clip spent (three shots), then the reload key
+        a.slots.get_mut(&0).unwrap().clip = 0;
+        let key = |t: u32| WeaponCommands {
+            reload: t == 400,
+            // a press in the clip before the reload: the clip is empty, the reload goes on
+            fire: t == 512,
+            fire_press: t == 512,
+            ..WeaponCommands::default()
+        };
+        let mut v = run(&mut a, 400, 1000, key, &[]);
+        assert_eq!(a.phase(), Phase::Reload);
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((0, 6)));
+        // the notice when the clip before the reload ended (600 ms): the clip with its first round
+        let ev: Vec<&(u32, Outgoing)> = v.iter().filter(|m| m.1.shell == up::WEAPON_EVENT).collect();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(hex(&wire(&ev[0].1)), "0b76030101");
+        assert!((600..616).contains(&ev[0].0), "{}", ev[0].0);
+        // one round per 400 ms pass
+        v.extend(run(&mut a, 1000, 1400, |_| fire_cmd(false), &[]));
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((1, 5)));
+        v.extend(run(&mut a, 1400, 1800, |_| fire_cmd(false), &[]));
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((2, 4)));
+        v.extend(run(&mut a, 1800, 2080, |_| fire_cmd(false), &[]));
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((3, 3)));
+        assert_eq!(a.phase(), Phase::Reload, "the clip after the passes");
+        v.extend(run(&mut a, 2080, 2200, |_| fire_cmd(false), &[]));
+        assert_eq!(a.phase(), Phase::Idle);
+        assert_eq!(
+            shells(&v).iter().filter(|s| **s == up::RELOAD).count(),
+            1,
+            "one 0x83 for the sequence"
+        );
+        assert!(!shells(&v).contains(&up::FIRE));
+        let sounds: Vec<u8> = v
+            .iter()
+            .filter(|m| m.1.shell == up::WEAPON_SOUND)
+            .map(|m| wire(&m.1)[2])
+            .collect();
+        assert_eq!(sounds, vec![1, 2, 2, 2, 3]);
+        // two shots, the reload key, one pass loads a round, the press in the second pass ends the reload and fires
+        let press = |at: u32| {
+            move |t: u32| WeaponCommands {
+                fire: t == at,
+                fire_press: t == at,
+                ..WeaponCommands::default()
+            }
+        };
+        let v = run(&mut a, 2200, 2400, press(2200), &[]);
+        assert_eq!(shells(&v).iter().filter(|s| **s == up::FIRE).count(), 4);
+        run(&mut a, 2400, 2600, press(2400), &[]);
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((1, 3)));
+        let v = run(
+            &mut a,
+            2600,
+            3296,
+            |t| WeaponCommands {
+                reload: t == 2600,
+                ..WeaponCommands::default()
+            },
+            &[],
+        );
+        assert_eq!(shells(&v).iter().filter(|s| **s == up::RELOAD).count(), 1);
+        assert_eq!(a.held().map(|c| (c.clip, c.stock)), Some((2, 2)));
+        let v = run(&mut a, 3296, 4000, press(3296), &[]);
+        assert_eq!(
+            v.iter().filter(|m| m.1.shell == up::FIRE).map(|m| m.0).collect::<Vec<_>>(),
+            vec![3296; 4],
+            "the shot at the press"
+        );
+        assert!(!shells(&v).contains(&up::RELOAD));
+        assert_eq!(
+            a.held().map(|c| (c.clip, c.stock)),
+            Some((1, 2)),
+            "the pass of the press loaded nothing"
+        );
+        assert_ne!(a.phase(), Phase::Reload);
+    }
+
+    /// CLI-1934: the ROM's `ReloadPerBullet` rows have the clips before and after their reload clip (counts and weapon
+    /// numbers only).
+    #[test]
+    fn rom_shell_wise_rows_have_their_reload_clips() {
+        let Some(rom) = dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let t = std::sync::Arc::new(WeaponTable::open(&rom).expect("weapon table"));
+        let ids: Vec<u16> = t
+            .rows
+            .iter()
+            .filter(|(_, r)| r.reload_per_shell)
+            .map(|(n, _)| *n)
+            .collect();
+        let mut a = Arsenal::new(ArmsConfig {
+            table: Some(t.clone()),
+            rom: Some(rom),
+            ..ArmsConfig::default()
+        });
+        let mut with_clips = Vec::new();
+        for &w in &ids {
+            if let Some(c) = a.clips_of(w) {
+                println!(
+                    "weapon {w}: clip {:?}, one per press {}, pre {:?} ms, reload {:?} ms ({} keys), post {:?} ms",
+                    t.rows[&w].clip,
+                    t.rows[&w].single_shot.is_some_and(|n| n >= 1),
+                    c.pre_reload.as_ref().map(|c| c.len_ms),
+                    c.reload.as_ref().map(|c| c.len_ms),
+                    c.reload.as_ref().map_or(0, |c| c.marks.len()),
+                    c.post_reload.as_ref().map(|c| c.len_ms),
+                );
+                if c.pre_reload.is_some() && c.reload.is_some() && c.post_reload.is_some() {
+                    with_clips.push(w);
+                }
+            }
+        }
+        println!("ReloadPerBullet rows {}, with all three clips {}", ids.len(), with_clips.len());
+        assert!(!ids.is_empty(), "the ROM has shell-wise rows");
+        assert!(!with_clips.is_empty());
     }
 
     #[test]

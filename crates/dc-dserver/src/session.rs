@@ -1568,6 +1568,7 @@ impl<A: Ord + Clone + Display> Server<A> {
                     clip,
                 } => self.on_ai_died(slot, pos, yaw, clip, now),
                 GameOut::AiLook { slot } => self.on_ai_look(slot),
+                GameOut::AiHidden { slot } => self.on_ai_hidden(slot),
                 GameOut::WorldScript(t) => {
                     if self.script_texts.len() < crate::doors::DELAYED_MAX {
                         self.script_texts.push(t);
@@ -2709,6 +2710,17 @@ impl<A: Ord + Clone + Display> Server<A> {
         let ms = self.cfg.game.coop.corpse_ms;
         self.corpses
             .push((corpse, (ms > 0).then(|| now.wrapping_add(ms))));
+    }
+
+    /// An AI left the world without a death (DSV-642): one object group to every client in the world hides its
+    /// character and weapon at the park point (FT-R1).
+    fn on_ai_hidden(&mut self, slot: usize) {
+        let recs = self.ai_hidden_records(slot);
+        for v in self.world_viewers() {
+            if let Some(g) = objects::obj_group(&recs) {
+                self.send(&v, g);
+            }
+        }
     }
 
     /// A reused AI slot gets the body and the weapon model of its new spec.

@@ -51,6 +51,15 @@ pub struct BotExe {
     pub dir: PathBuf,
 }
 
+/// What an ended bot shows: a clean exit is the bot's normal end (its hour ran, BOT-158), not an error.
+fn ended_text(s: std::process::ExitStatus) -> String {
+    if s.success() {
+        "ran its hour".to_string()
+    } else {
+        crate::net::exit_text(s)
+    }
+}
+
 fn rotate(p: &Path) {
     if std::fs::metadata(p).is_ok_and(|m| m.len() > LOG_MAX) {
         let mut old = p.as_os_str().to_owned();
@@ -267,7 +276,7 @@ impl Supervisor {
             let Some(c) = p.child.as_mut() else { continue };
             let text = match c.try_wait() {
                 Ok(None) => continue,
-                Ok(Some(s)) => crate::net::exit_text(s),
+                Ok(Some(s)) => ended_text(s),
                 Err(e) => format!("lost: {e}"),
             };
             p.child = None;
@@ -561,6 +570,8 @@ pub fn bot_args(f: &Facts, g: &Group, name: &str, channel: u32) -> Vec<String> {
             .display()
             .to_string(),
     );
+    // BOT-157: the bot moves its own events file to `.1` at this size while it runs (the lobby does it at a start)
+    add("--log-max", LOG_MAX.to_string());
     add(
         "--known-servers",
         f.dir.join("known_servers.txt").display().to_string(),

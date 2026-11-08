@@ -36,6 +36,14 @@ pub const KEY_CLIP: &str = "ShotsPerClip";
 // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] IsAmmo (1 on 20 rows, every one with ShotsPerClip 1; launchers
 // with throwable-type ammunition rows have none)
 pub const KEY_IS_AMMO: &str = "IsAmmo";
+/// `[Weapon<n>]` kind of the weapon on the client: 2 for the hand-thrown and placed weapons (the grenades, the kits,
+/// the mines, the sensors), 1 for the guns and launchers.
+// OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] ClientWeaponType (2 on every hand grenade row and the mine rows, 1 on
+// the launchers, the rocket rows and the snowball gun; values read at run time 2026-11-08); dc-client reads the same
+// key for its throw path (`arms::CLIENT_KIND_THROWN`, the meaning PLAUSIBLE)
+pub const KEY_CLIENT_KIND: &str = "ClientWeaponType";
+/// The [`KEY_CLIENT_KIND`] value of a hand-thrown weapon.
+pub const CLIENT_KIND_HAND: u32 = 2;
 /// `[Weapon<n>]` pellets per round (the client sends one `UP_FIRE` per pellet).
 // OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] VectorsPerRound
 pub const KEY_PELLETS: &str = "VectorsPerRound";
@@ -102,7 +110,8 @@ pub const KEY_PROJECTILE_FX: &str = "ProjectileFXName";
 // these values (2026-10-25 scratch survey, world-objects; values read at run time, never copied)
 pub const KEY_IMPACT_FX: &str = "ImpactFXName";
 /// The ammunition row's kind (`Type`): 0 an instant trace, 1 a fired projectile (the launchers' rows), 2 a thrown
-/// one (the grenades' rows).
+/// one (the grenades' rows). Not the whole story: the projectile row's class decides launched or thrown where it
+/// names one ([`RomTables::round_flight`], DSV-650; the grenade launcher's row is `Type` 2).
 // OBSERVED: ROM table key WEAPONS.TXT [Ammo<n>] Type (LAW / M136_AT4 rows 1 with ProjectileFXName Missile, the M67 row
 // 2; values read at run time); WEAPON_FIRE_2009_addendum_cone.md AC-3.4 (the client traces only the instant kind)
 pub const KEY_AMMO_KIND: &str = "Type";
@@ -143,6 +152,41 @@ pub const KEY_PFX_VELOCITY: &str = "Velocity";
 // the class-data rows, cshell+0x28fdf0)
 pub const KEY_PFX_CLASS: &str = "Class";
 pub const KEY_PFX_CLASS_DATA: &str = "ClassData";
+/// How the server flies a round: launched (it bursts where it first meets the world or a player, or at the end of
+/// its row's `Lifetime`) or thrown (it bounces and goes off at its fuse, the row's `Lifetime`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundFlight {
+    Launched,
+    Thrown,
+}
+/// Name keys of the two projectile row classes that tell the flight (folded class names; the names are ROM data,
+/// matched by key, never quoted): the impact class (the user's ROM: the rocket, flame, snowball and the grenade
+/// launcher's shell rows) and the fused class (every hand grenade row: frag, flash, smoke, the kit).
+// OBSERVED: ROM table key FX.TXT [ProjectileFX<k>] Class, read at run time 2026-11-08 (m32-launcher scratch run, rows
+// tabulated, not copied): the LAW / RPG / AT4 rocket row and the grenade launcher's shell row share the impact class
+// while the launcher's ammunition row is `Type` 2 like the frag's; the flash, smoke and two other hand grenades are
+// `Type` 1 with the fused class. The ammunition `Type` therefore does not tell a launched round from a thrown one; the
+// projectile row's class does (both launcher rows carry it, no hand grenade does)
+// EVIDENCE: cshell+0x292f90 (the client reads `Class` into its projectile row; what the class does is the server
+// object's, not in the client)
+// DC-DEFAULT: DSV-650 (proposed) the projectile row's class decides launched or thrown
+pub const PFX_CLASS_IMPACT: crate::chars::NameKey =
+    ([0x31, 0x6e, 0x49, 0xfa, 0xe0, 0x02, 0xc9, 0x84], 11);
+pub const PFX_CLASS_FUSED: crate::chars::NameKey =
+    ([0x92, 0x7e, 0xc5, 0xa5, 0x17, 0xa9, 0xa9, 0x6a], 8);
+
+/// The flight a projectile row's `Class` names (`None`: another class, such as a mine's, or none).
+// DC-DEFAULT: DSV-650 (proposed)
+pub fn class_flight(class: &str) -> Option<RoundFlight> {
+    let k = crate::chars::name_key(dc_bute::fold_latin1(class.trim()).as_bytes());
+    if k == PFX_CLASS_IMPACT {
+        Some(RoundFlight::Launched)
+    } else if k == PFX_CLASS_FUSED {
+        Some(RoundFlight::Thrown)
+    } else {
+        None
+    }
+}
 /// The mine class-data rows of the FX table and their keys: the distance at which a mine goes off and the delay
 /// before it is armed (seconds).
 // DISASM: cshell+0x295e44 (the FX table loader reads `LandTrapClassData<n>` rows from 0 up), cshell+0x28e680 (the
@@ -295,6 +339,8 @@ pub struct WeaponRow {
     pub hh_styles: Vec<String>,
     /// `IsAmmo` non-zero: the weapon is its own ammunition.
     pub own_ammo: bool,
+    /// `ClientWeaponType` ([`CLIENT_KIND_HAND`]: thrown by hand).
+    pub client_kind: Option<u32>,
     /// `Guntype` of the row (`None` when absent): mode-1 fire is honoured only for 0 / 0xd / 0xe.
     pub gun_type: Option<u32>,
     /// The row's default attachments as part bytes (scope, muzzle, magazine mod indices, finish; -1 = none);
@@ -319,6 +365,44 @@ pub struct WeaponRow {
     pub controllee: Option<u16>,
     /// A heartbeat-sensor row (`SensorOption` 0 or 1): its `ScanDist` (0 when missing); `None` for any other row.
     pub scan_dist: Option<f32>,
+    /// The AI burst keys of the row (`None` unless all four are present): how a co-op AI holding it fires (DSV-640).
+    pub ai_burst: Option<AiBurst>,
+}
+
+/// How an AI fires a weapon (DSV-640): a burst of `shots.0..=shots.1` shots, then a pause of `pause_s.0..=pause_s.1`
+/// seconds before the next burst.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AiBurst {
+    pub shots: (u32, u32),
+    pub pause_s: (f32, f32),
+}
+
+/// The AI burst keys of a `[Weapon<n>]` row: the fewest and most shots of a burst, the shortest and longest pause
+/// (seconds) after one.
+// OBSERVED: ROM table key WEAPONS.TXT [Weapon<n>] AIMinBurstShots, AIMaxBurstShots, AIMinBurstInterval,
+// AIMaxBurstInterval (six rows, the ones the co-op AI templates hold; the launcher and the bolt rifle rows give one
+// shot per burst, the automatic rows more; values read at run time, 2026-11-08 scratch run)
+pub const KEY_AI_BURST: [&str; 4] = [
+    "AIMinBurstShots",
+    "AIMaxBurstShots",
+    "AIMinBurstInterval",
+    "AIMaxBurstInterval",
+];
+
+/// The row's AI burst: all four keys present, the shot counts at least 1 (the larger end at least the smaller), the
+/// pauses finite and not negative.
+fn ai_burst(sec: &dc_bute::SectionMap) -> Option<AiBurst> {
+    let [a, b, c, d] = KEY_AI_BURST.map(|k| num_f32(sec.get(k)));
+    let (lo, hi, plo, phi) = (a?, b?, c?, d?);
+    if ![lo, hi, plo, phi].iter().all(|v| v.is_finite()) || plo < 0.0 || phi < 0.0 {
+        return None;
+    }
+    let lo = (lo.max(1.0) as u32).min(1_000);
+    let hi = (hi.max(1.0) as u32).clamp(lo, 1_000);
+    Some(AiBurst {
+        shots: (lo, hi),
+        pause_s: (plo.min(phi), plo.max(phi)),
+    })
 }
 
 /// `[Weapon<n>]` key naming the weapon a controller sets off (the claymore controller row names the claymore).
@@ -607,6 +691,7 @@ impl WeaponTable {
                         hh_skins: numbered(sec, KEY_HH_SKIN, 8),
                         hh_styles: numbered(sec, KEY_HH_STYLE, 4),
                         own_ammo: num_u32(sec.get(KEY_IS_AMMO)).is_some_and(|v| v != 0),
+                        client_kind: num_u32(sec.get(KEY_CLIENT_KIND)),
                         gun_type: num_u32(sec.get(KEY_GUN_TYPE)),
                         default_parts,
                         mod_list,
@@ -624,6 +709,7 @@ impl WeaponTable {
                                     .filter(|d| d.is_finite() && *d > 0.0)
                                     .unwrap_or(0.0)
                             }),
+                        ai_burst: ai_burst(sec),
                     },
                 );
             }
@@ -959,6 +1045,11 @@ impl WeaponTable {
             })
     }
 
+    /// The AI burst of a weapon row (DSV-640; `None` without the four keys).
+    pub fn ai_burst(&self, weapon_id: u16) -> Option<AiBurst> {
+        self.weapons.get(&weapon_id).and_then(|w| w.ai_burst)
+    }
+
     /// Clip size of a weapon.
     pub fn clip(&self, weapon_id: u16) -> Option<u32> {
         self.weapons.get(&weapon_id).and_then(|w| w.clip)
@@ -1045,6 +1136,15 @@ impl WeaponTable {
             .is_some_and(|a| a.kind == Some(AMMO_KIND_THROWN))
     }
 
+    /// Whether `weapon_id` is thrown by hand (`ClientWeaponType` [`CLIENT_KIND_HAND`]): its release is a throw on
+    /// the client's side (the callout, no shot record, the count mirror of DSV-39 Q9) whatever its round's flight.
+    // DC-DEFAULT: DSV-650 (amendment, proposed) the hand decides the bookkeeping, the class only the flight
+    pub fn hand_thrown(&self, weapon_id: u16) -> bool {
+        self.weapons
+            .get(&weapon_id)
+            .is_some_and(|w| w.client_kind == Some(CLIENT_KIND_HAND))
+    }
+
     /// The weapon whose mines `weapon_id` sets off (its `SubControlleeWeaponID`): the claymore controller's claymore.
     pub fn controllee(&self, weapon_id: u16) -> Option<u16> {
         self.weapons.get(&weapon_id)?.controllee
@@ -1071,6 +1171,8 @@ pub struct ProjectileRow {
     pub velocity: Option<f32>,
     /// `Class` (the object class the row's round is).
     pub class: Option<String>,
+    /// The flight the row's `Class` names ([`class_flight`]); `None` keeps the ammunition `Type` rule.
+    pub flight: Option<RoundFlight>,
     /// `ClassData` (the name of a class-data row; a mine's names a [`TRAP_SECTION`] row).
     pub class_data: Option<String>,
     /// The lowest and the highest corner of the row's `Model` mesh (model space, bind pose), read for a mine's row
@@ -1197,6 +1299,7 @@ impl ProjectileTable {
                     lifetime_s: num_f32(sec.get(KEY_PFX_LIFETIME)),
                     velocity: num_f32(sec.get(KEY_PFX_VELOCITY)),
                     class: text(KEY_PFX_CLASS),
+                    flight: text(KEY_PFX_CLASS).and_then(|c| class_flight(&c)),
                     class_data: text(KEY_PFX_CLASS_DATA),
                     model_box: None,
                 },
@@ -1649,6 +1752,27 @@ pub struct RomTables {
 }
 
 impl RomTables {
+    /// How the server flies the round of `weapon` / `ammo` (ammunition `Type` 1 or 2): the flight its projectile row's
+    /// class names, else launched for `Type` 1 with a projectile row and thrown for `Type` 2 (the rule before DSV-650).
+    /// `None` for any other round (traced, the controller). A mine's row (DSV-611) names neither class and keeps the
+    /// `Type` rule here; [`crate::game::Game`] tests it first.
+    // DC-DEFAULT: DSV-650 (proposed; amends DSV-181, DSV-29) the class first, the `Type` after
+    pub fn round_flight(&self, weapon: u16, ammo: u16) -> Option<RoundFlight> {
+        let w = &self.weapons;
+        if !(w.fires_projectile(weapon, ammo) || w.throws_round(weapon, ammo)) {
+            return None;
+        }
+        let class = w
+            .projectile_fx(weapon, ammo)
+            .and_then(|n| self.projectiles.get(n))
+            .and_then(|r| r.flight);
+        Some(class.unwrap_or(if w.throws_round(weapon, ammo) {
+            RoundFlight::Thrown
+        } else {
+            RoundFlight::Launched
+        }))
+    }
+
     /// The item table's `ItemType` of weapon `w`; a variant (VAR-1) has its base gun's type, since a variant has no
     /// item row of its own.
     // DC-DEFAULT: VAR-1 (proposed) type lookups go through the base gun; DSV-610 (proposed, OWNER REPORT 2026-11-05)
@@ -2204,6 +2328,67 @@ ItemName = \"I (Default)\"
     /// DSV-611: the user's FX table has mine class-data rows, projectile rows that name one carry their class and
     /// model, and a launched (`Type` 1) ammunition row of a weapon names such a row with a blast: the mine the
     /// server lays. Values are printed, never asserted (skipped without the ROM).
+    /// ROM-gated (DSV-650): the grenade launcher 171 (ammunition `Type` 2) is a launched round like the rocket 29;
+    /// the frag 7 and the flash grenade 8 (ammunition `Type` 1) are thrown. Counts only are printed.
+    #[test]
+    fn rom_the_grenade_launcher_is_launched_and_the_hand_grenades_thrown() {
+        let Some(rom) = dc_rez::dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let (t, _) = RomTables::load(&rom);
+        let mut by = BTreeMap::new();
+        for (&w, row) in &t.weapons.weapons {
+            let Some(a) = row.ammo else { continue };
+            if let Some(f) = t.round_flight(w, a) {
+                *by.entry((format!("{f:?}"), t.weapons.throws_round(w, a)))
+                    .or_insert(0usize) += 1;
+            }
+        }
+        println!("rows by (flight, Type 2): {by:?}");
+        // the rows whose class overrides the `Type` rule, exactly: a ROM or pack change that re-classifies another
+        // row (a throwing knife, a decoy, a flare) fails here
+        let (mut launched2, mut thrown1, mut hand_impact) = (Vec::new(), Vec::new(), Vec::new());
+        for (&w, row) in &t.weapons.weapons {
+            let Some(a) = row.ammo else { continue };
+            let two = t.weapons.throws_round(w, a);
+            match t.round_flight(w, a) {
+                Some(RoundFlight::Launched) if two => launched2.push(w),
+                Some(RoundFlight::Thrown) if !two => thrown1.push(w),
+                _ => {}
+            }
+            if t.round_flight(w, a) == Some(RoundFlight::Launched)
+                && t.weapons.hand_thrown(w)
+                && t.projectiles
+                    .trap_of(t.weapons.projectile_fx(w, a).unwrap_or(""))
+                    .is_none()
+            {
+                hand_impact.push(w);
+            }
+        }
+        println!("Type 2 launched {launched2:?}; Type 1 thrown {thrown1:?}; hand-thrown impact {hand_impact:?}");
+        // the user's ROM (2026-11-08): the airstrike shell guns 32 / 265 / 294, the snow guns 100 / 101 and the grenade
+        // launchers 171 / 250 / 290 (all `ClientWeaponType` 1: fired, with a gun's clip); the flash, smoke and three
+        // other hand grenades 8 / 9 / 14 / 18 / 19; no hand-thrown row has the impact class
+        assert_eq!(launched2, [32, 100, 101, 171, 250, 265, 290, 294]);
+        assert_eq!(thrown1, [8, 9, 14, 18, 19]);
+        assert!(hand_impact.is_empty(), "{hand_impact:?}");
+        for (w, want) in [
+            (171u16, RoundFlight::Launched),
+            (29, RoundFlight::Launched),
+            (7, RoundFlight::Thrown),
+            (8, RoundFlight::Thrown),
+        ] {
+            let a = t.weapons.ammo_of(w).expect("ammunition row");
+            assert_eq!(t.round_flight(w, a), Some(want), "weapon {w}");
+        }
+        let a = t.weapons.ammo_of(171).unwrap();
+        assert!(
+            t.weapons.throws_round(171, a),
+            "the launcher's row is Type 2"
+        );
+    }
+
     #[test]
     fn rom_mine_rows_load_with_their_class_and_keys() {
         let Some(rom) = dc_rez::dc_rom::test_rom() else {
