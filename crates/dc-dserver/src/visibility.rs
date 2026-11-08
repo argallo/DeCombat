@@ -485,6 +485,8 @@ pub struct Actor {
     /// While this player's heartbeat sensor scans: the horizontal reach within which every enemy is shown to him,
     /// walls or not (DSV-616, [`Game::scan_reach`]).
     pub sense: Option<f32>,
+    /// The teams (bit per team value) a team ping lets see this player unculled for now (DSV-651).
+    pub spotted: u16,
 }
 
 /// The players of the game layer as visibility actors; `plain_full_precision` = the session creates plain player
@@ -513,6 +515,7 @@ pub fn actors(game: &Game, plain_full_precision: bool) -> Vec<Actor> {
                     p.killed_by
                 },
                 sense: game.scan_reach(p.pid),
+                spotted: game.spotted_mask(p.pid),
             }
         })
         .collect()
@@ -527,6 +530,12 @@ fn sensed(v: &Actor, e: &Actor) -> bool {
         let (dx, dz) = (v.pos[0] - e.pos[0], v.pos[2] - e.pos[2]);
         dx * dx + dz * dz <= r * r
     })
+}
+
+/// A team ping spotted the enemy for the viewer's team (DSV-651): shown through walls for the ping's time.
+// DC-DEFAULT: DSV-651 (proposed) a spotted enemy is unculled for the pinger's team
+fn spotted(v: &Actor, e: &Actor) -> bool {
+    v.team < 16 && e.spotted & (1 << v.team) != 0
 }
 
 /// The FFA mode class: every other player is an enemy.
@@ -566,6 +575,9 @@ struct Pair {
     parked_at: Millis,
     refreshed: bool,
     last_clear: Option<Millis>,
+    /// The last REAL sight: a clear segment test or the always-radius rule; never a sensor contact or a team
+    /// ping's spot (DSV-651: what an enemy ping needs).
+    last_sight: Option<Millis>,
     last_test: Option<Millis>,
     event_until: Option<Millis>,
     /// Index of the segment that was clear last time (tried first).
@@ -678,6 +690,28 @@ impl Visibility {
             .any(|(_, p)| p.parked && p.enemy_obj == enemy_obj)
     }
 
+    /// DSV-651: whether `viewer` may ping `enemy` (object `enemy_obj`): culling off (he sees every enemy), or the
+    /// pair not parked and a real sight (a clear test or the always radius) at most `max_ms` old. A sensor contact
+    /// or a team ping's spot does not count.
+    pub fn sees_for_ping(
+        &self,
+        viewer: u8,
+        enemy: u8,
+        enemy_obj: u16,
+        now: Millis,
+        max_ms: u32,
+    ) -> bool {
+        if !self.cfg.enabled {
+            return true;
+        }
+        !self.parked(viewer, enemy_obj)
+            && self
+                .pairs
+                .get(&(viewer, enemy))
+                .and_then(|p| p.last_sight)
+                .is_some_and(|t| since(now, t) <= max_ms)
+    }
+
     /// The last clear test of the pair (tests).
     pub fn last_clear(&self, viewer: u8, enemy: u8) -> Option<Millis> {
         self.pairs.get(&(viewer, enemy)).and_then(|p| p.last_clear)
@@ -755,6 +789,7 @@ impl Visibility {
                     // DC-DEFAULT: VIS-8 (proposed) a spawn restarts the pair (tested in the same tick)
                     p.spawns = e.spawns;
                     p.last_clear = None;
+                    p.last_sight = None;
                     p.last_test = None;
                     p.event_until = None;
                 }
@@ -763,9 +798,15 @@ impl Visibility {
                     continue;
                 }
                 let dist = len(sub(v.pos, e.pos));
-                if dist <= self.cfg.always_radius || sensed(v, e) {
+                if dist <= self.cfg.always_radius {
                     p.last_clear = Some(now);
+                    p.last_sight = Some(now);
                     continue;
+                }
+                // DC-DEFAULT: DSV-651 (proposed) a sensor contact or a team ping's spot shows the enemy but is no
+                // sight: the pair keeps its real tests, so a spot cannot renew itself through a ping
+                if sensed(v, e) || spotted(v, e) {
+                    p.last_clear = Some(now);
                 }
                 let interval = if p.parked { self.cfg.hidden_test_ms } else { 0 };
                 let is_due = p.last_test.is_none_or(|t| since(now, t) >= interval);
@@ -802,6 +843,7 @@ impl Visibility {
             p.last_test = Some(now);
             if clear {
                 p.last_clear = Some(now);
+                p.last_sight = Some(now);
                 p.cached = idx;
             }
         }
@@ -937,7 +979,10 @@ impl Visibility {
             return false;
         }
         let sees = |me: &Visibility, from: &Actor| -> bool {
-            if len(sub(from.pos, e.pos)) <= me.cfg.always_radius || sensed(from, e) {
+            if len(sub(from.pos, e.pos)) <= me.cfg.always_radius
+                || sensed(from, e)
+                || spotted(from, e)
+            {
                 return true;
             }
             let l = me.lookahead_ms(from, tick_ms, tick_ms);
@@ -962,6 +1007,8 @@ impl Visibility {
             parked_at: now,
             refreshed: false,
             last_clear: vis.then_some(now),
+            // DSV-651: the spawn test may count a sensor or a spot: real sight comes from the next tick's test
+            last_sight: None,
             last_test: Some(now),
             event_until: None,
             cached: 0,
@@ -1349,6 +1396,7 @@ mod tests {
             full_precision: false,
             killer: None,
             sense: None,
+            spotted: 0,
         }
     }
 
@@ -1482,6 +1530,77 @@ mod tests {
             v.update(&a, &[1, 2], false, 33, t);
         }
         assert!(v.parked(1, 102));
+    }
+
+    /// DSV-651: an enemy a team ping spotted is shown through the wall to every viewer of that team (not to others),
+    /// and parked again once the spot ends and the window ran out.
+    #[test]
+    fn a_spotted_enemy_is_shown_through_a_wall_to_the_pinging_team_only() {
+        let mut v = vis(VisTuning::default());
+        let mut a = vec![
+            actor(1, 1, [-450.0, 0.0, 0.0]),
+            actor(2, 2, [450.0, 0.0, 0.0]),
+            actor(3, 1, [-450.0, 0.0, 50.0]),
+        ];
+        a[1].spotted = 1 << 1;
+        let c = v.update(&a, &[1, 2, 3], false, 33, 0);
+        assert!(!v.parked(1, 102) && !v.parked(3, 102), "{c:?}");
+        assert!(
+            v.parked(2, 101) && v.parked(2, 103),
+            "the spotted side sees nothing new: {c:?}"
+        );
+        assert!(!v.spawn_parked(&a, 1, 2, false, 33, 10));
+        a[1].spotted = 1 << 2;
+        for t in (33..1200).step_by(33) {
+            v.update(&a, &[1, 2, 3], false, 33, t);
+        }
+        assert!(v.parked(1, 102) && v.parked(3, 102));
+    }
+
+    /// DSV-651 (review): only REAL sight lets a player ping an enemy. Behind the wall, a spot (his own team's) or a
+    /// heartbeat-sensor contact shows the enemy but never counts, so a spot cannot be renewed through a ping by the
+    /// pinger or a teammate; a clear line or the always radius counts, and goes stale after the window; a parked
+    /// pair never counts; culling off counts every enemy.
+    #[test]
+    fn only_real_sight_lets_a_player_ping_an_enemy() {
+        let mut v = vis(VisTuning::default());
+        let mut a = vec![
+            actor(1, 1, [-450.0, 0.0, 0.0]),
+            actor(2, 2, [450.0, 0.0, 0.0]),
+            actor(3, 1, [-450.0, 0.0, 50.0]),
+        ];
+        a[1].spotted = 1 << 1;
+        a[0].sense = Some(1000.0);
+        for t in (0..400).step_by(33) {
+            v.update(&a, &[1, 2, 3], false, 33, t);
+        }
+        assert!(!v.parked(1, 102) && !v.parked(3, 102), "shown to the team");
+        assert!(
+            !v.sees_for_ping(1, 2, 102, 400, 1000),
+            "spot + sensor are no sight"
+        );
+        assert!(
+            !v.sees_for_ping(3, 2, 102, 400, 1000),
+            "a teammate cannot renew the spot"
+        );
+        // the wall gone (in the always radius): real sight, then stale after the window
+        a[1].pos = [-400.0, 0.0, 0.0];
+        a[1].spotted = 0;
+        a[0].sense = None;
+        v.update(&a, &[1, 2, 3], false, 33, 433);
+        assert!(v.sees_for_ping(1, 2, 102, 433, 1000));
+        assert!(!v.sees_for_ping(1, 2, 102, 1500, 1000), "stale");
+        // behind the wall again with no spot: parked after the window, never a ping
+        a[1].pos = [450.0, 0.0, 0.0];
+        for t in (466..2000).step_by(33) {
+            v.update(&a, &[1, 2, 3], false, 33, t);
+        }
+        assert!(v.parked(1, 102) && !v.sees_for_ping(1, 2, 102, 2000, 1000));
+        let off = vis(VisTuning {
+            enabled: false,
+            ..VisTuning::default()
+        });
+        assert!(off.sees_for_ping(1, 2, 102, 0, 1000));
     }
 
     #[test]

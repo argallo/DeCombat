@@ -410,6 +410,24 @@ pub const EXIT_POOL_ADDRESS: i32 = 4;
 /// The start of the error of a bot whose `--match-wait` passed with no room to join (BOT-158: a normal end).
 pub const NO_ROOM_PREFIX: &str = "lobby: no room appeared within";
 
+/// The error of a leave the lobby answered 0x387 {0} (a member held for a start countdown, LG-177, or a seat the lobby
+/// no longer counts in a room).
+pub const LEAVE_REFUSED: &str = "lobby: leave refused";
+
+/// The report's `end` for an error that is a normal end of the run, not a failure (exit 0): the bot's own
+/// `--match-wait` ran out with no room (BOT-158), or the lobby refused its leave from a room (BOT-169: the bot ends
+/// its run and closes its connection; the lobby drops the session as on any disconnect, so the seat goes too).
+// DC-DEFAULT: BOT-158, BOT-169 (proposed)
+pub fn clean_end(error: &str) -> Option<String> {
+    if error.starts_with(NO_ROOM_PREFIX) {
+        Some(format!("ran its wait: {error}"))
+    } else if error == LEAVE_REFUSED {
+        Some("ran its hour: the lobby refused the leave, the connection closes".to_string())
+    } else {
+        None
+    }
+}
+
 /// LG-318: the exit code of a bot's error text, when it is a refusal of a seat.
 pub fn exit_code_of(error: &str) -> Option<i32> {
     use dc_wire::loginmods::{REASON_NO_POOL, REASON_POOL_ADDRESS, REASON_POOL_FULL};
@@ -1031,7 +1049,7 @@ impl Lobby {
         self.rec
             .event("room_left", json!({"room": number, "ok": ok, "why": why}));
         if !ok {
-            return Err(bot_err!("lobby: leave refused"));
+            return Err(bot_err!("{LEAVE_REFUSED}"));
         }
         Ok(())
     }
@@ -1904,6 +1922,36 @@ mod tests {
         me.skip_room(1);
         assert_eq!(me.skipped[&1], end, "a short wait does not cut it");
         assert!(!t.join().unwrap(), "no message about the room it left");
+    }
+
+    /// BOT-169: a leave the lobby refuses (0x387 {0}) ends with LEAVE_REFUSED, which the run takes as a normal end
+    /// (exit 0, `ran its hour`); an accepted leave and other errors are unchanged.
+    #[test]
+    fn a_refused_leave_is_a_clean_end_of_the_run() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut buf = [0u8; 64];
+            let n = s.read(&mut buf).unwrap_or(0);
+            s.write_all(&PktWriter::new(ROOM_LEAVE_REPLY).u32(0).u16(0xa).to_frame())
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            n
+        });
+        let rec = Recorder::new(None, None, "t").unwrap();
+        let mut me = lobby_for_test(addr, &rec);
+        let e = me.leave_room().unwrap_err();
+        assert_eq!(e.0, LEAVE_REFUSED);
+        assert!(me.room.is_none(), "the seat is forgotten");
+        assert!(t.join().unwrap() > 0, "the leave went out");
+        let end = clean_end(&e.0).expect("a clean end");
+        assert!(end.starts_with("ran its hour"), "{end}");
+        assert!(clean_end(&format!("{NO_ROOM_PREFIX} 3600s"))
+            .is_some_and(|s| s.starts_with("ran its wait")));
+        assert_eq!(clean_end("lobby: closed while waiting for the room"), None);
+        assert_eq!(clean_end(FILLER_ALONE), None);
     }
 
     /// LG-319: a room closing on the bot (no person left) is only the short wait: the number comes back with a new room.

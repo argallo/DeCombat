@@ -420,12 +420,16 @@ fn main() {
                     true,
                 )
             }
-            // BOT-158: the bot's own --match-wait ran out with no room to join: a normal end, not a failure
-            Err(e) if e.0.starts_with(dc_botclient::lobby::NO_ROOM_PREFIX) => (
-                serde_json::json!({"bot": c.cfg.nick, "stage": "Closed",
-                    "end": format!("ran its wait: {}", e.0)}),
-                true,
-            ),
+            // BOT-158: the bot's own --match-wait ran out with no room to join; BOT-169: the lobby refused the
+            // bot's leave from a room (the run ends, the connection closes with the process): normal ends, not failures
+            Err(e) if dc_botclient::lobby::clean_end(&e.0).is_some() => {
+                let end = dc_botclient::lobby::clean_end(&e.0).unwrap_or_default();
+                rec.event("run_end", serde_json::json!({"end": end, "detail": e.0}));
+                (
+                    serde_json::json!({"bot": c.cfg.nick, "stage": "Closed", "end": end}),
+                    true,
+                )
+            }
             Err(e) => {
                 seat_refused = dc_botclient::lobby::exit_code_of(&e.0);
                 (serde_json::json!({"bot": c.cfg.nick, "error": e.0}), false)

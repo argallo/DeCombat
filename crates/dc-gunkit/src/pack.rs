@@ -469,7 +469,10 @@ pub fn examples_dir() -> Option<PathBuf> {
         return d.is_dir().then_some(d);
     }
     let mut dirs = Vec::new();
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+    if let Some(p) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
         dirs.push(p.join("examples"));
     }
     if let Some(m) = std::env::var_os("CARGO_MANIFEST_DIR") {
@@ -817,7 +820,11 @@ mod tests {
         }
         assert_eq!(moving, 3, "Galaxy, Toxic and Prism");
         assert!(
-            open_example_in(&dir, "scar-l prism").unwrap().design.flow.is_some(),
+            open_example_in(&dir, "scar-l prism")
+                .unwrap()
+                .design
+                .flow
+                .is_some(),
             "Prism flows, and the name's case does not matter"
         );
         assert!(open_example_in(&dir, "nope").is_err());

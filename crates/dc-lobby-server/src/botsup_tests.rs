@@ -389,7 +389,8 @@ fn loadouts_are_given_once_per_spec_after_the_first_login() {
     let groups = vec![g.clone()];
     let w = wants(&st, &groups, &f, &BTreeMap::new());
     let mut lo = Loadouts::default();
-    let (restart, notes) = lo.apply(&st, &groups, &w);
+    let t0 = Instant::now();
+    let (restart, notes) = lo.apply_at(&st, &groups, &w, t0);
     assert!(restart.is_empty());
     assert_eq!(notes[0].1, "loadout 0:27 after the first login");
     // PlusBot1's first login made its account and character: the kit goes on, the bot restarts
@@ -408,7 +409,7 @@ fn loadouts_are_given_once_per_spec_after_the_first_login() {
         true,
     )
     .unwrap();
-    let (restart, notes) = lo.apply(&st, &groups, &w);
+    let (restart, notes) = lo.apply_at(&st, &groups, &w, t0 + LOADOUT_POLL);
     assert_eq!(restart, vec!["PlusBot1"]);
     assert_eq!(notes[0].1, "loadout 0:27");
     assert_eq!(
@@ -423,9 +424,56 @@ fn loadouts_are_given_once_per_spec_after_the_first_login() {
         loadout: "27".into(),
         ..g
     }];
-    let (restart, notes) = lo.apply(&st, &bad, &w);
+    let t1 = t0 + LOADOUT_POLL * 2;
+    let (restart, notes) = lo.apply_at(&st, &bad, &w, t1);
     assert!(restart.is_empty());
     assert!(notes[0].1.starts_with("loadout 27 refused"), "{notes:?}");
+    // the refusal stands, then is tried again after the interval
+    assert!(lo.failed.contains_key("plusbot1"));
+    let (_, notes) = lo.apply_at(&st, &bad, &w, t1 + RETRY_REFUSED - Duration::from_secs(1));
+    assert!(notes[0].1.starts_with("loadout 27 refused"), "{notes:?}");
+    assert_eq!(lo.failed["plusbot1"].3, t1, "not tried again yet");
+    let _ = lo.apply_at(&st, &bad, &w, t1 + RETRY_REFUSED);
+    assert_eq!(lo.failed["plusbot1"].3, t1 + RETRY_REFUSED, "tried again");
+    // an edit of the group drops the refusal at once
+    let edited = vec![Group {
+        skill: "10-20".into(),
+        ..bad[0].clone()
+    }];
+    let t2 = t1 + RETRY_REFUSED + LOADOUT_POLL;
+    let _ = lo.apply_at(&st, &edited, &w, t2);
+    assert_eq!(lo.failed["plusbot1"].3, t2, "retried on the edit");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_loadout_check_waits_between_polls_unless_the_session_appears() {
+    let dir = scratch("loadpoll");
+    let mut st = managed(&dir);
+    let mut g = group("PlusBot", 1, 1, &[1], RoomPick::Any);
+    g.loadout = "0:27".into();
+    g.id = crate::botgroups::save(&st.db, &g, 1).unwrap();
+    let f = facts(&st, &dir);
+    let groups = vec![g];
+    let w = wants(&st, &groups, &f, &BTreeMap::new());
+    let mut lo = Loadouts::default();
+    let t0 = Instant::now();
+    let _ = lo.apply_at(&st, &groups, &w, t0);
+    assert_eq!(lo.next_check["plusbot1"], t0 + LOADOUT_POLL);
+    // inside the interval nothing is read again
+    let _ = lo.apply_at(&st, &groups, &w, t0 + Duration::from_secs(3));
+    assert_eq!(lo.next_check["plusbot1"], t0 + LOADOUT_POLL);
+    // its session appearing is checked at once
+    let acc = crate::db::create_account(&st.db, "plusbot1", 1).unwrap();
+    let _rx = crate::state::testing::connect(&mut st, 5, crate::logs::Listener::Lobby);
+    {
+        let s = st.sessions.get_mut(&5).unwrap();
+        s.account = Some(acc);
+        s.in_lobby = true;
+    }
+    let t3 = t0 + Duration::from_secs(4);
+    let _ = lo.apply_at(&st, &groups, &w, t3);
+    assert_eq!(lo.next_check["plusbot1"], t3 + LOADOUT_POLL);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

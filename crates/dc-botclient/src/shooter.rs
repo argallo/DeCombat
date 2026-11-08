@@ -35,6 +35,10 @@ use serde_json::{json, Value};
 use crate::skill::{self, AimRng, Skill, SpreadParams};
 use crate::weapon::{FireExtra, FireReport, KillNote, WeaponChange, WeaponGrant};
 
+/// BOT-172: the knife run (a child module: it reads the shooter's state).
+#[path = "knife.rs"]
+pub mod knife;
+
 /// Default time between two shots.
 // DC-DEFAULT: BOT-11 (proposed) 150 ms between shots (the real client fired every 295-345 ms with its rifle)
 pub const DEFAULT_FIRE_INTERVAL_MS: u32 = 150;
@@ -44,31 +48,149 @@ pub const EYE_FRACTION: f32 = 0.66;
 /// `weapon_pos` relative to the origin: right, up, forward (world units, turned by the yaw).
 // OBSERVED: tdm4 conn 6: 0x82 weapon_pos - origin = (10.01, -4.27, 0.36) at yaw 1.0465 = 4.69 right, 8.85 forward
 pub const WEAPON_OFFSET: [f32; 3] = [4.69, -4.27, 8.85];
-/// The aim point above the target's box centre, as a fraction of its half height (a body hit, not the head).
-// DC-DEFAULT: BOT-12 (proposed) aim at centre + 0.5 x half height (the real client's hits were 26 above a centre
-// with half height 50, tdm4)
-pub const AIM_HEIGHT_FRACTION: f32 = 0.5;
+/// The aim point above the target's box centre, as a fraction of its half height (a body hit, not the head). The
+/// box centre: with the skill's vertical error at 30..65 (aim error, wander, recoil climb: the shots cross the
+/// target a median 0.04 of its height above the aim point, spread 0.35) about 15 % of the hits land in the head
+/// band (BOT-165), an average player's share; at 0.5 of the half height (0.75 of the box) it was about 30 %.
+// DC-DEFAULT: BOT-12 (proposed; amended 2026-11-08 by the head share of BOT-165) aim at the box centre
+pub const AIM_HEIGHT_FRACTION: f32 = 0.0;
+/// The point of the target the sight test traces to, above its box centre as a fraction of its half height (BOT-12's
+/// aim point before its amendment; the test is unchanged).
+// DC-DEFAULT: BOT-12 (proposed) 0.5
+pub const SIGHT_HEIGHT_FRACTION: f32 = 0.5;
+/// BOT-23: the per-shot aim error of a non-scoped, non-melee weapon (the skill's error, at least BOT-135's floor) is
+/// widened by this factor, so that skilled bots (30..65) hit about one shot in seven at the usual ranges, an average
+/// player's rate. A scoped sniper rifle (BOT-114 / BOT-123), melee and throws keep their error.
+// DC-DEFAULT: BOT-23 (proposed; amended 2026-11-08, coordinator decision "an average player hits with roughly one
+// shot in seven at 300-400 u") 1.7
+pub const AIM_ERROR_SCALE: f32 = 1.7;
 /// BOT-161: a rusher (an infected of a Quarantine human, `View::rushers`) within this distance is fired at full-auto
 /// (the clip in one burst, no pause); one crossing the line of sight slower than [`HEAD_ON_CROSSING`] units/s is
 /// aimed at [`HEAD_AIM_FRACTION`] of its half height above the centre (the head band: the top [`HEAD_BAND`] of the
-/// box height, as dc-dserver's geometric head test), and a hit landing in that band names the skeleton's head node.
+/// box height, as dc-dserver's geometric head test); its hits name the node of the zone they land in (BOT-165).
 // DC-DEFAULT: BOT-161 (proposed) 600 units, 120 units/s, 0.8, the top 0.2
 pub const RUSH_RANGE: f32 = 600.0;
 pub const HEAD_ON_CROSSING: f32 = 120.0;
 pub const HEAD_AIM_FRACTION: f32 = 0.8;
 pub const HEAD_BAND: f32 = 0.2;
 
-/// BOT-161: the node a hit at `p` on a box at `centre` (half extents `half`) names: the head node when the shot was at
-/// a rusher coming head-on (`rush`) and `p` lies in the head band; `None`: the usual node.
-pub fn head_claim(
-    rush: Option<bool>,
-    head_node: Option<u8>,
-    p: [f32; 3],
+/// BOT-165: a hit's body zone, by the ROM skeleton `Location` code it stands for (1 head, 2 torso, 3 arms, 4 legs).
+// OBSERVED: ROM table key MODELBUTES.TXT [Skeleton<s>] Node<k>Location (codes 1..4 read at run time)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone {
+    Head = 1,
+    Torso = 2,
+    Arms = 3,
+    Legs = 4,
+}
+
+/// BOT-165: the legs are the bottom [`LEG_BAND`] of the target's box height; in the band between the legs and the head
+/// band ([`HEAD_BAND`]) a shot passing the box's vertical axis farther than [`ARM_OFFSET`] of its half width is an
+/// arm hit, else a torso hit.
+// DC-DEFAULT: BOT-165 (proposed) the bottom 0.45, 0.6 of the half width
+pub const LEG_BAND: f32 = 0.45;
+pub const ARM_OFFSET: f32 = 0.6;
+
+/// BOT-165: the zone the shot ray `origin + t dir` (unit `dir`) strikes on the box `centre ± half`, judged where the
+/// ray passes nearest the box's vertical axis within the box (`None`: the ray misses the box). The height there
+/// against [`HEAD_BAND`] / [`LEG_BAND`], the distance from the axis against [`ARM_OFFSET`].
+pub fn zone_of_ray(
+    origin: [f32; 3],
+    dir: [f32; 3],
     centre: [f32; 3],
     half: [f32; 3],
-) -> Option<u8> {
-    let band = centre[1] + half[1] - 2.0 * half[1] * HEAD_BAND;
-    head_node.filter(|_| rush == Some(true) && p[1] >= band)
+) -> Option<Zone> {
+    let (t0, t1) = ray_box_span(origin, dir, centre, half)?;
+    let o = sub(origin, centre);
+    let flat = dir[0] * dir[0] + dir[2] * dir[2];
+    let t = if flat > 1e-9 {
+        (-(o[0] * dir[0] + o[2] * dir[2]) / flat).clamp(t0, t1)
+    } else {
+        t0
+    };
+    let q = [o[0] + t * dir[0], o[1] + t * dir[1], o[2] + t * dir[2]];
+    let h = 2.0 * half[1].max(1e-3);
+    let up = ((q[1] + half[1]) / h).clamp(0.0, 1.0);
+    let off = (q[0] * q[0] + q[2] * q[2]).sqrt() / half[0].min(half[2]).max(1e-3);
+    Some(if up >= 1.0 - HEAD_BAND {
+        Zone::Head
+    } else if up < LEG_BAND {
+        Zone::Legs
+    } else if off > ARM_OFFSET {
+        Zone::Arms
+    } else {
+        Zone::Torso
+    })
+}
+
+/// BOT-165: the skeleton node a hit in each [`Zone`] names (`UP_FIRE` extra block `extra_kind`). A client cannot see
+/// which body row a remote player wears, so per zone the node is one whose `Location` is that zone in every skeleton
+/// the ROM's body rows use (the server then scores it as that zone whatever the victim wears), the one with the
+/// largest hit `Radius` in the default body's (row 0) skeleton; when the skeletons share none, row 0's own.
+// OBSERVED: ROM table keys MODELBUTES.TXT [Model<n>] Skeleton, [Skeleton<s>] Node<k>Location, Node<k>Radius (read at
+// run time, no value copied)
+// DC-DEFAULT: BOT-165 (proposed)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ZoneNodes {
+    /// By zone code - 1 (head, torso, arms, legs).
+    pub nodes: [Option<u8>; 4],
+}
+
+impl ZoneNodes {
+    /// The table from the ROM's `MODELBUTES.TXT` (`None`: no such table or no row 0 skeleton).
+    pub fn of_rom(rom: &std::path::Path) -> Option<Self> {
+        let vfs = dc_rez::RezVfs::new(rom);
+        let doc = ButeDoc::try_from_vfs(&vfs, ATTRIBUTES_REZ, "ATTRIBUTES\\MODELBUTES.TXT").ok()??;
+        Self::from_doc(&doc)
+    }
+
+    /// [`ZoneNodes::of_rom`] on a parsed table.
+    pub fn from_doc(doc: &ButeDoc) -> Option<Self> {
+        let num = |v: Option<&String>| -> Option<f32> {
+            let t = v?.trim().trim_matches('"').trim();
+            t.strip_suffix(['f', 'F']).unwrap_or(t).parse().ok()
+        };
+        let skel_of = |row: &dc_bute::SectionMap| num(row.get("Skeleton")).map(|s| s as i64);
+        let row0 = skel_of(doc.get("Model0")?)?;
+        let mut used: Vec<i64> = doc
+            .iter()
+            .filter(|(n, _)| n.strip_prefix("Model").is_some_and(|k| k.parse::<u32>().is_ok()))
+            .filter_map(|(_, row)| skel_of(row))
+            .collect();
+        used.sort_unstable();
+        used.dedup();
+        let skels: Vec<&dc_bute::SectionMap> = used
+            .iter()
+            .filter_map(|s| doc.get(&format!("Skeleton{s}")))
+            .collect();
+        let base = doc.get(&format!("Skeleton{row0}"))?;
+        let loc = |sec: &dc_bute::SectionMap, k: u8| num(sec.get(&format!("Node{k}Location")));
+        let mut nodes = [None; 4];
+        for (i, slot) in nodes.iter_mut().enumerate() {
+            let code = (i + 1) as f32;
+            let own: Vec<u8> = (0..=255u8).filter(|k| loc(base, *k) == Some(code)).collect();
+            let shared: Vec<u8> = own
+                .iter()
+                .copied()
+                .filter(|k| skels.iter().all(|s| loc(s, *k) == Some(code)))
+                .collect();
+            let pick = if shared.is_empty() { own } else { shared };
+            let radius = |k: u8| num(base.get(&format!("Node{k}Radius"))).unwrap_or(0.0);
+            // the largest radius, the lowest index among equals
+            *slot = pick
+                .into_iter()
+                .fold(None::<u8>, |b, k| match b {
+                    Some(b) if radius(b) >= radius(k) => Some(b),
+                    _ => Some(k),
+                });
+        }
+        Some(Self { nodes })
+    }
+
+    /// The node a hit in `zone` names.
+    pub fn node(&self, zone: Zone) -> Option<u8> {
+        self.nodes[zone as usize - 1]
+    }
 }
 /// `extra_kind` of a hit on a player (meaning UNPROVEN; the real client sent 24 for its first two hits, 11 later).
 // OBSERVED: tdm4 conn 6 0x82 extra block kind 24, 24, 11, 11
@@ -126,6 +248,14 @@ pub const WEAPON_ITEM_LIMIT: i32 = 1000;
 pub const ENGAGE_RANGE: f32 = 1200.0;
 pub const FAR_GIVE_UP_MS: u32 = 8000;
 pub const GIVE_UP_FOR_MS: u32 = 15_000;
+/// BOT-170: an enemy this bot hit within this long counts as weakened: a skilled bot (`Skill::weak_ratio` above 1)
+/// takes it over a nearer one in sight. A client does not see another player's health; its own hits stand for it.
+// DC-DEFAULT: BOT-170 (proposed) 5000 ms; a kill (the enemy down) forgets it
+pub const WEAK_MS: u32 = 5000;
+/// BOT-170: the aim points a skilled bot tries, in order, when the line to its own aim point is blocked: share of
+/// the half height above the box centre (the chest, the head band).
+// DC-DEFAULT: BOT-170 (proposed) 0.5, 0.8
+pub const PEEK_FRACTIONS: [f32; 2] = [0.5, HEAD_AIM_FRACTION];
 /// BOT-126: a weapon whose clip and stock are both empty is put away: the bot draws the next slot that has
 /// ammunition (secondary, then melee; never the throwable of [`THROW_SLOT`]) and fires it after this draw time;
 /// with no weapon left it fights no one (it plays its objective or roams). With a melee weapon it takes only an
@@ -367,6 +497,16 @@ pub fn ray_box_entry(
     centre: [f32; 3],
     half: [f32; 3],
 ) -> Option<f32> {
+    ray_box_span(origin, dir, centre, half).map(|s| s.0)
+}
+
+/// [`ray_box_entry`] with the exit distance too: the part `(entry, exit)` of the ray inside the box.
+pub fn ray_box_span(
+    origin: [f32; 3],
+    dir: [f32; 3],
+    centre: [f32; 3],
+    half: [f32; 3],
+) -> Option<(f32, f32)> {
     let (mut t0, mut t1) = (0.0f32, f32::INFINITY);
     for i in 0..3 {
         let (lo, hi) = (centre[i] - half[i], centre[i] + half[i]);
@@ -384,7 +524,7 @@ pub fn ray_box_entry(
             return None;
         }
     }
-    Some(t0)
+    Some((t0, t1))
 }
 
 /// The unreliable 0x64 body with `extra` OR-ed into its `pu_flags` (bits that announce no field: 0x0800, 0x1000,
@@ -409,9 +549,9 @@ pub struct ShooterConfig {
     pub loadout: Vec<i32>,
     pub rom: Option<Arc<RomWeapons>>,
     pub hit_node: u8,
-    /// BOT-161: the head node of the default body's skeleton (ROM `MODELBUTES.TXT`), named by a head hit on a
-    /// rusher; `None` without a ROM.
-    pub head_node: Option<u8>,
+    /// BOT-165: the node a hit names by the zone its ray strikes (ROM `MODELBUTES.TXT`); `None` without a ROM: every
+    /// hit names `hit_node`.
+    pub zone_nodes: Option<ZoneNodes>,
     pub rearm_ms: u32,
     pub reload_ms: u32,
     pub seed: u64,
@@ -438,7 +578,7 @@ impl Default for ShooterConfig {
             loadout: Vec::new(),
             rom: None,
             hit_node: DEFAULT_HIT_NODE,
-            head_node: None,
+            zone_nodes: None,
             rearm_ms: DEFAULT_REARM_MS,
             reload_ms: DEFAULT_RELOAD_MS,
             seed: 0x005e_ed0f_f1e5,
@@ -527,7 +667,7 @@ pub fn occluded(view: &View, p: &Seen) -> bool {
         view.own_pos[1] + EYE_FRACTION * view.own_dims[1],
         view.own_pos[2],
     ];
-    let aim = [pos[0], pos[1] + AIM_HEIGHT_FRACTION * half[1], pos[2]];
+    let aim = [pos[0], pos[1] + SIGHT_HEIGHT_FRACTION * half[1], pos[2]];
     !crate::hunt::line_clear(world, eye, aim)
 }
 
@@ -647,6 +787,10 @@ pub struct Shooter {
     /// BOT-146: each enemy's current run in clear sight (first, last time seen; a flicker shorter than
     /// [`FLICKER_MS`] does not end the run).
     vis: BTreeMap<u8, (Millis, Millis)>,
+    /// BOT-170: when this bot last hit each enemy (a weakened one, [`WEAK_MS`]).
+    hit_on: BTreeMap<u8, Millis>,
+    /// BOT-170: the target whose line has been blocked since then while a skilled bot keeps its reaction.
+    blocked_at: Option<(u8, Millis)>,
     /// BOT-146: the last poll with a clear line to the engaged target.
     engaged_at: Option<Millis>,
     /// BOT-146: the reaction delays' random stream (per bot, apart from the aim's).
@@ -701,6 +845,8 @@ pub struct Shooter {
     table: Arc<ShotTable>,
     counter: ShotCounter,
     pub stats: ShooterStats,
+    /// BOT-172: the gun put away for a knife run (drawn again with its clip as it was).
+    knife_run: Option<HeldWeapon>,
 }
 
 impl Shooter {
@@ -712,6 +858,8 @@ impl Shooter {
             ready_at: None,
             lost: BTreeMap::new(),
             vis: BTreeMap::new(),
+            hit_on: BTreeMap::new(),
+            blocked_at: None,
             engaged_at: None,
             react_rng: AimRng::new(cfg.seed ^ 0x0e4c_7146),
             burst_left: 0,
@@ -745,6 +893,7 @@ impl Shooter {
                 .clone()
                 .unwrap_or_else(|| Arc::new(ShotTable::generated())),
             counter: ShotCounter::default(),
+            knife_run: None,
             cfg,
             grants: BTreeMap::new(),
             held: None,
@@ -865,6 +1014,17 @@ impl Shooter {
 
     /// Where a pellet along `dir` enters the target's box within `range` along a clear line (`world`; `None` = every
     /// line is clear): `(distance, point)`.
+    /// BOT-165: the node a hit by the ray `origin + t dir` on the box `tpos ± half` names: the node of the zone the
+    /// ray strikes ([`zone_of_ray`], [`ZoneNodes`]), else `hit_node`.
+    // DC-DEFAULT: BOT-165 (proposed)
+    fn claim_node(&self, origin: [f32; 3], dir: [f32; 3], tpos: [f32; 3], half: [f32; 3]) -> u8 {
+        self.cfg
+            .zone_nodes
+            .zip(zone_of_ray(origin, dir, tpos, half))
+            .and_then(|(z, zone)| z.node(zone))
+            .unwrap_or(self.cfg.hit_node)
+    }
+
     fn pellet_hit(
         origin: [f32; 3],
         dir: [f32; 3],
@@ -1257,6 +1417,25 @@ impl Shooter {
         }
         self.vis
             .retain(|_, v| since(now, v.1) <= skill::REACQUIRE_WINDOW_MS);
+        // BOT-170: a skilled bot finishes an enemy it hit lately (in sight) before it takes a nearer, unhurt one
+        let down = &self.down;
+        self.hit_on
+            .retain(|p, t| since(now, *t) <= WEAK_MS && !down.contains_key(p));
+        if let (Some(sk), Some(b)) = (self.cfg.skill, best) {
+            let near = b.pos.map_or(f32::MAX, |p| len(sub(p, own)));
+            let weak = enemies
+                .iter()
+                .zip(&why)
+                .filter(|(p, r)| r.is_none() && p.pid != b.pid && self.hit_on.contains_key(&p.pid))
+                .filter_map(|(p, _)| p.pos.map(|pos| (len(sub(pos, own)), *p)))
+                .filter(|(d, _)| sk.weak_ratio > 1.0 && *d <= sk.weak_ratio * near)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if !self.hit_on.contains_key(&b.pid) {
+                if let Some((_, w)) = weak {
+                    best = Some(w);
+                }
+            }
+        }
         // BOT-142: the preferred enemy (a defuser) in sight is the target, nearer ones or not
         // DC-DEFAULT: BOT-142 (proposed)
         if let Some(pp) = view.prefer.filter(|p| !self.down.contains_key(p)) {
@@ -1403,7 +1582,8 @@ impl Shooter {
                 time_ms: view.time_ms,
                 extra: hit.map(|(_, p)| FireExtra {
                     obj: t.obj,
-                    kind: self.cfg.hit_node,
+                    // BOT-165: the node of the zone this pellet's ray strikes
+                    kind: self.claim_node(origin, pdir, tpos, half_t),
                     a: p,
                     b: HIT_VECTOR,
                 }),
@@ -1508,9 +1688,8 @@ impl Shooter {
                 time_ms: view.time_ms,
                 extra: hit.map(|(_, p)| FireExtra {
                     obj: t.obj,
-                    // BOT-161: a hit in the head band of a rusher coming head-on names the skeleton's head node
-                    kind: head_claim(self.rush, self.cfg.head_node, p, tpos, half_t)
-                        .unwrap_or(self.cfg.hit_node),
+                    // BOT-165: the node of the zone this pellet's ray strikes
+                    kind: self.claim_node(origin, dir, tpos, half_t),
                     a: p,
                     b: HIT_VECTOR,
                 }),
@@ -1534,8 +1713,9 @@ impl Shooter {
         self.given_up.retain(|_, until| later(*until, now));
         let chosen = self.choose(now, view, out);
         let melee = self.held.is_some_and(|h| self.is_melee(&h));
-        // BOT-126: with a melee weapon only a near enemy is fought and no unseen one followed
-        if melee {
+        // BOT-126: with a melee weapon only a near enemy is fought and no unseen one followed (BOT-172: a knife run
+        // keeps its patrol: the walk goes on)
+        if melee && self.knife_run.is_none() {
             self.patrol = None;
         }
         self.lost
@@ -1611,11 +1791,25 @@ impl Shooter {
                 ((v[0] * dz - v[2] * dx) / l).abs() < HEAD_ON_CROSSING
             });
         self.rush = rush.then_some(head_on);
-        let lift = if head_on {
+        // BOT-170: a good player's aim point sits higher (toward the head band)
+        let mut lift = if head_on {
             HEAD_AIM_FRACTION
         } else {
-            AIM_HEIGHT_FRACTION
+            AIM_HEIGHT_FRACTION + sk.aim_lift
         };
+        // BOT-170: a skilled bot shoots at what it sees: with the line to its aim point blocked (a target behind a
+        // waist-high wall, a crate, a corner) it aims at the chest or the head when that line is clear
+        if let (true, Some(w)) = (sk.keep_sight && !head_on, view.world.as_deref()) {
+            let at = |f: f32| [tpos[0], tpos[1] + f * half[1], tpos[2]];
+            if !crate::hunt::line_clear(w, eye, at(lift)) {
+                if let Some(f) = PEEK_FRACTIONS
+                    .into_iter()
+                    .find(|f| *f > lift && crate::hunt::line_clear(w, eye, at(*f)))
+                {
+                    lift = f;
+                }
+            }
+        }
         let aim_at = [tpos[0], tpos[1] + lift * half[1], tpos[2]];
         let aim_lag = [lagged[0], lagged[1] + lift * half[1], lagged[2]];
         // BOT-90: the wander drifts slowly (Ornstein-Uhlenbeck: the shots of a burst share it), the overshoot and
@@ -1701,7 +1895,13 @@ impl Shooter {
         if let Err(why) = sight {
             self.goal = target.pos;
             self.target_dist = None;
-            if self.ready_at.take().is_some() {
+            // BOT-170: a skilled bot keeps its reaction through a line blocked for less than FLICKER_MS (a target
+            // strafing past a post, peeking a corner): the delay is not drawn afresh when the line comes back
+            if sk.keep_sight && self.ready_at.is_some_and(|r| r.0 == target.pid) {
+                if self.blocked_at.is_none_or(|b| b.0 != target.pid) {
+                    self.blocked_at = Some((target.pid, now));
+                }
+            } else if self.ready_at.take().is_some() {
                 self.lost.insert(target.pid, now);
             }
             if self.sight != Some(false) {
@@ -1716,6 +1916,15 @@ impl Shooter {
         }
         self.goal = None;
         self.target_dist = Some(len(sub(tpos, view.own_pos)));
+        // BOT-170: a block that lasted longer than a flicker ends the kept reaction (lost then: a re-acquire)
+        if let Some((pid, at)) = self.blocked_at.take() {
+            if pid == target.pid
+                && since(now, at) > FLICKER_MS
+                && self.ready_at.take().is_some()
+            {
+                self.lost.insert(pid, at);
+            }
+        }
         if self.sight != Some(true) {
             self.sight = Some(true);
             out.push(Action::Event(
@@ -1875,9 +2084,15 @@ impl Shooter {
                 }
             });
             let floor = sk.close_floor_deg(far, moving, crossing, self.burst_fired);
-            sk_shot.aim_sigma_deg = sk_shot.aim_sigma_deg.max(floor);
+            // BOT-23: the rifle error widened by AIM_ERROR_SCALE (after the floor; skill scaling unchanged); a
+            // Quarantine rusher (BOT-161) keeps its error
+            let scale = if self.rush.is_some() { 1.0 } else { AIM_ERROR_SCALE };
+            sk_shot.aim_sigma_deg = sk_shot.aim_sigma_deg.max(floor) * scale;
         }
         let (reports, hits) = self.skill_shot(view, &target, &h, &world, aim, &sk_shot, f);
+        if hits > 0 {
+            self.hit_on.insert(target.pid, now);
+        }
         self.recoil -= sk.recoil_deg.to_radians();
         self.spread_f = h.spread.grow(f);
         self.last_shot = Some(now);
@@ -3977,8 +4192,9 @@ mod tests {
             v.facing = s.look();
         }
         assert_eq!(s.hunt_goal(), Some([0.0, 50.0, 1200.0]));
-        // the aim line passes the wall's edge but perturbed rays may meet it: those are world-hit forms
-        let mut s = skilled(0);
+        // the aim line passes the wall's edge but perturbed rays may meet it: those are world-hit forms (skill 30: at
+        // skill 0 the BOT-23 scaled error hits nothing in 20 s)
+        let mut s = skilled(30);
         // BOT-126: within the engage range (1200 would be just beyond it)
         let mut v = walled_view(vec![enemy(1, 40, [420.0, 50.0, 1100.0])], (0.0, 0.0));
         v.own_pos = [420.0, 50.0, 0.0];
@@ -4054,13 +4270,13 @@ mod tests {
     }
 
     /// BOT-161: at a rusher within range the bot holds the trigger (no burst pause: every gap is the shot cycle) and,
-    /// the rusher coming head-on, its hits in the head band name the head node; at anyone else it bursts and names
-    /// the usual node.
+    /// the rusher coming head-on, aims at the head band, so more of its hits name the head node (BOT-165); at anyone
+    /// else it bursts at the body.
     #[test]
     fn a_rusher_is_fired_at_full_auto_and_head_hits_name_the_head_node() {
         let run = |rushers: Vec<u8>| {
             let mut s = skilled(50);
-            s.cfg.head_node = Some(8);
+            s.cfg.zone_nodes = Some(TEST_ZONES);
             let mut v = walled_view(vec![enemy(1, 40, [0.0, 50.0, 400.0])], (0.0, 0.0));
             v.rushers = rushers;
             let (mut times, mut nodes) = (Vec::new(), Vec::new());
@@ -4078,17 +4294,186 @@ mod tests {
         let (gaps, nodes) = run(vec![1]);
         assert!(gaps.len() > 20, "{gaps:?}");
         assert!(gaps.iter().all(|g| *g < 2 * DEFAULT_FIRE_INTERVAL_MS), "{gaps:?}");
-        assert!(nodes.contains(&8), "head hits name the head node: {nodes:?}");
+        let share = |nodes: &[u8]| {
+            nodes.iter().filter(|n| **n == 9).count() as f32 / nodes.len().max(1) as f32
+        };
+        let rush_head = share(&nodes);
+        assert!(rush_head > 0.5, "head hits name the head node: {nodes:?}");
         let (gaps, nodes) = run(Vec::new());
         assert!(gaps.iter().any(|g| *g >= 2 * DEFAULT_FIRE_INTERVAL_MS), "{gaps:?}");
-        assert!(!nodes.is_empty() && nodes.iter().all(|n| *n == DEFAULT_HIT_NODE), "{nodes:?}");
-        // the head band is the top fifth of the box
-        let c = [0.0, 50.0, 0.0];
-        let h = [15.0, 50.0, 15.0];
-        assert_eq!(head_claim(Some(true), Some(8), [0.0, 85.0, 0.0], c, h), Some(8));
-        assert_eq!(head_claim(Some(true), Some(8), [0.0, 70.0, 0.0], c, h), None);
-        assert_eq!(head_claim(Some(false), Some(8), [0.0, 95.0, 0.0], c, h), None);
-        assert_eq!(head_claim(Some(true), None, [0.0, 95.0, 0.0], c, h), None);
+        // (body hits at the centre aim: the BOT-12 test; with BOT-23's error few land in 6 s here)
+        assert!(share(&nodes) < rush_head, "{nodes:?}");
+    }
+
+    /// BOT-170: against a player strafing left and right at run speed 400 units away (the way a person dodges), the
+    /// hit rate by skill on the BOT-170 curve and on the straight lines it replaced: a skill-85 bot tracks the
+    /// strafe (lag 30 ms) and hits far more often than before; a beginner hits rarely; the average band as before.
+    #[test]
+    fn a_skilled_bot_tracks_a_strafing_player() {
+        let t = |l: u8| l as f32 / 100.0;
+        let lerp = |a: f32, b: f32, l: u8| a + (b - a) * t(l);
+        // the straight lines before BOT-170 (BOT-21..24 / BOT-90 / BOT-135)
+        let linear = |l: u8| Skill {
+            turn_deg_s: lerp(90.0, 540.0, l),
+            fire_tolerance_deg: lerp(6.0, 1.5, l),
+            reaction_ms: lerp(1000.0, 200.0, l).round() as u32,
+            reacquire_ms: lerp(1000.0, 200.0, l).round() as u32 / 2,
+            aim_sigma_deg: lerp(4.0, 0.4, l),
+            burst_min: lerp(2.0, 6.0, l).round() as u32,
+            burst_max: lerp(3.0, 10.0, l).round() as u32,
+            burst_pause_ms: lerp(900.0, 300.0, l).round() as u32,
+            lag_ms: lerp(280.0, 70.0, l).round() as u32,
+            wander_sigma_deg: lerp(2.0, 0.3, l),
+            overshoot: lerp(0.30, 0.05, l),
+            overshoot_cap_deg: lerp(10.0, 4.0, l),
+            recoil_deg: lerp(0.9, 0.25, l),
+            moving_factor: lerp(1.9, 1.25, l),
+            close_floor_u: lerp(4.0, 0.4, l).to_radians() * skill::FLOOR_RANGE,
+            spray_step: lerp(0.08, 0.03, l),
+            aim_lift: 0.0,
+            weak_ratio: 1.0,
+            keep_sight: false,
+            ..Skill::new(l)
+        };
+        let rate = |sk: Skill| {
+            let (mut hits, mut shots) = (0usize, 0usize);
+            for seed in 0..4u64 {
+                let mut s = skilled(sk.level);
+                s.cfg.skill = Some(sk);
+                s.aim_rng = AimRng::new(seed * 77 + 5);
+                let mut v = walled_view(vec![enemy(1, 40, [0.0, 50.0, 400.0])], (0.0, 0.0));
+                let (mut x, mut dir) = (0.0f32, 1.0f32);
+                for t in (0..20_000u32).step_by(10) {
+                    // run speed, the strafe reverses every 450..750 ms
+                    if t % (450 + 300 * ((t / 1000) % 2)) < 10 {
+                        dir = -dir;
+                    }
+                    x = (x + dir * 285.0 * 0.01).clamp(-150.0, 150.0);
+                    v.players[0].pos = Some([x, 50.0, 400.0]);
+                    for f in fires(&s.poll(t, &v)) {
+                        shots += f.len();
+                        hits += f.iter().filter(|r| r.extra.is_some()).count();
+                    }
+                    v.facing = s.look();
+                }
+            }
+            hits as f32 / shots.max(1) as f32
+        };
+        let mut rows = Vec::new();
+        for l in [20u8, 50, 80, 85] {
+            rows.push((l, rate(linear(l)), rate(Skill::new(l))));
+        }
+        eprintln!("strafing target at 400 u, hits/shot (level, before, BOT-170): {rows:?}");
+        let get = |l: u8| rows.iter().find(|r| r.0 == l).unwrap();
+        assert!((get(50).1 - get(50).2).abs() < 0.02, "the average band as before: {rows:?}");
+        assert!(get(85).2 > get(85).1 * 1.3, "{rows:?}");
+        assert!(get(20).2 < get(50).2 && get(50).2 < get(80).2 && get(80).2 <= get(85).2 + 0.02);
+    }
+
+    /// BOT-12: skilled bots (30..65) at a standing target 140..1000 units away aim at the box centre; their shots climb
+    /// and scatter so that about 15 % of the hits land in the head band (10..20 %), most of them in the torso.
+    #[test]
+    fn the_aim_point_puts_a_player_like_share_of_hits_in_the_head() {
+        let (mut head, mut hits, mut shots) = (0usize, 0usize, 0usize);
+        let mut by_level = Vec::new();
+        for level in (30..=65).step_by(5) {
+            let (h0, s0) = (hits, shots);
+            for d in [138.0f32, 237.0, 397.0, 639.0, 996.0] {
+                let mut s = skilled(level);
+                s.cfg.zone_nodes = Some(TEST_ZONES);
+                let mut v = walled_view(vec![enemy(1, 40, [d, 50.0, 0.0])], (1.0, 0.0));
+                for t in (0..20_000).step_by(10) {
+                    for f in fires(&s.poll(t, &v)) {
+                        shots += f.len();
+                        for k in f.iter().filter_map(|r| r.extra.map(|e| e.kind)) {
+                            hits += 1;
+                            head += usize::from(k == 9);
+                        }
+                    }
+                    v.facing = s.look();
+                }
+            }
+            by_level.push((hits - h0) as f32 / (shots - s0).max(1) as f32);
+        }
+        let share = head as f32 / hits.max(1) as f32;
+        let rate = hits as f32 / shots.max(1) as f32;
+        eprintln!("head {head} of {hits} hits, {shots} shots, by level {by_level:?}");
+        assert!(hits > 300 && (0.10..=0.22).contains(&share), "{head} of {hits}");
+        // BOT-23: about one shot in seven hits (12..18 %), a skill-65 bot more often than a skill-30 one
+        assert!((0.12..=0.18).contains(&rate), "{hits} of {shots}");
+        assert!(by_level[0] < by_level[by_level.len() - 1], "{by_level:?}");
+    }
+
+    /// BOT-165 test table: head 9, torso 6, arms 24, legs 4.
+    const TEST_ZONES: ZoneNodes = ZoneNodes {
+        nodes: [Some(9), Some(6), Some(24), Some(4)],
+    };
+
+    /// BOT-165: a ray's zone is where it passes the box's vertical axis: the top fifth the head, the bottom 0.45 the
+    /// legs, between them the torso near the axis and the arms off it; a ray missing the box has none.
+    #[test]
+    fn the_zone_of_a_ray_follows_the_height_and_offset_where_it_crosses_the_body() {
+        let c = [0.0, 50.0, 400.0];
+        let h = [16.0, 50.0, 16.0];
+        let at = |y: f32, x: f32| zone_of_ray([x, y, 0.0], [0.0, 0.0, 1.0], c, h);
+        assert_eq!(at(95.0, 0.0), Some(Zone::Head));
+        assert_eq!(at(81.0, 0.0), Some(Zone::Head));
+        assert_eq!(at(75.0, 0.0), Some(Zone::Torso));
+        assert_eq!(at(50.0, 0.0), Some(Zone::Torso), "the BOT-12 aim point");
+        assert_eq!(at(60.0, 5.0), Some(Zone::Torso));
+        assert_eq!(at(60.0, 12.0), Some(Zone::Arms), "off the axis: an arm");
+        assert_eq!(at(30.0, 0.0), Some(Zone::Legs));
+        assert_eq!(at(5.0, 12.0), Some(Zone::Legs));
+        assert_eq!(at(120.0, 0.0), None);
+        assert_eq!(at(60.0, 20.0), None);
+        // a ray from above (a sniper on a roof) judged where it passes the axis, not where it enters the top face
+        let o = [0.0, 50.0 + 300.0, 100.0];
+        let d = sub([0.0, 70.0, 400.0], o);
+        let d = [d[0] / len(d), d[1] / len(d), d[2] / len(d)];
+        assert_eq!(zone_of_ray(o, d, c, h), Some(Zone::Torso));
+        // straight down onto the top face: the head
+        assert_eq!(zone_of_ray([0.0, 300.0, 400.0], [0.0, -1.0, 0.0], c, h), Some(Zone::Head));
+    }
+
+    /// BOT-165: per zone the node whose location is that zone in every skeleton the body rows use, the largest radius
+    /// first; a zone the skeletons share no node for falls back to row 0's own; no row 0 skeleton: no table.
+    /// ROM-gated: the user's ROM gives a node for every zone, and it is that zone in every used skeleton.
+    #[test]
+    fn the_zone_nodes_are_shared_by_every_body_skeleton() {
+        let doc = ButeDoc::parse(concat!(
+            "[Model0]\nSkeleton=0\n[Model1]\nSkeleton=1\n[ModelSounds]\nSkeleton=7\n",
+            "[Skeleton0]\nNode0Location=0\nNode1Location=1\nNode1Radius=1\nNode2Location=1\nNode2Radius=3\n",
+            "Node3Location=2\nNode3Radius=9\nNode4Location=2\nNode4Radius=10\nNode5Location=3\nNode5Radius=5\n",
+            "Node6Location=4\nNode6Radius=8\n",
+            "[Skeleton1]\nNode0Location=0\nNode1Location=1\nNode2Location=1\nNode3Location=2\nNode4Location=3\n",
+            "Node5Location=3\nNode6Location=3\n",
+        ));
+        let z = ZoneNodes::from_doc(&doc).unwrap();
+        assert_eq!(z.node(Zone::Head), Some(2), "both head, the larger radius");
+        assert_eq!(z.node(Zone::Torso), Some(3), "node 4 is an arm in skeleton 1");
+        assert_eq!(z.node(Zone::Arms), Some(5));
+        assert_eq!(z.node(Zone::Legs), Some(6), "no shared leg node: row 0's own");
+        assert_eq!(ZoneNodes::from_doc(&ButeDoc::parse("[Model0]\n")), None);
+        // without a table every hit names the default node
+        let s = Shooter::new(ShooterConfig::default());
+        let (o, d) = ([0.0, 95.0, 0.0], [0.0, 0.0, 1.0]);
+        assert_eq!(s.claim_node(o, d, [0.0, 50.0, 400.0], [16.0, 50.0, 16.0]), DEFAULT_HIT_NODE);
+        if let Some(rom) = std::env::var_os("CA_ROM") {
+            let rom = Path::new(&rom);
+            let z = ZoneNodes::of_rom(rom).expect("zone table");
+            eprintln!("zone nodes {:?}", z.nodes);
+            let vfs = RezVfs::new(rom);
+            let doc = ButeDoc::try_from_vfs(&vfs, ATTRIBUTES_REZ, "ATTRIBUTES\\MODELBUTES.TXT")
+                .unwrap()
+                .unwrap();
+            for zone in [Zone::Head, Zone::Torso, Zone::Arms, Zone::Legs] {
+                let k = z.node(zone).expect("a node per zone");
+                for s in 0..2 {
+                    let loc = doc.get_str(&format!("Skeleton{s}"), &format!("Node{k}Location"));
+                    assert_eq!(loc.map(str::trim), Some((zone as u8).to_string().as_str()), "{zone:?} {s}");
+                }
+            }
+        }
     }
 
     // ----------------------------------------------------------------------------------------- the 2009 cone
@@ -4588,7 +4973,8 @@ mod tests {
     }
 
     /// BOT-135: near the target a rifle bot's error has a floor in units, so close shots are no longer near-certain
-    /// (stationary bot and target at 150..300 units: skill 30 30..45 %, skill 50 42..60 % of the shots; a live match,
+    /// (stationary bot and target at 150..300 units, with BOT-23's 1.7 error scale: skill 30 14..26 %, skill 50
+    /// 24..36 % of the shots, before that scale 30..45 % and 42..60 %; a live match,
     /// where both sides move, lands about half of that), the bot's motion, a strafing target and the spray of a
     /// burst cost more, skill 65 stays clearly better than 30, and beyond
     /// from skill::FLOOR_RANGE on the engagements are nearly what they were. Prints the table (`--nocapture`).
@@ -4638,8 +5024,8 @@ mod tests {
         for (ok, what) in checks {
             assert!(ok, "{what}");
         }
-        assert!((30.0..=45.0).contains(&m30), "skill 30 close {m30}");
-        assert!((42.0..=60.0).contains(&m50), "skill 50 close {m50}");
+        assert!((14.0..=26.0).contains(&m30), "skill 30 close {m30}");
+        assert!((24.0..=36.0).contains(&m50), "skill 50 close {m50}");
         assert!(m65 > m30 + 15.0, "skill 65 {m65} vs 30 {m30}");
     }
 }

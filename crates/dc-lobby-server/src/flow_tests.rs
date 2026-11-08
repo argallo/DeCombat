@@ -3544,6 +3544,27 @@ fn hardcore_on_a_featured_entry_only() {
 
 /// LG-307: the Possession Arms: a featured entry's host only, refused in Fireteam, Spy Hunt, Quarantine and with Gun Game;
 /// a ROM pick or a refused mode ends it; a vanilla entry's wire is byte for byte what it was.
+/// LG-437: an entry with `pings` gives every room's game server `-pings` (no room setting); its sibling entry gets
+/// nothing.
+#[test]
+fn pings_reach_every_room_of_a_featured_entry_only() {
+    let mut st = state();
+    two_entries(&mut st, &["pings"]);
+    for no in [0, 7] {
+        assert_eq!(
+            game::pings_args(&st, RoomKey { channel: 4, no }),
+            ["-pings"]
+        );
+        assert_eq!(
+            game::pings_args(&st, RoomKey { channel: 6, no }),
+            ["-pings"]
+        );
+        assert!(game::pings_args(&st, RoomKey { channel: 1, no }).is_empty());
+    }
+    two_entries(&mut st, &["possession"]);
+    assert!(game::pings_args(&st, RoomKey { channel: 4, no: 0 }).is_empty());
+}
+
 #[test]
 fn possession_on_a_featured_entry_only() {
     use dc_wire::possession::{parse, PUSH, REQUEST};

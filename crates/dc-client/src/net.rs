@@ -1362,6 +1362,8 @@ struct Shared {
     bomb_hold: Option<u16>,
     /// The own heartbeat sensor: its battery and switch ([`crate::hud::sensor`]).
     sensor: crate::hud::sensor::Sensor,
+    /// CLI-1951 / CLI-1952: the team pings of this match (the server's offer, the live tags and markers).
+    pings: crate::hud::teamping::TeamPings,
     /// The own plant / defuse hold's sounds (CLI-1530): its start (ms), defuse, the bomb row.
     hold_sound: Option<(u32, bool, u16)>,
     /// w2-sprites: the billboard objects and the list of the last poll ([`crate::sprites`]).
@@ -1606,7 +1608,11 @@ impl Shared {
                     next_world,
                     keep,
                     now: at_once,
-                } => self.hud.level_exit = Some((next_world, keep, at_once)),
+                } => {
+                    self.hud.level_exit = Some((next_world, keep, at_once));
+                    // CLI-1952: the next world offers pings again or not
+                    self.pings.reset();
+                }
                 GameEvent::Mover {
                     freeze, release, ..
                 } => {
@@ -1640,6 +1646,12 @@ impl Shared {
                         crate::hud::sensor::GS_RADAR_PING => {
                             if let Some(on) = crate::hud::sensor::read_switch_answer(&mut r) {
                                 self.sensor.on_answer(on);
+                            }
+                        }
+                        // DC-DEFAULT: CLI-1952 (proposed) the team pings: the offer and the team's tags and markers
+                        dc_wire::teamping::SHELL_ID => {
+                            if let Some(n) = dc_wire::teamping::read_notice(&mut r) {
+                                self.pings.on_notice(n, now);
                             }
                         }
                         // DC-DEFAULT: CLI-1642 (proposed) a Possession move: no firing, the body glides
@@ -3168,6 +3180,7 @@ impl NetWorld {
             item_target: false,
             bomb_hold: None,
             sensor: Default::default(),
+            pings: Default::default(),
             hold_sound: None,
             billboards: crate::sprites::BillboardTracker::default(),
             billboard_list: Vec::new(),
@@ -3730,6 +3743,7 @@ impl WorldSource for NetWorld {
             held_weapon: g.arsenal.held().map(|c| c.weapon),
             flash_decl: g.arsenal.held().map(|c| g.arsenal.flash_decl(c.weapon)),
             sensor: g.sensor.view(),
+            pings: g.pings.view(now),
             equipment: g.equipment.clone(),
         }
     }
@@ -3907,6 +3921,34 @@ impl WorldSource for NetWorld {
                     crate::hud::sensor::UP_SCAN,
                     crate::hud::sensor::scan_body(u16::from(team), on),
                 ));
+            }
+        }
+        // CLI-1951: the team ping key: the enemy under the crosshair, else the point under it (after the offer only)
+        if frame.commands.ping {
+            let gm = &mut *g;
+            let roster = gm.session.as_ref().map(|s| &s.obs.roster);
+            let own_team = gm
+                .hud_own
+                .0
+                .zip(roster)
+                .and_then(|(p, r)| r.get(&p).map(|b| b.team));
+            let team_of = |b: &RemoteBody| {
+                roster
+                    .and_then(|r| r.get(&b.pid))
+                    .map_or(b.team, |x| x.team)
+            };
+            let hit = crate::hud::teamping::aim_hit(
+                frame.remotes,
+                own_team,
+                &team_of,
+                frame.aim.origin,
+                crate::arms::forward(frame.aim.yaw, frame.aim.pitch),
+                Some(frame.world as &dyn dc_sim::Collider),
+            );
+            if let Some(q) = gm.pings.press(gm.hud.life_state == 1, now, hit) {
+                let mut body = dc_wire::udp::BitWriter::new();
+                dc_wire::teamping::write_request(&mut body, q);
+                gm.outgoing.push((dc_wire::teamping::UP_ID, body));
             }
         }
         // CLI-1230 / CLI-1795: the use prompt's door: the one the use key turns now (our server's reach, DSV-270)

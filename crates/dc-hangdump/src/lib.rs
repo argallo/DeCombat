@@ -537,5 +537,14 @@ mod tests {
             text.contains("spin_here"),
             "the spinning function is named:\n{text}"
         );
+        // OPS-27: debug builds keep line tables, so the frame also names its file and line
+        let frame = text
+            .lines()
+            .find(|l| l.contains("spin_here"))
+            .unwrap_or_default();
+        assert!(
+            frame.contains("lib.rs:"),
+            "the spinning frame names its file and line: {frame}"
+        );
     }
 }

@@ -184,6 +184,17 @@ pub const ROW_BGM: i32 = 102;
 const KEY_ROW_GAP: i32 = 8;
 /// CLI-1845: our weapon inspect key on the Control tab.
 pub const ROW_INSPECT: i32 = 103;
+/// CLI-1950: our team ping key on the Control tab, under the inspect row.
+pub const ROW_PING: i32 = 106;
+/// CLI-1950: the key that clears a waiting box of our own key rows (Delete, scan code set 1).
+pub const SCAN_DELETE: u8 = 0xd3;
+
+/// CLI-1950: the binding a key gives one of our own key rows: Delete clears it (unbound = off), any other key (the
+/// middle button's pseudo key too) is bound.
+// DC-DEFAULT: CLI-1950 (proposed)
+pub fn own_key_of(scan: u8) -> Option<u8> {
+    (scan != SCAN_DELETE).then_some(scan)
+}
 /// CLI-1852: our "Renderer" row of the Graphic tab (Windows only), after "Show FPS".
 pub const ROW_RENDERER: i32 = 104;
 /// CLI-1916: our "Field of View" row of the Graphic tab, after the Renderer row.
@@ -746,13 +757,21 @@ impl Options {
         let own: Vec<(i32, i32, i32, Knob)> = match self.tab {
             0 => graphic_own_rows(crate::settings::renderer_choosable()),
             1 => vec![(ROW_BGM, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::Bgm)],
-            // DC-DEFAULT: CLI-1845 our key row after the last key row of the Control tab
-            2 => vec![(
-                ROW_INSPECT,
-                TYPE_KEYS_ONE,
-                KEY_BOX[1],
-                Knob::OwnKey(crate::settings::CMD_INSPECT),
-            )],
+            // DC-DEFAULT: CLI-1845 our key row after the last key row of the Control tab; CLI-1950 the ping row under it
+            2 => vec![
+                (
+                    ROW_INSPECT,
+                    TYPE_KEYS_ONE,
+                    KEY_BOX[1],
+                    Knob::OwnKey(crate::settings::CMD_INSPECT),
+                ),
+                (
+                    ROW_PING,
+                    TYPE_KEYS_ONE,
+                    KEY_BOX[1],
+                    Knob::OwnKey(crate::settings::CMD_PING),
+                ),
+            ],
             _ => Vec::new(),
         };
         let anchor = match self.tab {
@@ -828,7 +847,9 @@ impl Options {
             Knob::Renderer => Some(("Renderer", &[])),
             Knob::Fov => Some(("Field of View", &[])),
             Knob::Bgm => Some(("BGM Music", &[])),
-            Knob::OwnKey(_) => Some(("Inspect Weapon", &[])),
+            Knob::OwnKey(crate::settings::CMD_INSPECT) => Some(("Inspect Weapon", &[])),
+            Knob::OwnKey(crate::settings::CMD_PING) => Some(("Ping", &[])),
+            Knob::OwnKey(_) => None,
             _ => None,
         }
     }
@@ -1440,12 +1461,18 @@ impl Options {
             return;
         };
         match self.rows.get(r).and_then(|x| x.knob.clone()) {
+            // CLI-1950: the middle button's pseudo key is for our own rows only (the 2009 section keeps key numbers);
+            // the box keeps waiting
+            Some(Knob::Keys(_)) if scan == crate::settings::KEY_MOUSE_MIDDLE => {
+                self.capture = Some((r, b));
+                return;
+            }
             Some(Knob::Keys(cmds)) => {
                 if let Some(row) = cmds.get(b).and_then(|c| data.commands.row(*c)) {
                     self.edit.binds.bind(row.command, Some(scan));
                 }
             }
-            Some(Knob::OwnKey(c)) => self.edit.binds.bind(c, Some(scan)),
+            Some(Knob::OwnKey(c)) => self.edit.binds.bind(c, own_key_of(scan)),
             _ => {}
         }
         self.build_rows();
@@ -1874,6 +1901,19 @@ mod tests {
             Some(("BGM Music", 0))
         );
         assert_eq!(knob_of(1, 2, 1, -1), Some(Knob::MusicOn), "the row our BGM row follows");
+    }
+
+    /// CLI-1950: each of our key rows is labelled by its command; Delete clears one, the middle button binds.
+    #[test]
+    fn own_key_rows_are_labelled_by_their_command() {
+        use crate::settings::{CMD_INSPECT, CMD_PING, KEY_MOUSE_MIDDLE};
+        let label = |c| Options::own_row_label(&Knob::OwnKey(c)).map(|(l, _)| l);
+        assert_eq!(label(CMD_INSPECT), Some("Inspect Weapon"));
+        assert_eq!(label(CMD_PING), Some("Ping"));
+        assert_eq!(label(12345), None);
+        assert_eq!(own_key_of(SCAN_DELETE), None);
+        assert_eq!(own_key_of(KEY_MOUSE_MIDDLE), Some(KEY_MOUSE_MIDDLE));
+        assert_eq!(own_key_of(34), Some(34));
     }
 
     /// CLI-1852: the Renderer row (Vulkan / DirectX 12 list, label "Renderer") is on the Graphic tab after "Show

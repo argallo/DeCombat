@@ -60,6 +60,7 @@ pub use warmup::WARMUP_MIN_SECS;
 mod freeze;
 pub mod place;
 pub mod remotehp;
+pub mod teamping;
 // FFA team values and the clan side switch (GMD-7, GMD-10; DSV-147..DSV-152)
 pub mod modes;
 pub use freeze::{FREEZE_WAIT_MS, ROUND_END_FREEZE};
@@ -968,6 +969,8 @@ pub struct GameTuning {
     pub warmup_damage: bool,
     /// Possession (`-possession`; DSV-483).
     pub possession: bool,
+    /// Team pings (`-pings`; DSV-651).
+    pub pings: bool,
     /// The weapon drop rules (`-drops key=value,...`).
     // DC-DEFAULT: DSV-93..DSV-95 (proposed)
     pub drops: drops::DropTuning,
@@ -1350,6 +1353,7 @@ impl Default for GameTuning {
             // DC-DEFAULT: DSV-566 (proposed; USER DECISION 2026-11-04)
             warmup_damage: false,
             possession: false,
+            pings: false,
             drops: drops::DropTuning::default(),
             destruct: crate::destructibles::DestructTuning::default(),
             // DC-DEFAULT: DSV-80 (proposed)
@@ -1954,6 +1958,8 @@ pub struct Game {
     warmup_done: bool,
     /// Other players' health for every client (DSV-480; `None`: a culled match sends none).
     remote_health: Option<remotehp::RemoteHealth>,
+    /// Team pings (DSV-651).
+    team_pings: teamping::TeamPings,
 }
 
 fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -2068,6 +2074,7 @@ impl Game {
             warmup_until: None,
             warmup_done: false,
             remote_health: None,
+            team_pings: teamping::TeamPings::default(),
             tables,
             cfg,
         };
@@ -3043,6 +3050,8 @@ impl Game {
         self.hisec_release_owner(pid);
         // DC-DEFAULT: DSV-612 (proposed) the mines of a player who left go with him
         self.drop_mines_of(pid);
+        // DC-DEFAULT: DSV-651 (proposed) his ping cooldown and the spots on him go with him
+        self.team_ping_forget(pid);
         for q in self.players.values_mut() {
             q.stream_seen.remove(&p.obj);
         }
@@ -3333,6 +3342,8 @@ impl Game {
             | Up::ObserveFree
             | Up::WeaponSound { .. }
             | Up::Developer
+            // DSV-651: the session checks the sight and calls `team_ping`
+            | Up::TeamPing(_)
             | Up::Unknown => {}
         }
     }
@@ -3731,6 +3742,8 @@ impl Game {
             p.ready = true;
         }
         self.out.push(GameOut::Mark(pid, Milestone::WorldReady));
+        // DC-DEFAULT: DSV-651 (proposed) the offer at world entry
+        self.team_ping_offer(pid);
         if self.cfg.start_order == StartOrder::Reference {
             self.after_world_ready(pid, now);
             // DC-DEFAULT: DSV-511 (proposed) Quarantine: the running outbreak countdown again once the client is in the
@@ -4726,6 +4739,7 @@ impl Game {
         self.tick_ping(now);
         self.tick_place(now);
         self.tick_remote_health();
+        self.tick_team_pings(now);
     }
 
     fn tick_introductions(&mut self, now: Millis) {
@@ -11024,6 +11038,189 @@ P0 = \"F\"
         );
         g.cfg.mod_damage = false;
         assert_eq!(g.hit_damage(0, &f), 50.0);
+    }
+
+    // ------------------------------------------------------------------------------------ team pings (DSV-651)
+
+    fn ping_game_of(class: &str, pings: bool) -> Game {
+        let mut g = Game::new(
+            GameTuning {
+                move_check: false,
+                pings,
+                ..GameTuning::default()
+            },
+            &world(),
+            tables(),
+        );
+        let mut room = RoomSettings::default();
+        room.pairs.insert("type".into(), class.into());
+        g.set_room(&room);
+        // pids 0 and 2 on team 0, pid 1 on team 1
+        for (pid, uid, team, obj) in [(0u8, 7u32, 0u8, 1u16), (1, 8, 1, 3), (2, 9, 0, 5)] {
+            let e = entry(uid, team, "P");
+            g.note_identified(&e);
+            g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+            g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+            g.on_up(pid, Up::WorldReady, 20);
+        }
+        g
+    }
+
+    fn ping_notices(o: &[GameOut], pid: u8) -> Vec<dc_wire::teamping::Notice> {
+        o.iter()
+            .filter_map(|x| match x {
+                GameOut::To(p, m) if *p == pid => {
+                    let mut r = m.reader();
+                    (r.read_u8() == crate::msg::S2C_SHELL_MSG
+                        && r.read_u8() == dc_wire::teamping::SHELL_ID)
+                        .then(|| dc_wire::teamping::read_notice(&mut r))
+                        .flatten()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The offer at world entry, an enemy ping to the pinger's team only (the enemy spotted for that team until the
+    /// tag's time is up), the per-player cooldown, and a place ping with the longer time.
+    #[test]
+    fn team_pings_reach_the_team_and_spot_the_enemy_for_its_time() {
+        use dc_wire::teamping::{Notice, Request};
+        let mut g = ping_game_of("1", true);
+        let o = g.take_out();
+        let offer = Notice::Offer {
+            enemy_ms: teamping::ENEMY_MS,
+            place_ms: teamping::PLACE_MS,
+        };
+        for pid in 0..3 {
+            assert_eq!(ping_notices(&o, pid), vec![offer], "offer to {pid}");
+        }
+        let seen = |_: u8, _: u16| true;
+        let t0 = 1u16 << g.players[&0].team;
+        g.team_ping(0, Request::Enemy { obj: 3 }, &seen, 1000);
+        let o = g.take_out();
+        let want = Notice::Enemy {
+            from: 1,
+            obj: 3,
+            ms: teamping::ENEMY_MS,
+        };
+        assert_eq!(ping_notices(&o, 0), vec![want]);
+        assert_eq!(ping_notices(&o, 2), vec![want]);
+        assert!(ping_notices(&o, 1).is_empty(), "the enemy is not told");
+        assert_eq!(g.spotted_mask(1), t0);
+        // the cooldown
+        g.team_ping(
+            0,
+            Request::Place {
+                pos: [10.0, 0.0, 0.0],
+            },
+            &seen,
+            1500,
+        );
+        assert!(ping_notices(&g.take_out(), 0).is_empty());
+        g.team_ping(
+            0,
+            Request::Place {
+                pos: [10.0, 0.0, 0.0],
+            },
+            &seen,
+            2100,
+        );
+        assert_eq!(
+            ping_notices(&g.take_out(), 2),
+            vec![Notice::Place {
+                from: 1,
+                pos: [10.0, 0.0, 0.0],
+                ms: teamping::PLACE_MS
+            }]
+        );
+        assert!(teamping::PLACE_MS > teamping::ENEMY_MS);
+        // the spot ends with the tag's time
+        g.tick(3900);
+        assert_eq!(g.spotted_mask(1), t0);
+        g.tick(4001);
+        assert_eq!(g.spotted_mask(1), 0);
+    }
+
+    /// Refused: an enemy out of the pinger's sight, a teammate, an unknown object, a place out of reach, a dead
+    /// pinger; and nothing at all in a free-for-all room or without the flag.
+    #[test]
+    fn team_pings_refuse_unseen_friends_far_places_and_ffa_and_are_off_by_default() {
+        use dc_wire::teamping::Request;
+        let mut g = ping_game_of("1", true);
+        g.take_out();
+        let unseen = |_: u8, _: u16| false;
+        let seen = |_: u8, _: u16| true;
+        g.team_ping(0, Request::Enemy { obj: 3 }, &unseen, 1000);
+        g.team_ping(0, Request::Enemy { obj: 5 }, &seen, 1000);
+        g.team_ping(0, Request::Enemy { obj: 77 }, &seen, 1000);
+        g.team_ping(
+            0,
+            Request::Place {
+                pos: [teamping::PLACE_REACH + 1.0, 0.0, 0.0],
+            },
+            &seen,
+            1000,
+        );
+        let o = g.take_out();
+        assert!((0..3).all(|p| ping_notices(&o, p).is_empty()));
+        assert_eq!(g.spotted_mask(1), 0);
+        g.players.get_mut(&0).unwrap().life = Life::Waiting { died: 900 };
+        g.team_ping(0, Request::Enemy { obj: 3 }, &seen, 1000);
+        assert!(ping_notices(&g.take_out(), 2).is_empty());
+        for (class, on) in [("6", true), ("1", false)] {
+            let mut g = ping_game_of(class, on);
+            let o = g.take_out();
+            assert!(
+                (0..3).all(|p| ping_notices(&o, p).is_empty()),
+                "no offer: {class} {on}"
+            );
+            g.team_ping(0, Request::Place { pos: [0.0; 3] }, &seen, 1000);
+            let o = g.take_out();
+            assert!((0..3).all(|p| ping_notices(&o, p).is_empty()));
+        }
+    }
+
+    /// DSV-651 (review): every attempt counts for the cooldown, so a flood of refused pings logs once a second and a
+    /// valid ping right after a refusal waits; a dead or not yet introduced target is refused; a player who leaves
+    /// takes his spots and his cooldown with him.
+    #[test]
+    fn team_ping_refusals_are_rate_limited_and_a_leaver_takes_his_spots() {
+        use dc_wire::teamping::Request;
+        let mut g = ping_game_of("1", true);
+        g.take_out();
+        let seen = |_: u8, _: u16| true;
+        let logs = |o: &[GameOut]| {
+            o.iter()
+                .filter(|x| matches!(x, GameOut::Log(s) if s.starts_with("ping:")))
+                .count()
+        };
+        for t in (1000..2000).step_by(50) {
+            g.team_ping(0, Request::Enemy { obj: 5 }, &seen, t);
+        }
+        let o = g.take_out();
+        assert_eq!(logs(&o), 1, "one refusal logged in the second");
+        g.team_ping(0, Request::Enemy { obj: 3 }, &seen, 1999);
+        assert!(
+            ping_notices(&g.take_out(), 2).is_empty(),
+            "the cooldown holds after a refusal"
+        );
+        g.team_ping(0, Request::Enemy { obj: 3 }, &seen, 2000);
+        assert_eq!(ping_notices(&g.take_out(), 2).len(), 1);
+        assert_ne!(g.spotted_mask(1), 0);
+        // the enemy leaves: the spot goes at once; a dead enemy is refused
+        g.remove_player(1, false);
+        assert_eq!(g.spotted_mask(1), 0);
+        let mut g = ping_game_of("1", true);
+        g.take_out();
+        g.players.get_mut(&1).unwrap().life = Life::Dying { died: 900 };
+        g.team_ping(0, Request::Enemy { obj: 3 }, &seen, 1000);
+        g.players.get_mut(&1).unwrap().life = Life::Alive;
+        g.players.get_mut(&1).unwrap().introduced = false;
+        g.team_ping(2, Request::Enemy { obj: 3 }, &seen, 1000);
+        let o = g.take_out();
+        assert!((0..3).all(|p| ping_notices(&o, p).is_empty()));
+        assert_eq!(g.spotted_mask(1), 0);
     }
 
     // ------------------------------------------------------------------------------------ Possession (DSV-483)

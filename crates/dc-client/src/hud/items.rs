@@ -617,6 +617,10 @@ pub fn build_marked(
             anchor: [0.5, 1.0],
         });
     }
+    // CLI-1952: the team's place markers, in the names' element, in the mate colour and the system banner's font
+    if notes {
+        super::teamping::push_items(&mut out, &s.ping_marks, mk.mate, super::chat::BANNER_FONT);
+    }
     // Fire Team: the AI health bars where the names stand and the own points popup, with the marks' layer
     // DC-DEFAULT: CLI-1871, CLI-1872 (proposed)
     if notes {

@@ -38,7 +38,8 @@ struct Inner {
     log: Option<LogWriter>,
     /// Log lines kept in memory as well (tests read them back), bounded.
     memory: Option<Vec<Value>>,
-    /// BOT-157: per-message transport records (`tcp_open`, `tcp_in`, `tcp_out`) go to the event log only when set.
+    /// BOT-157: per-message transport records (`tcp_open`, `tcp_in`, `tcp_out`; BOT-168: the game messages `msg_in`,
+    /// `msg_out`) go to the event log only when set.
     transport: bool,
 }
 

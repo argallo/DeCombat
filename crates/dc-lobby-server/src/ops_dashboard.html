@@ -873,7 +873,10 @@ VIEWS.bots = async () => {
   const off = first.managed ? null : $("div", { class: "status warn", role: "status" },
     $("h1", {}, "This lobby does not run bots."),
     $("p", { class: "sum" }, "Set managed = true under [bots] in its server.toml and restart it. Groups saved here start then."));
-  return [off, $("section", {}, $("h2", {}, "Bot groups"), facts, box), form.el].filter(Boolean);
+  const noexe = first.managed && first.exe_missing ? $("div", { class: "status bad", role: "status" },
+    $("h1", {}, "dc-botclient is missing."),
+    $("p", { class: "sum" }, "Put dc-botclient next to the lobby executable and restart the lobby; until then no bot can start.")) : null;
+  return [off, noexe, $("section", {}, $("h2", {}, "Bot groups"), facts, box), form.el].filter(Boolean);
 };
 // ---- the Updates tab: deploys from the dashboard (deploy.rs, tools/vps/deploy_from_git.sh, LG-392..LG-394)
 let updWatching = false, updTimer = null, updAsk = null; // updAsk: {from: the `checked` time when "Check now" was pressed, until}

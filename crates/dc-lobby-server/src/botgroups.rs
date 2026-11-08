@@ -837,7 +837,7 @@ pub fn write(st: &mut Core, path: &str, m: &Map<String, Value>, now: i64) -> Rep
 }
 
 /// Where a bot is in the lobby now, from its account's session.
-fn lobby_place(st: &Core, name: &str) -> Value {
+pub(crate) fn lobby_place(st: &Core, name: &str) -> Value {
     let login = name.to_ascii_lowercase();
     let acc: Option<i64> = st
         .db
@@ -891,6 +891,23 @@ pub fn status_json(shared: &Shared) -> Value {
         .map(|e| e.name.trim().to_string())
         .filter(|n| !n.is_empty())
         .collect();
+    // bots the total cap leaves out (`wants` drops the later groups' bots): said on the group, else it waits forever
+    let mut over: BTreeMap<i64, usize> = BTreeMap::new();
+    if g.opts.bots_managed {
+        let mut left = g.opts.bots_max_total as usize;
+        for grp in groups.iter().filter(|x| x.enabled) {
+            if usable_channels(grp, &entries).is_err() {
+                continue;
+            }
+            let n = grp.names().len();
+            let cut = n - n.min(left);
+            left -= n - cut;
+            if cut > 0 {
+                over.insert(grp.id, cut);
+            }
+        }
+    }
+    let exe_missing = g.opts.bots_managed && !crate::botsup::bot_exe().is_file();
     let mut running = 0;
     let gj: Vec<Value> = groups
         .iter()
@@ -922,7 +939,11 @@ pub fn status_json(shared: &Shared) -> Value {
                 .collect();
             let mut v = grp.json();
             v["entry_name"] = json!(entries.iter().find(|e| e.id == grp.server_id).map(|e| e.name.clone()));
-            v["problem"] = json!(usable.err());
+            v["problem"] = json!(usable.err().or_else(|| over.get(&grp.id).map(|n| format!(
+                "{n} bot{} over bots.managed_max_total ({}): not started",
+                if *n == 1 { "" } else { "s" },
+                g.opts.bots_max_total
+            ))));
             // OPS-15: where the followed player is and what the bots do about it
             if let RoomPick::Follow(nick) = &grp.room {
                 let place = place_of_player(&g, &entries, nick);
@@ -943,6 +964,7 @@ pub fn status_json(shared: &Shared) -> Value {
     json!({
         "ok": true,
         "managed": g.opts.bots_managed,
+        "exe_missing": exe_missing,
         "max_total": g.opts.bots_max_total,
         "per_group": MAX_PER_GROUP,
         "wanted": groups.iter().filter(|x| x.enabled).map(|x| x.count).sum::<u32>(),

@@ -837,3 +837,33 @@ fn the_status_of_a_following_group_carries_the_follow_line() {
         "Zoe is on Vanilla++ channel 9, in no room: the bots wait on that channel."
     );
 }
+
+#[test]
+fn the_status_says_why_bots_over_the_cap_wait_and_when_the_bot_exe_is_missing() {
+    let mut st = three_entries();
+    st.opts.bots_managed = true;
+    st.opts.bots_max_total = 3;
+    let e = crate::servers::entries(&st);
+    for (p, n) in [("AaBot", 2), ("BbBot", 2), ("CcBot", 1)] {
+        let mut g = parse(&obj(group_body(p, n, 2, &[4])), &e).unwrap();
+        g.id = save(&st.db, &g, 1).unwrap();
+    }
+    let sh = shared_of(st);
+    let (s, v) = request(&sh, "GET", "/ops/bots", &[], "");
+    assert_eq!(s, 200, "{v}");
+    assert!(v["groups"][0]["problem"].is_null(), "{v}");
+    assert_eq!(
+        v["groups"][1]["problem"],
+        "1 bot over bots.managed_max_total (3): not started"
+    );
+    assert_eq!(
+        v["groups"][2]["problem"],
+        "1 bot over bots.managed_max_total (3): not started"
+    );
+    // the test binary has no dc-botclient beside it
+    assert_eq!(v["exe_missing"], !crate::botsup::bot_exe().is_file());
+    crate::net::lock(&sh).opts.bots_managed = false;
+    let (_, v) = request(&sh, "GET", "/ops/bots", &[], "");
+    assert_eq!(v["exe_missing"], false, "an unmanaged lobby needs none");
+    assert!(v["groups"][1]["problem"].is_null());
+}

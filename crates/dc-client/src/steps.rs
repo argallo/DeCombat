@@ -1530,6 +1530,7 @@ fn game_key_named(k: &str) -> Option<GameKey> {
         ))]),
         "r" | "reload" => Press(vec![DeviceInput::Reload]),
         "i" | "inspect" => Press(vec![DeviceInput::Inspect]),
+        "ping" => Press(vec![DeviceInput::Ping]),
         "e" | "use" => Press(vec![DeviceInput::Use]),
         "enter" => Chat(crate::hud::chat::ChatPress::Enter),
         "escape" => Chat(crate::hud::chat::ChatPress::Escape),

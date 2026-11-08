@@ -39,6 +39,10 @@ pub const GS_MATCH_RESULT_SCREEN: u8 = 0x3f;
 /// How long the bot stays after 0x3f before it leaves (the time a player looks at the result screen).
 // DC-DEFAULT: BOT-16 (proposed) 3000 ms, `--stay-after-result` keeps the bot in the session
 pub const LEAVE_AFTER_RESULT_MS: u32 = 3000;
+/// The `--respawn-after` fallback asks again at most this often while the bot is still dead (the server ignores a
+/// request that comes too early, from a player without a co-op life, or after the round end, and answers nothing).
+// DC-DEFAULT: BOT-168 (proposed) 5000 ms; the first fallback request waits the class wait as well
+pub const RESPAWN_RETRY_MS: u32 = 5000;
 
 /// The respawn request for a mode class and whether it carries `[zero:u8]`; `None` = the class has no respawn
 /// request (the dead player waits for the next round).
@@ -75,6 +79,8 @@ pub enum LifeEvent {
     Armed { via: &'static str, a: u32, b: u32 },
     /// Back to state 1 after a death, `after_ms` since the death.
     Respawned { after_ms: u32 },
+    /// The bot is dead and sends no respawn request (once per death): `reason` says what decides instead.
+    Waiting { reason: &'static str },
 }
 
 /// A request to send.
@@ -112,6 +118,8 @@ pub struct Respawn {
     round_over: bool,
     /// The single request allowed after the round end already went out.
     post_round_sent: bool,
+    /// The `Waiting` note of this death went out (BOT-168). Cleared by the next death.
+    wait_noted: bool,
 }
 
 impl Respawn {
@@ -184,6 +192,7 @@ impl Respawn {
                 self.armed_at = None;
                 self.asked = false;
                 self.last_fallback = None;
+                self.wait_noted = false;
                 Some(LifeEvent::Died { state: s })
             }
             1 if was_dead => {
@@ -235,11 +244,38 @@ impl Respawn {
         None
     }
 
+    /// The `Waiting` note, once per death, while the bot is dead and sends no request because the mode decides: a
+    /// class without a respawn request (the round modes 2, 3, 11, 12, 13: the next round; others: the server's
+    /// timer), class 5 without a co-op life, or the round is over. `None` while the class is unknown.
+    // DC-DEFAULT: BOT-168 (proposed) one `respawn_wait` event instead of a stream of requests
+    pub fn wait_note(&mut self, mode_class: Option<u8>) -> Option<LifeEvent> {
+        if self.wait_noted || !self.dead() {
+            return None;
+        }
+        let class = mode_class?;
+        let reason = if request_for(class).is_none() {
+            if matches!(class, 2 | 3 | 11 | 12 | 13) {
+                "round mode: the next round respawns"
+            } else {
+                "the server respawns on its own timer"
+            }
+        } else if class == 5 && self.coop_value == 0 && self.armed_at.is_none() && !self.asked {
+            "no co-op life left"
+        } else if self.round_over {
+            "the round is over"
+        } else {
+            return None;
+        };
+        self.wait_noted = true;
+        Some(LifeEvent::Waiting { reason })
+    }
+
     /// The request due at `now`, if any. Armed: one request more than 7000 ms after arming, then disarmed (as the
     /// 2009 client does) and the fallback then stays quiet for this death (DC-C2S-10', C2S §12.3; one 0x89 per
     /// death). Fallback (only while no armed request went out for this death, e.g. the self-armed wait is off or
-    /// the class never self-arms): one request `fallback_ms` after the death and again every `fallback_ms` while
-    /// still dead (DSV-32, proposed).
+    /// the class never self-arms): one request once both `fallback_ms` and the class wait passed since the death,
+    /// then again every `fallback_ms` but at most every [`RESPAWN_RETRY_MS`] while still dead; none in class 5
+    /// without a co-op life (DSV-32, BOT-168, proposed).
     pub fn poll(&mut self, now: Millis, mode_class: Option<u8>) -> Option<Request> {
         if !self.dead() {
             return None;
@@ -269,8 +305,22 @@ impl Respawn {
         let (Some(f), Some(d)) = (self.fallback_ms, self.died_at) else {
             return None;
         };
-        let from = self.last_fallback.unwrap_or(d);
-        if since(now, from) >= f {
+        // BOT-168: no fallback in class 5 without a co-op life (the 2009 client asks only with one, the server refuses
+        // it); the first fallback request no earlier than the class wait (the server ignores an earlier one), then at
+        // most every RESPAWN_RETRY_MS
+        // DC-DEFAULT: BOT-168 (proposed)
+        let class = mode_class.unwrap_or(1);
+        if class == 5 && self.coop_value == 0 {
+            return None;
+        }
+        let (from, gap) = match self.last_fallback {
+            None => (
+                d,
+                f.max(self_arm_wait(class, 1).unwrap_or(RESPAWN_WAIT_MS)),
+            ),
+            Some(l) => (l, f.max(RESPAWN_RETRY_MS)),
+        };
+        if since(now, from) >= gap {
             self.last_fallback = Some(now);
             if self.round_over {
                 self.post_round_sent = true;
@@ -408,19 +458,106 @@ mod tests {
 
     #[test]
     fn fallback_asks_after_the_delay_and_repeats() {
+        // a fallback longer than the class wait and the retry gap: its own pace
+        let mut r = Respawn::new(Some(8000));
+        r.on_state(0, 1);
+        r.on_state(1000, 2);
+        assert_eq!(r.poll(8999, None), None);
+        let q = r.poll(9000, None).expect("fallback");
+        assert_eq!((q.shell, q.source, q.waited_ms), (0x89, "fallback", 8000));
+        assert_eq!(r.poll(16_999, None), None);
+        assert!(r.poll(17_000, None).is_some());
+        assert_eq!(
+            r.on_state(17_100, 1),
+            Some(LifeEvent::Respawned { after_ms: 16_100 })
+        );
+        assert_eq!(r.poll(99_000, None), None);
+        // a short fallback waits the class wait first, then repeats at most every RESPAWN_RETRY_MS
         let mut r = Respawn::new(Some(3000));
         r.on_state(0, 1);
         r.on_state(1000, 2);
-        assert_eq!(r.poll(3999, Some(1)), None);
-        let q = r.poll(4000, Some(1)).expect("fallback");
-        assert_eq!((q.shell, q.source, q.waited_ms), (0x89, "fallback", 3000));
-        assert_eq!(r.poll(6999, Some(1)), None);
-        assert!(r.poll(7000, Some(1)).is_some());
+        assert_eq!(r.poll(7999, None), None);
+        assert!(r.poll(8000, None).is_some());
+        assert_eq!(r.poll(12_999, None), None);
+        assert!(r.poll(13_000, None).is_some());
+    }
+
+    /// BOT-168: `--respawn-after 0` with no armed request (the class unknown, the armed wait cut by the round end)
+    /// asks once after the class wait and then every RESPAWN_RETRY_MS, not on every poll.
+    #[test]
+    fn fallback_zero_does_not_flood() {
+        let mut r = Respawn::new(Some(0));
+        r.on_state(0, 1);
+        r.on_state(1000, 2);
+        // a whole minute dead, polled every 2 ms
+        let mut n = 0;
+        let mut t = 1000;
+        while t <= 61_000 {
+            if r.poll(t, None).is_some() {
+                n += 1;
+            }
+            t += 2;
+        }
+        // at 8000, then every 5000 ms up to 58 000: 11 requests
+        assert_eq!(n, 11);
+        // class 10's shorter wait
+        let mut r = Respawn::new(Some(0));
+        r.on_state(0, 1);
+        r.on_state(1000, 2);
+        r.on_round_over();
+        assert_eq!(r.poll(2499, Some(10)), None);
+        assert!(r.poll(2500, Some(10)).is_some());
+    }
+
+    /// BOT-168: no request at all where the mode decides; one `Waiting` note per death with the reason.
+    #[test]
+    fn no_request_where_the_mode_decides_and_one_note() {
+        // the round modes (S&D 2, Elimination 3, Quarantine 11, ...): nothing, one note
+        for class in [2u8, 3, 11, 12, 13] {
+            let mut r = Respawn::new(Some(0));
+            r.on_state(0, 1);
+            r.on_state(1000, 2);
+            r.self_arm(1000, Some(class));
+            assert_eq!(count_until(&mut r, 1000, 60_000, class), 0);
+            assert_eq!(
+                r.wait_note(Some(class)),
+                Some(LifeEvent::Waiting {
+                    reason: "round mode: the next round respawns"
+                })
+            );
+            assert_eq!(r.wait_note(Some(class)), None, "once per death");
+        }
+        // co-op without a life left: nothing, one note
+        let mut r = Respawn::new(Some(0));
+        r.on_state(0, 1);
+        r.on_coop_sub2(900, 1, 0);
+        r.on_state(1000, 2);
+        assert_eq!(r.self_arm(1000, Some(5)), None);
+        assert_eq!(count_until(&mut r, 1000, 60_000, 5), 0);
         assert_eq!(
-            r.on_state(7100, 1),
-            Some(LifeEvent::Respawned { after_ms: 6100 })
+            r.wait_note(Some(5)),
+            Some(LifeEvent::Waiting {
+                reason: "no co-op life left"
+            })
         );
-        assert_eq!(r.poll(99_000, Some(1)), None);
+        assert_eq!(r.wait_note(Some(5)), None);
+        // a new death notes again; a living or TDM bot with a pending request notes nothing
+        r.on_state(70_000, 1);
+        assert_eq!(r.wait_note(Some(5)), None);
+        r.on_state(71_000, 2);
+        assert!(r.wait_note(Some(5)).is_some());
+        let mut r = Respawn::new(Some(0));
+        r.on_state(0, 1);
+        r.on_state(1000, 2);
+        r.self_arm(1000, Some(1));
+        assert_eq!(r.wait_note(Some(1)), None);
+        r.on_round_over();
+        assert_eq!(
+            r.wait_note(Some(1)),
+            Some(LifeEvent::Waiting {
+                reason: "the round is over"
+            })
+        );
     }
 
     #[test]
@@ -587,18 +724,19 @@ mod tests {
         r.on_state(0, 1);
         r.on_state(1000, 2);
         assert!(
-            r.poll(1000, None).is_some(),
-            "fallback with the class unknown"
+            r.poll(8000, None).is_some(),
+            "fallback with the class unknown, after the class wait"
         );
+        assert_eq!(r.poll(8050, None), None, "not again at once (BOT-168)");
         assert!(
-            r.poll(1050, None).is_some(),
-            "and keeps asking while nothing armed it"
+            r.poll(13_000, None).is_some(),
+            "but again after the retry gap while nothing armed it"
         );
-        // class 5 with coop value 0 does not self-arm
+        // class 5 with coop value 0 does not self-arm and, without a life, does not ask (BOT-168)
         let mut r = Respawn::new(Some(0));
         r.on_state(0, 1);
         r.on_state(1000, 2);
         assert_eq!(r.self_arm(1000, Some(5)), None);
-        assert!(r.poll(1001, Some(5)).is_some());
+        assert_eq!(r.poll(60_000, Some(5)), None);
     }
 }

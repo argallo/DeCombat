@@ -32,7 +32,10 @@ status 0 when every scenario passed, 1 when one failed, 2 on a usage error.
 Options: `--minutes <m>` per scenario, `--players <n>` per room (the mix is scaled, up to 16), `--parallel <n>` rooms
 at once (one lobby, a game server per room), `--only <name,...>`, `--seed <n>` (every path is seeded: a run repeats),
 `--dserver-args <text>` (passed to every game server), `--xfail <profile,...>` / `--xfail none`, `--strict` (a known
-failure fails the run too), `--bin-dir <dir>` (default: next to `dc-netlab`).
+failure fails the run too), `--bin-dir <dir>` (default: next to `dc-netlab`), `--skills <a,b,...>` (ROM rooms: the
+skill level of each bot in join order, the list repeated; the lobby deals the joiners to the two teams in turn, so
+`--skills 85,30` puts a skill-85 team against a skill-30 team; default: levels drawn from 30..65 so both teams get the
+same strength).
 
 ## Profiles
 

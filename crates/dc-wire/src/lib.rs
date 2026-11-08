@@ -34,6 +34,7 @@ pub mod roomhacks;
 pub mod roomhardcore;
 pub mod seatticket;
 pub mod tcp;
+pub mod teamping;
 pub mod udp;
 
 pub use filetime::{

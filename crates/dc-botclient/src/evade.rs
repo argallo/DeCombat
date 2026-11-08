@@ -27,8 +27,10 @@ pub struct Move {
     pub back: bool,
     /// Jump this tick.
     pub jump: bool,
-    /// Crouch (the enemy is far and nothing hit the bot lately).
+    /// Crouch (the enemy is far and nothing hit the bot lately; BOT-170: a skilled bot's crouch-strafe).
     pub crouch: bool,
+    /// BOT-170: walk toward the target along `yaw` as well (a skilled bot pushes a far enemy).
+    pub push: bool,
     /// What began this tick, for the event log (`"jump"`, `"hit_reverse"`, `"reverse"`), else `None`.
     pub note: Option<&'static str>,
 }
@@ -53,6 +55,11 @@ pub const BACK_MS: u32 = 400;
 // DC-DEFAULT: BOT-92 (proposed) 900 units, 2500 ms
 pub const CROUCH_DIST: f32 = 900.0;
 pub const CROUCH_CALM_MS: u32 = 2500;
+/// BOT-170: a strafe period begun farther than this from the target may push (walk toward it as well,
+/// `Skill::push_chance`); the push stops nearer than PUSH_STOP_DIST.
+// DC-DEFAULT: BOT-170 (proposed) 450 units, 300 units
+pub const PUSH_DIST: f32 = 450.0;
+pub const PUSH_STOP_DIST: f32 = 300.0;
 
 /// The evasion state of one bot.
 #[derive(Debug, Clone)]
@@ -65,6 +72,10 @@ pub struct Evader {
     hit_at: Option<Millis>,
     reacted_hit: Option<Millis>,
     last_tick: Option<Millis>,
+    /// BOT-170: this strafe period stands still / pushes / crouches.
+    stand: bool,
+    push: bool,
+    crouch: bool,
     pub reversals: u32,
     pub jumps: u32,
 }
@@ -80,9 +91,25 @@ impl Evader {
             hit_at: None,
             reacted_hit: None,
             last_tick: None,
+            stand: false,
+            push: false,
+            crouch: false,
             reversals: 0,
             jumps: 0,
         }
+    }
+
+    /// BOT-170: the manner of a new strafe period: stood still ([`crate::skill::anchors::STAND_SHARE`]), pushing a
+    /// target farther than [`PUSH_DIST`] ([`crate::skill::anchors::PUSH_CHANCE`]) or crouched
+    /// ([`crate::skill::anchors::CROUCH_CHANCE`]); a chance of 0 draws nothing (the 30..65 band's random stream is
+    /// as before).
+    fn manner(&mut self, level: u8, dist: f32) {
+        use crate::skill::{anchors, curve};
+        let mut roll = |p: f32| p > 0.0 && self.rng.unit() < p;
+        let stand = roll(curve(&anchors::STAND_SHARE, level));
+        let push = !stand && dist > PUSH_DIST && roll(curve(&anchors::PUSH_CHANCE, level));
+        let crouch = !stand && !push && roll(curve(&anchors::CROUCH_CHANCE, level));
+        (self.stand, self.push, self.crouch) = (stand, push, crouch);
     }
 
     /// The bot took damage now.
@@ -118,7 +145,8 @@ impl Evader {
             self.strafe = -self.strafe;
             self.reversals += 1;
             self.next_reverse = Some(now.wrapping_add(self.period(level)));
-            if self.last_jump.is_none_or(|j| since(now, j) >= JUMP_GAP_MS) {
+            self.manner(level, dist);
+            if !self.stand && self.last_jump.is_none_or(|j| since(now, j) >= JUMP_GAP_MS) {
                 jump = true;
                 self.last_jump = Some(now);
                 self.jumps += 1;
@@ -131,6 +159,7 @@ impl Evader {
                     self.strafe = -self.strafe;
                     self.reversals += 1;
                     self.next_reverse = Some(now.wrapping_add(self.period(level)));
+                    self.manner(level, dist);
                     if dist < BACK_DIST && self.rng.unit() < BACK_CHANCE {
                         self.back_until = Some(now.wrapping_add(BACK_MS));
                     }
@@ -140,12 +169,14 @@ impl Evader {
                 None => {
                     self.strafe = if self.rng.unit() < 0.5 { -1 } else { 1 };
                     self.next_reverse = Some(now.wrapping_add(self.period(level)));
+                    self.manner(level, dist);
                 }
             }
             // a jump now and then, in a fight (the enemy within a sprint), never two close together
             let rate = lerp(JUMP_RATE.0, JUMP_RATE.1, level);
             let p = rate * dt as f32 / 1000.0;
             if dist < 1200.0
+                && !self.stand
                 && self.last_jump.is_none_or(|j| since(now, j) >= JUMP_GAP_MS)
                 && self.rng.unit() < p
             {
@@ -162,12 +193,15 @@ impl Evader {
             self.back_until = None;
         }
         let calm = self.hit_at.is_none_or(|h| since(now, h) >= CROUCH_CALM_MS);
+        // BOT-170: a stood period neither strafes nor steps back; a push ends near the target
+        let push = self.push && dist > PUSH_STOP_DIST;
         Move {
             yaw,
-            strafe: self.strafe,
-            back,
+            strafe: if self.stand { 0 } else { self.strafe },
+            back: back && !self.stand && !push,
             jump,
-            crouch: dist > CROUCH_DIST && calm,
+            crouch: (dist > CROUCH_DIST && calm) || self.crouch,
+            push,
             note,
         }
     }
@@ -222,6 +256,7 @@ fn evade_move(yaw: f32, strafe: i8, back: bool, jump: bool) -> Move {
         back,
         jump,
         crouch: false,
+        push: false,
         note: None,
     }
 }
@@ -240,33 +275,41 @@ pub fn evade_safety(
     secs: f32,
 ) -> Safety {
     let ok = |strafe: i8, back: bool| {
-        let path = body.probe_path(
-            None,
-            Some(evade_move(yaw, strafe, back, false)),
-            secs,
-            PROBE_SAMPLES,
-        );
-        if !path_safe(world, kill, body.dims(), &path) {
-            return false;
-        }
-        // BOT-134: nor a move that brings the body within a body width of the danger (the place one body width on
-        // beyond the end of the move, along it): a strafe back to the edge of a ledge or a kill volume after a step
-        // away from it made the bot dance there
-        let (from, end) = (body.pos(), path[path.len() - 1]);
-        let (dx, dz) = (end[0] - from[0], end[2] - from[2]);
-        let len = dx.hypot(dz);
-        if len < 1.0 {
-            return true;
-        }
-        let w = 2.0 * body.dims()[0] * EDGE_WIDTHS / len;
-        let beyond = [end[0] + dx * w, end[1], end[2] + dz * w];
-        !crate::nav::in_danger(world, kill, body.dims(), beyond)
+        move_safe(body, world, kill, evade_move(yaw, strafe, back, false), secs)
     };
     Safety {
         left: ok(-1, false),
         right: ok(1, false),
         back: ok(0, true),
     }
+}
+
+/// BOT-134: whether the evasive move `mv` (no jump) run on a copy for `secs` keeps the body out of danger, every
+/// place along it and one body width beyond its end. BOT-170: a push (`mv.push`, walking toward the target as it
+/// strafes) is tested this way before it is walked.
+pub fn move_safe(
+    body: &crate::motion::Body,
+    world: &dc_sim::CollisionWorld,
+    kill: &[dc_sim::ConvexVolume],
+    mv: Move,
+    secs: f32,
+) -> bool {
+    let path = body.probe_path(None, Some(mv), secs, PROBE_SAMPLES);
+    if !path_safe(world, kill, body.dims(), &path) {
+        return false;
+    }
+    // BOT-134: nor a move that brings the body within a body width of the danger (the place one body width on
+    // beyond the end of the move, along it): a strafe back to the edge of a ledge or a kill volume after a step
+    // away from it made the bot dance there
+    let (from, end) = (body.pos(), path[path.len() - 1]);
+    let (dx, dz) = (end[0] - from[0], end[2] - from[2]);
+    let len = dx.hypot(dz);
+    if len < 1.0 {
+        return true;
+    }
+    let w = 2.0 * body.dims()[0] * EDGE_WIDTHS / len;
+    let beyond = [end[0] + dx * w, end[1], end[2] + dz * w];
+    !crate::nav::in_danger(world, kill, body.dims(), beyond)
 }
 
 /// BOT-134: whether a jump now keeps the body out of danger: the body walking along `steer` (or doing the evasive
@@ -762,7 +805,20 @@ mod tests {
         for w in jumps.windows(2) {
             assert!(w[1] - w[0] >= JUMP_GAP_MS, "{w:?}");
         }
-        assert!(m.iter().all(|(_, mv)| !mv.crouch), "no crouch at 500 units");
+        // BOT-170: at 100 some periods crouch-strafe and some push (500 units: beyond PUSH_DIST); the average band
+        // neither crouches at 500 units nor pushes; a beginner stands through most periods
+        let share = |m: &[(Millis, Move)], f: fn(&Move) -> bool| {
+            m.iter().filter(|(_, mv)| f(mv)).count() as f32 / m.len() as f32
+        };
+        assert!((0.1..0.6).contains(&share(&m, |mv| mv.crouch)), "{}", share(&m, |mv| mv.crouch));
+        assert!((0.25..0.9).contains(&share(&m, |mv| mv.push)), "{}", share(&m, |mv| mv.push));
+        assert!(m.iter().all(|(_, mv)| !(mv.push && mv.crouch)));
+        let m50 = run(&mut Evader::new(11), 0, 60_000, 20, 500.0, 50);
+        assert!(m50.iter().all(|(_, mv)| !mv.crouch && !mv.push), "no crouch at 500 units");
+        let m10 = run(&mut Evader::new(11), 0, 60_000, 20, 500.0, 10);
+        assert!(share(&m10, |mv| mv.strafe == 0) > 0.5, "{}", share(&m10, |mv| mv.strafe == 0));
+        let near = run(&mut Evader::new(11), 0, 60_000, 20, 250.0, 100);
+        assert!(near.iter().all(|(_, mv)| !mv.push), "no push within PUSH_STOP_DIST");
         let mut e = Evader::new(11);
         assert!(e.tick(0, 0.0, 1500.0, 50).crouch, "far and calm: crouch");
         e.on_damage(10);

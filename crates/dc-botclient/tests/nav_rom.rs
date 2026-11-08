@@ -140,6 +140,7 @@ fn body_run(
             back: false,
             jump: true,
             crouch: false,
+            push: false,
             note: None,
         });
         b.advance(16_667);
@@ -588,6 +589,7 @@ impl RoomWorld {
                         back: false,
                         jump: true,
                         crouch: false,
+                        push: false,
                         note: None,
                     });
                     for _ in 0..3 {
@@ -705,6 +707,7 @@ impl RoomWorld {
                 back: false,
                 jump: true,
                 crouch: false,
+                push: false,
                 note: None,
             });
             for _ in 0..3 {

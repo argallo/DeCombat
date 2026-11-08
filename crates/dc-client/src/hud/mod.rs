@@ -46,6 +46,7 @@ pub mod spy;
 pub mod state;
 pub mod prompt;
 pub mod teamchange;
+pub mod teamping;
 pub mod vitals;
 pub mod whiteout;
 pub mod xray;
@@ -767,6 +768,7 @@ impl HudDriver {
             || self.state.crouched != crouched
             || self.state.show_board != show_board
             || self.state.sensor != fs.sensor
+            || self.state.pings != fs.pings
         {
             self.dirty = true;
         }
@@ -788,6 +790,7 @@ impl HudDriver {
         self.state.aim_cross_hidden = fs.aim_cross_hidden;
         self.state.aim_picture = fs.aim_picture.clone();
         self.state.sensor = fs.sensor;
+        self.state.pings.clone_from(&fs.pings);
         self.state.flash_decl = fs.flash_decl;
         self.state.crouched = crouched;
         // the board's open sound: the key going down outside the result board (the close is silent)
@@ -1063,14 +1066,21 @@ impl HudDriver {
         }
         let forced = self.forced_tags();
         let size = self.hud.size;
+        // CLI-1952: a pinged enemy's tag shows as the x-ray's forced tags do, whatever the x-ray does
+        let pinged = &self.state.pings.enemies;
         let shown = marks::frame_marks_forced(
             &self.state,
             remotes,
             &|p| project_on(camera, p, size),
             target,
             points,
-            &|obj| forced.contains(&obj),
+            &|obj| forced.contains(&obj) || pinged.contains(&obj),
         );
+        let ping_marks = self.ping_marks(remotes, camera);
+        if ping_marks != self.state.ping_marks {
+            self.dirty = true;
+        }
+        self.state.ping_marks = ping_marks;
         let mate = marks::mate_target(&self.state, remotes, target);
         // CLI-1871: the AI health bars; CLI-1872: a live points popup recomposes every frame while it rises
         let bars = npcbar::frame_bars(
@@ -1099,6 +1109,41 @@ impl HudDriver {
         }
         self.state.marks = shown;
         self.state.mate_target = mate;
+    }
+
+    /// CLI-1952: the team's place markers on the screen: each at its point or on the screen edge, with its distance
+    /// from the camera and the pinger's name when he is a drawn remote (the own ping has none).
+    // DC-DEFAULT: CLI-1952 (proposed)
+    fn ping_marks(
+        &self,
+        remotes: &[crate::world::RemoteBody],
+        camera: &dc_render::Camera,
+    ) -> Vec<teamping::PingMark> {
+        let size = self.hud.size;
+        self.state
+            .pings
+            .places
+            .iter()
+            .map(|p| {
+                let (at, edge) = teamping::marker_place(camera, p.pos, size);
+                let name = remotes
+                    .iter()
+                    .find(|r| r.obj == p.from)
+                    .map(|r| {
+                        self.state
+                            .roster
+                            .get(&r.pid)
+                            .map_or_else(|| r.name.clone(), |b| b.name.clone())
+                    })
+                    .unwrap_or_default();
+                teamping::PingMark {
+                    at,
+                    edge,
+                    metres: modetop::metres_between(camera.pos.to_array(), p.pos),
+                    name,
+                }
+            })
+            .collect()
     }
 
     /// CLI-1631 (amended): the objects whose 2009 enemy tag the x-ray forces on: every player the hook's last answer
@@ -1832,5 +1877,71 @@ mod band_tests {
                 assert!((v[0] - 512.0).abs() > 512.0, "{w}x{h}: the edge of the view lies in a side band");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ping_tests {
+    use super::marks::MarkState;
+    use super::{Hud, HudDriver};
+    use crate::world::RemoteBody;
+
+    fn body(obj: u16, team: u8, x: f32) -> RemoteBody {
+        RemoteBody {
+            obj,
+            pid: obj as u8,
+            name: format!("p{obj}"),
+            team,
+            pos: [x, 0.0, 500.0],
+            half: [16.0, 50.0, 16.0],
+            yaw: None,
+            look: None,
+        }
+    }
+
+    /// CLI-1952: a pinged enemy gets the 2009 enemy tag without any x-ray mod; a place ping is a marker with its
+    /// distance and the pinger's name, drawn in the names' element.
+    #[test]
+    fn a_pinged_enemy_is_tagged_without_xray_and_a_place_is_marked() {
+        let mut d = HudDriver::new(Hud::fallback(1024, 768, None));
+        d.state.own_pid = Some(5);
+        for (pid, team) in [(5u8, 2u8), (11, 1), (12, 2)] {
+            d.state.roster.insert(
+                pid,
+                super::state::BoardRow {
+                    pid,
+                    name: format!("p{pid}"),
+                    team,
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(d.xray.is_none());
+        let remotes = [body(11, 1, 150.0), body(12, 2, -150.0)];
+        let camera = dc_render::Camera::looking(glam::Vec3::ZERO, 0.0, 0.0, 1.5, 1.2);
+        let tags = |d: &HudDriver| -> Vec<(u8, MarkState)> {
+            d.state.marks.iter().map(|m| (m.pid, m.state)).collect()
+        };
+        d.set_marks(&remotes, &camera, None);
+        assert_eq!(tags(&d), [(12, MarkState::Mate)], "not under the cross");
+        d.state.pings.enemies = vec![11];
+        d.state.pings.places = vec![super::teamping::PlacePing {
+            from: 12,
+            pos: [0.0, 0.0, 800.0],
+            until: 0,
+        }];
+        d.set_marks(&remotes, &camera, None);
+        assert_eq!(tags(&d), [(11, MarkState::Enemy), (12, MarkState::Mate)]);
+        assert_eq!(d.state.ping_marks.len(), 1);
+        let m = &d.state.ping_marks[0];
+        assert_eq!((m.metres, m.name.as_str(), m.edge), (20, "p12", false));
+        let items = super::items::build(&d.hud.layout, &d.state, &|_, _| 0.0, &|_| None);
+        assert!(items.iter().any(|i| matches!(i,
+            super::items::DrawItem::Label { text, .. } if text == "20 m")));
+        // the pings gone: the 2009 rule alone again
+        d.state.pings = Default::default();
+        d.set_marks(&remotes, &camera, None);
+        assert_eq!(tags(&d), [(12, MarkState::Mate)]);
+        assert!(d.state.ping_marks.is_empty());
     }
 }

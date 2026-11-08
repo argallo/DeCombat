@@ -685,8 +685,19 @@ impl Follows {
 #[derive(Default)]
 pub struct Loadouts {
     done: HashMap<String, String>,
-    failed: HashMap<String, (String, String)>,
+    /// login -> (spec, the group as it was when refused, why, when): retried after `RETRY_REFUSED`, or at once
+    /// when the group is edited.
+    failed: HashMap<String, (String, String, String, Instant)>,
+    /// login -> when the database is read for it next (a bot waiting for its first login or a refused kit).
+    next_check: HashMap<String, Instant>,
+    /// logins with a lobby session at the last round (a new session is checked at once).
+    online: BTreeSet<String>,
 }
+
+/// How long a refused loadout stays refused before the next try.
+pub const RETRY_REFUSED: Duration = Duration::from_secs(600);
+/// How often the database is read for a bot that has not got its kit yet (a lobby session appearing counts at once).
+pub const LOADOUT_POLL: Duration = Duration::from_secs(10);
 
 impl Loadouts {
     /// Returns the bots to restart and each wanted bot's loadout note.
@@ -695,6 +706,17 @@ impl Loadouts {
         st: &Core,
         groups: &[Group],
         wants: &[Want],
+    ) -> (Vec<String>, Vec<(String, String)>) {
+        self.apply_at(st, groups, wants, Instant::now())
+    }
+
+    /// `apply` at the time `now`.
+    pub fn apply_at(
+        &mut self,
+        st: &Core,
+        groups: &[Group],
+        wants: &[Want],
+        now: Instant,
     ) -> (Vec<String>, Vec<(String, String)>) {
         let mut restart = Vec::new();
         let mut notes = Vec::new();
@@ -709,15 +731,38 @@ impl Loadouts {
                 continue;
             }
             let login = w.name.to_ascii_lowercase();
-            let done = self.done.get(&login).is_some_and(|s| s == spec)
-                || botgroups::applied_loadout(&st.db, &login).is_ok_and(|s| s == spec);
-            if done {
-                self.done.insert(login, spec.to_string());
+            if self.done.get(&login).is_some_and(|s| s == spec) {
                 notes.push((w.name.clone(), format!("loadout {spec}")));
                 continue;
             }
-            if let Some((s, why)) = self.failed.get(&login).filter(|(s, _)| s == spec) {
-                notes.push((w.name.clone(), format!("loadout {s} refused: {why}")));
+            // a refusal stands until the group is edited or the retry time has passed
+            let shape = format!("{g:?}");
+            if let Some((s, gs, why, at)) = self.failed.get(&login) {
+                if s == spec && *gs == shape && now < *at + RETRY_REFUSED {
+                    notes.push((w.name.clone(), format!("loadout {s} refused: {why}")));
+                    continue;
+                }
+                self.failed.remove(&login);
+            }
+            // the database is read when the bot's session appears, else every LOADOUT_POLL
+            let online = botgroups::lobby_place(st, &w.name)["online"] == true;
+            let fresh = if online {
+                self.online.insert(login.clone())
+            } else {
+                self.online.remove(&login);
+                false
+            };
+            if !fresh && self.next_check.get(&login).is_some_and(|t| now < *t) {
+                notes.push((
+                    w.name.clone(),
+                    format!("loadout {spec} after the first login"),
+                ));
+                continue;
+            }
+            self.next_check.insert(login.clone(), now + LOADOUT_POLL);
+            if botgroups::applied_loadout(&st.db, &login).is_ok_and(|s| s == spec) {
+                self.done.insert(login, spec.to_string());
+                notes.push((w.name.clone(), format!("loadout {spec}")));
                 continue;
             }
             let has_char = crate::db::account_by_login(&st.db, &login)
@@ -748,7 +793,7 @@ impl Loadouts {
                 Err(e) => {
                     st.note(&format!("bots: loadout {spec} for {}: {e}", w.name));
                     notes.push((w.name.clone(), format!("loadout {spec} refused: {e}")));
-                    self.failed.insert(login, (spec.to_string(), e));
+                    self.failed.insert(login, (spec.to_string(), shape, e, now));
                 }
             }
         }

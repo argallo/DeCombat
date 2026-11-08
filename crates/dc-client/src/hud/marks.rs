@@ -113,7 +113,7 @@ pub fn caption_point(r: &RemoteBody, points: &BTreeMap<u16, [f32; 3]>) -> [f32; 
         .unwrap_or_else(|| mark_point(r))
 }
 
-fn shown(r: &RemoteBody) -> bool {
+pub(crate) fn shown(r: &RemoteBody) -> bool {
     r.look.as_ref().is_none_or(|l| l.visible)
 }
 

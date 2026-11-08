@@ -235,7 +235,8 @@ impl Body {
         let back = walk && self.backing && self.steer.is_some();
         TickInput {
             commands: Commands {
-                forward: walk && !back,
+                // BOT-170: a push walks toward the target while it strafes
+                forward: (walk && !back) || side.is_some_and(|e| e.push && !e.back),
                 backward: back || side.is_some_and(|e| e.back),
                 left: side.is_some_and(|e| e.strafe < 0 && !e.back),
                 right: side.is_some_and(|e| e.strafe > 0 && !e.back),
@@ -453,6 +454,7 @@ impl Body {
                     back: false,
                     jump: true,
                     crouch: false,
+                    push: false,
                     note: None,
                 }
             });
@@ -506,6 +508,9 @@ impl Body {
         // BOT-92: the evasive move's own control bits
         if let Some(e) = self.evading() {
             if self.steer.is_none() {
+                if e.push && !e.back {
+                    control |= bits::FWD;
+                }
                 if e.back {
                     control |= bits::BACK;
                 } else if e.strafe < 0 {

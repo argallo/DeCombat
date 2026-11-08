@@ -824,6 +824,8 @@ pub const OTHER_SECTIONS: &[&str] = &[
     "beta",
     "admin_web",
     "deploy",
+    // LG-434: [[packs.sources]] is read as an option (cli.rs pack_sources) for the Sync packs action, not as a rule
+    "packs",
     "mail",
     "identity",
 ];

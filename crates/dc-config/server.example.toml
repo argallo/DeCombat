@@ -77,7 +77,7 @@ single_session = true           # CD-55
 # servers = [{ name = "Server 1", capacity = 1000 }]            # CD-21; empty = one default server
 #   an entry also takes host = "" (this machine; or a [[hosts.agents]] name, CD-88) and channels = 3 (its block of
 #   channel ids when the list has two or more entries; one entry keeps the lobby.channels count)
-#   features = ["gun_game", "hardcore", "possession"] on an entry: Gun Game, Hardcore and Possession rooms there (LG-304, LG-307, LG-305, LG-306); add a new entry AFTER the existing ones
+#   features = ["gun_game", "hardcore", "possession", "pings"] on an entry: Gun Game, Hardcore and Possession rooms there, team pings in every room (LG-304, LG-307, LG-305, LG-306, LG-437); add a new entry AFTER the existing ones
 #   (ids and channel blocks follow config order).
 # channels = [{ name = "Channel 1", capacity = 200 }]           # CD-21; empty = three default channels
 

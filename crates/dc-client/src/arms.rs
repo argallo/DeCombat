@@ -1124,6 +1124,8 @@ pub struct WeaponCommands {
     pub reload: bool,
     /// The weapon inspect key was pressed since the last frame (DC-DEFAULT: CLI-1845).
     pub inspect: bool,
+    /// The team ping key was pressed since the last frame (the frame loop sends the ping, CLI-1951).
+    pub ping: bool,
     /// The use key was pressed since the last frame (the frame loop asks for the drop under the player, CLI-675).
     pub use_key: bool,
     /// The use key is held down (a hold to plant / defuse, CLI-1054).

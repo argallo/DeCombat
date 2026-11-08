@@ -195,33 +195,6 @@ pub fn world_spots(
     rank_spots(&landed, free, |p| !crate::nav::in_danger(coll, kill, dims, p))
 }
 
-/// BOT-161: the head node a bot names for a head hit: of the default body row (`[Model0]`, the bots' body, BOT-149)
-/// its skeleton row's first node whose `Location` is the head (1), read from the user's ROM at run time.
-// OBSERVED: ROM table keys MODELBUTES.TXT [Model<n>] Skeleton, [Skeleton<s>] Node<k>Location (read at run time, no
-// value copied)
-// DC-DEFAULT: BOT-161 (proposed) body row 0
-pub fn head_node_of_rom(rom: &std::path::Path) -> Option<u8> {
-    let vfs = dc_rez::RezVfs::new(rom);
-    let doc = dc_bute::ButeDoc::try_from_vfs(
-        &vfs,
-        crate::shooter::ATTRIBUTES_REZ,
-        "ATTRIBUTES\\MODELBUTES.TXT",
-    )
-    .ok()??;
-    head_node(&doc)
-}
-
-/// BOT-161: [`head_node_of_rom`] on a parsed table.
-pub fn head_node(doc: &dc_bute::ButeDoc) -> Option<u8> {
-    let num = |v: Option<&String>| -> Option<f32> {
-        let t = v?.trim().trim_matches('"').trim();
-        t.strip_suffix(['f', 'F']).unwrap_or(t).parse().ok()
-    };
-    let skel = num(doc.get("Model0")?.get("Skeleton"))? as i64;
-    let sec = doc.get(&format!("Skeleton{skel}"))?;
-    (0..=255u8).find(|k| num(sec.get(&format!("Node{k}Location"))) == Some(1.0))
-}
-
 /// BOT-160: the stand of round `round` (1 = the first) among the ranked places.
 pub fn spot_for_round(ranked: &[[f32; 3]], round: u8) -> Option<[f32; 3]> {
     let n = ranked.len().min(SPOT_TURNS);
@@ -712,21 +685,6 @@ mod tests {
         let long = [[0.0, 0.0, 2000.0], [1000.0, 0.0, 2000.0], [1000.0, 0.0, 0.0]];
         assert!(!way_reaches(at, &long, goal), "5000 units of way");
         assert!(!way_reaches(at, &[], goal));
-    }
-
-    /// BOT-161: the head node is the default body's skeleton's first head-location node; ROM-gated: it exists.
-    #[test]
-    fn the_head_node_is_the_first_head_location_of_the_default_skeleton() {
-        let doc = dc_bute::ButeDoc::parse(
-            "[Model0]\nSkeleton=2\n[Skeleton2]\nNode0Location=2\nNode1Location=3\nNode2Location=1\nNode3Location=1\n",
-        );
-        assert_eq!(head_node(&doc), Some(2));
-        assert_eq!(head_node(&dc_bute::ButeDoc::parse("[Model0]\n")), None);
-        if let Some(rom) = std::env::var_os("CA_ROM") {
-            let n = head_node_of_rom(std::path::Path::new(&rom));
-            eprintln!("head node {n:?}");
-            assert!(n.is_some());
-        }
     }
 
     /// BOT-160: each human's place lies at its own bearing round the stand, within the ring.

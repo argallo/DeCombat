@@ -465,6 +465,10 @@ pub struct HudState {
     pub radar: Option<super::radar::RadarFrame>,
     /// The own heartbeat sensor of this frame ([`super::sensor`]); `None`: none carried.
     pub sensor: Option<super::sensor::SensorView>,
+    /// CLI-1952: the team's live pings of this frame (empty without an offer).
+    pub pings: super::teamping::PingView,
+    /// CLI-1952: the place markers on the screen this frame ([`super::teamping::marker_place`]).
+    pub ping_marks: Vec<super::teamping::PingMark>,
     /// The own kill banner and its pending voice lines ([`super::banners`]).
     pub banner: super::banners::BannerState,
     /// The low-health pulse and heartbeat clock ([`super::vitals`]).

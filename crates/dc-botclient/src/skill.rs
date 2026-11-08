@@ -16,6 +16,83 @@ fn lerp(at0: f32, at100: f32, t: f32) -> f32 {
     at0 + (at100 - at0) * t
 }
 
+/// BOT-170: the value at `level` of a curve given by its anchors `(level, value)` (levels rising), linear between
+/// two anchors, flat outside them.
+pub fn curve(anchors: &[(u8, f32)], level: u8) -> f32 {
+    let l = level as f32;
+    let Some(first) = anchors.first() else {
+        return 0.0;
+    };
+    if l <= first.0 as f32 {
+        return first.1;
+    }
+    for w in anchors.windows(2) {
+        let ((l0, v0), (l1, v1)) = (w[0], w[1]);
+        if l <= l1 as f32 {
+            let span = (l1 as f32 - l0 as f32).max(1.0);
+            return v0 + (v1 - v0) * (l - l0 as f32) / span;
+        }
+    }
+    anchors[anchors.len() - 1].1
+}
+
+/// BOT-170: the skill curve's anchors, `(level, value)`. Three bands: 0..30 a beginner (slow, sloppy, stands while
+/// it fires), 30..65 an average player (the values the evaluation programme tunes: each one exactly BOT-21..24 / BOT-90
+/// / BOT-135's straight line there, so a level in that band plays as before), 65..100 a good player (quick, tight,
+/// tracks a moving target, long bursts with the recoil held, moves while it fights). Before, every value was one
+/// straight line from 0 to 100, so a level of 80 was only a little better than the average band (BOT-23's 1.7 widening
+/// applied to it as well) and played the same way (strafing, lagging a moving target by 112 ms).
+// DC-DEFAULT: BOT-170 (proposed) the anchors below
+pub mod anchors {
+    /// Body / aim turn rate, deg/s (BOT-21).
+    pub const TURN_DEG_S: [(u8, f32); 5] = [(0, 90.0), (30, 225.0), (65, 382.5), (85, 560.0), (100, 720.0)];
+    /// Fire tolerance, deg (BOT-21).
+    pub const FIRE_TOLERANCE_DEG: [(u8, f32); 5] = [(0, 6.0), (30, 4.65), (65, 3.075), (85, 2.0), (100, 1.5)];
+    /// First-sighting reaction delay, ms (BOT-22; the drawn delay's median is 1.06x, BOT-146).
+    pub const REACTION_MS: [(u8, f32); 5] = [(0, 1200.0), (30, 760.0), (65, 480.0), (85, 300.0), (100, 220.0)];
+    /// The re-acquire delay as a share of the reaction delay (BOT-22): a beginner loses track of a target that
+    /// stepped out of sight for a moment.
+    pub const REACQUIRE_SHARE: [(u8, f32); 3] = [(0, 0.8), (30, 0.5), (100, 0.5)];
+    /// Per-shot aim error, deg, one axis (BOT-23; widened by `shooter::AIM_ERROR_SCALE` for rifles).
+    pub const AIM_SIGMA_DEG: [(u8, f32); 5] = [(0, 5.0), (30, 2.92), (65, 1.66), (85, 0.94), (100, 0.4)];
+    /// Shots per burst, least and most (BOT-24).
+    pub const BURST_MIN: [(u8, f32); 5] = [(0, 2.0), (30, 3.2), (65, 4.6), (85, 7.0), (100, 8.0)];
+    pub const BURST_MAX: [(u8, f32); 5] = [(0, 3.0), (30, 5.1), (65, 7.55), (85, 12.0), (100, 14.0)];
+    /// Pause between bursts, ms (BOT-24).
+    pub const BURST_PAUSE_MS: [(u8, f32); 5] = [(0, 1100.0), (30, 720.0), (65, 510.0), (85, 280.0), (100, 200.0)];
+    /// The aim follows where a moving target was this long ago, ms (BOT-90): a good player tracks it.
+    pub const LAG_MS: [(u8, f32); 5] = [(0, 320.0), (30, 217.0), (65, 143.5), (85, 30.0), (100, 0.0)];
+    /// Slow aim wander, deg (BOT-90).
+    pub const WANDER_DEG: [(u8, f32); 5] = [(0, 2.0), (30, 1.49), (65, 0.895), (85, 0.45), (100, 0.25)];
+    /// Overshoot of a turn onto a new target, share, and its cap, deg (BOT-90).
+    pub const OVERSHOOT: [(u8, f32); 5] = [(0, 0.30), (30, 0.225), (65, 0.1375), (85, 0.08), (100, 0.05)];
+    pub const OVERSHOOT_CAP_DEG: [(u8, f32); 5] = [(0, 10.0), (30, 8.2), (65, 6.1), (85, 4.5), (100, 4.0)];
+    /// Uncompensated recoil climb per shot, deg (BOT-90): a good player holds the burst down.
+    pub const RECOIL_DEG: [(u8, f32); 5] = [(0, 0.9), (30, 0.705), (65, 0.4775), (85, 0.2), (100, 0.12)];
+    /// Aim error factor while the bot moves (BOT-90).
+    pub const MOVING_FACTOR: [(u8, f32); 5] = [(0, 1.9), (30, 1.705), (65, 1.4775), (85, 1.25), (100, 1.15)];
+    /// Spray growth of the close-range floor per shot of a burst (BOT-135).
+    pub const SPRAY_STEP: [(u8, f32); 5] = [(0, 0.08), (30, 0.065), (65, 0.0475), (85, 0.03), (100, 0.02)];
+    /// The aim point above the box centre, share of the half height (BOT-12's centre up to 65; a good player aims
+    /// higher, toward the head band).
+    pub const AIM_LIFT: [(u8, f32); 4] = [(0, 0.0), (65, 0.0), (85, 0.3), (100, 0.45)];
+    /// BOT-92: the share of the strafe periods of a fight the bot stands still in (a beginner stands while it fires;
+    /// read by `evade::Evader`).
+    pub const STAND_SHARE: [(u8, f32); 4] = [(0, 0.8), (20, 0.6), (30, 0.0), (100, 0.0)];
+    /// BOT-92: the chance a strafe period beyond `evade::PUSH_DIST` also walks toward the target (a good player
+    /// pushes a seen enemy; read by `evade::Evader`).
+    pub const PUSH_CHANCE: [(u8, f32); 4] = [(0, 0.0), (65, 0.0), (85, 0.5), (100, 0.6)];
+    /// BOT-92: the chance a strafe period is crouched (a good player's crouch-strafe; read by `evade::Evader`).
+    pub const CROUCH_CHANCE: [(u8, f32); 4] = [(0, 0.0), (65, 0.0), (85, 0.25), (100, 0.35)];
+    /// BOT-90: an enemy this bot hit within `shooter::WEAK_MS` is taken over a nearer one up to this multiple of the
+    /// nearer one's distance (the weakened enemy first); 1 or less: no preference.
+    pub const WEAK_RATIO: [(u8, f32); 4] = [(0, 1.0), (65, 1.0), (85, 1.6), (100, 2.0)];
+    /// BOT-146 / BOT-12: at 0.5 or more the bot keeps its reaction through a sight blocked for less than
+    /// `shooter::FLICKER_MS` and aims at the chest or head when the line to its aim point is blocked
+    /// (`shooter::PEEK_FRACTIONS`): from level 70.
+    pub const KEEP_SIGHT: [(u8, f32); 3] = [(0, 0.0), (65, 0.0), (75, 1.0)];
+}
+
 /// The aiming parameters of one skill level.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Skill {
@@ -83,6 +160,13 @@ pub struct Skill {
     /// BOT-135: the close-range floor grows by this share for every shot already fired in the burst (spray).
     // DC-DEFAULT: BOT-135 (proposed) 0.08 at 0 .. 0.03 at 100 (0.055 at 50), capped at SPRAY_CAP
     pub spray_step: f32,
+    /// BOT-170: the aim point above the box centre, share of the half height ([`anchors::AIM_LIFT`]).
+    pub aim_lift: f32,
+    /// BOT-170: keeps its reaction through a sight flicker and aims at what it sees ([`anchors::KEEP_SIGHT`]).
+    pub keep_sight: bool,
+    /// BOT-170: how much farther a weakened enemy may be than the nearest and still be taken
+    /// ([`anchors::WEAK_RATIO`]).
+    pub weak_ratio: f32,
 }
 
 /// BOT-135: the distance up to which the close-range floor holds (the skill's angular error there), units.
@@ -135,32 +219,39 @@ pub const REACTION_CAP: f32 = 2.5;
 pub const REACTION_CAP_MS: u32 = 2500;
 
 impl Skill {
+    /// The parameters of `level` (clamped to 100): BOT-170's per-band anchors ([`anchors`]), interpolated; the
+    /// sniper rule (BOT-123) stays one line from 0 to 100.
     pub fn new(level: u8) -> Self {
         let level = level.min(100);
         let t = level as f32 / 100.0;
-        let reaction = lerp(1000.0, 200.0, t).round() as u32;
+        let at = |a: &[(u8, f32)]| curve(a, level);
+        let reaction = at(&anchors::REACTION_MS).round() as u32;
+        let aim_sigma = at(&anchors::AIM_SIGMA_DEG);
         Skill {
             level,
-            turn_deg_s: lerp(90.0, 540.0, t),
-            fire_tolerance_deg: lerp(6.0, 1.5, t),
+            turn_deg_s: at(&anchors::TURN_DEG_S),
+            fire_tolerance_deg: at(&anchors::FIRE_TOLERANCE_DEG),
             reaction_ms: reaction,
-            reacquire_ms: reaction / 2,
-            aim_sigma_deg: lerp(4.0, 0.4, t),
-            burst_min: lerp(2.0, 6.0, t).round() as u32,
-            burst_max: lerp(3.0, 10.0, t).round() as u32,
-            burst_pause_ms: lerp(900.0, 300.0, t).round() as u32,
-            lag_ms: lerp(280.0, 70.0, t).round() as u32,
-            wander_sigma_deg: lerp(2.0, 0.3, t),
-            overshoot: lerp(0.30, 0.05, t),
-            overshoot_cap_deg: lerp(10.0, 4.0, t),
-            recoil_deg: lerp(0.9, 0.25, t),
-            moving_factor: lerp(1.9, 1.25, t),
+            reacquire_ms: (reaction as f32 * at(&anchors::REACQUIRE_SHARE)) as u32,
+            aim_sigma_deg: aim_sigma,
+            burst_min: at(&anchors::BURST_MIN).round() as u32,
+            burst_max: at(&anchors::BURST_MAX).round() as u32,
+            burst_pause_ms: at(&anchors::BURST_PAUSE_MS).round() as u32,
+            lag_ms: at(&anchors::LAG_MS).round() as u32,
+            wander_sigma_deg: at(&anchors::WANDER_DEG),
+            overshoot: at(&anchors::OVERSHOOT),
+            overshoot_cap_deg: at(&anchors::OVERSHOOT_CAP_DEG),
+            recoil_deg: at(&anchors::RECOIL_DEG),
+            moving_factor: at(&anchors::MOVING_FACTOR),
             stick_ratio: 0.55,
             sniper_sigma_mult: lerp(2.0, 1.2, t),
             sniper_settle_ms: lerp(400.0, 100.0, t).round() as u32,
             sniper_far_miss: lerp(0.40, 0.20, t),
-            close_floor_u: lerp(4.0, 0.4, t).to_radians() * FLOOR_RANGE,
-            spray_step: lerp(0.08, 0.03, t),
+            close_floor_u: aim_sigma.to_radians() * FLOOR_RANGE,
+            spray_step: at(&anchors::SPRAY_STEP),
+            aim_lift: at(&anchors::AIM_LIFT),
+            keep_sight: at(&anchors::KEEP_SIGHT) >= 0.5,
+            weak_ratio: at(&anchors::WEAK_RATIO),
         }
     }
 
@@ -419,6 +510,54 @@ mod tests {
         assert_eq!(Skill::new(250).level, 100);
     }
 
+    // BOT-170: the band anchors: a beginner at 20, the average band at 50 (as before), a good player at 85; every
+    // level of 30..65 keeps the straight lines of BOT-21..24 / BOT-90 / BOT-135
+    #[test]
+    fn the_skill_curve_has_three_bands_and_keeps_the_average_band() {
+        let (s20, s50, s85) = (Skill::new(20), Skill::new(50), Skill::new(85));
+        assert_eq!((s20.reaction_ms, s50.reaction_ms, s85.reaction_ms), (907, 600, 300));
+        let sig = |s: &Skill| (s.aim_sigma_deg * 1000.0).round() as u32;
+        assert_eq!((sig(&s20), sig(&s50), sig(&s85)), (3613, 2200, 940));
+        assert_eq!((s20.lag_ms, s50.lag_ms, s85.lag_ms), (251, 175, 30));
+        assert_eq!((s85.burst_min, s85.burst_max, s85.burst_pause_ms), (7, 12, 280));
+        assert!(s85.aim_lift > 0.25 && s50.aim_lift == 0.0 && s85.weak_ratio > 1.5);
+        // the median drawn reaction (1.06x): beginner about 1 s, good player 0.25..0.45 s
+        assert!((900.0..1100.0).contains(&(s20.reaction_ms as f32 * REACTION_MEDIAN_FACTOR)));
+        assert!((250.0..450.0).contains(&(s85.reaction_ms as f32 * REACTION_MEDIAN_FACTOR)));
+        for level in 30..=65u8 {
+            let (s, t) = (Skill::new(level), level as f32 / 100.0);
+            let close = |a: f32, b: f32| (a - b).abs() < 1e-3 * b.abs().max(1.0);
+            assert_eq!(s.reaction_ms, lerp(1000.0, 200.0, t).round() as u32, "{level}");
+            assert_eq!(s.reacquire_ms, s.reaction_ms / 2, "{level}");
+            assert!(close(s.aim_sigma_deg, lerp(4.0, 0.4, t)), "{level}");
+            assert!(close(s.turn_deg_s, lerp(90.0, 540.0, t)), "{level}");
+            assert!(close(s.fire_tolerance_deg, lerp(6.0, 1.5, t)), "{level}");
+            assert!(close(s.wander_sigma_deg, lerp(2.0, 0.3, t)), "{level}");
+            assert!(close(s.recoil_deg, lerp(0.9, 0.25, t)), "{level}");
+            assert!(close(s.moving_factor, lerp(1.9, 1.25, t)), "{level}");
+            assert!(close(s.spray_step, lerp(0.08, 0.03, t)), "{level}");
+            assert!(close(s.close_floor_u, lerp(4.0, 0.4, t).to_radians() * FLOOR_RANGE));
+            assert_eq!(s.lag_ms, lerp(280.0, 70.0, t).round() as u32, "{level}");
+            assert_eq!(s.burst_min, lerp(2.0, 6.0, t).round() as u32, "{level}");
+            assert_eq!(s.burst_max, lerp(3.0, 10.0, t).round() as u32, "{level}");
+            assert_eq!(s.burst_pause_ms, lerp(900.0, 300.0, t).round() as u32, "{level}");
+            assert_eq!((s.aim_lift, s.weak_ratio, s.keep_sight), (0.0, 1.0, false), "{level}");
+            for a in [&anchors::STAND_SHARE[..], &anchors::PUSH_CHANCE, &anchors::CROUCH_CHANCE] {
+                assert_eq!(curve(a, level), 0.0, "{level}");
+            }
+        }
+        // the dashboard group's skill text (`--skill 80`) reaches the shooter as 80: no clamp, no rebalancing
+        assert_eq!(Skill::parse_level("80", 1).map(Skill::new).map(|s| s.level), Some(80));
+        assert_eq!(Skill::parse_level(" 80 ", 99), Some(80));
+        assert!(Skill::new(80).lag_ms < Skill::new(65).lag_ms / 2 && Skill::new(80).keep_sight);
+        // monotone over the whole range
+        for l in 0..100u8 {
+            let (a, b) = (Skill::new(l), Skill::new(l + 1));
+            assert!(b.reaction_ms <= a.reaction_ms && b.aim_sigma_deg <= a.aim_sigma_deg, "{l}");
+            assert!(b.lag_ms <= a.lag_ms && b.burst_pause_ms <= a.burst_pause_ms, "{l}");
+        }
+    }
+
     // BOT-146: the drawn reaction delays spread around the skill's delay (p10 ~0.7x, p90 ~1.6x), never under the
     // floors, the same for the same seed
     #[test]
@@ -463,7 +602,7 @@ mod tests {
     #[test]
     fn feel_parameters_scale_and_a_skill_range_picks_a_stable_level() {
         let (lo, mid, hi) = (Skill::new(0), Skill::new(50), Skill::new(100));
-        assert_eq!((lo.lag_ms, mid.lag_ms, hi.lag_ms), (280, 175, 70));
+        assert_eq!((lo.lag_ms, mid.lag_ms, hi.lag_ms), (320, 175, 0));
         assert!(
             lo.wander_sigma_deg > mid.wander_sigma_deg
                 && mid.wander_sigma_deg > hi.wander_sigma_deg

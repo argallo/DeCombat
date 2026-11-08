@@ -79,7 +79,7 @@ pub const USAGE: &str = "usage: dc-dserver -port <udp> -world <Worlds\\name> [-g
        [-visibility on|off] [-visibility-window <ms>] [-visibility-radius <units>]
        [-coop <key>=<value>,...] [-directionalanims on|off] [-worldsounds on|off]
        [-stepheight <units>|off] [-worldnorth <radians>|off] [-hisec <key>=<value>,...]
-       [-drops <key>=<value>,...] [-destruct <key>=<value>,...] [-gungame <seed>:<weapon>,...] [-possession]";
+       [-drops <key>=<value>,...] [-destruct <key>=<value>,...] [-gungame <seed>:<weapon>,...] [-possession] [-pings]";
 
 /// World tick rates offered by `-tick` (any 1..=240 is accepted, the range `dc-config` validates for
 /// `dserver.tick_hz`; these are the documented choices).
@@ -303,6 +303,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
             }
             // DC-DEFAULT: DSV-483 (proposed) the lobby's Possession room
             "possession" => a.server.game.possession = true,
+            // DC-DEFAULT: DSV-651 (proposed)
+            "pings" => a.server.game.pings = true,
             "hisec" => {
                 // DC-DEFAULT: HS-1..HS-5 (proposed; HS-1 project decision) the case rules are operator keys
                 let v = value().ok_or("-hisec needs key=value[,key=value]")?;

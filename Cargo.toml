@@ -38,6 +38,13 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+# OPS-27: debug and test builds keep function names and line numbers (panic messages, backtraces, dc-hangdump's
+# sampled stacks) but no variable or type information, so a debugger shows no locals. Measured 2026-11-08 on the
+# workspace's test build (-j 4): cold 9:52 -> 5:41, a dc-client rebuild 4:36 -> 2:43, the target folder 89 -> 36 GB.
+# Need locals for a session? `CARGO_PROFILE_DEV_DEBUG=true` for that build. Release builds are not affected.
+[profile.dev]
+debug = "line-tables-only"
+
 # The Tier-1 differential test streams ~485 MB through Blowfish and SHA-256; keep that usable in debug test runs.
 # dc-mapkit bakes lightmaps and compresses textures on every `build` and `play`: unoptimized that is 40 seconds of
 # silence before the game opens (MAP-108)

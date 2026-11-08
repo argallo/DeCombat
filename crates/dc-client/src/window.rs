@@ -302,6 +302,7 @@ pub fn press_input_for(bound: Option<crate::settings::Bound>) -> Option<DeviceIn
     match bound? {
         crate::settings::Bound::Reload => Some(DeviceInput::Reload),
         crate::settings::Bound::Inspect => Some(DeviceInput::Inspect),
+        crate::settings::Bound::Ping => Some(DeviceInput::Ping),
         crate::settings::Bound::Use => Some(DeviceInput::Use),
         _ => None,
     }
@@ -3740,6 +3741,30 @@ impl ApplicationHandler for App {
                 if captured || !down {
                     self.input
                         .device(DeviceInput::Action(Action::Zoom, down && captured));
+                }
+            }
+            // DC-DEFAULT: CLI-1950 (proposed) the middle button: a waiting key box of the options takes it as our
+            // pseudo key; in the match it is the press of the command bound to it (the team ping by default)
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                if self.options_up {
+                    if self.options_menu.as_ref().is_some_and(|m| m.wants_scan()) {
+                        self.options_input(crate::menu::MenuInput::Scan(
+                            crate::settings::KEY_MOUSE_MIDDLE,
+                        ));
+                    }
+                    return;
+                }
+                let captured = self.live.as_ref().is_some_and(|l| l.captured);
+                if captured && self.report_form.is_none() && !self.leave.open {
+                    if let Some(d) = press_input_for(crate::settings::bound_input(
+                        crate::settings::KEY_MOUSE_MIDDLE,
+                    )) {
+                        self.input.device(d);
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

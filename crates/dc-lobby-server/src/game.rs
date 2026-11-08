@@ -582,6 +582,17 @@ pub fn possession_args(st: &Core, key: RoomKey) -> Vec<String> {
     }
 }
 
+/// LG-437 / DSV-651: the game server's flag of every room on an entry with the `pings` feature (no room setting:
+/// the entry offers team pings in all its rooms; the game server leaves them off in free-for-all rooms).
+// DC-DEFAULT: LG-437 (proposed, project decision; owner request 2026-11-08) team pings on a featured entry
+pub fn pings_args(st: &Core, key: RoomKey) -> Vec<String> {
+    if crate::servers::channel_has_feature(st, key.channel, dc_wire::teamping::FEATURE) {
+        vec!["-pings".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// LG-306 / DSV-482: the game server's flag of a Hardcore room (after the operator's flags, so it wins); never for a
 /// room of an entry without the feature.
 pub fn hardcore_args(st: &Core, key: RoomKey) -> Vec<String> {
@@ -806,6 +817,9 @@ pub(crate) fn spawn(st: &mut Core, key: RoomKey) -> Result<u64, String> {
         cmd.arg(a);
     }
     for a in possession_args(st, key) {
+        cmd.arg(a);
+    }
+    for a in pings_args(st, key) {
         cmd.arg(a);
     }
     for a in hisec_args(st) {
@@ -1123,6 +1137,7 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
     args.extend(crate::gungame::args(st, key));
     args.extend(hardcore_args(st, key));
     args.extend(possession_args(st, key));
+    args.extend(pings_args(st, key));
     args.extend(hisec_args(st));
     let json = start_json(
         &world,

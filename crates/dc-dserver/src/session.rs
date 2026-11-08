@@ -3714,6 +3714,14 @@ impl<A: Ord + Clone + Display> Server<A> {
                     self.run_door_statements(Vec::new(), now);
                 }
             }
+            // DC-DEFAULT: DSV-651 (proposed) an enemy ping needs the pinger's own real sight (Visibility::sees_for_ping)
+            if let (true, Up::TeamPing(q)) = (in_game, &msg) {
+                let vis = &self.vis;
+                let seen = |enemy: u8, enemy_obj: u16| {
+                    vis.sees_for_ping(pid, enemy, enemy_obj, now, crate::game::teamping::SEEN_MS)
+                };
+                self.game.team_ping(pid, *q, &seen, now);
+            }
             if in_game {
                 self.game.on_up(pid, msg, now);
             }

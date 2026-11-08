@@ -617,6 +617,17 @@ impl ApplicationHandler for MenuApp<'_> {
                     },
                 );
             }
+            // DC-DEFAULT: CLI-1950 (proposed) a key box of the options waiting for a key takes the middle button
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                if self.menu.wants_scan() && !crate::steps::active() {
+                    self.menu
+                        .input(MenuInput::Scan(crate::settings::KEY_MOUSE_MIDDLE));
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => self.key_in(el, KeyIn::from(&event)),
             WindowEvent::Resized(size) => {
                 if let Some(l) = self.live.as_mut() {

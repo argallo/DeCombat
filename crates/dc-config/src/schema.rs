@@ -492,7 +492,8 @@ impl LobbySection {
 }
 
 /// The values `lobby.servers[].features` takes. DC-DEFAULT: LG-304 (proposed).
-pub const SERVER_FEATURES: &[&str] = &["gun_game", "hardcore", "possession"];
+// DC-DEFAULT: LG-437 (proposed) `pings`: team pings in every room of the entry
+pub const SERVER_FEATURES: &[&str] = &["gun_game", "hardcore", "possession", "pings"];
 
 fn default_server_channels() -> u32 {
     3

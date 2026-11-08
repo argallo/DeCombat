@@ -378,6 +378,8 @@ pub enum Up {
         team: u16,
         on: bool,
     },
+    /// Our team ping request 0xf4 (DSV-651).
+    TeamPing(dc_wire::teamping::Request),
     /// A developer / console message (DC-C2S-1).
     Developer,
     /// Any other id.
@@ -489,6 +491,10 @@ pub fn parse_up(shell_id: u8, body: &BitWriter) -> Up {
             },
             _ => Up::Unknown,
         },
+        // DC-DEFAULT: DSV-651 (proposed) our team ping request
+        dc_wire::teamping::UP_ID => {
+            dc_wire::teamping::read_request(&mut r).map_or(Up::Unknown, Up::TeamPing)
+        }
         id if DEV_IDS.contains(&id) => Up::Developer,
         _ => Up::Unknown,
     }

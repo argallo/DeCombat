@@ -4,7 +4,7 @@
 //! dc-netlab quick|soak|ci|campus [--rom <dir> | --direct] [--minutes <m>] [--players <n>] [--parallel <n>]
 //!           [--only <name,...>] [--out <dir>] [--bin-dir <dir>] [--seed <n>] [--dserver-args <text>]
 //!           [--xfail <profile,...>] [--strict]
-//! dc-netlab run --mix good:6,wifi:2,... [--mode <key>] [--map <n>] [same options]
+//! dc-netlab run --mix good:6,wifi:2,... [--mode <key>] [--map <n>] [--skills <a,b,...>] [same options]
 //! dc-netlab list [--rom <dir>]
 //! dc-netlab judge --out <run folder>       (judges an earlier run again from its files)
 //! ```
@@ -20,7 +20,7 @@ use dc_netlab::RunConfig;
 const USAGE: &str = "usage: dc-netlab quick|soak|ci|campus [--rom <dir> | --direct] [--minutes <m>] [--players <n>]
                  [--parallel <n>] [--only <name,...>] [--out <dir>] [--bin-dir <dir>] [--seed <n>]
                  [--dserver-args <text>] [--xfail <profile,...>] [--strict]
-       dc-netlab run --mix good:6,wifi:2,... [--mode <key>] [--map <n>] [same options]
+       dc-netlab run --mix good:6,wifi:2,... [--mode <key>] [--map <n>] [--skills <a,b,...>] [same options]
        dc-netlab list [--rom <dir>]
        dc-netlab judge --out <run folder> [--xfail <profile,...>]   (judge an earlier run again from its files)
 The ROM comes from --rom or CA_ROM; without one (or with --direct) the bots join a game server on a synthetic world.";
@@ -61,6 +61,7 @@ fn real_main(args: &[String]) -> Result<i32, String> {
         .collect();
     let mut strict = false;
     let mut mix: Option<String> = None;
+    let mut skills: Vec<u8> = Vec::new();
     let mut mode_key: Option<String> = None;
     let mut map: Option<usize> = None;
     let mut it = args[1..].iter();
@@ -107,6 +108,7 @@ fn real_main(args: &[String]) -> Result<i32, String> {
             }
             "--strict" => strict = true,
             "--mix" => mix = Some(val("--mix")?),
+            "--skills" => skills = dc_netlab::parse_skills(&val("--skills")?)?,
             "--mode" => mode_key = Some(val("--mode")?),
             "--map" => map = Some(val("--map")?.parse().map_err(|_| "--map: bad number")?),
             "-h" | "--help" => return Err(String::new()),
@@ -220,6 +222,7 @@ fn real_main(args: &[String]) -> Result<i32, String> {
         seed,
         dserver_args,
         xfail,
+        skills,
         command: std::iter::once("dc-netlab".to_string())
             .chain(args.iter().cloned())
             .collect::<Vec<_>>()

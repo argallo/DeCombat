@@ -293,6 +293,8 @@ pub enum Bound {
     ChatTeam,
     /// CLI-1845: the weapon inspect.
     Inspect,
+    /// CLI-1950: the team ping.
+    Ping,
 }
 
 /// The two movement commands the 2009 bindable command table has no row for (their keys are kept in our own
@@ -303,6 +305,12 @@ pub const CMD_RUN_LOCK: i32 = 12;
 pub const CMD_STRAFE: i32 = 9;
 /// Our own command with no row in the 2009 table: the weapon inspect (DC-DEFAULT: CLI-1845).
 pub const CMD_INSPECT: i32 = 900;
+/// Our own command with no row in the 2009 table: the team ping (DC-DEFAULT: CLI-1950).
+pub const CMD_PING: i32 = 901;
+/// CLI-1950: the key code our own section stores for the middle mouse button (keyboard scan codes stop at 0xED, so
+/// no key has it); only our own key rows can take it.
+// DC-DEFAULT: CLI-1950 (proposed)
+pub const KEY_MOUSE_MIDDLE: u8 = 0xFF;
 
 /// What a 2009 bindable command does here (`None`: drawn and stored, inert).
 // SPEC: MOVEMENT_2009.md §5.1 (0 forward, 1 back, 5 crouch, 6 jump, 7 run, 9 strafe modifier, 10 / 11 left / right,
@@ -324,6 +332,7 @@ pub fn bound_of_command(cmd: i32) -> Option<Bound> {
         CMD_RUN_LOCK => Bound::Action(Action::RunLock),
         CMD_STRAFE => Bound::Action(Action::StrafeMod),
         CMD_INSPECT => Bound::Inspect,
+        CMD_PING => Bound::Ping,
         78 => Bound::Slot(0),
         79 => Bound::Slot(1),
         80 => Bound::Slot(2),
@@ -573,6 +582,9 @@ pub fn scan_of_code(code: winit::keyboard::KeyCode) -> Option<u8> {
 
 /// The drawn name of scan code `scan`.
 pub fn scan_name(scan: u8) -> String {
+    if scan == KEY_MOUSE_MIDDLE {
+        return "Mouse 3".to_string();
+    }
     SCAN_NAMES
         .iter()
         .find(|(s, _)| *s == scan)
@@ -604,6 +616,8 @@ impl Default for KeyBinds {
             (CMD_STRAFE, 16),
             // DC-DEFAULT: CLI-1845 I
             (CMD_INSPECT, 23),
+            // DC-DEFAULT: CLI-1950 the middle mouse button
+            (CMD_PING, KEY_MOUSE_MIDDLE),
             (61, 44),
             (78, 2),
             (79, 3),
@@ -1138,6 +1152,7 @@ impl Settings {
             (CMD_RUN_LOCK, "bind_run_lock"),
             (CMD_STRAFE, "bind_strafe"),
             (CMD_INSPECT, "bind_inspect"),
+            (CMD_PING, "bind_ping"),
         ] {
             if let Some(v) = doc.own_get(key).and_then(int_of) {
                 s.binds
@@ -1321,6 +1336,7 @@ impl Settings {
             (CMD_RUN_LOCK, "bind_run_lock"),
             (CMD_STRAFE, "bind_strafe"),
             (CMD_INSPECT, "bind_inspect"),
+            (CMD_PING, "bind_ping"),
         ] {
             let v = self.binds.key_of(cmd).map_or(0, i32::from);
             doc.own_set(key, &v.to_string());
@@ -2116,6 +2132,32 @@ mod tests {
         k.bind(CMD_INSPECT, Some(19));
         assert_eq!(k.key_of(3), None, "reload lost R");
         assert_eq!(k.lookup(19), Some(Bound::Inspect));
+    }
+
+    // CLI-1950: the ping key: the middle mouse button by default, kept in our own section, unbound kept as unbound
+    #[test]
+    fn the_ping_key_is_the_middle_button_by_default_and_round_trips() {
+        let k = KeyBinds::default();
+        assert_eq!(k.key_of(CMD_PING), Some(KEY_MOUSE_MIDDLE));
+        assert_eq!(k.lookup(KEY_MOUSE_MIDDLE), Some(Bound::Ping));
+        assert_eq!(scan_name(KEY_MOUSE_MIDDLE), "Mouse 3");
+        let doc = ProfileDoc::parse(SAMPLE);
+        let base = Settings::from_doc(&doc, &table(), &names);
+        assert_eq!(base.binds.key_of(CMD_PING), Some(KEY_MOUSE_MIDDLE));
+        for key in [Some(KEY_MOUSE_MIDDLE), Some(34), None] {
+            let mut t = base.clone();
+            t.binds.bind(CMD_PING, key);
+            let mut d = doc.clone();
+            t.to_doc(&mut d, &table(), &names);
+            let text = d.text();
+            assert!(
+                text.contains(&format!("bind_ping = {}", key.map_or(0, i32::from))),
+                "{text}"
+            );
+            assert!(!text.contains("##255"), "no 2009 section holds the pseudo key");
+            let back = Settings::from_doc(&ProfileDoc::parse(&text), &table(), &names);
+            assert_eq!(back.binds.key_of(CMD_PING), key);
+        }
     }
 
     #[test]

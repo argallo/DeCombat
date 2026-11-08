@@ -37,6 +37,10 @@ pub struct RunConfig {
     pub seed: u64,
     pub dserver_args: String,
     pub xfail: Vec<String>,
+    /// `--skills <a,b,...>`: the skill level of each bot of a ROM room in join order (the list repeats when the
+    /// room has more bots), in place of the balanced 30..65 draw; the lobby deals the joiners to the two teams in
+    /// turn, so `85,30` gives one team 85 and the other 30. Empty: the balanced draw.
+    pub skills: Vec<u8>,
     pub command: String,
 }
 
@@ -71,6 +75,21 @@ pub fn balanced_levels(seed: u64, n: usize, lo: u8, hi: u8) -> Vec<u8> {
         }
     }
     out
+}
+
+/// `--skills`: `n` levels in join order from `list`, repeated (`85,30` over 8 bots: 85, 30, 85, 30, ...).
+pub fn listed_levels(list: &[u8], n: usize) -> Vec<u8> {
+    list.iter().copied().cycle().take(if list.is_empty() { 0 } else { n }).collect()
+}
+
+/// `--skills <a,b,...>`: levels 0..=100.
+pub fn parse_skills(text: &str) -> Result<Vec<u8>, String> {
+    text.split(',')
+        .map(|s| match s.trim().parse::<u8>() {
+            Ok(v) if v <= 100 => Ok(v),
+            _ => Err(format!("--skills: {s:?} is not a level 0..100")),
+        })
+        .collect()
 }
 
 fn nick(sc: usize, k: usize) -> String {
@@ -204,8 +223,13 @@ fn run_scenario(ctx: &Ctx<'_>, idx: usize, sc: &Scenario) -> Value {
     // ROM rooms: one skill level per bot, drawn from the range once per room and dealt so that the two lobby
     // teams (the bots join in order and alternate) get the same strength; before, a level came from the nick alone,
     // so team 1 was always the stronger side (45/37/51/55 against 48/42/31/46) and won 13 of 14 round matches.
-    let levels = (ctx.cfg.rom.is_some() && ctx.lobby.is_some())
-        .then(|| balanced_levels(ctx.cfg.seed ^ (idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15), roster.len(), 30, 65));
+    let levels = (ctx.cfg.rom.is_some() && ctx.lobby.is_some()).then(|| {
+        if ctx.cfg.skills.is_empty() {
+            balanced_levels(ctx.cfg.seed ^ (idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15), roster.len(), 30, 65)
+        } else {
+            listed_levels(&ctx.cfg.skills, roster.len())
+        }
+    });
     loop {
         let now = Instant::now();
         pending.retain(|&(k, at)| {
@@ -578,5 +602,15 @@ mod level_tests {
             assert!(even.abs_diff(odd) <= 35, "seed {seed}: {l:?}");
         }
         assert_ne!(super::balanced_levels(1, 8, 30, 65), super::balanced_levels(2, 8, 30, 65));
+    }
+
+    // --skills: the list in join order, repeated; the alternate deal puts one level on each team
+    #[test]
+    fn listed_levels_repeat_in_join_order() {
+        let l = super::parse_skills("85, 30").unwrap();
+        assert_eq!(super::listed_levels(&l, 5), vec![85, 30, 85, 30, 85]);
+        assert!(super::parse_skills("85,101").is_err());
+        assert!(super::parse_skills("x").is_err());
+        assert!(super::listed_levels(&[], 4).is_empty());
     }
 }

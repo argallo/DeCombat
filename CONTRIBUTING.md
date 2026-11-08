@@ -39,6 +39,10 @@ CA_ROM=/path/to/client/folder cargo test --workspace   # also runs the ROM-backe
 `cargo_env.py` is an optional shim for a portable Windows toolchain layout (`DC_TARGET=x86_64 python cargo_env.py cargo
 test --workspace`); you don't need it elsewhere.
 
+Debug and test builds keep function names and line numbers, so panics, backtraces and hang reports point at the right
+place, but they carry no variable information: a debugger shows no locals. When you need them, build with
+`CARGO_PROFILE_DEV_DEBUG=true`. This keeps the test build about 40% faster and its target folder about 60% smaller.
+
 ## Before you open a pull request
 
 - Add tests with every change. Use synthetic fixtures; ROM-backed tests must skip when `CA_ROM` is unset.

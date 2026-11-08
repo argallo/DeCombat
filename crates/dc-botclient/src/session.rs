@@ -702,6 +702,8 @@ pub struct BotSession {
     /// BOT-116: when the evasive move's sides and back were last probed, and whether each is safe; BOT-134: when the
     /// body was last tested for a kill volume's edge beside it, and the way away from it.
     evade_safe: (Millis, crate::evade::Safety),
+    /// BOT-170: whether the push of the evasive move was safe at the last probe (probed only while one is due).
+    push_safe: bool,
     /// BOT-145: the step inward from a deck's edge in force (until when, the walking direction).
     inside_step: Option<(Millis, Option<f32>)>,
     edge: (Millis, Option<f32>),
@@ -783,6 +785,8 @@ pub struct BotSession {
     /// BOT-164: the player the chaser fights from where it stands (in clear sight), none while it walks its chase.
     spy_engaged: Option<u32>,
     last_hurt: Option<Millis>,
+    /// BOT-172: the knife run's session side (start, end, last contact, team mate killed near).
+    knife: crate::shooter::knife::KnifeState,
     /// BOT-128: the place a Quarantine human falls back to and when it was picked; whether it walks back to the
     /// other humans.
     qrt_retreat: Option<([f32; 3], Millis)>,
@@ -888,6 +892,7 @@ impl BotSession {
                     .bytes()
                     .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)),
             evade_safe: (0, crate::evade::Safety::default()),
+            push_safe: false,
             inside_step: None,
             edge: (0, None),
             watch: None,
@@ -943,6 +948,7 @@ impl BotSession {
             spy_guard: None,
             spy_engaged: None,
             last_hurt: None,
+            knife: Default::default(),
             qrt_retreat: None,
             qrt_guard: None,
             qrt_camp: false,
@@ -1232,8 +1238,9 @@ impl BotSession {
             && !reliable
             && self.obs.updates_sent > 5
             && !self.obs.updates_sent.is_multiple_of(50);
+        // BOT-157 (amended by BOT-168): per-message game records only with `--log-transport`
         if !quiet {
-            self.rec.event(
+            self.rec.transport_event(
                 "msg_out",
                 json!({"rel": reliable, "id": id, "shell": sh, "bits": msg.bit_len(),
                        "head": head(bytes), "ms": self.ms(now)}),
@@ -1344,7 +1351,7 @@ impl BotSession {
             &self.cfg.hello_tag,
             self.cfg.seat_ticket.as_ref(),
         );
-        self.rec.event(
+        self.rec.transport_event(
             "msg_out",
             json!({"rel": true, "id": c2s::HELLO, "bits": hello.bit_len(), "head": head(hello.as_bytes())}),
         );
@@ -1478,8 +1485,9 @@ impl BotSession {
             *self.obs.shell_counts.entry(s).or_default() += 1;
         }
         // the stream arrives every tick: log the first ones and then every 100th
+        // BOT-157 (amended by BOT-168): per-message game records only with `--log-transport`
         if id != s2c::OBJ_STREAM || n <= 5 || n.is_multiple_of(100) {
-            self.rec.event(
+            self.rec.transport_event(
                 "msg_in",
                 json!({"rel": reliable, "id": id, "name": s2c::name(id), "shell": sh,
                        "bits": bits.bit_len(), "head": head(bytes), "ms": t, "n": n}),
@@ -2385,6 +2393,7 @@ impl BotSession {
             back: false,
             jump: false,
             crouch: false,
+            push: false,
             note: None,
         });
         m.jump = true;
@@ -2642,6 +2651,22 @@ impl BotSession {
                     ));
                 }
                 self.obs.kills.push((k.victim, k.killer));
+                // BOT-172: a team mate killed: where (a knife run near it ends)
+                let own_pid = self.obs.client_id.map(|c| c.0 as u8);
+                let mate = Some(k.victim) != own_pid
+                    && self.own_team().is_some_and(|t| {
+                        self.obs.roster.get(&k.victim).is_some_and(|r| r.team == t)
+                    });
+                if let Some(p) = self
+                    .obs
+                    .roster
+                    .get(&k.victim)
+                    .and_then(|r| self.table.objects.get(&r.character))
+                    .and_then(|o| o.pos)
+                    .filter(|_| mate)
+                {
+                    self.knife.mate_down = Some((now, p));
+                }
                 // the victim's roster record is dead until the server's next record of it (the spawn refresh), as
                 // the 2009 client's 0x6d sets the record's dead flag; BOT-124: the team jobs count the living by it
                 // SPEC: GAME_MESSAGES_2009_S2C.md §3.2.1 field 13 (record +0x74, set to 1 by 0x6d)
@@ -3024,6 +3049,12 @@ impl BotSession {
                 self.rec.event(
                     "respawned",
                     json!({"ms": ms, "after_ms": after_ms, "pos": pos}),
+                );
+            }
+            Some(LifeEvent::Waiting { reason }) => {
+                self.rec.event(
+                    "respawn_wait",
+                    json!({"ms": ms, "reason": reason, "mode_class": self.obs.mode_class}),
                 );
             }
             None => {}
@@ -3455,6 +3486,9 @@ impl BotSession {
         let class = self.obs.mode_class.or(self.cfg.mode_class_hint);
         let ev = self.respawn.self_arm(now, class);
         self.log_life(now, ev);
+        // DC-DEFAULT: BOT-168 (proposed) one `respawn_wait` per death where the mode decides
+        let ev = self.respawn.wait_note(class);
+        self.log_life(now, ev);
         if let Some(q) = self.respawn.poll(now, class) {
             let mut body = BitWriter::new();
             if q.with_zero {
@@ -3775,6 +3809,10 @@ impl BotSession {
                 .or(self.stood_at.map(|_| "stand"))
                 .or(planting.then_some("hold"));
             let goal = goal.map(|g| g.0);
+            // BOT-172: the knife out on a long quiet walk, the gun back on any contact
+            if !paused {
+                self.knife_tick(now, goal, goal_kind, playing);
+            }
             let at = self.body.as_ref().map(|b| (b.pos(), b.rom_world));
             // the bot's place and walk goal every 2 s while it lives in a running round (orbit checks, live logs)
             if self.life_state == 1 && playing && since(now, self.track_said) >= TRACK_MS {
@@ -3800,6 +3838,7 @@ impl BotSession {
                                "via": self.squad.via(), "team": self.own_team(),
                                "edge": self.nav_end.is_some(), "arrived": self.nav_arrived.is_some(),
                                "tgt": tgt, "tgt_dist": tgt_dist, "sight": sight, "branch": self.branch,
+                               "knife": sh.is_some_and(Shooter::knifing),
                                "qrt": self.qrt_plan}),
                     );
                 }
@@ -4069,6 +4108,26 @@ impl BotSession {
                             _ => crate::evade::Safety::default(),
                         };
                         self.evade_safe = (now.max(1), safe);
+                        // BOT-170: a push is walked only when its run on a copy keeps out of danger (probed only
+                        // while one is due; off the ROM world it is not walked)
+                        self.push_safe = mv.push
+                            && match (self.body.as_ref(), self.world.as_ref()) {
+                                (Some(b), Some(w)) if b.rom_world => crate::evade::move_safe(
+                                    b,
+                                    &w.collision,
+                                    if self.in_hazard {
+                                        &self.kill_only
+                                    } else {
+                                        &self.kill_now
+                                    },
+                                    crate::evade::Move { jump: false, ..mv },
+                                    EVADE_PROBE_SECS,
+                                ),
+                                _ => false,
+                            };
+                    }
+                    if !self.push_safe {
+                        mv.push = false;
                     }
                     // BOT-134: a strafe toward an unsafe side turns to the safe one (or stops), and a jump runs its
                     // whole flight on a copy first
@@ -4106,7 +4165,7 @@ impl BotSession {
                         self.rec.event(
                             "evade",
                             json!({"ms": self.ms(now), "what": n, "strafe": mv.strafe, "back": mv.back,
-                                   "crouch": mv.crouch, "dist": dist, "gated": gated,
+                                   "crouch": mv.crouch, "push": mv.push, "dist": dist, "gated": gated,
                                    "jump_vetoed": vetoed}),
                         );
                     }
@@ -4126,6 +4185,7 @@ impl BotSession {
                     back: false,
                     jump: true,
                     crouch: false,
+                    push: false,
                     note: None,
                 });
             }
@@ -4137,6 +4197,7 @@ impl BotSession {
                     back: false,
                     jump: false,
                     crouch: false,
+                    push: false,
                     note: None,
                 });
                 m.jump = true;
@@ -4285,6 +4346,7 @@ impl BotSession {
                         back: false,
                         jump: false,
                         crouch: true,
+                        push: false,
                         note: None,
                     });
                 }
@@ -4860,6 +4922,121 @@ impl BotSession {
             json!({"ms": self.ms(now), "target": target, "pos": pos, "defuse": defusing}),
         );
         None
+    }
+
+    /// BOT-172: starts, ends or keeps the knife run from this tick's walk goal (`goal`, its kind) and what the bot
+    /// knows of its surroundings; a run that lapsed (death, a respawn's select) is closed without a draw.
+    fn knife_tick(
+        &mut self,
+        now: Millis,
+        goal: Option<[f32; 3]>,
+        kind: Option<&'static str>,
+        playing: bool,
+    ) {
+        use crate::shooter::knife::{self, Situation, Verdict};
+        let Some(pos) = self.body.as_ref().map(|b| b.pos()) else {
+            return;
+        };
+        let alive = self.life_state == 1 && playing && !self.respawn.dead();
+        let view = self.shooter_view(now);
+        let Some(sh) = self.shooter.as_mut() else {
+            return;
+        };
+        let Some(level) = sh.config().skill.map(|s| s.level) else {
+            return;
+        };
+        let lapsed = sh.knife_lapsed(alive);
+        let contact = if alive {
+            sh.contact(now, &view, knife::HEAR_RANGE)
+        } else {
+            None
+        };
+        let knifing = sh.knifing();
+        let ready = sh.knife_ready();
+        if lapsed {
+            let why = if alive {
+                "reselected"
+            } else if self.life_state == 1 && !self.respawn.dead() {
+                "round_over"
+            } else {
+                "died"
+            };
+            self.knife_closed(now, why);
+        }
+        if !alive {
+            return;
+        }
+        if let Some(c) = contact {
+            self.knife.contact = Some((now, c));
+        }
+        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        let barred = if matches!(
+            self.obs.mode_class,
+            Some(crate::qrt::QRT_CLASS | crate::spyrun::SPY_CLASS)
+        ) {
+            Some("mode")
+        } else if self.bomb.carrying(self.obs.view_object) {
+            Some("bomb_carrier")
+        } else {
+            None
+        };
+        let s = Situation {
+            kind,
+            left: goal.map(|g| self.nav_way_left(pos, g).unwrap_or_else(|| flat(pos, g))),
+            contact: self.knife.contact.map(|(t, c)| (c, since(now, t))),
+            hurt_ago: self.last_hurt.map(|t| since(now, t)),
+            mate_down_ago: self
+                .knife
+                .mate_down
+                .filter(|(_, p)| flat(*p, pos) <= knife::MATE_DOWN_RANGE)
+                .map(|(t, _)| since(now, t)),
+            barred,
+            level,
+            ready,
+            since_stop: self.knife.stopped.map(|t| since(now, t)),
+        };
+        match knife::verdict(knifing, &s) {
+            Verdict::Start(why) => {
+                let acts = self
+                    .shooter
+                    .as_mut()
+                    .map(|sh| sh.draw_knife(now))
+                    .unwrap_or_default();
+                if acts.is_empty() {
+                    return;
+                }
+                self.knife.started = Some(now);
+                self.knife.runs += 1;
+                self.rec.event(
+                    "knife_run",
+                    json!({"ms": self.ms(now), "on": true, "why": why, "kind": kind, "left": s.left,
+                           "pos": pos, "goal": goal}),
+                );
+                self.run_actions(now, acts);
+            }
+            Verdict::Stop(why) => {
+                let acts = self
+                    .shooter
+                    .as_mut()
+                    .map(|sh| sh.end_knife(now))
+                    .unwrap_or_default();
+                self.knife_closed(now, why);
+                self.run_actions(now, acts);
+            }
+            Verdict::Stay => {}
+        }
+    }
+
+    /// BOT-172: a knife run ended (`why`): event `knife_run` off with its length.
+    fn knife_closed(&mut self, now: Millis, why: &'static str) {
+        let ran = self.knife.started.take().map(|t| since(now, t));
+        self.knife.stopped = Some(now);
+        self.knife.run_ms += u64::from(ran.unwrap_or(0));
+        self.rec.event(
+            "knife_run",
+            json!({"ms": self.ms(now), "on": false, "why": why, "ran_ms": ran,
+                   "pos": self.body.as_ref().map(|b| b.pos())}),
+        );
     }
 
     /// The bot's own team (the roster row of its client id).
@@ -6455,6 +6632,7 @@ mod tests {
     #[test]
     fn roster_query_asks_for_records_whose_object_is_unknown_on_the_roster_tick() {
         let rec = Recorder::null("Ext").keep_in_memory();
+        rec.set_log_transport(true);
         let mut cfg = GameConfig::new("Ext");
         cfg.external_body = true;
         cfg.external_load = true;
@@ -6500,6 +6678,7 @@ mod tests {
     #[test]
     fn extras_carry_the_eye_offset_always_and_the_camera_point_when_it_moved() {
         let rec = Recorder::null("Ext").keep_in_memory();
+        rec.set_log_transport(true);
         let mut cfg = GameConfig::new("Ext");
         cfg.external_body = true;
         cfg.external_load = true;
@@ -6548,6 +6727,7 @@ mod tests {
     #[test]
     fn weapon_float_goes_out_only_when_it_changed_and_weapon_messages_become_events() {
         let rec = Recorder::null("Ext").keep_in_memory();
+        rec.set_log_transport(true);
         let mut cfg = GameConfig::new("Ext");
         cfg.external_body = true;
         cfg.external_load = true;

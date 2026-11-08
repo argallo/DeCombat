@@ -374,7 +374,7 @@ coloured ok / warn / bad, the rooms, the newest problems; it refreshes every 30 
 every player's whole-link numbers, a round-trip line per player, the match's events and every 10 s window), **Player** (search by character
 or login: the account panel with its changes, section 16, then the matches and the events of the account; the list marks banned, disabled and
 muted accounts and has an "Only banned" filter), **Alerts** (the checks of section 8 with their default thresholds), **Bots** (the bot groups the lobby runs and
-where each bot is, with add / edit / start / stop / delete: docs/BOTS.md "Bots the lobby runs"). A **Beta list** link in the header opens the beta signup list (docs/BETA.md). Colours: bad = nothing
+where each bot is, with add / edit / start / stop / delete, a note on a group over the bot cap and a banner when `dc-botclient` is missing: docs/BOTS.md "Bots the lobby runs"). A **Beta list** link in the header opens the beta signup list (docs/BETA.md). Colours: bad = nothing
 arrived (no datagram in a window, no report for 25 s, a silent end) or a round trip over 200 ms; warn = over 120 ms, a spike over 400 ms, more than
 10 resends or any flow drop per 10 s. The round trip is the raw samples', so its max can be above the smoothed one of the server log's
 `link summary` line; the other numbers are the same as that line's.

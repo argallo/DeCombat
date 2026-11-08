@@ -893,6 +893,8 @@ pub struct FrameState {
     pub own_team: Option<u8>,
     /// The own heartbeat sensor (`None`: none carried, or a local source; [`crate::hud::sensor`]).
     pub sensor: Option<crate::hud::sensor::SensorView>,
+    /// CLI-1952: the team's live pings (empty: none, no offer, or a local source; [`crate::hud::teamping`]).
+    pub pings: crate::hud::teamping::PingView,
     /// The weapon the own player holds now (`None`: none or a local source); the mover's speed rows follow it.
     // EVIDENCE: cshell+0x5c270 (the speed penalty reads the held weapon's row, slot +0xc0 of the object at VA
     // 0x3759e110)

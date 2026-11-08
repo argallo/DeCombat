@@ -153,18 +153,25 @@ it says `(MISSING: no bot can start)` when `dc-botclient` is not beside `dc-lobb
   round the list: three channels and seven bots give 3, 2 and 2 bots;
 - the room: any room with a person in it, the room of one player (they follow that player and leave with them, see
   "Following a player" below), or the first room whose title holds a text;
-- the skill: a level 0..100, a range such as `30-65` (each bot gets its own level from its name), or `off`;
+- the skill: a level 0..100, a range such as `30-65` (each bot gets its own level from its name), or `off`. Three bands
+  (BOT-170 in DC_DEFAULTS.md): up to 30 a beginner (about 1 s to react, few hits, stands while it fires), 30..65 an average
+  player (the default range), from 65 a good player (0.3 s to react, tracks a strafing target, long bursts, pushes and
+  crouch-strafes, keeps firing at a target that ducks behind cover for a moment). 80 and up is meant to be dangerous;
+  20 is meant to be easy;
 - a loadout, or nothing to leave their guns alone: a dropdown of gun names per slot (primary, secondary, melee, throwing; the ROM's
   weapons and the camo variants of the loaded mod sets), or typed below them: `random`, or the items as `account loadout` takes
   them (`0:27` is the L96A1 in slot 0). Each bot gets it once, after its first login made the account (or at once when it has one), and
-  restarts so the kit counts. The status shows `loadout 0:27`, `after the first login` or why it was refused.
+  restarts so the kit counts. The status shows `loadout 0:27`, `after the first login` or why it was refused. A refused kit is tried again
+  after 10 minutes, or at once when the group is edited; a bot still waiting for its first login is checked when it logs in, else every 10 s.
 
 The tab lists each group and its bots: the process (running, restarting with the seconds left, stopped), how long it has
 run, its restarts and last exit, its channel, and from the lobby whether it is logged in and in which room or match.
 **Edit** changes a group: only the bots whose settings change restart (a new channel list moves the bots one by one).
 **Stop** ends its bots and keeps the group; **Start** runs them again; **Delete** ends them and removes the group. A
 change that would run more than `managed_max_total` bots is refused. Every change is an event of kind `bots` in the
-dashboard's events list, by group number and prefix. Groups can be saved while `managed` is off; they start once it is on.
+dashboard's events list, by group number and prefix. Groups can be saved while `managed` is off; they start once it is on. A group whose bots do not fit under `managed_max_total` (the
+later groups lose out) shows "N bots over bots.managed_max_total" on its card and those bots stay waiting. When `dc-botclient` is
+not next to the lobby executable the tab shows a red banner (`exe_missing` in `GET /ops/bots`); no bot can start until it is there.
 
 **Following a player.** A group that follows a player goes where the lobby sees that player: when they are on a channel
 of another entry or another channel of this lobby, the group's bots restart there (all of them on the player's channel,
@@ -185,8 +192,11 @@ featured entries' packs, when there are any), `--mod-set-hash` / `--content-hash
 `--known-servers` in the bots' folder. That is what `bots.sh` passed. The output goes to `bots/<name>.out` and
 `bots/<name>.events.jsonl` beside the lobby's log (`/opt/decombat/logs/bots` on the VPS; above 5 MB a file is moved to
 `.1`: the lobby does it for `.out` at a start, the bot does it for its events file while it runs, `--log-max 5242880`).
-The events file holds the summary events only; the per-message transport records (`tcp_open`, `tcp_in`, `tcp_out`) are
-written only with `--log-transport`, which no managed or swarm bot gets.
+The events file holds the summary events only; the per-message transport records (`tcp_open`, `tcp_in`, `tcp_out`) and
+game-message records (`msg_in`, `msg_out`) are written only with `--log-transport`, which no managed or swarm bot gets.
+`--respawn-after 0` asks for a respawn once the mode's wait passed and then at most every 5 s while the bot is still dead;
+where the round or the mode decides (Search and Destroy, Elimination, Quarantine, co-op without a life) it never asks and
+logs one `respawn_wait` with the reason. A leave the lobby refuses (a start countdown) ends the run with exit code 0.
 
 A bot that ends starts again 10 s later (one game session lasts an hour, then it starts over; a bot whose hour passed
 with no room to join exits with code 0 and the Bots tab shows `ran its hour`, a real failure keeps exit code 1); one that keeps ending
