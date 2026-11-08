@@ -45,7 +45,7 @@
     {
       "id": "variant_galaxy_g36e",
       "name": "G36E Galaxy",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "author": "DeCombat",
       "category": "visual",
       "description": "Animated camo + weapon inspect. Original G36E stats.",
@@ -66,7 +66,7 @@
     {
       "id": "variant_toxic_l96a1",
       "name": "L96A1 Toxic",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "author": "DeCombat",
       "category": "visual",
       "description": "Animated camo + weapon inspect. Original L96A1 stats.",

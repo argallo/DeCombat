@@ -191,3 +191,37 @@ the bots then log in from that address, not loopback.
 on the tab: the same prefix reuses the same accounts, with their characters, guns and history. A `--args "--server-id 2
 --channel 4"` becomes entry 2 with channel 4 ticked; a loadout given by hand with `account loadout` stays until a group
 names another. Rules: LG-388 .. LG-391 in DC_DEFAULTS.md.
+
+## Evaluating the bots' gameplay
+
+`tools/bot_eval.py` (Python 3, standard library) plays headless rooms of bots through the network lab
+([NETLAB.md](NETLAB.md)) and scores how much they play like an average person, per bot and per room.
+
+```text
+python -I tools/bot_eval.py run --out <dir> [--parallel 3] [--bots 8] [--only TDM,TMM] [--minutes M] [--bin <dir>] [--rom <dir>]
+python -I tools/bot_eval.py score <dir> [--md] [--csv] [--partial]
+```
+
+`run` plays every mode on every map it has (Fireteam excluded): 6 minutes for the respawn modes, 8 for the round
+modes, `--bots` good bots per room, `--parallel` rooms at once. The ROM is `--rom` or `CA_ROM`, the binaries
+`--bin` or `target/release` of this checkout (build `dc-netlab`, `dc-botclient`, `dc-dserver` and `dc-lobby-server`
+in release first). Each room lands in `<dir>/<KEY>_<map index>_<map name>/`; a room that already has `report.json`
+is skipped, so a stopped run continues where it was. `progress.txt` gets a line per room; the folder is scored at
+the end.
+
+`score` takes one netlab `--out` folder or a folder of them. It reads the bots' event logs, the game server's log
+and `report.json`, and writes `score.md` / `score.json` per room and `summary.md` / `scores.csv` for the folder
+(`--partial` also scores rooms still running). The room report lists every rubric line that applies to the mode
+with PASS / FAIL and its numbers, then a table per bot (kills, deaths and who killed it, world deaths, shots,
+stuck and idle time, goals reached, reaction times), the rounds and how each ended, and the stuck, idle and
+unreached-goal episodes with their positions. The metric definitions are in the script's header and its
+thresholds are constants at the top of the file:
+
+- mobility: stuck episodes (a goal more than 96 units away, the body within 48 units for 8 s or more), idle time
+  (no goal and no movement for 15 s), deaths without a killer, goals not reached within 60 s, floor coverage per
+  team (256-unit cells);
+- combat (respawn modes): kills per 2 minutes alive, team kill shares, kills per shot, the time from seeing an
+  enemy to the first shot;
+- objectives: Search and Destroy plants, defuses and round ends; Capture the Flag captures and dropped flags;
+  Spy Hunt pickups and stage times; Quarantine and Elimination Pro round ends;
+- flow: dropped bots, failed joins, panics, refusals by the server.
