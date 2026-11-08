@@ -787,6 +787,9 @@ pub struct Settings {
     /// CLI-1852: the Graphic tab's "Renderer" row (Windows only): the graphics API the NEXT start of the client
     /// opens its device with, our own section.
     pub renderer: Renderer,
+    /// CLI-1916: the Graphic tab's "Field of View" row: the 4:3-horizontal angle in degrees ([`FOV_DEFAULT`] = the 2009
+    /// view), our own section. It applies only on a server that publishes a range (modded and curated entries).
+    pub fov: i32,
     /// CLI-1599: the Sound tab's "BGM Music" row: [`BGM_2009`] (the attribute file's tracks) or [`BGM_CLASSIC`]
     /// (the UI loop in the front end, the waiting-room loop in a room), our own section.
     pub bgm: u32,
@@ -887,6 +890,14 @@ impl Renderer {
         }
     }
 
+    /// CLI-1932: the other choice (the start guard's switch).
+    pub fn other(self) -> Renderer {
+        match self {
+            Renderer::Vulkan => Renderer::Dx12,
+            Renderer::Dx12 => Renderer::Vulkan,
+        }
+    }
+
     /// The backend the choice asks for.
     pub fn backends(self) -> wgpu::Backends {
         match self {
@@ -894,6 +905,18 @@ impl Renderer {
             Renderer::Dx12 => wgpu::Backends::DX12,
         }
     }
+}
+
+/// CLI-1916: the Field of View row's choices (the 4:3-horizontal angle, degrees), in list order.
+// DC-DEFAULT: CLI-1916 (proposed), see DC_DEFAULTS.md
+pub const FOV_CHOICES: [i32; 11] = [70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120];
+/// CLI-1916: the 2009 view: a 4:3-horizontal angle of 90 degrees (a vertical 75, `FovY` of the 2009 client).
+pub const FOV_DEFAULT: i32 = 90;
+
+/// CLI-1916: the saved Field of View word: a listed choice, else the default.
+pub fn fov_from_profile(v: Option<i64>) -> i32 {
+    v.and_then(|v| FOV_CHOICES.iter().copied().find(|&c| i64::from(c) == v))
+        .unwrap_or(FOV_DEFAULT)
 }
 
 /// CLI-1852: whether this build offers the Renderer choice (Windows only: macOS is Metal, no choice).
@@ -922,6 +945,17 @@ pub fn saved_renderer(store: &ProfileStore) -> Renderer {
         .load()
         .and_then(|(doc, _)| doc.own_get(OWN_RENDERER).and_then(Renderer::from_name))
         .unwrap_or(RENDERER_DEFAULT)
+}
+
+/// CLI-1932: saves `r` as the Renderer choice of the player's profile (the start guard's switch); the rest of the
+/// profile stays as it is.
+pub fn save_renderer(store: &ProfileStore, r: Renderer) -> Result<PathBuf, String> {
+    let mut doc = store
+        .load()
+        .map(|(d, _)| d)
+        .unwrap_or_else(|| ProfileDoc::parse(""));
+    doc.own_set(OWN_RENDERER, r.name());
+    store.save(&doc)
 }
 
 /// CLI-1599: the BGM row's choices, in list order.
@@ -971,6 +1005,7 @@ impl Default for Settings {
             fps_cap: FPS_CAP_DEFAULT,
             show_fps: false,
             renderer: RENDERER_DEFAULT,
+            fov: FOV_DEFAULT,
             bgm: BGM_DEFAULT,
             mods_local_enabled: Vec::new(),
             mods_settings: Default::default(),
@@ -1135,6 +1170,8 @@ impl Settings {
             .own_get(OWN_RENDERER)
             .and_then(Renderer::from_name)
             .unwrap_or(RENDERER_DEFAULT);
+        // CLI-1916: an unknown or missing value is the 2009 view
+        s.fov = fov_from_profile(own_int(OWN_FOV));
         if let Some(v) = own_int(OWN_BGM) {
             s.bgm = BGM_CHOICES
                 .iter()
@@ -1296,6 +1333,7 @@ impl Settings {
         doc.own_set(OWN_FPS_CAP, &self.fps_cap.to_string());
         doc.own_set(OWN_SHOW_FPS, &i32::from(self.show_fps).to_string());
         doc.own_set(OWN_RENDERER, self.renderer.name());
+        doc.own_set(OWN_FOV, &self.fov.to_string());
         doc.own_set(OWN_BGM, &self.bgm.to_string());
         doc.own_set(OWN_MODS_LOCAL_ENABLED, &self.mods_local_enabled.join(","));
         for (id, values) in &self.mods_settings {
@@ -1531,6 +1569,9 @@ pub const OWN_BGM: &str = "bgm";
 /// CLI-1852: our own section's key of the Renderer row (`vulkan` / `dx12`).
 // DC-DEFAULT: CLI-1852 (proposed)
 pub const OWN_RENDERER: &str = "renderer";
+/// CLI-1916: our own section's key of the Field of View row (degrees, a [`FOV_CHOICES`] entry).
+// DC-DEFAULT: CLI-1916 (proposed)
+pub const OWN_FOV: &str = "fov";
 /// CLI-1617 / CLI-1618: our own section's keys of the enabled local mods and the accepted server mods.
 // DC-DEFAULT: CLI-1617, CLI-1618 (proposed)
 pub const OWN_MODS_LOCAL_ENABLED: &str = "mods.local_enabled";
@@ -1868,6 +1909,32 @@ mod tests {
         assert_eq!(doc.own_get(OWN_RENDERER), Some("vulkan"));
         assert_eq!((Renderer::Vulkan.label(), Renderer::Dx12.label()), ("Vulkan", "DirectX 12"));
         assert_eq!(Renderer::Dx12.backends(), wgpu::Backends::DX12);
+    }
+
+    /// CLI-1916: the Field of View row's profile number: 70..120 in steps of 5, anything else the 2009 view (90).
+    #[test]
+    fn the_field_of_view_is_saved_and_unknown_values_fall_back() {
+        let load = |extra: &str| {
+            let text = format!("{SAMPLE}\n[DeCombat]\n{extra}");
+            Settings::from_doc(&ProfileDoc::parse(&text), &table(), &names)
+        };
+        assert_eq!(Settings::default().fov, 90);
+        assert_eq!(load("").fov, 90, "no key");
+        for v in FOV_CHOICES {
+            assert_eq!(load(&format!("fov = {v}\n")).fov, v);
+        }
+        assert_eq!(FOV_CHOICES.len(), 11);
+        assert_eq!((FOV_CHOICES[0], FOV_CHOICES[10]), (70, 120));
+        for old in ["69", "72", "125", "0", "-90", "wide", ""] {
+            assert_eq!(load(&format!("fov = {old}\n")).fov, 90, "{old:?}");
+        }
+        let mut doc = ProfileDoc::parse(SAMPLE);
+        let mut s = Settings::default();
+        s.fov = 110;
+        s.to_doc(&mut doc, &table(), &names);
+        assert_eq!(doc.own_get(OWN_FOV), Some("110"));
+        let back = Settings::from_doc(&ProfileDoc::parse(&doc.text()), &table(), &names);
+        assert_eq!(back.fov, 110);
     }
 
     /// CLI-1852: `--adapter` wins over the setting (and stays exclusive); the setting is a first attempt; builds

@@ -1,0 +1,30 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "assets",
+    "content.weapons"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "K7 Cotton Candy: pink and blue cotton candy puffs that drift and swirl. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "variant_cotton_candy_k7",
+  "kind": "shared",
+  "name": "K7 Cotton Candy",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [
+    "variant",
+    "camo"
+  ],
+  "version": "0.1.0"
+}

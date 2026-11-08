@@ -189,7 +189,11 @@ pub(crate) fn render_pipeline_for(
             .pipelines
             .insert((label_of(desc.label), digest));
     }
-    crate::perf::render_pipeline(device, desc)
+    // CLI-1933: timed, slow ones logged, each one progress for the client's watchdog
+    let t = std::time::Instant::now();
+    let p = crate::perf::render_pipeline(device, desc);
+    crate::warm::pipeline_made(desc.label, detail, t.elapsed());
+    p
 }
 
 /// `device.create_sampler`, noting the descriptor's settings digest while the journal is on.

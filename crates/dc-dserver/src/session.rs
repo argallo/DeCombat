@@ -4143,7 +4143,7 @@ impl<A: Ord + Clone + Display> Server<A> {
                     self.hazard_next
                         .insert((pid, i), now.wrapping_add(HAZARD_STEP_MS));
                     let amount = h.damage_per_sec * HAZARD_STEP_MS as f32 / 1000.0;
-                    steps.push((pid, amount, h.dtype));
+                    steps.push((pid, amount, h.dtype, h.damage_per_sec));
                 }
             }
         }
@@ -4154,8 +4154,8 @@ impl<A: Ord + Clone + Display> Server<A> {
         if steps.is_empty() {
             return;
         }
-        for (pid, amount, dtype) in steps {
-            self.game.hazard_damage(pid, amount, dtype, now);
+        for (pid, amount, dtype, per_sec) in steps {
+            self.game.hazard_damage(pid, amount, dtype, per_sec, now);
         }
         self.apply_game(now);
     }

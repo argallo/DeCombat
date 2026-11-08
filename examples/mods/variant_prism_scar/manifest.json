@@ -1,0 +1,30 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "assets",
+    "content.weapons"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "SCAR-L Prism: rainbow liquid chrome for the MK16 SCAR-L, smears of cyan, green, gold, orange, pink and blue over violet. The whole paint rolls over the gun like a lava lamp (VAR-12; an older client shows the plain SCAR-L). An animated weapon variant: it looks different and plays exactly the same.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "variant_prism_scar",
+  "kind": "shared",
+  "name": "SCAR-L Prism",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [
+    "variant",
+    "camo"
+  ],
+  "version": "0.2.1"
+}

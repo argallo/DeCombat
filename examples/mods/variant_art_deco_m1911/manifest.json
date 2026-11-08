@@ -1,0 +1,30 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "assets",
+    "content.weapons"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "M1911 MEU Art Deco: Art Deco gold sunburst fans and emerald inlays on black. A rare weapon variant: it looks different and plays exactly the same.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "variant_art_deco_m1911",
+  "kind": "shared",
+  "name": "M1911 MEU Art Deco",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [
+    "variant",
+    "camo"
+  ],
+  "version": "0.1.0"
+}

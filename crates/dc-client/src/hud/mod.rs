@@ -47,6 +47,7 @@ pub mod state;
 pub mod prompt;
 pub mod teamchange;
 pub mod vitals;
+pub mod whiteout;
 pub mod xray;
 
 pub use compose::{compose, HudAssets, HudFonts, NoTextures, RomTextureSource, Tex, TextureSource};
@@ -363,6 +364,11 @@ impl Hud {
 
     /// The display list of `state` (after the mod hook).
     pub fn items(&mut self, state: &HudState) -> Vec<DrawItem> {
+        self.items_spanned(state).0
+    }
+
+    /// [`Hud::items`] with the named elements' item ranges (the spans a `hud.draw` hook sees; tests).
+    pub fn items_spanned(&mut self, state: &HudState) -> (Vec<DrawItem>, modhud::Spans) {
         let sx = VirtualScaler::new(self.size.0, self.size.1).sx;
         let fonts = &mut self.assets.fonts;
         let mut widths: BTreeMap<(i32, String), f32> = BTreeMap::new();
@@ -427,6 +433,7 @@ impl Hud {
             scope::push_items(&mut items, &state.scope, self.size, &tex_size);
         }
         marks.push(("letterbox", items.len()));
+        let screen_layers = items.len();
         letterbox::push_bars(
             &mut items,
             self.size.1,
@@ -439,6 +446,11 @@ impl Hud {
         if state.result_screen.is_none() && death::live_widgets(state) {
             fallborder::push_items(&mut items, state.fall_border, self.size.0, self.size.1);
         }
+        // CLI-1915: the letterbox bars and the vignette lie over the world, which fills the side bands too
+        widen_to_surface(
+            &mut items[screen_layers..],
+            VirtualScaler::new(self.size.0, self.size.1),
+        );
         // CLI-1620: the x-ray boxes over the world, under every HUD element
         marks.push(("xray", items.len()));
         items.extend(state.xray.iter().cloned());
@@ -472,6 +484,14 @@ impl Hud {
         }
         marks.push(("kill_banners", items.len()));
         self.banners.draw(state, &mut items);
+        // CLI-1926: the flashbang's white over the world and the HUD, under the network lines and the boxes
+        marks.push(("whiteout", items.len()));
+        let white_at = items.len();
+        whiteout::push_items(&mut items, state.white_level());
+        widen_to_surface(
+            &mut items[white_at..],
+            VirtualScaler::new(self.size.0, self.size.1),
+        );
         marks.push(("net_overlay", items.len()));
         // CLI-1574: the network overlay, top left, over the HUD and under the boxes
         if state.net_mode != netview::OFF && !state.net_lines.is_empty() {
@@ -514,7 +534,7 @@ impl Hud {
                         &crate::menu::popup::yes_no_buttons(),
                         None,
                         (view.hover.or(Some(0)), view.down),
-                        self.size.0 as f32 / 1024.0,
+                        VirtualScaler::new(self.size.0, self.size.1).sx,
                         &mut items,
                     );
                 }
@@ -554,7 +574,7 @@ impl Hud {
         if let Some(c) = &self.cursor {
             items.push(c.clone());
         }
-        items
+        (items, spans)
     }
 
     /// The composed HUD image of `state`.
@@ -564,23 +584,52 @@ impl Hud {
     }
 }
 
+/// CLI-1915: a fill or image of `items` spanning the whole virtual width is widened to the whole surface (the layers
+/// over the world: the letterbox bars, the fall vignette). Nothing changes without side bands.
+// DC-DEFAULT: CLI-1915 (proposed)
+pub fn widen_to_surface(items: &mut [DrawItem], sc: VirtualScaler) {
+    if !sc.banded() {
+        return;
+    }
+    let [left, _, right, _] = sc.surface_virtual();
+    let full = dc_ui_data::VIRTUAL_WIDTH as f32;
+    for it in items {
+        let r = match it {
+            DrawItem::Fill { rect, .. } => rect,
+            DrawItem::Image { dst, turn: None, .. } => dst,
+            _ => continue,
+        };
+        if r[0] <= 0.0 && r[0] + r[2] >= full {
+            r[0] = left;
+            r[2] = right - left;
+        }
+    }
+}
+
 /// Height above a case at which its indicator is drawn (world units): the console value's default.
 // SPEC: HISEC_2009.md §3.3 step 2 (`FlagOffset`, default 70 world units)
 // DC-DEFAULT: CLI-81 (proposed) the default 70 (no console value in DeCombat)
 pub const CASE_MARK_LIFT: f32 = 70.0;
 
-/// A world point on the target in virtual pixels (1024 x 768), `None` behind the camera.
+/// A world point on the target in virtual pixels (1024 x 768), `None` behind the camera (a target at 16:9 or
+/// narrower; [`project_on`] for any size).
 pub fn project(camera: &dc_render::Camera, p: [f32; 3]) -> Option<[f32; 2]> {
+    project_on(camera, p, (dc_ui_data::VIRTUAL_WIDTH, dc_ui_data::VIRTUAL_HEIGHT))
+}
+
+/// A world point on a `size` target in virtual pixels, `None` behind the camera. CLI-1915: the world fills the
+/// whole target and the virtual screen maps to the centred 16:9 band, so on a wider target a point in a side band
+/// lies left of 0 or right of 1024 (without side bands this is the plain NDC-to-1024 x 768 mapping).
+// DC-DEFAULT: CLI-1915 (proposed)
+pub fn project_on(camera: &dc_render::Camera, p: [f32; 3], size: (u32, u32)) -> Option<[f32; 2]> {
     let c = camera.view_projection() * glam::Vec4::new(p[0], p[1], p[2], 1.0);
     if c.w <= 1e-4 {
         return None;
     }
     let (nx, ny) = (c.x / c.w, c.y / c.w);
-    // NDC to the virtual screen (y down)
-    Some([
-        (nx + 1.0) * 0.5 * dc_ui_data::VIRTUAL_WIDTH as f32,
-        (1.0 - ny) * 0.5 * dc_ui_data::VIRTUAL_HEIGHT as f32,
-    ])
+    // NDC to a share of the target (y down), then to the virtual screen
+    let sc = VirtualScaler::new(size.0.max(1), size.1.max(1));
+    Some(sc.from_surface_share([(nx + 1.0) * 0.5, (1.0 - ny) * 0.5]))
 }
 
 /// CLI-1625: the notice of `/wallhack` on a server without an x-ray mod.
@@ -739,6 +788,7 @@ impl HudDriver {
         self.state.aim_cross_hidden = fs.aim_cross_hidden;
         self.state.aim_picture = fs.aim_picture.clone();
         self.state.sensor = fs.sensor;
+        self.state.flash_decl = fs.flash_decl;
         self.state.crouched = crouched;
         // the board's open sound: the key going down outside the result board (the close is silent)
         if show_board && !self.state.show_board && self.state.result_mark.is_none() {
@@ -746,7 +796,12 @@ impl HudDriver {
         }
         self.state.show_board = show_board;
         let life = self.hud.layout.feed.lifetime_ms.max(1);
+        let flashing = self.state.whiteout.is_some();
         self.state.tick(now, life);
+        // CLI-1926: the white changes every frame while a flash runs, and once more when it ends
+        if flashing || self.state.whiteout.is_some() {
+            self.dirty = true;
+        }
         vitals::tick(&mut self.state, &self.hud.layout.low_health, now);
         if let Some(mk) = &self.hud.layout.mk {
             self.state.expire_notes(now, mk.lifetime_ms.max(1));
@@ -930,11 +985,12 @@ impl HudDriver {
     // SPEC: HISEC_2009.md §3.3 step 2 (the indicator point is the object's position raised by the console value of
     // the flag offset, default 70 world units, cs+0x19fde0; not drawn behind the camera)
     pub fn set_cases(&mut self, cases: &[crate::world::HudCase], camera: &dc_render::Camera) {
+        let size = self.hud.size;
         let marks: Vec<CaseMark> = cases
             .iter()
             .map(|c| CaseMark {
                 key: c.key,
-                at: project(camera, [c.pos[0], c.pos[1] + CASE_MARK_LIFT, c.pos[2]]),
+                at: project_on(camera, [c.pos[0], c.pos[1] + CASE_MARK_LIFT, c.pos[2]], size),
                 remaining: c.remaining.max(0),
             })
             .collect();
@@ -948,19 +1004,21 @@ impl HudDriver {
     /// raised by the flag offset.
     // EVIDENCE: cshell+0x86f10
     pub fn set_flags(&mut self, flags: &[crate::world::HudFlag], camera: &dc_render::Camera) {
+        let size = self.hud.size;
         let marks: Vec<modetop::FlagMark> = flags
             .iter()
             .map(|f| modetop::FlagMark {
                 team: f.team,
                 base: f.base,
                 // a flag's point is raised by the flag offset, a zone's is not (cshell+0x86f10)
-                at: project(
+                at: project_on(
                     camera,
                     [
                         f.pos[0],
                         f.pos[1] + if f.base { 0.0 } else { modetop::FLAG_MARK_LIFT },
                         f.pos[2],
                     ],
+                    size,
                 ),
                 remaining: f.remaining,
                 metres: modetop::metres_between(camera.pos.to_array(), f.pos),
@@ -1004,10 +1062,11 @@ impl HudDriver {
             self.mark_points.clone_from(points);
         }
         let forced = self.forced_tags();
+        let size = self.hud.size;
         let shown = marks::frame_marks_forced(
             &self.state,
             remotes,
-            &|p| project(camera, p),
+            &|p| project_on(camera, p, size),
             target,
             points,
             &|obj| forced.contains(&obj),
@@ -1017,7 +1076,7 @@ impl HudDriver {
         let bars = npcbar::frame_bars(
             &self.state,
             remotes,
-            &|p| project(camera, p),
+            &|p| project_on(camera, p, size),
             target,
             points,
         );
@@ -1086,11 +1145,12 @@ impl HudDriver {
             x.note_refresh(now, remotes.len());
             self.xray_mates = xray::mate_colours(&self.xray_style, self.xray_seed);
         }
+        let size = self.hud.size;
         let rect_of = |id: u16| {
             remotes
                 .iter()
                 .find(|r| r.obj == id)
-                .and_then(|r| xray::body_rect(camera, r.pos, r.half))
+                .and_then(|r| xray::body_rect_on(camera, r.pos, r.half, size))
         };
         xray::push_items(
             &x.looks,
@@ -1108,7 +1168,7 @@ impl HudDriver {
             let shown = marks::frame_marks_forced(
                 &self.state,
                 remotes,
-                &|p| project(camera, p),
+                &|p| project_on(camera, p, size),
                 self.mark_target,
                 &self.mark_points,
                 &|obj| forced.contains(&obj),
@@ -1636,6 +1696,52 @@ mod sound_tests {
         assert_eq!(later.pixel(1, h / 2), plain.pixel(1, h / 2));
     }
 
+    /// CLI-1926: a 0x66 kind 0x0c flash whites the composed HUD frame out at once and fades it with the held weapon's
+    /// numbers; with no weapon in hand nothing is drawn; the own death ends it.
+    #[test]
+    fn a_screen_flash_whites_the_frame_out_and_fades() {
+        use crate::world::FrameState;
+        let (w, h) = (640u32, 480u32);
+        let row = Some(whiteout::FlashDecl::default());
+        let frame = |ms: u32, events: Vec<(u32, state::HudEvent)>, decl| FrameState {
+            clock_ms: Some(ms),
+            hud_events: events,
+            flash_decl: decl,
+            ..FrameState::default()
+        };
+        let flash = |ms: u32| {
+            vec![(
+                ms,
+                state::HudEvent::ScreenFlash {
+                    fade: true,
+                    secs: 4.0,
+                },
+            )]
+        };
+        let mut d = driver();
+        d.update(&frame(1000, vec![(1000, state::HudEvent::Life(1))], row), 1000, 0.0, false, false);
+        let plain = d.image(true).unwrap();
+        let centre = |img: &crate::overlay::text::RgbaImage| img.pixel(w / 2, h / 2 + 60);
+        d.update(&frame(2000, flash(2000), row), 2000, 0.0, false, false);
+        assert_eq!(centre(&d.image(true).unwrap()), [255, 255, 255, 255], "white at the burst");
+        d.update(&frame(3000, vec![], row), 3000, 0.0, false, false);
+        let mid = centre(&d.image(true).unwrap());
+        let expect = whiteout::alpha(1.0 - 2.0 * whiteout::ease(0.25));
+        assert!(mid[3].abs_diff(expect) <= 1, "{mid:?} vs alpha {expect}");
+        d.update(&frame(4100, vec![], row), 4100, 0.0, false, false);
+        assert_eq!(centre(&d.image(true).unwrap()), centre(&plain), "clear after half its length");
+        assert_eq!(d.state.whiteout, None);
+        // no weapon in hand: the flash runs on, undrawn
+        d.update(&frame(5000, flash(5000), None), 5000, 0.0, false, false);
+        assert_eq!(centre(&d.image(true).unwrap()), centre(&plain));
+        assert!(d.state.whiteout.is_some());
+        d.update(&frame(5100, vec![], row), 5100, 0.0, false, false);
+        assert!(centre(&d.image(true).unwrap())[3] >= 250, "drawn again with a weapon in hand");
+        // the own death ends it
+        d.update(&frame(5200, vec![(5200, state::HudEvent::Life(2))], row), 5200, 0.0, false, false);
+        assert_eq!(d.state.whiteout, None);
+    }
+
     #[test]
     fn reality_setter_gates_the_arcs() {
         let mut d = driver();
@@ -1673,5 +1779,58 @@ mod sound_tests {
             .expect("caret drawn at the opening instant");
         let [x, y] = layout.chat_look.input_pos;
         assert_eq!(caret, [x as f32 + 35.0, y as f32]);
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::*;
+
+    /// CLI-1915: the letterbox bars and the fall vignette span the whole surface on an ultrawide target; other items
+    /// and a 16:9 target are untouched.
+    #[test]
+    fn the_layers_over_the_world_reach_the_side_bands() {
+        let bar = DrawItem::Fill {
+            rect: [0.0, 0.0, 1024.0, 65.0],
+            colour: [0, 0, 0, 255],
+        };
+        let small = DrawItem::Fill {
+            rect: [10.0, 0.0, 100.0, 65.0],
+            colour: [0, 0, 0, 255],
+        };
+        let mut items = vec![bar.clone(), small.clone()];
+        widen_to_surface(&mut items, VirtualScaler::new(2560, 1440));
+        assert_eq!(items, vec![bar.clone(), small.clone()]);
+        widen_to_surface(&mut items, VirtualScaler::new(3440, 1440));
+        let DrawItem::Fill { rect, .. } = items[0] else {
+            panic!("a fill");
+        };
+        // 440 pixels of side band at 2.5 pixels per virtual pixel
+        assert_eq!(rect, [-176.0, 0.0, 1376.0, 65.0]);
+        assert_eq!(items[1], small);
+    }
+
+    /// CLI-1915: a projected world point keeps its place on the whole target: on 3440 x 1440 the virtual point maps
+    /// back through the band to the NDC pixel; straight ahead is the centre on every target.
+    #[test]
+    fn a_projected_point_lands_on_its_ndc_pixel() {
+        for (w, h) in [(2560u32, 1440u32), (3440, 1440), (5120, 1440)] {
+            let (fx, fy) = dc_render::fov_pair_2009(75.0, w, h);
+            let cam = dc_render::Camera::looking(glam::Vec3::ZERO, 0.0, 0.0, fx, fy);
+            let ahead = cam.pos + cam.forward() * 500.0;
+            let at = project_on(&cam, ahead.to_array(), (w, h)).unwrap();
+            assert!((at[0] - 512.0).abs() < 1e-2 && (at[1] - 384.0).abs() < 1e-2, "{w}x{h}: {at:?}");
+            // a point near a side edge of the view
+            let right = cam.rot * glam::Vec3::X;
+            let p = ahead + right * 500.0 * (fx * 0.5).tan() * 0.95;
+            let c = cam.view_projection() * p.extend(1.0);
+            let px = (c.x / c.w + 1.0) * 0.5 * w as f32;
+            let v = project_on(&cam, p.to_array(), (w, h)).unwrap();
+            let sc = VirtualScaler::new(w, h);
+            assert!((v[0] * sc.sx + sc.ox - px).abs() < 0.05, "{w}x{h}: {v:?} vs pixel {px}");
+            if w > 2560 {
+                assert!((v[0] - 512.0).abs() > 512.0, "{w}x{h}: the edge of the view lies in a side band");
+            }
+        }
     }
 }

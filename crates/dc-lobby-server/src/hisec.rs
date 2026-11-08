@@ -48,6 +48,9 @@ pub struct HisecRules {
     pub odds: Vec<(u32, u32)>,
     // DC-DEFAULT: HS-7 (proposed) 0x32f reason when no usable key is owned (0x99: outside the client's table)
     pub no_key_reason: u32,
+    // DC-DEFAULT: CRATE-2 (amended 2026-11-07, OWNER DIRECTION) percent of the drops that are Camo Crates; `None` =
+    // the game server's own default (75), `Some(n)` goes to every game server as `-hisec camo_share=<n>`
+    pub camo_share: Option<u32>,
 }
 
 impl Default for HisecRules {
@@ -58,6 +61,7 @@ impl Default for HisecRules {
             // DC-DEFAULT: HS-8 (proposed) 7 days 50 %, 30 days 35 %, permanent 15 %
             odds: vec![(7, 50), (30, 35), (0, 15)],
             no_key_reason: 0x99,
+            camo_share: None,
         }
     }
 }
@@ -77,6 +81,7 @@ impl HisecRules {
             "hisec.case_product"
                 | "hisec.announce"
                 | "hisec.no_key_reason"
+                | "hisec.camo_share"
                 | "economy.hisec_case_odds"
         )
     }
@@ -104,6 +109,10 @@ impl HisecRules {
             "hisec.no_key_reason" => n
                 .filter(|x| (1.0..=65535.0).contains(x))
                 .map(|x| self.no_key_reason = x as u32)
+                .is_some(),
+            "hisec.camo_share" => n
+                .filter(|x| (0.0..=100.0).contains(x) && x.fract() == 0.0)
+                .map(|x| self.camo_share = Some(x as u32))
                 .is_some(),
             "economy.hisec_case_odds" => {
                 let JsonValue::Array(a) = v else { return false };
@@ -495,6 +504,16 @@ mod tests {
         assert!(!r.apply("economy.hisec_case_odds", &v("[[1, 0]]")));
         assert!(!r.apply("economy.hisec_case_odds", &v("[1, 2]")));
         assert!(!r.apply("hisec.other", &v("1")));
+        // CRATE-2 (amended): the crate share is a whole percent, unset until the operator gives it
+        assert_eq!(r.camo_share, None);
+        assert!(r.apply("hisec.camo_share", &v("60")));
+        assert_eq!(r.camo_share, Some(60));
+        assert!(r.apply("hisec.camo_share", &v("0")));
+        assert_eq!(r.camo_share, Some(0));
+        for bad in ["101", "-1", "12.5", "\"half\""] {
+            assert!(!r.apply("hisec.camo_share", &v(bad)), "{bad}");
+        }
+        assert_eq!(r.camo_share, Some(0));
     }
 
     #[test]

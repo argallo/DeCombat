@@ -1,0 +1,30 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "assets",
+    "content.weapons"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "G18 Candy Corn: candy corn and little bats on purple-black. A common weapon variant: it looks different and plays exactly the same.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "variant_candy_corn_g18",
+  "kind": "shared",
+  "name": "G18 Candy Corn",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [
+    "variant",
+    "camo"
+  ],
+  "version": "0.1.0"
+}

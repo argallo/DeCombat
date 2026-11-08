@@ -6,7 +6,7 @@ use crate::guns::View;
 use crate::pack::{self, SaveOptions};
 use crate::patterns;
 use crate::studio::{Studio, BACKGROUNDS};
-use dc_render::camo::{self, CamoFx, Circle};
+use dc_render::camo::{self, CamoFlow, CamoFx, Circle};
 use dc_render::TextureImage;
 use serde_json::{json, Value};
 
@@ -115,6 +115,19 @@ pub const TOOLS: &[Tool] = &[
                 "gain_low": {"type": "number", "description": "Lowest brightness, 0..1."},
                 "gain_high": {"type": "number", "description": "Highest brightness, 0..1."},
                 "pulse_seconds": {"type": "number", "description": "Seconds per pulse, at least 1. 0 is steady at the highest brightness."}
+            }})
+        },
+    },
+    Tool {
+        name: "set_flow",
+        about: "Makes the paint itself move, like a lava lamp: the pattern's colours drift and are swirled by slow waves, so its blobs travel, stretch and fold over the gun. It is paint, lit like the gun, so it does not glow; it takes the place of set_effect's light. Needs a paint pattern. Values are held to the game's limits. Use off to remove it.",
+        schema: || {
+            json!({"type": "object", "properties": {
+                "off": {"type": "boolean"},
+                "drift_u": {"type": "number", "description": "Repeats per second across, -1..1. A slow drift is 0.03."},
+                "drift_v": {"type": "number", "description": "Repeats per second down, -1..1."},
+                "swirl": {"type": "number", "description": "How far the waves push the pattern about, in repeats, 0..0.25. 0.1 is a gentle lava lamp."},
+                "swirl_seconds": {"type": "number", "description": "Seconds per turn of the waves, at least 3."}
             }})
         },
     },
@@ -345,6 +358,12 @@ pub fn status(s: &Studio) -> Value {
             "layers": pack::describe(&s.design),
             "full_texture": row.is_some_and(|r| s.design.full.contains_key(&(r, view))),
             "effect": fx_json(s.design.fx),
+            "flow": s.design.flow.map(|f| json!({
+                "drift_u": f.speed[0],
+                "drift_v": f.speed[1],
+                "swirl": f.swirl,
+                "swirl_seconds": f.seconds,
+            })),
             "keep": keep,
             "animated": s.animating(),
         },
@@ -534,6 +553,33 @@ pub fn run(s: &mut Studio, tool: &str, args: &Value) -> Result<Reply, String> {
                     .is_some_and(|r| s.design.full.contains_key(&(r, s.view)))
             {
                 out["note"] = json!("The effect has no pattern to move yet: call set_pattern.");
+            }
+            Ok(out.into())
+        }
+        "set_flow" => {
+            if args.get("off").and_then(Value::as_bool) == Some(true) {
+                s.design.flow = None;
+            } else {
+                let was = s.design.flow.unwrap_or(CamoFlow {
+                    speed: [0.03, 0.01],
+                    swirl: 0.1,
+                    seconds: 8.0,
+                });
+                s.design.flow = Some(camo::limited_flow(CamoFlow {
+                    speed: [
+                        number(args, "drift_u").unwrap_or(was.speed[0]),
+                        number(args, "drift_v").unwrap_or(was.speed[1]),
+                    ],
+                    swirl: number(args, "swirl").unwrap_or(was.swirl),
+                    seconds: number(args, "swirl_seconds").unwrap_or(was.seconds),
+                }));
+            }
+            s.repaint()?;
+            let mut out = status(s);
+            if s.design.flow.is_some() && s.design.paint.is_none() {
+                out["note"] = json!("A flow moves the paint pattern: call set_pattern first.");
+            } else if s.design.flow.is_some() && s.design.fx.is_some() {
+                out["note"] = json!("The flow takes the place of the light effect, which the game will not draw with it.");
             }
             Ok(out.into())
         }

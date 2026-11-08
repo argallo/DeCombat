@@ -13,7 +13,8 @@
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 static IN_PLAY: AtomicBool = AtomicBool::new(false);
 static CREATES: AtomicU64 = AtomicU64::new(0);
@@ -28,6 +29,93 @@ pub const MADE_KEPT: usize = 64;
 
 thread_local! {
     static FORBIDDEN: Cell<bool> = const { Cell::new(false) };
+    /// CLI-1933: the backend of the device this thread makes pipelines on (for the slow-pipeline line).
+    static BACKEND: Cell<Option<wgpu::Backend>> = const { Cell::new(None) };
+}
+
+/// CLI-1933: called after every pipeline made (the client's frame watchdog counts it as progress: a load that makes
+/// many slow pipelines is slow, not hung).
+static PROGRESS: OnceLock<fn()> = OnceLock::new();
+static PIPES: AtomicU64 = AtomicU64::new(0);
+static PIPE_US: AtomicU64 = AtomicU64::new(0);
+static PIPE_MAX_US: AtomicU64 = AtomicU64::new(0);
+
+/// CLI-1933: a pipeline that takes longer than this to make is logged with its label, raster state and backend
+/// (`DC_SLOW_PIPELINE_MS` overrides it; 0 logs every pipeline).
+// DC-DEFAULT: CLI-1933 250 ms
+pub const SLOW_PIPELINE_MS: u64 = 250;
+
+/// CLI-1933: `f` runs after every pipeline made, on the thread that made it (set once per process).
+pub fn set_progress_hook(f: fn()) {
+    let _ = PROGRESS.set(f);
+}
+
+/// CLI-1933: the calling thread makes pipelines on a device of `backend` (named in the slow-pipeline line).
+pub fn set_thread_backend(backend: wgpu::Backend) {
+    let _ = BACKEND.try_with(|b| b.set(Some(backend)));
+}
+
+/// CLI-1933: the backend [`set_thread_backend`] named on this thread.
+pub fn thread_backend() -> Option<wgpu::Backend> {
+    BACKEND.try_with(Cell::get).ok().flatten()
+}
+
+/// CLI-1933: pipelines made so far, their summed and their longest creation time.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PipelineTimes {
+    pub count: u64,
+    pub total_ms: f64,
+    pub max_ms: f64,
+}
+
+/// CLI-1933: starts a new longest time ([`PipelineTimes::max_ms`] covers the pipelines made from now on; the count
+/// and the sum keep running).
+pub fn restart_longest() {
+    PIPE_MAX_US.store(0, Relaxed);
+}
+
+/// CLI-1933: the creation times of every pipeline made so far (all threads); `max_ms` since [`restart_longest`].
+pub fn pipeline_times() -> PipelineTimes {
+    PipelineTimes {
+        count: PIPES.load(Relaxed),
+        total_ms: PIPE_US.load(Relaxed) as f64 / 1000.0,
+        max_ms: PIPE_MAX_US.load(Relaxed) as f64 / 1000.0,
+    }
+}
+
+fn slow_ms() -> u64 {
+    static V: OnceLock<u64> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("DC_SLOW_PIPELINE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(SLOW_PIPELINE_MS)
+    })
+}
+
+/// CLI-1933: the log line of a slow pipeline.
+pub fn slow_line(what: &str, ms: f64, backend: Option<wgpu::Backend>) -> String {
+    let backend = backend.map_or_else(|| "?".to_string(), |b| format!("{b:?}"));
+    format!("dc-render: pipeline {what} compiled in {ms:.0} ms ({backend})")
+}
+
+/// CLI-1933: books one pipeline made in `took`: the times, the slow line, the progress hook.
+pub(crate) fn pipeline_made(label: Option<&str>, detail: Option<&str>, took: Duration) {
+    let us = took.as_micros().min(u128::from(u64::MAX)) as u64;
+    PIPES.fetch_add(1, Relaxed);
+    PIPE_US.fetch_add(us, Relaxed);
+    PIPE_MAX_US.fetch_max(us, Relaxed);
+    if us >= slow_ms().saturating_mul(1000) {
+        let mut what = label.unwrap_or("(unlabelled)").to_string();
+        if let Some(d) = detail {
+            what.push(' ');
+            what.push_str(d);
+        }
+        println!("{}", slow_line(&what, us as f64 / 1000.0, thread_backend()));
+    }
+    if let Some(f) = PROGRESS.get() {
+        f();
+    }
 }
 
 /// One pipeline or shader module made in play or on a thread that forbids it.
@@ -151,5 +239,44 @@ mod tests {
         });
         assert!(!t.join().unwrap());
         assert!(allowed_here());
+    }
+
+    // CLI-1933: the slow-pipeline line names what, how long and the backend; a thread knows its own backend
+    #[test]
+    fn a_slow_pipeline_line_names_the_state_and_the_backend() {
+        assert_eq!(
+            slow_line(
+                "model Blend(One, Zero) style RS\\A.LTB",
+                812.4,
+                Some(wgpu::Backend::Dx12)
+            ),
+            "dc-render: pipeline model Blend(One, Zero) style RS\\A.LTB compiled in 812 ms (Dx12)"
+        );
+        assert_eq!(
+            slow_line("gamma", 300.0, None),
+            "dc-render: pipeline gamma compiled in 300 ms (?)"
+        );
+        set_thread_backend(wgpu::Backend::Vulkan);
+        assert_eq!(thread_backend(), Some(wgpu::Backend::Vulkan));
+        assert_eq!(std::thread::spawn(thread_backend).join().unwrap(), None);
+    }
+
+    static HOOKED: AtomicU64 = AtomicU64::new(0);
+
+    fn bump() {
+        HOOKED.fetch_add(1, Relaxed);
+    }
+
+    #[test]
+    fn every_pipeline_made_is_timed_and_reported_as_progress() {
+        set_progress_hook(bump);
+        let hooked = HOOKED.load(Relaxed);
+        let before = pipeline_times();
+        pipeline_made(Some("t"), None, Duration::from_millis(3));
+        let after = pipeline_times();
+        assert!(after.count > before.count);
+        assert!(after.total_ms >= before.total_ms + 3.0 - 1e-9);
+        assert!(after.max_ms >= 3.0 - 1e-9);
+        assert!(HOOKED.load(Relaxed) > hooked, "the progress hook ran");
     }
 }

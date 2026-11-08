@@ -103,6 +103,10 @@ impl Shared {
             .map(|(_, v)| v.trim().trim_matches('"').to_string())?;
         let pattern = self.pattern_image(c.pattern)?;
         let base = self.image(&path)?;
+        // VAR-12: a painted camo that flows keeps the gun's shading in its texture and moves its colour in the shader
+        if let (Some(flow), dc_render::camo::MODE_PAINT) = (c.flow, c.mode) {
+            return dc_render::camo::flowing(&base, &pattern, &c.keep, flow);
+        }
         let mut painted = dc_render::camo::compose(c.mode, &base, &pattern, &c.keep)?;
         if let Some(fx) = c.fx {
             let moved = match c.fx_pattern {

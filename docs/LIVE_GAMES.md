@@ -70,7 +70,7 @@ sudo systemctl edit decombat-lobby      # or decombat-lobby@<name>
    ```
 
    Keep the URL out of chat, shell history, logs and git. systemd's `LoadCredential` hands the file to the publisher only; the URL grants publishing access to #live-games.
-4. After approval to publish the board, run `sudo systemctl daemon-reload`, then `sudo systemctl start decombat-live-games.service`. Check the first message in Discord before running `sudo systemctl enable --now decombat-live-games.timer`. The timer runs every 30 seconds; an unchanged board refreshes its "Last checked" clock every three minutes. To stop posting updates, stop and disable the timer.
+4. After approval to publish the board, run `sudo systemctl daemon-reload`, then `sudo systemctl start decombat-live-games.service`. Check the first message in Discord before running `sudo systemctl enable --now decombat-live-games.timer`. The timer runs every 30 seconds and re-stamps the "Last checked" clock on every run, so a clock older than about a minute means the publisher is stalled. To stop posting updates, stop and disable the timer.
 
 ## Recovery
 

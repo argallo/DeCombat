@@ -597,7 +597,7 @@ impl Popup {
                 cat.paths.warning.clone()
             },
         };
-        let sx = cat.size().0 as f32 / 1024.0;
+        let sx = cat.scaler().sx;
         if let Some(h) = &self.hisec {
             let state = (self.hover.or(self.focus_of()), self.down);
             hisec_items(

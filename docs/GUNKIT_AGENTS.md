@@ -52,6 +52,11 @@ A pattern repeats twice across the gun's texture, and each texel is the pattern'
 Values are held to the game's limits (VAR-4), and the answer shows what was kept: drift at most 1 repeat a second, a pulse at least
 1 second. Keep it subtle. **A camo must never hide a player or give one away**, so a bright glow on a sniper will not pass review.
 
+`set_flow` moves the paint itself, like a lava lamp (VAR-12): the pattern's colours drift and are swirled by slow waves, so
+its blobs travel, stretch and fold over the gun. It is paint, lit like the gun, so it does not glow, and it takes the place of
+`set_effect`'s light. Swirl 0.1 with 8 seconds per swirl is a gentle lava lamp; SCAR-L Prism uses that with a drift of 0.03, 0.01.
+A busy pattern with many colours shows the movement best. It needs a client with VAR-12; an older one draws the plain gun.
+
 A `screenshot` of an animated camo shows one moment. Take two a second apart to see it move.
 
 ## Keeping a lens clean
@@ -106,5 +111,5 @@ dc-gunkit check <pack folder>
 
 ## Tools
 
-`status`, `list_guns`, `select_gun`, `set_view`, `set_pattern`, `clear_pattern`, `set_full_texture`, `set_effect`, `set_keep`,
+`status`, `list_guns`, `select_gun`, `set_view`, `set_pattern`, `clear_pattern`, `set_full_texture`, `set_effect`, `set_flow`, `set_keep`,
 `set_camera`, `screenshot`, `window_screenshot`, `describe_texture`, `get_texture`, `save_pack`, `open_pack`. `tools/list` gives each one's arguments.

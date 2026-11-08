@@ -2291,8 +2291,7 @@ fn contained(cat: &mut Catalog, tex: &str, b: [i32; 4], out: &mut Vec<DrawItem>)
     let Some((tw, th)) = cat.tex_size(tex) else {
         return;
     };
-    let (sw, sh) = cat.screen_size();
-    let (sx, sy) = (sw as f32 / 1024.0, sh as f32 / 768.0);
+    let dc_ui_data::VirtualScaler { sx, sy, .. } = cat.scaler();
     let k = (b[2] as f32 * sx / tw as f32).min(b[3] as f32 * sy / th as f32);
     let (w, h) = (tw as f32 * k / sx, th as f32 * k / sy);
     out.push(DrawItem::Image {

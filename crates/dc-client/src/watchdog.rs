@@ -270,6 +270,8 @@ pub fn set_event_log(path: &Path) {
 pub fn arm(dir: Option<PathBuf>) {
     let d = report_dir(dir).to_path_buf();
     install_crash_reports(&d);
+    // CLI-1933: every GPU pipeline made is progress (a match load that compiles many slow shaders is not a hang)
+    dc_render::warm::set_progress_hook(busy);
     if LOG.get().is_none() {
         let _ = std::fs::create_dir_all(&d);
         if let Ok(f) = std::fs::OpenOptions::new()

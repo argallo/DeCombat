@@ -1589,6 +1589,13 @@ impl Screen for Room {
             LinkEvent::SettingReply { ok: false } => ctx.notice(text_ids::GAME_RUNNING),
             // the countdown's red line and its sound come from the menu (`Menu::update`, `frontfx`)
             LinkEvent::LeftRoom => *ctx.go = Some(Go::Lobby),
+            // CLI-1303 (amended): the Character Info entry of the member menu asks for the profile; the reply opens
+            // the Character Info box over the waiting room as it does over the room list (CLI-931)
+            // EVIDENCE: cshell+0x15dde0 (the 0x573 entry of the member menu), cshell+0x35cf0 (the reply fills the box)
+            LinkEvent::ProfileInfo(p) => {
+                ctx.data.char_view = Some(p.clone());
+                *ctx.go = Some(Go::CharInfo);
+            }
             // CLI-1303: the kick's answer
             // EVIDENCE: cshell+0x160340 (ok -> 0x1849 with the kicked name; else the reason's string; a message box)
             LinkEvent::KickReply { ok, reason } => {

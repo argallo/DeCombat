@@ -1,0 +1,30 @@
+{
+  "api": 1,
+  "asset_policy": "original_only",
+  "author": "DeCombat",
+  "capabilities": [
+    "assets",
+    "content.weapons"
+  ],
+  "conflicts": [],
+  "dependencies": [],
+  "description": "Dragunov SVD Aurora: green and teal aurora curtains swaying over a starry navy sky. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A legendary weapon variant: it looks different and plays exactly the same.",
+  "entry": "main.lua",
+  "games": [
+    "all"
+  ],
+  "id": "variant_aurora_svd",
+  "kind": "shared",
+  "name": "Dragunov SVD Aurora",
+  "optional_dependencies": [],
+  "permissions": [],
+  "requires_client": true,
+  "screenshots": [
+    "screenshots/main.png"
+  ],
+  "tags": [
+    "variant",
+    "camo"
+  ],
+  "version": "0.1.0"
+}

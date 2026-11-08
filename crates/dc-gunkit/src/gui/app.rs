@@ -35,6 +35,7 @@ const CHANGING_TOOLS: &[&str] = &[
     "clear_pattern",
     "set_full_texture",
     "set_effect",
+    "set_flow",
     "set_keep",
     "open_pack",
 ];

@@ -21,6 +21,440 @@
       "sha256": "2cda9e8435b55525d4f09da1305b013e4661fc21bf85fb751ddd5eb5dde24836",
       "source_repo": "https://github.com/argallo/DeCombat",
       "reviewer_note": "Inspect for the G36E and the L96A1 (and so their camos), owner approved 2026-11-04. Adds inspect poses only (CLI-1845): drawn on the player's own screen, no stat or sound changes, cancelled by firing, reloading or switching. Our own poses, no game files. Source in examples/mods/inspect_g36e_l96a1. Needs clients with weapon inspect (6664ad1b or later)."
+    },
+    {
+      "id": "variant_abyss_aug_a1",
+      "version": "0.1.0",
+      "sha256": "ea46a208cc582f4d828f9ea47af2ba8bc2449125322c2e3ccd62bc5fba98e9c2",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "AUG A1 Abyss, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_abyss_aug_a1/gen.py, no game pixels. Source in examples/mods/variant_abyss_aug_a1. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_art_deco_m1911",
+      "version": "0.1.0",
+      "sha256": "bfdaf869535e4eb8994ad1749ada96965f1574082faed832f6b997fd7d178ee7",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M1911 MEU Art Deco, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_art_deco_m1911/gen.py, no game pixels. Source in examples/mods/variant_art_deco_m1911. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_aurora_svd",
+      "version": "0.1.0",
+      "sha256": "449c179bef8630969adcf00ba0b3bc5777ac57b3b608a1f85002650f31a16bd5",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Dragunov SVD Aurora, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_aurora_svd/gen.py, no game pixels. Source in examples/mods/variant_aurora_svd. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_autumn_fall_m24",
+      "version": "0.1.0",
+      "sha256": "0f66b14ab284820833d55cabbf3803f271923119c10a1bf11428df3dc3cd806e",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M24 Autumn Fall, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_autumn_fall_m24/gen.py, no game pixels. Source in examples/mods/variant_autumn_fall_m24. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_big_banana_m107cq",
+      "version": "0.1.0",
+      "sha256": "02d596d974cfd2e056685dc1da49c4a76aab7c4f559c91361d5ae184292636d9",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M107CQ Big Banana, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_big_banana_m107cq/gen.py, no game pixels. Source in examples/mods/variant_big_banana_m107cq. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_black_opal_usp",
+      "version": "0.1.0",
+      "sha256": "1d5a5ff844774f548f51822d6c61cd891d8f7b297850a679a74248cb7dfcceac",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "USP Black Opal, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_black_opal_usp/gen.py, no game pixels. Source in examples/mods/variant_black_opal_usp. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_blood_moon_p226",
+      "version": "0.1.0",
+      "sha256": "7d04f7b7b998656b3522bb00f18f7e6365d7a283c05350c91618fb54ad76fc7b",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "P226 Blood Moon, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_blood_moon_p226/gen.py, no game pixels. Source in examples/mods/variant_blood_moon_p226. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_boneyard_l115a2",
+      "version": "0.1.0",
+      "sha256": "2f0c1aef0194a847d58ebf80ec30ba351aa6fc967a8999abba810ba46a5ca8cc",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "L115A2 Boneyard, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_boneyard_l115a2/gen.py, no game pixels. Source in examples/mods/variant_boneyard_l115a2. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_bubble_wrap_minimi",
+      "version": "0.1.0",
+      "sha256": "986c050c77dd4a4b6e58620495d44f2e1a34f73edb47e22c61381eb444528627",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "MINIMI Bubble Wrap, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_bubble_wrap_minimi/gen.py, no game pixels. Source in examples/mods/variant_bubble_wrap_minimi. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_bubblegum_sprinkles_famas",
+      "version": "0.1.0",
+      "sha256": "371155d462940234177ad87b58ef52fcf1552a24910b084942df32a728ae01c2",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "FAMAS Bubblegum Sprinkles, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_bubblegum_sprinkles_famas/gen.py, no game pixels. Source in examples/mods/variant_bubblegum_sprinkles_famas. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_candy_corn_g18",
+      "version": "0.1.0",
+      "sha256": "27f9a657424a9455deece175853b6e51524fd9d92a2558ca7bbeb336022a029a",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "G18 Candy Corn, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_candy_corn_g18/gen.py, no game pixels. Source in examples/mods/variant_candy_corn_g18. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_candy_g36e",
+      "version": "0.1.1",
+      "sha256": "b643f95807365094e98bbc485ed3819be2a6422ca6ceb130b4b4d1b679d314d2",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "G36E Candy, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_candy_g36e/gen.py, no game pixels. Source in examples/mods/variant_candy_g36e. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_carbon_venom_m417",
+      "version": "0.1.0",
+      "sha256": "77b09ec099f22626d5780e29d3308bb050be2fbe88735c33b4cd767c7305dda6",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M417 Carbon Venom, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_carbon_venom_m417/gen.py, no game pixels. Source in examples/mods/variant_carbon_venom_m417. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_clockwork_r870",
+      "version": "0.1.0",
+      "sha256": "a91a38ff4d4fc985adb766718730402865988957d464899b557b37ab14232796",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "R870 Clockwork, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_clockwork_r870/gen.py, no game pixels. Source in examples/mods/variant_clockwork_r870. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_comic_pop_mp5",
+      "version": "0.1.0",
+      "sha256": "b5c72fc57cb503cfc57320f984f864138c38758ad073e02fe9fc9c3249529147",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "MP5A4 Comic Pop, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_comic_pop_mp5/gen.py, no game pixels. Source in examples/mods/variant_comic_pop_mp5. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_cotton_candy_k7",
+      "version": "0.1.0",
+      "sha256": "9dcdd96d593a70ba55d7dbcacbbec1f6ec227f23b6a9839f24ee4c29d03a9500",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "K7 Cotton Candy, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_cotton_candy_k7/gen.py, no game pixels. Source in examples/mods/variant_cotton_candy_k7. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_crown_jewels_l85a1",
+      "version": "0.1.0",
+      "sha256": "d54c9665e9a0145d0f31ae6ea9c0efad4e6884422377235b9edaa7feee4a1f7e",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "L85A1 Crown Jewels, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_crown_jewels_l85a1/gen.py, no game pixels. Source in examples/mods/variant_crown_jewels_l85a1. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_disco_fever_uzi",
+      "version": "0.1.0",
+      "sha256": "cb825cf8a7260c85a4f15062d427b4c93eda3c1042618ad121180838110bde4a",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "UZI Disco Fever, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_disco_fever_uzi/gen.py, no game pixels. Source in examples/mods/variant_disco_fever_uzi. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_dragon_scale_spas12",
+      "version": "0.1.0",
+      "sha256": "cb5fca499c0152e36911c9474151cf12b6100587c1d4cddd1a9c553606496b0b",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "SPAS-12 Dragon Scale, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_dragon_scale_spas12/gen.py, no game pixels. Source in examples/mods/variant_dragon_scale_spas12. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_egg_hunt_m32",
+      "version": "0.1.0",
+      "sha256": "710cb0b5cb560050691d11aac719c9ad5453ee499c4c7a8c802d675443172099",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M32 Egg Hunt, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_egg_hunt_m32/gen.py, no game pixels. Source in examples/mods/variant_egg_hunt_m32. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_extra_pepperoni_p90",
+      "version": "0.1.0",
+      "sha256": "60374fba90b747747541228601e3c8c0f9f2460744abe15659ba50adb0d30e5d",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "P90 Extra Pepperoni, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_extra_pepperoni_p90/gen.py, no game pixels. Source in examples/mods/variant_extra_pepperoni_p90. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_folk_bloom_pp19",
+      "version": "0.1.0",
+      "sha256": "4128a88a9bba2b0b3d7edc456da4a90d4a95906f414a58caefe84282814ecaa4",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "PP-19 Folk Bloom, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_folk_bloom_pp19/gen.py, no game pixels. Source in examples/mods/variant_folk_bloom_pp19. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_frostbite_deagle",
+      "version": "0.1.0",
+      "sha256": "38362ebec823b61a259f2cb4db7b76acab9f77b85b6c2b11a6c21e0f0c67d9ce",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Desert Eagle Frostbite, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_frostbite_deagle/gen.py, no game pixels. Source in examples/mods/variant_frostbite_deagle. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_galaxy_g36e",
+      "version": "0.1.2",
+      "sha256": "61192887593c95e3589b9eb9a5482a0674a645cc9c3f52c0dc49b53d99e96cc6",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "G36E Galaxy, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_galaxy_g36e/gen.py, no game pixels. Source in examples/mods/variant_galaxy_g36e. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_glitch_mp7",
+      "version": "0.1.0",
+      "sha256": "8d11394f3c4b2a0f2b358017cec1e3d3e0b1f1bf6abd6e5ea89cb58f726d6c71",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "MP7 Glitch, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_glitch_mp7/gen.py, no game pixels. Source in examples/mods/variant_glitch_mp7. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_gold_rush_anaconda",
+      "version": "0.1.0",
+      "sha256": "7201598441ee9622bb0b57e45472ce4e28ef0da93953bf65b62b3acf98175d44",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Anaconda Black Gold Rush, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_gold_rush_anaconda/gen.py, no game pixels. Source in examples/mods/variant_gold_rush_anaconda. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_grand_finale_law",
+      "version": "0.1.0",
+      "sha256": "4f45d62cd8b2da6cbfd463d737adb34c61cc6e12f3d7678d6d80ff902b036aa7",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "LAW Grand Finale, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_grand_finale_law/gen.py, no game pixels. Source in examples/mods/variant_grand_finale_law. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_grandma_s_quilt_rpk",
+      "version": "0.1.0",
+      "sha256": "c18a296992c2faf25a5493c92fc1ca34f18bc093e2f4fef60c98a4b84f68c632",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "RPK Grandma's Quilt, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_grandma_s_quilt_rpk/gen.py, no game pixels. Source in examples/mods/variant_grandma_s_quilt_rpk. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_gummy_bears_ak74u",
+      "version": "0.1.0",
+      "sha256": "f2fb66bfd65b7d69169748a3028247e0666f4bc4c514a7f853d21e15d3629e22",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "AK-74U Gummy Bears, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_gummy_bears_ak74u/gen.py, no game pixels. Source in examples/mods/variant_gummy_bears_ak74u. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_hazard_rave_m60",
+      "version": "0.1.0",
+      "sha256": "e8bea4883e26000e7de6560cb3d3390b10eb91109c69a0ef91bf189fb5523935",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M60 Hazard Rave, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_hazard_rave_m60/gen.py, no game pixels. Source in examples/mods/variant_hazard_rave_m60. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_honey_heist_ump",
+      "version": "0.1.0",
+      "sha256": "c7b5366962cce2010d9f7fcd3594eca6eabbc06a061b33278068887106c6c227",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "UMP Honey Heist, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_honey_heist_ump/gen.py, no game pixels. Source in examples/mods/variant_honey_heist_ump. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_hot_sauce_mac10",
+      "version": "0.1.0",
+      "sha256": "73b4668b095f49ed24eaab30121237fd6b43cb113678f8d2c762ffb444673e57",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "MAC-10 Hot Sauce, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_hot_sauce_mac10/gen.py, no game pixels. Source in examples/mods/variant_hot_sauce_mac10. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_inferno_minigun",
+      "version": "0.1.0",
+      "sha256": "8c2fa5a7a99e5bcf4d3201e4f77fd03d822fb8354cc6432d0e96ab0155e9c8a7",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M134 Minigun Inferno, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_inferno_minigun/gen.py, no game pixels. Source in examples/mods/variant_inferno_minigun. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_kintsugi_ak74m",
+      "version": "0.1.0",
+      "sha256": "4a68c59f2fd8c97e0d4d4e060fb079fc89aa51235e05ef217c2ff02aa637a8f2",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "AK-74M Kintsugi, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_kintsugi_ak74m/gen.py, no game pixels. Source in examples/mods/variant_kintsugi_ak74m. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_kitty_chaos_saiga",
+      "version": "0.1.0",
+      "sha256": "f6b75ca8c56fb5a2325b5f27f41466c531edc404ccc1b1a2e6b5f098ca505f1f",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Saiga 20K Kitty Chaos, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_kitty_chaos_saiga/gen.py, no game pixels. Source in examples/mods/variant_kitty_chaos_saiga. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_koi_pond_aug_a3",
+      "version": "0.1.0",
+      "sha256": "c641e79c570ebea69b6110795152c23acaf651a0c77ff60c57d2979d96efbe06",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "AUG A3 Koi Pond, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_koi_pond_aug_a3/gen.py, no game pixels. Source in examples/mods/variant_koi_pond_aug_a3. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_liquid_mercury_psg1",
+      "version": "0.1.0",
+      "sha256": "e53c8776ffba71bed09a08a0468b57fc89f3d4db330be903ddc163d5836b932a",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "PSG-1 Liquid Mercury, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_liquid_mercury_psg1/gen.py, no game pixels. Source in examples/mods/variant_liquid_mercury_psg1. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_macaw_k3",
+      "version": "0.1.0",
+      "sha256": "1f300240a88bc80a25f41da432bc8bd9a34955b23bb5f47479814b18c82719aa",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "K3 Macaw, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_macaw_k3/gen.py, no game pixels. Source in examples/mods/variant_macaw_k3. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_marshmallow_roast_flamethrower",
+      "version": "0.1.0",
+      "sha256": "6376cf453aec19e4f8c8456fd404debb82b1706fa15093d76f945be40ff6b3ad",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Flamethrower Marshmallow Roast, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_marshmallow_roast_flamethrower/gen.py, no game pixels. Source in examples/mods/variant_marshmallow_roast_flamethrower. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_melting_chocolate_sg556",
+      "version": "0.1.0",
+      "sha256": "e98a1d57ff357cca78510f380b4717669aa05204c59ea6d42fdede9477a7f964",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "SG556 Melting Chocolate, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_melting_chocolate_sg556/gen.py, no game pixels. Source in examples/mods/variant_melting_chocolate_sg556. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_mirage_tar21",
+      "version": "0.1.0",
+      "sha256": "7e313da73e0bced365dead6120bd79c98029968789bc06f08df3fe021449b043",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "TAR-21 Mirage, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_mirage_tar21/gen.py, no game pixels. Source in examples/mods/variant_mirage_tar21. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_molten_core_ak47",
+      "version": "0.1.0",
+      "sha256": "3bfbd45439ae5f5502aba54d8f3f45c727ca439367465f6192fc84011f81df80",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "AK-47 Molten Core, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_molten_core_ak47/gen.py, no game pixels. Source in examples/mods/variant_molten_core_ak47. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_neon_leopard_k2",
+      "version": "0.1.0",
+      "sha256": "dd112fe9d97af3ce98f0c8046570343c901676ee953b6c970f85a62f7f596710",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "K2 Neon Leopard, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_neon_leopard_k2/gen.py, no game pixels. Source in examples/mods/variant_neon_leopard_k2. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_neon_tiger_mk48",
+      "version": "0.1.0",
+      "sha256": "a70b2ed2664d7d50bbb897f73b46b54c9b2b73b805338bee05f4b380197ed9b4",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "MK.48 Neon Tiger, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_neon_tiger_mk48/gen.py, no game pixels. Source in examples/mods/variant_neon_tiger_mk48. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_neon_venom_skorpion",
+      "version": "0.1.0",
+      "sha256": "62d1a1432b131618689e2c00f51816eec362a4e053e9949e7bc3d2504558b344",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Skorpion Neon Venom, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_neon_venom_skorpion/gen.py, no game pixels. Source in examples/mods/variant_neon_venom_skorpion. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_overclocked_m416",
+      "version": "0.1.0",
+      "sha256": "c929f97514b6e44ca717d6e6787e61c2521544d031d24625c4a38771e0bb77e6",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M416 Overclocked, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_overclocked_m416/gen.py, no game pixels. Source in examples/mods/variant_overclocked_m416. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_party_popper_rpg7",
+      "version": "0.1.0",
+      "sha256": "5160ab0a886f1eb6fa725987d2c52c166bbc98b0c5335d07a7a30c375998885c",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "RPG-7 Party Popper, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_party_popper_rpg7/gen.py, no game pixels. Source in examples/mods/variant_party_popper_rpg7. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_peppermint_k5",
+      "version": "0.1.0",
+      "sha256": "fc79d81880b52e78c45e3e585e574813aed36dd56aa10e6e7057711a6b599cc8",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "K5 Peppermint, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_peppermint_k5/gen.py, no game pixels. Source in examples/mods/variant_peppermint_k5. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_pixel_arcade_m6a2",
+      "version": "0.1.0",
+      "sha256": "57f1a5806903307fb7bc48fee6d79e1b57cca6c0949588c1ddc7b899f0716c41",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M6A2 Pixel Arcade, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_pixel_arcade_m6a2/gen.py, no game pixels. Source in examples/mods/variant_pixel_arcade_m6a2. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_prism_scar",
+      "version": "0.2.1",
+      "sha256": "1b7091f27ce0af593d631a1b682b669b702a18f2f3f06bf306467c3888d5e410",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "SCAR-L Prism, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_prism_scar/gen.py, no game pixels. Source in examples/mods/variant_prism_scar. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_python_sr25",
+      "version": "0.1.0",
+      "sha256": "f577e6de01e7b1838c6063bfeb4661fa7a35d82d253ee1e710ca897f740cdf88",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "SR25 Python, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_python_sr25/gen.py, no game pixels. Source in examples/mods/variant_python_sr25. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_royal_marble_g23",
+      "version": "0.1.0",
+      "sha256": "35449011c1a72597858090e875f358f13a432a3270f259764e66c4be27ce8efd",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "G23 Royal Marble, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_royal_marble_g23/gen.py, no game pixels. Source in examples/mods/variant_royal_marble_g23. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_rubber_ducky_m92f",
+      "version": "0.1.0",
+      "sha256": "66c477251bd0e2d7c4423caa56439070209a4d9af2920249ab1ab8af32fba5dc",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M92F SE Rubber Ducky, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_rubber_ducky_m92f/gen.py, no game pixels. Source in examples/mods/variant_rubber_ducky_m92f. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_shark_week_m590",
+      "version": "0.1.0",
+      "sha256": "b8ee0a4e4b2ffca4582c3721aa02007d0f0d0f0c24794f4817a75e3f91a8d363",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M590 Mariners Shark Week, a Rare weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_shark_week_m590/gen.py, no game pixels. Source in examples/mods/variant_shark_week_m590. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_stained_glass_msg90",
+      "version": "0.1.0",
+      "sha256": "6b09837d588d230178d590adb5346a71b644732e372c8c6a3c721a3f69dd1bf0",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "MSG-90 Stained Glass, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_stained_glass_msg90/gen.py, no game pixels. Source in examples/mods/variant_stained_glass_msg90. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_swiss_cheese_sg550",
+      "version": "0.1.0",
+      "sha256": "9156783655f5fa833e3148d1eb52fc1a4ad6250afc22f8777fb569a9a32cbd58",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "SG550 Swiss Cheese, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_swiss_cheese_sg550/gen.py, no game pixels. Source in examples/mods/variant_swiss_cheese_sg550. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_synthwave_m4a1",
+      "version": "0.1.0",
+      "sha256": "008a0073c6bffef2fa0c36a5ad482df2877b7978b0c106a0d9b6cf48a45f7386",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M4A1 Synthwave, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_synthwave_m4a1/gen.py, no game pixels. Source in examples/mods/variant_synthwave_m4a1. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_thunderstorm_m14",
+      "version": "0.1.0",
+      "sha256": "ba087bec7e9496d1357a7ac84b02452809533df854d9add8e8f84dbd2c7bb3db",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "M14 Thunderstorm, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_thunderstorm_m14/gen.py, no game pixels. Source in examples/mods/variant_thunderstorm_m14. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_tie_dye_k1a",
+      "version": "0.1.0",
+      "sha256": "f5abed3a6418b7c4f8202a6e94e4790a72e6f13945654e23885ea45cc7af8f93",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "K1A Tie-Dye, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_tie_dye_k1a/gen.py, no game pixels. Source in examples/mods/variant_tie_dye_k1a. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_tiger_l96a1",
+      "version": "0.1.1",
+      "sha256": "772190d229b2b258d15dfcdaab2bb15cc0e30b9bbea1948c535d818eed955111",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "L96A1 Purple Tiger, a Epic weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_tiger_l96a1/gen.py, no game pixels. Source in examples/mods/variant_tiger_l96a1. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_toxic_l96a1",
+      "version": "0.1.2",
+      "sha256": "93712d3ecec6478eb8bedc74c563a5ec50a9ea2e31d7b210f6191d0ac0d966f6",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "L96A1 Toxic, a Legendary weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_toxic_l96a1/gen.py, no game pixels. Source in examples/mods/variant_toxic_l96a1. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
+    },
+    {
+      "id": "variant_watermelon_smash_double_barrel",
+      "version": "0.1.0",
+      "sha256": "874d9d57685bd97f2d607868cd1b6847a240c117ba93588b465f4372013e4eec",
+      "source_repo": "https://github.com/argallo/DeCombat",
+      "reviewer_note": "Double Barrel Watermelon Smash, a Common weapon variant (camo) for the Camo Crate; owner go 2026-11-07 (Mac hand-off, camo tiers CRATE-6). Looks different, plays exactly the same as its base gun. Our own paint from tools/camos/variant_watermelon_smash_double_barrel/gen.py, no game pixels. Source in examples/mods/variant_watermelon_smash_double_barrel. Flowing paint needs a client with VAR-12 (caf5587e or later); the rarity key needs clients and lobbies with CRATE-6 (09396979 or later)."
     }
   ]
 }

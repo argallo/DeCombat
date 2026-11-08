@@ -4380,11 +4380,15 @@ fn dispatch(s: &mut Session, id: u16, d: &[u8], ev: &mut Vec<LinkEvent>) -> Opti
     None
 }
 
-/// The balance replies and grade pushes kept while the connection belonged to the game session, as events (the
-/// last of each kind; neither is parked by the 2009 client).
-// EVIDENCE: cshell+0x337b0 (0x345), cshell+0x36690 (0x3003): both store their values whatever screen is up
+/// The balance replies, grade pushes and inbox-stale pushes kept while the connection belonged to the game session,
+/// as events (the last of each kind; none is parked by the 2009 client).
+// EVIDENCE: cshell+0x337b0 (0x345), cshell+0x36690 (0x3003): both store their values whatever screen is up;
+// cshell+0x33c20 (0x3014: the inbox flag shell +0x1bc +0x1a = 1, whatever screen is up)
+// DC-DEFAULT: CRATE-3 (amend, owner report 2026-11-07) a crate or HiSec case picked up in the match pushes 0x3014 while
+// the match holds the connection; the return keeps it, so the inbox asks again after the match (it was dropped with
+// the other kept frames and the row showed only after a relog)
 fn kept_pushes(link: &mut TcpLink) -> Vec<LinkEvent> {
-    let frames = link.take_ids(&[BALANCE_REPLY, GRADE_PUSH]);
+    let frames = link.take_ids(&[BALANCE_REPLY, GRADE_PUSH, INBOX_STALE_PUSH]);
     let last = |id: u16| frames.iter().rev().find(|(i, _)| *i == id).map(|(_, d)| d);
     let mut out = Vec::new();
     if let Some(d) = last(GRADE_PUSH) {
@@ -4392,6 +4396,9 @@ fn kept_pushes(link: &mut TcpLink) -> Vec<LinkEvent> {
     }
     if let Some(e) = last(BALANCE_REPLY).and_then(|d| balance_of(d)) {
         out.push(e);
+    }
+    if last(INBOX_STALE_PUSH).is_some() {
+        out.push(LinkEvent::InboxStale);
     }
     out
 }
@@ -4627,6 +4634,56 @@ mod tests {
         w.command(LinkCmd::BackToRoom);
         assert!(progress_events(&rx).is_empty());
         assert_eq!(w.session.as_ref().unwrap().profile.exp, 100);
+    }
+
+    /// The worker's lobby as a match hands it back: the session taken out (the hand-over), `ids` pushed by the lobby
+    /// while the match runs and read into the connection's kept frames (the lobby keeper's pump).
+    fn back_from_match(w: &mut Worker, peer: &mut std::net::TcpStream, ids: &[u16]) -> Lobby {
+        use std::io::Write;
+        let s = w.session.take().unwrap();
+        let mut lobby = Lobby::from_parts(
+            s.link,
+            s.ticket,
+            s.profile,
+            s.room,
+            Duration::from_secs(5),
+            Recorder::null("test"),
+        );
+        for &id in ids {
+            peer.write_all(&PktWriter::new(id).into_frame()).unwrap();
+        }
+        let end = Instant::now() + Duration::from_secs(5);
+        while !ids.iter().all(|&id| lobby.link.has_pending(id)) && Instant::now() < end {
+            let _ = lobby.link.pump(Duration::from_millis(50));
+        }
+        assert!(ids.iter().all(|&id| lobby.link.has_pending(id)));
+        lobby
+    }
+
+    #[test]
+    fn an_inbox_push_during_the_match_marks_the_inbox_stale_on_the_return() {
+        // CRATE-3 amend (owner report 2026-11-07: a Camo Crate picked up in a match was not in the inbox after the
+        // match, only after a relog): the 0x3014 of the pickup came while the match held the connection and the
+        // return dropped it with the other kept frames
+        for held in [true, false] {
+            let (mut w, rx, mut peer) = held_worker(None);
+            let lobby = back_from_match(&mut w, &mut peer, &[INBOX_STALE_PUSH, INBOX_STALE_PUSH]);
+            w.message(if held {
+                Msg::ResumeHeld(Box::new(lobby))
+            } else {
+                Msg::Resume(Box::new(lobby))
+            });
+            let stale = rx
+                .try_iter()
+                .filter(|e| matches!(e, LinkEvent::InboxStale))
+                .count();
+            assert_eq!(stale, 1, "result screen {held}: one stale mark");
+        }
+        // nothing pushed: no mark
+        let (mut w, rx, mut peer) = held_worker(None);
+        let lobby = back_from_match(&mut w, &mut peer, &[]);
+        w.message(Msg::ResumeHeld(Box::new(lobby)));
+        assert!(!rx.try_iter().any(|e| matches!(e, LinkEvent::InboxStale)));
     }
 
     #[test]

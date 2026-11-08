@@ -301,6 +301,8 @@ impl MenuApp<'_> {
         }
         let t_present = Instant::now();
         dc_hangdump::crumb_wait!("frame: present", frame.present());
+        // CLI-1932: enough frames shown: the start finished
+        crate::startguard::presented();
         #[cfg(target_os = "ios")]
         if std::env::var_os("DC_IOS_INPUT_LOG").is_some() {
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -482,16 +484,25 @@ impl MenuApp<'_> {
         crate::window::end_loop(el);
     }
 
-    /// Window pixels to the virtual 1024 x 768 screen.
+    /// Window pixels to the virtual 1024 x 768 screen (CLI-1915: through the band of [`dc_ui_data::VirtualScaler`];
+    /// a point in a side band lies left of 0 or right of 1024 and hits no control).
     fn to_virtual(&self, x: f64, y: f64) -> [f32; 2] {
         let (w, h) = self.live.as_ref().map_or((1024, 768), |l| {
             (l.host.config.width.max(1), l.host.config.height.max(1))
         });
-        [
-            (x * 1024.0 / w as f64) as f32,
-            (y * 768.0 / h as f64) as f32,
-        ]
+        pointer_to_virtual([x, y], (w, h))
     }
+}
+
+/// Window pixels `p` of a `size` window to the virtual screen: the band of [`dc_ui_data::VirtualScaler`] (CLI-1915),
+/// in f64 as the menu window always mapped (without side bands `x x 1024 / width`, `y x 768 / height`).
+pub fn pointer_to_virtual(p: [f64; 2], size: (u32, u32)) -> [f32; 2] {
+    let sc = dc_ui_data::VirtualScaler::new(size.0.max(1), size.1.max(1));
+    let (bw, bh) = sc.band_size();
+    [
+        ((p[0] - sc.ox as f64) * 1024.0 / bw as f64) as f32,
+        ((p[1] - sc.oy as f64) * 768.0 / bh as f64) as f32,
+    ]
 }
 
 impl ApplicationHandler for MenuApp<'_> {
@@ -865,6 +876,7 @@ fn match_options(
     room: &super::link::RoomView,
     reticle: Option<(u16, u32)>,
     prefs: crate::window::MatchPrefs,
+    fov_range: Option<(u32, u32)>,
 ) -> WindowOptions {
     let mut mopts = wopts.clone();
     if let Some(s) = changed {
@@ -882,6 +894,9 @@ fn match_options(
     };
     // use-items-sweep: and the reticle item in use (CLI-1878)
     mopts.reticle = reticle;
+    // CLI-1916: the player's field of view inside the range the server published (vanilla: the 2009 view)
+    mopts.client_fov = fov_range;
+    mopts.view = mopts.view.with_player_fov(prefs.settings.fov, fov_range);
     // CLI-1907: and the settings the options over the match start from
     mopts.prefs = Some(prefs);
     mopts
@@ -1035,6 +1050,7 @@ pub fn run_menu_window(
                             &menu.data.room,
                             reticle,
                             prefs,
+                            menu.fov_range(),
                         );
                         let (r, back, host) =
                             run_window_in_host(&mut el, Box::new(net), mopts, sound.take(), host);

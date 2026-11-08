@@ -68,10 +68,12 @@ pub struct HisecTuning {
     pub force: bool,
     /// Percent of the drops that are a Camo Crate instead of a HiSec case, in a match whose weapon table has variants
     /// (`hisec.camo_share`, 0..100; 0 = never).
-    // DC-DEFAULT: CRATE-2 (proposed) half of the drops on an entry with camos
+    // DC-DEFAULT: CRATE-2 (amended 2026-11-07, OWNER DIRECTION) three of four drops on an entry with camos
     pub camo_share: u32,
-    /// The `[Hisec<n>]` row whose model a Camo Crate shows in the world (`hisec.camo_row`).
-    // DC-DEFAULT: CRATE-2 (proposed) row 1
+    /// The `[Hisec<n>]` row whose model a Camo Crate shows in the world (`hisec.camo_row`). Not a row of
+    /// [`HisecTuning::case_rows`]: the EU ROM's rows 0 and 1 are the same case model in a dark silver and a dark gold
+    /// skin, which the plain drops use; row 2 is the one case of another shape and colour.
+    // DC-DEFAULT: CRATE-2 (amended 2026-11-07, OWNER REPORT "camo crates also appear as black hi-sec") row 2
     pub camo_row: u32,
 }
 
@@ -88,8 +90,8 @@ impl Default for HisecTuning {
             case_row: 0,
             case_rows: [(0, 80), (1, 20), (0, 0), (0, 0)],
             force: false,
-            camo_share: 50,
-            camo_row: 1,
+            camo_share: 75,
+            camo_row: 2,
         }
     }
 }

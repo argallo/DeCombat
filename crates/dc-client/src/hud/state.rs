@@ -394,6 +394,10 @@ pub struct HudState {
     pub damage: [f32; DAMAGE_SECTORS],
     /// The fall's screen-edge band strength (1 at the hit, decays like a sector; [`super::fallborder`]).
     pub fall_border: f32,
+    /// The running screen flash of 0x66 kind 0x0c ([`super::whiteout`], CLI-1926).
+    pub whiteout: Option<super::whiteout::Whiteout>,
+    /// The drawn weapon's flash numbers (`None`: no weapon in hand, the white is not drawn), set every frame.
+    pub flash_decl: Option<super::whiteout::FlashDecl>,
     /// When the sectors last decayed (ms).
     pub damage_at: u32,
     /// Death time (0x67 state 2) and the wait the client armed for it.
@@ -515,6 +519,20 @@ impl HudState {
         }
         self.fall_border = (self.fall_border - dt * DAMAGE_DECAY_PER_S).max(0.0);
         self.now_ms = now;
+        // CLI-1926: the screen flash ends at its time, or for a fading one when its white is gone, and at the own
+        // death
+        // EVIDENCE: cshell+0x485fc..0x48611 (the own player's state, local player +0x30, other than 1 ends it unless
+        // local player +0x428 is 3)
+        // DC-DEFAULT: CLI-1926 (proposed) the death states 2, 3, 5, 6 end it (+0x428 is not read; a HUD that has no
+        // state yet keeps the flash)
+        let decl = self.flash_decl.unwrap_or_default();
+        let dead = matches!(self.life_state, 2 | 3 | 5 | 6);
+        if self
+            .whiteout
+            .is_some_and(|w| dead || w.level(now, decl).is_none())
+        {
+            self.whiteout = None;
+        }
         // CLI-1051: the bomb timer's beeps, the gauge's end
         self.tick_bomb(now);
         self.tick_qrt(now);
@@ -648,6 +666,15 @@ impl HudState {
             return;
         }
         self.hit_flash_at = Some(now);
+    }
+
+    /// The screen flash's white level at the HUD clock (0: none, or no weapon in hand to read the numbers from).
+    // EVIDENCE: cshell+0x485b4..0x485c1 (no drawn weapon object: the frame draws nothing, the flash runs on)
+    pub fn white_level(&self) -> f32 {
+        match (self.whiteout, self.flash_decl) {
+            (Some(w), Some(d)) => w.level(self.now_ms, d).unwrap_or(0.0),
+            _ => 0.0,
+        }
     }
 
     /// The hit flash's strength at `now`: 1 at the hit, falling to 0 over [`HIT_FLASH_MS`].
@@ -1375,6 +1402,8 @@ pub enum HudEvent {
     /// A local weapon change (the 0x7f the client sent): the carried weapons in slot order and the selected one
     /// ([`super::panel`], client-hudgaps).
     WeaponPanel { carried: Vec<u16>, selected: u16 },
+    /// 0x66 kind 0x0c: the screen flash (`fade`: the non-zero first sub-byte; its length in seconds), CLI-1926.
+    ScreenFlash { fade: bool, secs: f32 },
 }
 
 impl HudState {
@@ -1382,6 +1411,10 @@ impl HudState {
     pub fn apply(&mut self, e: &HudEvent, now: u32, view_yaw: f32) {
         match e {
             HudEvent::Status { kind, value } => self.on_status(*kind, *value),
+            HudEvent::ScreenFlash { fade, secs } => {
+                // a new flash replaces the running one (cshell+0x47bb0 resets the state before it starts)
+                self.whiteout = super::whiteout::Whiteout::start(now, *secs, *fade);
+            }
             HudEvent::Life(st) => {
                 self.on_life(*st, now);
                 if *st == 1 {

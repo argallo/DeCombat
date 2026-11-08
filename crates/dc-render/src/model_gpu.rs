@@ -117,6 +117,7 @@ struct PassUniform {
     mat_specular: [f32; 4],
     fx_a: [f32; 4],
     fx_b: [f32; 4],
+    flow: [f32; 4],
 }
 
 /// The seconds the camo effects run on (DC_DEFAULTS.md VAR-4), wrapped so they stay exact in a float.
@@ -173,6 +174,24 @@ fn argb(v: u32) -> [f32; 4] {
 /// A model pipeline shared by the uploads that use its raster state: filled on the frame thread (gpu-prewarm: a
 /// loader thread leaves it empty and queues its key, [`ModelPipelines::make_pending`] fills it before the frame).
 type PipeSlot = Arc<OnceLock<wgpu::RenderPipeline>>;
+
+/// CLI-1933: the threads the pre-warm makes `keys` pipelines on: one per key up to the CPU's threads less one (the
+/// audio and network threads keep running), at most [`PREWARM_THREADS_MAX`], at least one. On DX12 each pipeline
+/// compiles its HLSL with FXC on the CPU (about 130 ms per model pipeline on a fast desktop CPU, several times that
+/// on a laptop), so the match load of 18 model pipelines was 18 compiles in a row on the frame thread.
+// DC-DEFAULT: CLI-1933 (proposed) up to 4 pre-warm threads
+fn prewarm_threads(keys: usize) -> usize {
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    prewarm_threads_for(keys, cpus)
+}
+
+/// CLI-1933: the most pre-warm threads.
+pub const PREWARM_THREADS_MAX: usize = 4;
+
+fn prewarm_threads_for(keys: usize, cpus: usize) -> usize {
+    keys.min(cpus.saturating_sub(1))
+        .clamp(1, PREWARM_THREADS_MAX)
+}
 
 /// What [`ModelPipelines::prewarm`] made.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -371,8 +390,21 @@ impl ModelPipelines {
     /// thread ([`crate::warm::forbid_on_this_thread`]) an empty slot whose key [`ModelPipelines::make_pending`] makes.
     /// Returns the slot and whether a pipeline was made.
     fn pipeline(&self, ctx: &GpuContext, key: PipeKey) -> (PipeSlot, bool) {
-        let mut map = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
-        let slot = map.entry(key).or_default().clone();
+        self.pipeline_for(ctx, key, None)
+    }
+
+    /// [`ModelPipelines::pipeline`] naming the render style that needs it (`style`, for the slow-pipeline line).
+    /// CLI-1933: the map is not held while the pipeline is made (the pre-warm makes several at once).
+    fn pipeline_for(
+        &self,
+        ctx: &GpuContext,
+        key: PipeKey,
+        style: Option<&str>,
+    ) -> (PipeSlot, bool) {
+        let slot = {
+            let mut map = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+            map.entry(key).or_default().clone()
+        };
         if slot.get().is_some() {
             return (slot, false);
         }
@@ -384,7 +416,7 @@ impl ModelPipelines {
             self.has_pending.store(true, Ordering::Release);
             return (slot, false);
         }
-        let made = slot.set(self.make_pipeline(ctx, key)).is_ok();
+        let made = slot.set(self.make_pipeline(ctx, key, style)).is_ok();
         (slot, made)
     }
 
@@ -418,17 +450,72 @@ impl ModelPipelines {
         ctx: &GpuContext,
         styles: impl IntoIterator<Item = &'a RenderStyle>,
     ) -> PrewarmCount {
+        // CLI-1933: the slow-pipeline lines of this thread name this context's backend
+        crate::warm::set_thread_backend(ctx.info.backend);
         let mut n = PrewarmCount::default();
+        // CLI-1933: the distinct raster states not made yet (with the first style that names each), made on up to
+        // `prewarm_threads` threads at once; the samplers here, one by one (they are cheap)
+        let mut keys: Vec<(PipeKey, String)> = Vec::new();
         let mut add = |style: &RenderStyle| {
-            let (p, s) = self.warm_style(ctx, style);
             n.styles += 1;
-            n.pipelines += p;
-            n.samplers += s;
+            n.samplers += self.warm_samplers(ctx, style);
+            for p in &style.passes {
+                let key = PipeKey::of(p);
+                if !keys.iter().any(|(k, _)| *k == key) && !self.has_pipeline(key) {
+                    keys.push((key, style.source.clone()));
+                }
+            }
         };
         add(&RenderStyle::engine_default());
         add(&RenderStyle::plain());
         styles.into_iter().for_each(add);
+        n.pipelines = self.make_keys(ctx, &keys);
         n
+    }
+
+    fn has_pipeline(&self, key: PipeKey) -> bool {
+        let map = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(&key).is_some_and(|s| s.get().is_some())
+    }
+
+    /// CLI-1933: makes the pipelines of `keys` on [`prewarm_threads`] threads (the calling thread waits); each thread
+    /// takes every n-th key. Returns how many were made.
+    fn make_keys(&self, ctx: &GpuContext, keys: &[(PipeKey, String)]) -> usize {
+        let threads = prewarm_threads(keys.len());
+        if threads <= 1 || !crate::warm::allowed_here() {
+            return keys
+                .iter()
+                .filter(|(k, s)| self.pipeline_for(ctx, *k, Some(s)).1)
+                .count();
+        }
+        let backend = ctx.info.backend;
+        let stride = move |i: usize| {
+            keys.iter()
+                .skip(i)
+                .step_by(threads)
+                .filter(|(k, s)| self.pipeline_for(ctx, *k, Some(s)).1)
+                .count()
+        };
+        std::thread::scope(|scope| {
+            let mut inline = Vec::new();
+            let workers: Vec<_> = (0..threads)
+                .filter_map(|i| {
+                    let spawned = std::thread::Builder::new()
+                        .name(format!("dc-pipeline-{i}"))
+                        .spawn_scoped(scope, move || {
+                            crate::warm::set_thread_backend(backend);
+                            stride(i)
+                        });
+                    // a thread the system refuses: its share is made here, as before CLI-1933
+                    spawned.map_err(|_| inline.push(i)).ok()
+                })
+                .collect();
+            let here: usize = inline.into_iter().map(stride).sum();
+            here + workers
+                .into_iter()
+                .map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+                .sum::<usize>()
+        })
     }
 
     /// gpu-prewarm: makes what the passes of a style list need now (the frame thread, when a model with these styles
@@ -442,9 +529,21 @@ impl ModelPipelines {
     }
 
     fn warm_style(&self, ctx: &GpuContext, style: &RenderStyle) -> (usize, usize) {
-        let (mut pipes, mut samps) = (0, 0);
+        let pipes = style
+            .passes
+            .iter()
+            .filter(|p| {
+                self.pipeline_for(ctx, PipeKey::of(p), Some(&style.source))
+                    .1
+            })
+            .count();
+        (pipes, self.warm_samplers(ctx, style))
+    }
+
+    /// The samplers the stages of `style` need, made now; returns how many were new.
+    fn warm_samplers(&self, ctx: &GpuContext, style: &RenderStyle) -> usize {
+        let mut samps = 0;
         for p in &style.passes {
-            pipes += self.pipeline(ctx, PipeKey::of(p)).1 as usize;
             for st in &p.stages {
                 let key = SampKey {
                     address: st.address,
@@ -461,10 +560,15 @@ impl ModelPipelines {
                 }
             }
         }
-        (pipes, samps)
+        samps
     }
 
-    fn make_pipeline(&self, ctx: &GpuContext, key: PipeKey) -> wgpu::RenderPipeline {
+    fn make_pipeline(
+        &self,
+        ctx: &GpuContext,
+        key: PipeKey,
+        style: Option<&str>,
+    ) -> wgpu::RenderPipeline {
         let blend = key.blend.map(|(s, d)| {
             let c = wgpu::BlendComponent {
                 src_factor: blend_factor(s),
@@ -473,7 +577,10 @@ impl ModelPipelines {
             };
             wgpu::BlendState { color: c, alpha: c }
         });
-        let detail = format!("{key:?}");
+        let detail = match style {
+            Some(s) => format!("{key:?} style {s}"),
+            None => format!("{key:?}"),
+        };
         crate::determinism::render_pipeline_for(
             &ctx.device,
             &wgpu::RenderPipelineDescriptor {
@@ -711,12 +818,11 @@ impl ModelPipelines {
             }
         };
         // VAR-4: the first pass of a piece carries the effect of its first texture, once
-        let fx = views
-            .iter()
-            .flatten()
-            .next()
+        let first = views.iter().position(Option::is_some);
+        let fx = first
+            .and_then(|k| views[k])
             .filter(|_| std::ptr::eq(p, &style.passes[0]))
-            .and_then(|slot| textures.get(*slot as usize)?.as_ref()?.fx.as_ref());
+            .and_then(|slot| textures.get(slot as usize)?.as_ref()?.fx.as_ref());
         let fx_tile_view;
         let fx_mask_view;
         let (fx_tile, fx_mask) = match fx {
@@ -752,6 +858,11 @@ impl ModelPipelines {
             mat_specular: [m.specular[0], m.specular[1], m.specular[2], power],
             fx_a: fx.map_or([0.0; 4], |f| [1.0, f.tiles, f.speed[0], f.speed[1]]),
             fx_b: fx.map_or([0.0; 4], |f| [f.gain[0], f.gain[1], f.seconds, 0.0]),
+            // VAR-12: a flow colours the stage of that first texture: on, swirl, seconds per swirl, stage
+            flow: match fx.and_then(|f| f.flow) {
+                Some([swirl, seconds]) => [1.0, swirl, seconds, first.unwrap_or(0) as f32],
+                None => [0.0; 4],
+            },
         };
         let device = &ctx.device;
         let ub = crate::perf::buffer_init(
@@ -1813,5 +1924,21 @@ impl ModelUploader {
     /// The device context the uploads go to.
     pub fn context(&self) -> &GpuContext {
         &self.ctx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // CLI-1933: one thread per pipeline, the CPU's threads less one, at most four, at least one
+    #[test]
+    fn the_prewarm_uses_a_few_threads() {
+        assert_eq!(prewarm_threads_for(18, 8), 4);
+        assert_eq!(prewarm_threads_for(18, 4), 3);
+        assert_eq!(prewarm_threads_for(2, 16), 2);
+        assert_eq!(prewarm_threads_for(18, 2), 1);
+        assert_eq!(prewarm_threads_for(18, 1), 1);
+        assert_eq!(prewarm_threads_for(0, 8), 1);
     }
 }

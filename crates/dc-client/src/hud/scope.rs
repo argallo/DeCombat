@@ -109,7 +109,9 @@ pub fn texel_size(scale: f32, width: u32, height: u32) -> [f32; 2] {
     let fy = dc_render::PLAYER_VIEW_DEFAULT.fov_y_deg.to_radians();
     // eye units per texel (the half extent is texels x scale) / eye units per half screen height at the depth
     let k = 2.0 * scale / (SPRITE_DEPTH * (fy * 0.5).tan());
-    let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+    // CLI-1915: the virtual width is the 16:9 band's on a wider target
+    let band = dc_ui_data::VirtualScaler::new(width.max(1), height.max(1)).band_size().0;
+    let (w, h) = (band.max(1) as f32, height.max(1) as f32);
     let vh = dc_ui_data::VIRTUAL_HEIGHT as f32;
     let vw = dc_ui_data::VIRTUAL_WIDTH as f32;
     // target pixels per texel: k x height / 2 on both axes (the player-view projection divides x by the aspect)

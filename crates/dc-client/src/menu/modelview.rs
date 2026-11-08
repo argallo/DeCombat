@@ -385,6 +385,12 @@ pub fn crop(rgba: &[u8], w: u32, h: u32, rect: [u32; 4]) -> Tex {
     }
 }
 
+/// CLI-1915: the size the interface's model views are laid out on: the 16:9 band of a wider target (the view is part
+/// of the 2D layer; the band's origin is added when the picture is drawn as a display-list image).
+pub fn layout_size(size: (u32, u32)) -> (u32, u32) {
+    dc_ui_data::VirtualScaler::new(size.0.max(1), size.1.max(1)).band_size()
+}
+
 /// The pane rectangle in target pixels.
 pub fn rect_px(rect: [i32; 4], size: (u32, u32)) -> [u32; 4] {
     let sx = size.0 as f32 / 1024.0;
@@ -519,7 +525,7 @@ fn render(g: &mut Gpu, job: &Job) -> Option<Tex> {
         return render_showcase(g, job, s);
     }
     g.models.clear_showcase();
-    let (w, h) = (job.size.0.max(1), job.size.1.max(1));
+    let (w, h) = layout_size(job.size);
     let look = match &job.req.look {
         Some(l) => l.clone(),
         None => CharLook {
@@ -658,7 +664,7 @@ fn render(g: &mut Gpu, job: &Job) -> Option<Tex> {
 /// CRATE-8: the showcase model alone, posed and lit as `s` asks, over the request's rectangle (coverage as the
 /// character's: drawn over black and over white).
 fn render_showcase(g: &mut Gpu, job: &Job, s: &Showcase) -> Option<Tex> {
-    let (w, h) = (job.size.0.max(1), job.size.1.max(1));
+    let (w, h) = layout_size(job.size);
     let (lo, hi) = g.models.showcase_bounds(&g.ctx, &g.renderer, &s.model)?;
     let size = Vec3::from(hi) - Vec3::from(lo);
     let length = size.max_element().max(1.0);

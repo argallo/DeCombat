@@ -46,6 +46,8 @@ pub fn match_gpu(
 ) -> Prewarm {
     let t = Instant::now();
     let before = dc_render::warm::creates();
+    dc_render::warm::restart_longest();
+    let times0 = dc_render::warm::pipeline_times();
     let counts = match models {
         Some(m) => m.prewarm(ctx, renderer),
         None => renderer.prewarm(ctx, []),
@@ -61,6 +63,15 @@ pub fn match_gpu(
         "dc-client: GPU pipelines made before play: {} in {:.1} ms ({} model pipelines and {} samplers for {} render \
          styles, x-ray, effects); later ones are logged as \"pipeline made in play\"",
         p.creates, p.ms, counts.pipelines, counts.samplers, counts.styles
+    );
+    // CLI-1933: the compile time behind it (summed over the pre-warm threads) and the backend
+    let times = dc_render::warm::pipeline_times();
+    println!(
+        "dc-client: pre-warm pipelines {} ({:?}): {:.0} ms of compiles, the longest {:.0} ms",
+        times.count - times0.count,
+        ctx.info.backend,
+        times.total_ms - times0.total_ms,
+        times.max_ms
     );
     dc_render::warm::begin_play();
     p

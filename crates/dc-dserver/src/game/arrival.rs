@@ -295,16 +295,19 @@ impl Game {
     /// A step of a hazard volume's damage on a living player inside it: `amount` of damage type `dtype` through the
     /// DSV-30 path (the worn armour takes the share its gear rows give that type), no attacker, `from_dir` up and
     /// `dmg_kind` 0 as a fall's, the pain sound; a lethal step dies with no killer and the drawn weapon in the kill
-    /// feed (the DSV-52 form). Nothing while the round is not running.
+    /// feed (the DSV-52 form). Nothing while the round is not running, and nothing for an infected player of a
+    /// Quarantine room in a survivable poison volume (`per_sec`, the volume's damage per second, below
+    /// `infect::INFECTED_LETHAL_HAZARD_RATE`; DSV-607 amended).
     // SPEC: GAME_MESSAGES_2009_S2C.md §3.3.1 field 2 (`killer` 0xff = no killer), §4.3 (0x74 after the damage)
     // DC-DEFAULT: DSV-607 (proposed) hazard volumes hurt on the server
-    pub fn hazard_damage(&mut self, pid: u8, amount: f32, dtype: u8, now: Millis) {
+    pub fn hazard_damage(&mut self, pid: u8, amount: f32, dtype: u8, per_sec: f32, now: Millis) {
         let Some(p) = self.players.get(&pid) else {
             return;
         };
         if p.life != Life::Alive
             || !matches!(self.phase, super::RoundPhase::Running { .. })
             || !(amount.is_finite() && amount > 0.0)
+            || self.infected_spared_by_hazard(pid, dtype, per_sec)
         {
             return;
         }

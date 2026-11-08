@@ -352,6 +352,9 @@ pub struct MenuData {
     pub mods_dir: Option<PathBuf>,
     /// CLI-1908: the options are over a match: their Mods tab lists these mods (`None`: the lobby's options).
     pub match_mods: Option<optionsmods::MatchModsInfo>,
+    /// CLI-1916: the field-of-view range the joined server publishes (the Options screen's Field of View row says
+    /// "locked" without one; read from the join's mod set when the options open, from the match's info over a match).
+    pub fov_range: Option<(u32, u32)>,
     /// LG-272: the other lobbies the login's lobby lists (push 0x3f02).
     pub other_lobbies: Vec<link::OtherLobby>,
     /// CLI-1622: the lobby of the list the player joined (its name) and where the player came from; the login screen
@@ -1027,6 +1030,7 @@ impl Menu {
         }
         self.data.settings_changed = false;
         self.data.sound_live = None;
+        self.data.fov_range = mods.fov_range;
         self.data.match_mods = Some(mods);
         self.popups.clear();
         self.under.clear();
@@ -1476,6 +1480,10 @@ impl Menu {
         // MAP-32: the room list opens on the joined server's community maps and its mod files
         if g == Go::Lobby {
             self.sync_mods();
+        }
+        // CLI-1916: the options show whether the joined server lets the player choose a field of view
+        if g == Go::Options && self.data.match_mods.is_none() {
+            self.data.fov_range = self.link.join_report().set.and_then(|s| s.fov_range());
         }
         self.screen = match g {
             Go::Login => Box::new(login::Login::new(&self.cat, &self.data)),
@@ -2350,6 +2358,12 @@ impl Menu {
                 .map(crate::modassets::ModAssets::from_recipe),
         );
         self.dirty = true;
+    }
+
+    /// CLI-1916: the field-of-view range of the joined server's set (`None`: vanilla, an older lobby, no join): the
+    /// range the match clamps the player's setting into.
+    pub fn fov_range(&self) -> Option<(u32, u32)> {
+        self.link.join_report().set.and_then(|s| s.fov_range())
     }
 
     /// The community map rows (tests and tools): what [`Menu::sync_mods`] reads from the join report, with the

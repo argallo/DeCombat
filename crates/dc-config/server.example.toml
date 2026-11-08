@@ -50,6 +50,7 @@ heartbeat_secs = 60
 [mods]
 policy = "vanilla"              # "vanilla" or "modded"
 client_visual_allowed = false   # must stay false when vanilla
+# client_fov = [70, 120]        # modded only: the field-of-view range players may choose (60..130); [90, 90] locks it
 max_zip_bytes = 33554432
 
 # --- DeCombat gameplay defaults (DC_DEFAULTS.md); change only what you want to differ ---
@@ -89,6 +90,8 @@ blast_damage_scale = 1.0        # DSV-165: multiplier of grenade / blast damage 
 fallback = true                 # false = no fallback: such rooms get time=0 (no clock, DSV-20)
 default = 600                   # seconds for a mode class the built-in table does not list
 # 1 = 900                       # <ROM mode class> = seconds; unlisted classes keep the built-in table
+# 7 = 900                       # a non-zero class entry beats the mode file's TimeLimit; the flag classes 7 / 8
+#                               # ignore the file's TimeLimit (its 180 is not a match length) and default to 600
 
 [economy]
 case_odds = [[1, 60], [3, 25], [7, 10], [30, 4], [0, 1]]   # CD-01: [days, weight]; 0 days = permanent
@@ -99,14 +102,14 @@ ranks = ""                      # CD-05: path of a ranks.toml, empty = generated
 rank_bonus = true               # CD-41: a rank-up adds the ROM level table's Bonus GP (LG-303)
 trust_server_rewards = false    # CD-54
 
-[economy.exp]                   # CD-03
-finish = 10
-kill = 4
+[economy.exp]                   # CD-03 (x1.5 over the first defaults, 2026-11-07)
+finish = 15
+kill = 6
 assist = 0
 win_percent = 25
-objective = 15
+objective = 22
 team_kill_penalty = -1          # -1 = same as kill
-agent_win = 30                  # CD-86 Spy Hunt agent win extra
+agent_win = 45                  # CD-86 Spy Hunt agent win extra
 
 [economy.gp]                    # CD-04
 finish = 20
@@ -271,6 +274,7 @@ managed_max_total = 21          # LG-388: most managed bots of all groups togeth
 case_product = 0                # HS-6: product a picked-up case becomes; 0 = from the ROM tables
 announce = "all"                # HS-9: who hears a HiSec opening (0x3013): "all", "channel" or "off"
 no_key_reason = 153             # HS-7: 0x32f reason (0x99) when no usable key is owned
+camo_share = 75                 # CRATE-2: percent of the HiSec drops that are Camo Crates where the entry has camos (0..100; 0 = never); passed to each game server as `-hisec camo_share=<n>`, so the total stays about one drop a match
 
 [client]                        # LG-322 (proposed): what clients are told before their login (GET /client_version.json)
 latest = ""                     # newest release, "0.3.0"; an older client shows a notice and goes on; "" = no notice

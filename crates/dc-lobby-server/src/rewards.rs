@@ -534,18 +534,18 @@ mod tests {
         let mut agent = ctx(2, 1, 0);
         agent.player_win = Some(true);
         agent.agent_win = true;
-        // (10 + 8) * 1.25 + 30 = 52.5 -> 53 EXP; GP: (20 + 12) * 1.25 + 0 = 40
-        assert_eq!(base(&r, &agent), (53, 40));
+        // (15 + 12) * 1.25 + 45 = 78.75 -> 79 EXP; GP: (20 + 12) * 1.25 + 0 = 40
+        assert_eq!(base(&r, &agent), (79, 40));
         assert!(agent.won());
         // a hunter with the same kills on the same lobby side: win=0 -> no win bonus, no extra
         let mut hunter = ctx(2, 1, 0);
         hunter.player_win = Some(false);
-        assert_eq!(base(&r, &hunter), (18, 32));
+        assert_eq!(base(&r, &hunter), (27, 32));
         assert!(!hunter.won());
         // the hunters' win after the agent fell: win=1 without agent=1 is the plain win bonus
         let mut hunter_won = ctx(2, 1, 0);
         hunter_won.player_win = Some(true);
-        assert_eq!(base(&r, &hunter_won), (23, 40));
+        assert_eq!(base(&r, &hunter_won), (34, 40));
         // a per-player verdict beats the team rule either way
         let mut overruled = ctx(2, 1, 1);
         overruled.player_win = Some(false);
@@ -558,12 +558,12 @@ mod tests {
     #[test]
     fn cd03_cd04_defaults() {
         let r = Rules::default();
-        // winner with 2 kills: (10 + 8) * 1.25 = 22.5 -> 23 exp; (20 + 12) * 1.25 = 40 GP
-        assert_eq!(base(&r, &ctx(2, 1, 1)), (23, 40));
+        // winner with 2 kills: (15 + 12) * 1.25 = 33.75 -> 34 exp; (20 + 12) * 1.25 = 40 GP
+        assert_eq!(base(&r, &ctx(2, 1, 1)), (34, 40));
         // loser with no kills: finish only
-        assert_eq!(base(&r, &ctx(0, 2, 1)), (10, 20));
+        assert_eq!(base(&r, &ctx(0, 2, 1)), (15, 20));
         // draw: no win bonus
-        assert_eq!(base(&r, &ctx(1, 1, 0)), (14, 26));
+        assert_eq!(base(&r, &ctx(1, 1, 0)), (21, 26));
         // team kills cost the kill value, never below zero
         let mut c = ctx(0, 2, 1);
         c.team_kills = 10;
@@ -572,7 +572,8 @@ mod tests {
         let mut c = ctx(0, 2, 1);
         c.exp_factor = 1.5;
         c.gp_factor = 2.0;
-        assert_eq!(base(&r, &c), (15, 40));
+        // 15 * 1.5 = 22.5 -> 23 (half away from zero)
+        assert_eq!(base(&r, &c), (23, 40));
     }
 
     #[test]
@@ -581,7 +582,7 @@ mod tests {
         let mut c = ctx(2, 1, 1);
         c.reported_exp = Some(3);
         c.reported_gp = Some(1);
-        assert_eq!(base(&r, &c), (23, 40));
+        assert_eq!(base(&r, &c), (34, 40));
         r.trust_server_rewards = true;
         assert_eq!(
             base(&r, &c),

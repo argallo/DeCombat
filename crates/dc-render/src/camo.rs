@@ -3,7 +3,7 @@
 //!
 //! A pack may not carry anything taken from the game (docs/MODDING_GUIDE.md section 8), so a camo ships as its own pattern
 //! and a skin path that says how to use it: `@camo:<mode>:<base row>:<skin key>:[keep=x,y,radius[/x,y,radius...]:][fx=...:]<pattern
-//! path>[|<effect pattern path>]`. `keep` names circles of the base texture that stay unpainted, such as a scope's lens.
+//! path>[|<effect pattern path>]` (a `flow=...:` part may follow `fx`, VAR-12). `keep` names circles of the base texture that stay unpainted, such as a scope's lens.
 // DC-DEFAULT: VAR-3 (proposed; USER DECISION 2026-11-02, gen1recomp's rule)
 
 use crate::texture::{TextureFx, TextureImage};
@@ -20,6 +20,19 @@ const KEEP_EDGE: f32 = 2.0;
 /// What comes before a camo's effect: `fx=<drift u>,<drift v>,<lowest gain>,<highest gain>,<seconds per pulse>`.
 const FX_PREFIX: &str = "fx=";
 
+/// What comes before a camo's flow: `flow=<drift u>,<drift v>,<swirl>,<seconds per swirl>` (VAR-12).
+const FLOW_PREFIX: &str = "flow=";
+
+/// The most a flow may swirl the pattern, in repeats: past this the blobs smear into streaks (VAR-12).
+const FLOW_MAX_SWIRL: f32 = 0.25;
+
+/// The quickest swirl a flow may have, so that the colours roll like a lava lamp and never flicker (VAR-12).
+const FLOW_MIN_SECONDS: f32 = 3.0;
+
+/// The grey a flowing camo's texture is painted with: the shader multiplies it back by `255 / FLOW_GREY` times the moving
+/// pattern, so a flowing texel comes out as the painted one would, with the same shading (VAR-12).
+pub const FLOW_GREY: u8 = 170;
+
 /// The shortest pulse an effect may have, so that nothing strobes (VAR-4).
 const FX_MIN_PULSE_SECONDS: f32 = 1.0;
 
@@ -28,6 +41,20 @@ const FX_MAX_DRIFT: f32 = 1.0;
 
 /// The largest side of an effect's mask: it only has to follow the texture's parts, so it stays small.
 const FX_MASK_SIZE: usize = 256;
+
+/// A camo's flow (VAR-12): the painted colour itself moves. The texture keeps only the gun's shading, and the shader colours it
+/// from the pattern, drifting and swirled by slow waves, so the colours roll over the gun like a lava lamp. It is paint, lit as
+/// the gun is, not light: it does not glow in the dark. A path with a flow has no light effect.
+// DC-DEFAULT: VAR-12 (proposed; USER REQUEST 2026-11-06 "the full thing animating like its basically a lava lamp")
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CamoFlow {
+    /// Drift, in repeats per second, held to the effect's limit (VAR-4).
+    pub speed: [f32; 2],
+    /// How far the waves push the pattern about, in repeats (0..0.25).
+    pub swirl: f32,
+    /// Seconds per turn of the waves (at least 3).
+    pub seconds: f32,
+}
 
 /// A camo's effect: its pattern drifts and pulses over the gun as light (VAR-4).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +80,7 @@ pub struct CamoPath<'a> {
     pub base_key: &'a str,
     pub keep: Vec<Circle>,
     pub fx: Option<CamoFx>,
+    pub flow: Option<CamoFlow>,
     pub pattern: &'a str,
     /// The pattern the effect moves, when it is not the painted one (`<pattern>|<effect pattern>`).
     pub fx_pattern: Option<&'a str>,
@@ -80,6 +108,12 @@ pub fn parse(name: &str) -> Option<CamoPath<'_>> {
         fx = Some(parse_fx(text)?);
         pattern = after;
     }
+    let mut flow = None;
+    if let Some(rest) = pattern.strip_prefix(FLOW_PREFIX) {
+        let (text, after) = rest.split_once(':')?;
+        flow = Some(parse_flow(text)?);
+        pattern = after;
+    }
     let (pattern, fx_pattern) = match pattern.split_once('|') {
         Some((painted, moved)) if !moved.is_empty() => (painted, Some(moved)),
         Some(_) => return None,
@@ -91,8 +125,38 @@ pub fn parse(name: &str) -> Option<CamoPath<'_>> {
         base_key,
         keep,
         fx,
+        flow,
         pattern,
         fx_pattern,
+    })
+}
+
+/// `drift u,drift v,swirl,seconds`, held to the limits of VAR-12.
+fn parse_flow(text: &str) -> Option<CamoFlow> {
+    let v = text
+        .split(',')
+        .map(|t| t.parse::<f32>().ok().filter(|v| v.is_finite()))
+        .collect::<Option<Vec<f32>>>()?;
+    let [su, sv, swirl, seconds] = v.as_slice() else {
+        return None;
+    };
+    Some(CamoFlow {
+        speed: [su, sv].map(|s| s.clamp(-FX_MAX_DRIFT, FX_MAX_DRIFT)),
+        swirl: swirl.clamp(0.0, FLOW_MAX_SWIRL),
+        seconds: seconds.max(FLOW_MIN_SECONDS),
+    })
+}
+
+/// A flow held to the limits of VAR-12, as the game reads one.
+pub fn limited_flow(flow: CamoFlow) -> CamoFlow {
+    let text = format!(
+        "{},{},{},{}",
+        flow.speed[0], flow.speed[1], flow.swirl, flow.seconds
+    );
+    parse_flow(&text).unwrap_or(CamoFlow {
+        speed: [0.0, 0.0],
+        swirl: 0.0,
+        seconds: FLOW_MIN_SECONDS,
     })
 }
 
@@ -124,6 +188,42 @@ pub fn fx_of(
     keep: &[Circle],
     fx: CamoFx,
 ) -> Option<TextureFx> {
+    Some(TextureFx {
+        tile: with_smaller_sizes(pattern)?,
+        mask: fx_mask(base, keep, true)?,
+        tiles: PATTERN_TILES,
+        speed: fx.speed,
+        gain: fx.gain,
+        seconds: fx.seconds,
+        flow: None,
+    })
+}
+
+/// A flowing camo (VAR-12): its texture, the base painted grey so that it holds only the gun's shading, and the moving
+/// pattern, which the shader multiplies back in. Its mask leaves out only the kept circles: every other texel takes the
+/// flow, as every texel of a painted camo takes the paint.
+pub fn flowing(
+    base: &TextureImage,
+    pattern: &TextureImage,
+    keep: &[Circle],
+    flow: CamoFlow,
+) -> Option<TextureImage> {
+    let grey = TextureImage::rgba(1, 1, vec![FLOW_GREY, FLOW_GREY, FLOW_GREY, 255]);
+    let mut out = paint(base, &grey, keep)?;
+    out.fx = Some(std::sync::Arc::new(TextureFx {
+        tile: with_smaller_sizes(pattern)?,
+        mask: fx_mask(base, keep, false)?,
+        tiles: PATTERN_TILES,
+        speed: flow.speed,
+        gain: [1.0, 1.0],
+        seconds: 0.0,
+        flow: Some([flow.swirl, flow.seconds]),
+    }));
+    Some(out)
+}
+
+/// Where an effect shows, small: none in the kept circles and, when `skip_unused`, none in the base's unused space.
+fn fx_mask(base: &TextureImage, keep: &[Circle], skip_unused: bool) -> Option<TextureImage> {
     let b = base.levels.first()?;
     let (w, h) = (base.width as usize, base.height as usize);
     let (mw, mh) = (w.clamp(1, FX_MASK_SIZE), h.clamp(1, FX_MASK_SIZE));
@@ -133,7 +233,7 @@ pub fn fx_of(
             let x = ((mx * w + w / 2) / mw).min(w.saturating_sub(1));
             let y = ((my * h + h / 2) / mh).min(h.saturating_sub(1));
             let i = (y * w + x) * 4;
-            let drawn = b.get(i..i + 4).is_some_and(|px| luma(px) > UNUSED_LUMA);
+            let drawn = !skip_unused || b.get(i..i + 4).is_some_and(|px| luma(px) > UNUSED_LUMA);
             let amount = paint_amount(keep, x as f32 + 0.5, y as f32 + 0.5);
             let v = if drawn {
                 (amount * 255.0).round() as u8
@@ -143,14 +243,7 @@ pub fn fx_of(
             mask[(my * mw + mx) * 4..][..3].fill(v);
         }
     }
-    Some(TextureFx {
-        tile: with_smaller_sizes(pattern)?,
-        mask: TextureImage::rgba(mw as u32, mh as u32, mask),
-        tiles: PATTERN_TILES,
-        speed: fx.speed,
-        gain: fx.gain,
-        seconds: fx.seconds,
-    })
+    Some(TextureImage::rgba(mw as u32, mh as u32, mask))
 }
 
 /// A copy of `image` with its halved sizes down to a few texels, so a far gun's effect does not shimmer.
@@ -394,6 +487,12 @@ pub fn format_path(c: &CamoPath<'_>) -> String {
         s.push_str(&format!(
             "{FX_PREFIX}{},{},{},{},{}:",
             f.speed[0], f.speed[1], f.gain[0], f.gain[1], f.seconds
+        ));
+    }
+    if let Some(f) = c.flow {
+        s.push_str(&format!(
+            "{FLOW_PREFIX}{},{},{},{}:",
+            f.speed[0], f.speed[1], f.swirl, f.seconds
         ));
     }
     s.push_str(c.pattern);
@@ -698,6 +797,11 @@ mod tests {
                 gain: [0.25, 0.65],
                 seconds: 2.0,
             }),
+            flow: Some(CamoFlow {
+                speed: [0.03, 0.01],
+                swirl: 0.12,
+                seconds: 9.0,
+            }),
             pattern: "@mod:p/assets/a.dtx",
             fx_pattern: Some("@mod:p/assets/b.dtx"),
         };
@@ -708,6 +812,7 @@ mod tests {
             base_key: "HHSkin0",
             keep: Vec::new(),
             fx: None,
+            flow: None,
             pattern: "@mod:p/assets/a.dtx",
             fx_pattern: None,
         };
@@ -728,5 +833,57 @@ mod tests {
         assert_eq!(f.speed, [1.0, -1.0]);
         assert_eq!(f.gain, [1.0, 1.0]);
         assert_eq!(f.seconds, 1.0);
+    }
+
+    #[test]
+    fn a_flow_out_of_its_limits_is_held_to_them_and_a_bad_one_is_no_camo() {
+        let f = limited_flow(CamoFlow {
+            speed: [4.0, -4.0],
+            swirl: 3.0,
+            seconds: 0.2,
+        });
+        assert_eq!(f.speed, [1.0, -1.0]);
+        assert_eq!(f.swirl, FLOW_MAX_SWIRL);
+        assert_eq!(f.seconds, FLOW_MIN_SECONDS);
+        let c = parse("@camo:paint:33:PVSkin1:flow=0.05,0,0.1,8:@mod:p/assets/a.dtx").unwrap();
+        assert_eq!(c.flow.map(|f| f.swirl), Some(0.1));
+        assert_eq!(c.pattern, "@mod:p/assets/a.dtx");
+        assert!(parse("@camo:paint:33:PVSkin1:flow=0.05,0,0.1:@mod:p/assets/a.dtx").is_none());
+    }
+
+    #[test]
+    fn a_flowing_texture_holds_the_shading_and_its_flow_paints_it_back() {
+        // two texels, one twice as bright as the other: the grey keeps that shading, and grey x 255/FLOW_GREY x the
+        // pattern is what painting the pattern would give
+        let base = TextureImage::rgba(2, 1, [[60, 60, 60, 255], [120, 120, 120, 255]].concat());
+        let pattern = TextureImage::rgba(1, 1, vec![200, 100, 40, 255]);
+        let flow = CamoFlow {
+            speed: [0.05, 0.0],
+            swirl: 0.1,
+            seconds: 8.0,
+        };
+        let t = flowing(&base, &pattern, &[], flow).unwrap();
+        let px = &t.levels[0];
+        assert_eq!((px[0], px[1], px[2]), (px[0], px[0], px[0]), "grey");
+        assert!(px[4] > px[0], "the brighter texel stays brighter");
+        let painted = paint(&base, &pattern, &[]).unwrap().levels.remove(0);
+        for (i, c) in [(0usize, 0usize), (4, 0), (4, 1), (4, 2)] {
+            // the shader's stages clamp to 1, as painting clamps to 255
+            let back = (px[i] as f32 * 255.0 / FLOW_GREY as f32 * pattern.levels[0][c] as f32
+                / 255.0)
+                .min(255.0);
+            assert!(
+                (back - painted[i + c] as f32).abs() <= 2.0,
+                "{i} {c}: {back} vs {}",
+                painted[i + c]
+            );
+        }
+        let fx = t.fx.as_ref().unwrap();
+        assert_eq!(fx.flow, Some([0.1, 8.0]));
+        assert_eq!(fx.speed, [0.05, 0.0]);
+        assert!(
+            fx.mask.levels[0].iter().step_by(4).all(|&m| m == 255),
+            "every texel flows"
+        );
     }
 }

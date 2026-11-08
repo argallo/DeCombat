@@ -68,7 +68,10 @@ pub const BURN_STEP_MS: u32 = 250;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Burn {
     pub victim: u8,
+    /// Who set it (his Spy Hunt damage factor applies, DSV-456); a client id no player has: no one.
     pub owner: u8,
+    /// The owner is credited with a kill by it (a flame's burn, DSV-455); a hazard's burn (DSV-635) is not.
+    pub credit: bool,
     pub weapon: u16,
     pub per_second: f32,
     pub damage_type: Option<u8>,
@@ -88,6 +91,72 @@ pub fn blast_factor(distance: f32, radius: f32, inner: f32) -> f32 {
         return 1.0;
     }
     ((radius - distance) / (radius - r0)).clamp(0.0, 1.0)
+}
+
+/// The damage type of a flash blast: its `AreaDamageType` (the flash type of the 2009 client's damage-type names).
+// DISASM: cshell+0x282a6c (damage-type section name = the pointer at VA 0x375573f0 + 4 x type; entry 34 is the flash
+// type's name); OBSERVED: ROM table WEAPONS.TXT, the gear rows' `ProtectionType<k>` 34 carry the flash comment and the
+// flash grenade's ammunition row has `AreaDamageType` 34 (read at run time; 2026-11-07)
+pub const DAMAGE_FLASH: u8 = 34;
+
+/// The flash's seconds at full strength (see [`flash_secs`]); no 2009 server rule for the length is known (the client
+/// only plays the length the server names, cshell+0x47bb0).
+// DC-DEFAULT: DSV-630 (proposed; OWNER PLAYTEST 2026-11-07 "flashes also didn't cause my screen to go white") 6 s,
+// which the 2009 client's curve turns into white easing out over the first 3 s with a weapon row without its own
+// numbers (cshell+0x485a0, cshell+0x17f7b0)
+pub const FLASH_SECS: f32 = 6.0;
+/// The flash's factor for a player whose view points away from the blast.
+// DC-DEFAULT: DSV-630 (proposed) one half
+pub const FLASH_BEHIND: f32 = 0.5;
+
+/// The screen flash's seconds for a player `distance` units from a flash blast of `radius` (the blast falloff of
+/// [`blast_factor`] with `inner`) whose view direction makes `facing` with the direction to the blast (the cosine;
+/// `>= 0`: the blast is in the front half of the view) at `full` seconds and `behind` for a blast behind him.
+// DC-DEFAULT: DSV-630 (proposed)
+pub fn flash_secs(
+    distance: f32,
+    radius: f32,
+    inner: f32,
+    facing: f32,
+    full: f32,
+    behind: f32,
+) -> f32 {
+    let side = if facing.is_nan() || facing >= 0.0 {
+        1.0
+    } else {
+        behind
+    };
+    full * blast_factor(distance, radius, inner) * side
+}
+
+/// The cosine between a player's view (yaw `yaw`, 0 along +Z, positive toward +X) and the level direction from his
+/// position `at` to `blast` (1 for a blast straight above or below him).
+pub fn facing_cos(yaw: f32, at: [f32; 3], blast: [f32; 3]) -> f32 {
+    let (dx, dz) = (blast[0] - at[0], blast[2] - at[2]);
+    let l = (dx * dx + dz * dz).sqrt();
+    if !(l > 1e-3 && yaw.is_finite()) {
+        return 1.0;
+    }
+    let (sy, cy) = yaw.sin_cos();
+    (dx * sy + dz * cy) / l
+}
+
+/// A lingering area of progressive damage where a thrown round went off: the incendiary grenade's fire and the gas
+/// grenade's cloud (DSV-635). Until `until`, every [`BURN_STEP_MS`] (`next`) each player inside `prog.radius` of `pos`
+/// starts or renews a burn ([`Burn`], no killer).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Hazard {
+    pub key: u32,
+    pub owner: u8,
+    /// The thrower's account when the hazard started (`None`: he had already left): a newcomer given the same client
+    /// id within the lifetime is not taken for him.
+    pub owner_uid: Option<Option<u32>>,
+    pub owner_team: u8,
+    pub weapon: u16,
+    pub pos: [f32; 3],
+    pub prog: ProgDamage,
+    pub until: Millis,
+    pub next: Millis,
 }
 
 /// One thrown object in flight.
@@ -940,6 +1009,13 @@ impl Game {
         self.out.push(GameOut::ProjectileGone { key: fl.key });
         // DC-DEFAULT: DSV-455 (proposed) a flame bursts without a blast: it sets the players near it burning
         if let Some(prog) = self.tables.weapons.prog(fl.weapon, fl.ammo) {
+            // DC-DEFAULT: DSV-635 (proposed) a thrown round (not a flown one) whose row has a lifetime leaves a
+            // lingering hazard instead (the incendiary and gas grenades)
+            let life = self.tables.weapons.prog_lifetime(fl.weapon, fl.ammo);
+            if let (false, true, Some(life)) = (fl.impact, self.cfg.projectile.hazards, life) {
+                self.hazard_start(fl, prog, life, now);
+                return;
+            }
             self.flame_burst(fl, prog, now);
             return;
         }
@@ -962,28 +1038,14 @@ impl Game {
                 damage_type: None,
                 radius: pt.area_radius,
             });
-        let m = gs::shot_effect(&gs::ShotEffect {
-            first: None,
-            shooter: fl.owner_obj,
-            weapon: fl.weapon,
-            ammo: fl.ammo,
-            from: fl.origin,
-            to: fl.pos,
-            normal: TODO_BLAST_NORMAL,
-            // the surface below the blast point (V-SURF-1)
-            // OBSERVED: capture 20261025_065016_tdm6 c6 seq 9727 / 20355 (`a` 10 on JUNK_FLEA),
-            // 20261025_002236_tdm4 c6 seq 8065 and 20261025_001409_tdm2 c6 seq 8517 (`a` 71 on SNOWVALLEY): each the
-            // surface word of the polygon below the blast point; REFERENCE
-            // DC-DEFAULT: DSV-62 (proposed)
-            surface: self.world_surface_below(fl.pos),
-            mask: gs::SHOT_MASK_MISS,
-            // the thrower's client id (a thrower who left still has his id: no client of the match has it now)
-            // DC-DEFAULT: DSV-85 (proposed)
-            client: fl.owner,
-            mods: gs::NO_SHOT_MODS,
-        });
-        for to in self.introduced() {
-            self.out.push(GameOut::Unreliable(to, m.clone()));
+        self.blast_record(fl);
+        // DC-DEFAULT: DSV-630 (proposed) a flash blast whites out the screens it reaches; DSV-631 (amended) and hurts as
+        // a blast unless `flash_damage` is off
+        if area.damage_type == Some(DAMAGE_FLASH) {
+            self.flash(fl, area.radius);
+            if !pt.flash_damage {
+                return;
+            }
         }
         let src = DamageSource {
             weapon: fl.weapon,
@@ -1075,6 +1137,78 @@ impl Game {
         );
     }
 
+    /// The blast record of `fl` (type 0x06 with no hit object, from the release origin to the blast point) to every
+    /// introduced player: the clients draw the ammunition row's impact effect and sound there.
+    // SPEC: GAME_MESSAGES_2009_S2C.md §8.2 (the blast row; REFERENCE, ACCEPTED)
+    fn blast_record(&mut self, fl: &Flight) {
+        let m = gs::shot_effect(&gs::ShotEffect {
+            first: None,
+            shooter: fl.owner_obj,
+            weapon: fl.weapon,
+            ammo: fl.ammo,
+            from: fl.origin,
+            to: fl.pos,
+            normal: TODO_BLAST_NORMAL,
+            // the surface below the blast point (V-SURF-1)
+            // OBSERVED: capture 20261025_065016_tdm6 c6 seq 9727 / 20355 (`a` 10 on JUNK_FLEA),
+            // 20261025_002236_tdm4 c6 seq 8065 and 20261025_001409_tdm2 c6 seq 8517 (`a` 71 on SNOWVALLEY): each the
+            // surface word of the polygon below the blast point; REFERENCE
+            // DC-DEFAULT: DSV-62 (proposed)
+            surface: self.world_surface_below(fl.pos),
+            mask: gs::SHOT_MASK_MISS,
+            // the thrower's client id (a thrower who left still has his id: no client of the match has it now)
+            // DC-DEFAULT: DSV-85 (proposed)
+            client: fl.owner,
+            mods: gs::NO_SHOT_MODS,
+        });
+        for to in self.introduced() {
+            self.out.push(GameOut::Unreliable(to, m.clone()));
+        }
+    }
+
+    /// A flash blast's screen flashes: to every living, introduced player within `radius` of the blast (the thrower and
+    /// team mates too; not one inside his spawn window, not one the trace world hides from it with the blast
+    /// line-of-sight rule) a 0x66 kind 0x0c fading from full white for [`flash_secs`] seconds.
+    // SPEC: GAME_MESSAGES_2009_S2C.md §2.2 row 0x66 kind 0x0c
+    // DC-DEFAULT: DSV-630 (proposed) who is flashed and for how long (no 2009 server rule is known)
+    fn flash(&mut self, fl: &Flight, radius: f32) {
+        let pt = self.cfg.projectile;
+        let lifted = [fl.pos[0], fl.pos[1] + BLAST_RAY_LIFT, fl.pos[2]];
+        let seen: Vec<(u8, [f32; 3], f32)> = self
+            .players
+            .values()
+            .filter(|v| v.life == Life::Alive && v.introduced)
+            .map(|v| (v.pid, v.pos, v.yaw))
+            .collect();
+        for (vpid, vpos, yaw) in seen {
+            let d = len3(sub3(vpos, fl.pos));
+            if !(d.is_finite() && d < radius) || self.spawn_shielded(vpid) {
+                continue;
+            }
+            if pt.blast_los && self.projectile_ray(lifted, vpos).is_some() {
+                continue;
+            }
+            let facing = facing_cos(yaw, vpos, fl.pos);
+            let secs = flash_secs(
+                d,
+                radius,
+                pt.inner_fraction,
+                facing,
+                pt.flash_secs,
+                pt.flash_behind,
+            );
+            if !(secs.is_finite() && secs >= 0.001) {
+                continue;
+            }
+            self.log(format!(
+                "throw {}: client {vpid} flashed {secs:.2} s at {d:.0} units (facing {facing:.2})",
+                fl.key
+            ));
+            self.out
+                .push(GameOut::To(vpid, gs::screen_flash(true, secs)));
+        }
+    }
+
     /// The shot record of a launcher's `UP_FIRE` (a round the server flies, [`Game::rocket_release`]): no hit object, a
     /// one-unit path from the muzzle point along the shot, the sky surface, the miss mask. The other clients play the
     /// shooter's fire sound from it; the short path draws no tracer and the sky surface no impact, so no explosion
@@ -1152,6 +1286,7 @@ impl Game {
                 Some(b) => {
                     b.until = until;
                     b.owner = fl.owner;
+                    b.credit = true;
                     b.weapon = fl.weapon;
                     b.per_second = prog.per_second;
                     b.damage_type = prog.damage_type;
@@ -1159,6 +1294,7 @@ impl Game {
                 None => self.burns.push(Burn {
                     victim: vpid,
                     owner: fl.owner,
+                    credit: true,
                     weapon: fl.weapon,
                     per_second: prog.per_second,
                     damage_type: prog.damage_type,
@@ -1170,6 +1306,146 @@ impl Game {
                 "flame {}: client {vpid} burns ({:.0} per second until {until})",
                 fl.key, prog.per_second
             ));
+        }
+    }
+
+    /// A thrown round's hazard (DSV-635): the blast record (the clients draw the row's impact effect, the ROM's fire or
+    /// gas cloud, and its sound) and the hazard at the burst point for the row's `ProgDamageLifetime`; its first step
+    /// is due at once.
+    // OBSERVED: ROM table keys WEAPONS.TXT [Ammo<n>] ProgDamage, ProgDamageType, ProgDamageDuration,
+    // ProgDamageRadius, ProgDamageLifetime, ImpactFXName (the incendiary and gas grenade rows: per second, the burn /
+    // poison type, the victim's duration, the reach, the lifetime; read at run time, 2026-11-07)
+    // DC-DEFAULT: DSV-635 (proposed) the hazard lasts the lifetime, a victim's damage the duration (the reading of
+    // DSV-600)
+    fn hazard_start(&mut self, fl: &Flight, prog: ProgDamage, life_s: f32, now: Millis) {
+        self.blast_record(fl);
+        let until = now.wrapping_add((life_s * 1000.0).round().max(1.0) as u32);
+        let owner_uid = self.players.get(&fl.owner).map(|p| p.uid);
+        self.hazards.push(Hazard {
+            key: fl.key,
+            owner: fl.owner,
+            owner_uid,
+            owner_team: fl.owner_team,
+            weapon: fl.weapon,
+            pos: fl.pos,
+            prog,
+            until,
+            next: now,
+        });
+        self.log(format!(
+            "throw {} leaves a hazard at ({:.0}, {:.0}, {:.0}): {:.1} per second within {:.0} until {until}",
+            fl.key, fl.pos[0], fl.pos[1], fl.pos[2], prog.per_second, prog.radius
+        ));
+    }
+
+    /// The hazards' steps (DSV-635): every [`BURN_STEP_MS`] while a hazard lasts, each living, introduced player within
+    /// its radius whose centre the trace world does not hide from it (the blast line-of-sight rule, DSV-92), not
+    /// inside his spawn window, the thrower too when `hazard_self` is on, team mates only with the room's friendly
+    /// fire, starts or renews a burn of the row's type until that step plus the row's `ProgDamageDuration`, credited to
+    /// no one. A hazard ends at its lifetime or when the round is not running.
+    // SPEC: GAME_MESSAGES_2009_S2C.md §3.3.1 field 11 (the 2009 kill feed draws burn and poison deaths with an empty
+    // killer: no credit)
+    // DC-DEFAULT: DSV-635 (proposed)
+    pub(super) fn tick_hazards(&mut self, now: Millis) {
+        if self.hazards.is_empty() {
+            return;
+        }
+        if !matches!(self.phase, RoundPhase::Running { .. }) {
+            self.hazards.clear();
+            return;
+        }
+        let pt = self.cfg.projectile;
+        let mut hazards = std::mem::take(&mut self.hazards);
+        hazards.retain(|h| !later(h.next, h.until));
+        for h in hazards.iter_mut() {
+            if later(h.next, now) {
+                continue;
+            }
+            let at = h.next;
+            h.next = at.wrapping_add(BURN_STEP_MS);
+            // DC-DEFAULT: DSV-566 (proposed) the warm-up holds player damage: a hazard's steps start no burn
+            if self.warmup_holds_damage() {
+                continue;
+            }
+            let thrower = self.hazard_thrower(h);
+            let owner_team = thrower
+                .and_then(|t| self.players.get(&t))
+                .map_or(h.owner_team, |p| p.team);
+            let lifted = [h.pos[0], h.pos[1] + BLAST_RAY_LIFT, h.pos[2]];
+            let inside: Vec<(u8, [f32; 3])> = self
+                .players
+                .values()
+                .filter(|v| v.life == Life::Alive && v.introduced)
+                .filter(|v| {
+                    if Some(v.pid) == thrower {
+                        pt.hazard_self
+                    } else {
+                        self.team_may_hurt(owner_team, v.team)
+                    }
+                })
+                .filter(|v| {
+                    let d = len3(sub3(v.pos, h.pos));
+                    d.is_finite() && d <= h.prog.radius
+                })
+                .map(|v| (v.pid, v.pos))
+                .collect();
+            for (vpid, vpos) in inside {
+                if self.spawn_shielded(vpid) {
+                    continue;
+                }
+                if pt.blast_los && self.projectile_ray(lifted, vpos).is_some() {
+                    continue;
+                }
+                let by = thrower.unwrap_or(gs::SHOT_CLIENT_NONE);
+                self.ignite(vpid, by, h.weapon, h.prog, at);
+            }
+        }
+        hazards.append(&mut self.hazards);
+        self.hazards = hazards;
+    }
+
+    /// A hazard's thrower while he is still in the match (the same client id and account as at the start).
+    fn hazard_thrower(&self, h: &Hazard) -> Option<u8> {
+        let uid = h.owner_uid?;
+        self.players
+            .get(&h.owner)
+            .filter(|p| p.uid == uid)
+            .map(|p| p.pid)
+    }
+
+    /// Starts `vpid` burning (or renews his burn) at `at` until `at` + the row's duration: a hazard's burn, set by
+    /// `owner` (his damage factor applies; [`gs::SHOT_CLIENT_NONE`]: no one) and credited to no one. A renewal of a
+    /// credited burn (a flame's) keeps its burner and his credit.
+    // DC-DEFAULT: DSV-455 (proposed) one burn per player, renewed; DSV-635 (proposed) no credit for a hazard
+    pub(super) fn ignite(
+        &mut self,
+        vpid: u8,
+        owner: u8,
+        weapon: u16,
+        prog: ProgDamage,
+        at: Millis,
+    ) {
+        let until = at.wrapping_add((prog.duration_s * 1000.0).round().max(1.0) as u32);
+        match self.burns.iter_mut().find(|b| b.victim == vpid) {
+            Some(b) => {
+                b.until = until;
+                if !b.credit {
+                    b.owner = owner;
+                }
+                b.weapon = weapon;
+                b.per_second = prog.per_second;
+                b.damage_type = prog.damage_type;
+            }
+            None => self.burns.push(Burn {
+                victim: vpid,
+                owner,
+                credit: false,
+                weapon,
+                per_second: prog.per_second,
+                damage_type: prog.damage_type,
+                until,
+                next: at.wrapping_add(BURN_STEP_MS),
+            }),
         }
     }
 
@@ -1198,9 +1474,16 @@ impl Game {
                 continue;
             }
             self.burns[i].next = b.next.wrapping_add(BURN_STEP_MS);
+            let by_player = self.players.contains_key(&b.owner);
+            // DC-DEFAULT: DSV-566 (proposed) a burn a player set does nothing while the warm-up holds damage (a
+            // hazard's burn has no killer, so the hold at the damage point does not see it)
+            if by_player && self.warmup_holds_damage() {
+                i += 1;
+                continue;
+            }
             let dmg =
                 b.per_second * BURN_STEP_MS as f32 / 1000.0 * self.agent_damage_scale(b.owner);
-            let killer = self.players.contains_key(&b.owner).then_some(b.owner);
+            let killer = (b.credit && by_player).then_some(b.owner);
             let src = DamageSource {
                 weapon: b.weapon,
                 dtype: b.damage_type.unwrap_or(TODO_DAMAGE_ZONE),

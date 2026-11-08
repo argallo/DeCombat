@@ -237,6 +237,7 @@ pub fn expected_set(s: &ServerEntry) -> crate::mods::ServerModSet {
             client_visual_allowed: s.client_visual_allowed,
         },
         community_map_base: None,
+        client_fov: None,
         mods: s
             .mods
             .iter()

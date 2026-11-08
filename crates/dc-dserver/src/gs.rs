@@ -197,6 +197,10 @@ pub const MOVER_FREEZE: u16 = 0x0080;
 // SPEC: MOVEMENT_2009.md §8.4 (cshell+0x1fce10: `k = 5.0 * min(1, container factors)`; remote: from 0xa0 0x04 / 0x08
 // only); UDP_REFERENCE_FINDINGS_botclient.md reference run (the reference stack sent 5.0 in both blocks; REFERENCE)
 pub const FRICTION_NO_CONTAINER: f32 = 5.0;
+/// `GS_PLAYER_STATUS` kind 0x0c: the screen flash `[0x0c][fade_out:u8][unused:u8][flash_secs:f32]` (white for
+/// `flash_secs`; a non-zero `fade_out` fades from full white).
+// SPEC: GAME_MESSAGES_2009_S2C.md §2.2 row 0x66 kind 0x0c (cshell+0x49aa8..0x49b03, cshell+0x47bb0)
+pub const STATUS_SCREEN_FLASH: u8 = 0x0c;
 /// `GS_PLAYER_STATUS` kind 0x13: status reset (`client_shell`+0xc3b0 := 5).
 // SPEC: GAME_MESSAGES_2009_S2C.md §4.3 (cshell+0x5cb80 kind 0x13 -> cshell+0x63160)
 pub const STATUS_RESET: u8 = 0x13;
@@ -812,6 +816,12 @@ pub fn player_status(kind: u8, value: f32) -> BitWriter {
     shell(GS_PLAYER_STATUS, |w| {
         w.write_u8(kind).write_u8(0).write_u8(0).write_f32(value);
     })
+}
+
+/// `GS_PLAYER_STATUS` kind 0x0c: a screen flash of `secs` seconds, fading from full white when `fade`.
+// SPEC: GAME_MESSAGES_2009_S2C.md §2.2 row 0x66 kind 0x0c
+pub fn screen_flash(fade: bool, secs: f32) -> BitWriter {
+    player_status_b(STATUS_SCREEN_FLASH, u8::from(fade), 0, secs)
 }
 
 /// One loadout weapon for `GS_WEAPON_GIVE` / `GS_WEAPON_EQUIP`.

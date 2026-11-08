@@ -8,6 +8,7 @@ return function(mod)
         id = "Weapon500",
         variant_of = 25,
         variant_name = "G36E Candy",
+        variant_rarity = "epic", -- CRATE-6: how often a Camo Crate gives it and how its opening is shown
         PVSkin1 = "@camo:paint:25:PVSkin1:keep=928,928,92:" .. candy,
         HHSkin0 = "@camo:paint:25:HHSkin0:keep=37,30,25:" .. candy,
     })

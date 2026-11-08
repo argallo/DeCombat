@@ -1161,7 +1161,13 @@ fn window_adapter(a: &Args) -> (AdapterChoice, bool) {
                 .as_deref(),
             dc_client::settings::own_profile_dir().as_deref(),
         );
-        dc_client::settings::saved_renderer(&store)
+        // CLI-1932: a start that died before its first frames on the saved renderer: this one uses the other
+        // (saved as the Renderer choice)
+        dc_client::startguard::at_window_start(dc_client::settings::saved_renderer(&store), |r| {
+            if let Err(e) = dc_client::settings::save_renderer(&store, r) {
+                println!("dc-client: the renderer switch was not saved ({e})");
+            }
+        })
     } else {
         dc_client::settings::RENDERER_DEFAULT
     };
@@ -1216,6 +1222,7 @@ fn run_window_mode(
         } else {
             mod_recipe_of(&a)?
         },
+        client_fov: None,
         room_hacks: None,
         gun_ladder: Vec::new(),
         reticle: None,
@@ -1232,6 +1239,8 @@ fn run_window_mode(
         },
     };
     let r = run_window(source, opts).map_err(|e| e.to_string())?;
+    // CLI-1932: the window ended in order: the start finished
+    dc_client::startguard::finished();
     for l in dc_client::window::exit_report_lines(&r) {
         println!("{l}");
     }
@@ -1523,6 +1532,7 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
         debug_panel: !a.hud || a.debug_overlay,
         board_at: a.board_at,
         mods: None,
+        client_fov: None,
         room_hacks: None,
         gun_ladder: Vec::new(),
         reticle: None,
@@ -1584,6 +1594,8 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
     });
     let trail = dc_client::menu::window::run_menu_window(menu, opts, base, pilot)
         .map_err(|e| e.to_string())?;
+    // CLI-1932: the window ended in order: the start finished
+    dc_client::startguard::finished();
     println!("dc-client menu: screens {}", trail.join(" -> "));
     Ok(())
 }

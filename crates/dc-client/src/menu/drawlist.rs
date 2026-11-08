@@ -353,9 +353,7 @@ pub fn record_want(cat: &Catalog, part: &Part, parent_pos: [i32; 2]) -> Option<R
 
 /// The drawn rectangle of an item (virtual pixels); text by the atlas the compositor would use.
 fn item_rect(cat: &mut Catalog, item: &DrawItem) -> [f32; 4] {
-    let (w, h) = cat.size();
-    let sx = w as f32 / 1024.0;
-    let sy = h as f32 / 768.0;
+    let dc_ui_data::VirtualScaler { sx, sy, .. } = cat.scaler();
     match item {
         DrawItem::Image { dst, .. } => *dst,
         DrawItem::Fill { rect, .. } => *rect,

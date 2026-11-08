@@ -658,3 +658,67 @@ fn instances_render_like_fresh_uploads() {
     assert_eq!(a.draw_count(), fa.draw_count());
     assert_eq!(a.anim.clip_count(), fa.anim.clip_count());
 }
+
+/// VAR-12: a flowing camo's texture holds only grey shading, and the shader paints the moving pattern back in, so a flat
+/// pattern draws as painting it would at any moment, and another pattern draws another colour.
+#[test]
+fn a_flowing_camo_draws_as_its_paint_would() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let r = WorldRenderer::new(&ctx, OFFSCREEN_FORMAT, RenderSettings::default());
+    let files = rigid_cube();
+    let scene = upload(&ctx, &r, &SceneMesh::default());
+    let centre = |tex: TextureImage| {
+        let mut m = r.upload_model(&ctx, &files, &[Some(tex)]);
+        m.lights.ambient = Vec3::splat(255.0);
+        let (img, _) = r
+            .render_frame_offscreen(
+                &ctx,
+                &scene,
+                &camera(),
+                &FrameOptions::opaque_only(),
+                &[&m],
+                W,
+                H,
+            )
+            .expect("frame");
+        let i = ((H / 2 * W + W / 2) * 4) as usize;
+        [
+            img.rgba[i],
+            img.rgba[i + 1],
+            img.rgba[i + 2],
+            img.rgba[i + 3],
+        ]
+    };
+    let base = solid([120, 120, 120, 255]);
+    let orange = solid([200, 100, 40, 255]);
+    let flow = camo::CamoFlow {
+        speed: [0.5, 0.2],
+        swirl: 0.2,
+        seconds: 3.0,
+    };
+    let painted = centre(camo::paint(&base, &orange, &[]).unwrap());
+    let flowing = camo::flowing(&base, &orange, &[], flow).unwrap();
+    let grey_only = {
+        let mut t = flowing.clone();
+        t.fx = None;
+        centre(t)
+    };
+    let flowed = centre(flowing);
+    println!("painted {painted:?} flowing {flowed:?} grey {grey_only:?}");
+    assert!(
+        near(flowed, [painted[0], painted[1], painted[2]], 3),
+        "{flowed:?} vs {painted:?}"
+    );
+    assert!(
+        !near(grey_only, [painted[0], painted[1], painted[2]], 20),
+        "the texture alone is grey"
+    );
+    let blue = camo::flowing(&base, &solid([40, 80, 220, 255]), &[], flow).unwrap();
+    assert!(blue_over(centre(blue)), "another pattern, another colour");
+}
+
+fn blue_over(px: [u8; 4]) -> bool {
+    px[2] as i32 > px[0] as i32 + 60
+}

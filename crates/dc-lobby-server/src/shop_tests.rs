@@ -1822,8 +1822,10 @@ fn a_balance_changed_behind_the_session_is_what_the_next_buy_checks_and_reports(
 
 /// One played match of `players` (account, kills) on team 1 through the game server's result lines (LG-200 pays the
 /// passes, LG-201 counts them).
-fn play_match(st: &mut Core, id: u64, players: &[(u32, u32)]) {
+fn play_match(st: &mut Core, id: u64, players: &[(u32, u32)]) -> Vec<String> {
     let key = crate::room::RoomKey { channel: 1, no: 0 };
+    // the pipe lines the lobby writes to the game server are captured through a remote link
+    let (tx, lines) = std::sync::mpsc::channel();
     st.games.insert(
         id,
         crate::game::Game {
@@ -1832,7 +1834,15 @@ fn play_match(st: &mut Core, id: u64, players: &[(u32, u32)]) {
             port: 0,
             map: 0,
             mode: 0,
-            link: Default::default(),
+            link: crate::game::Link::Remote(crate::game::RemoteLink {
+                agent: "test".into(),
+                address: "127.0.0.1".into(),
+                port: Some(1),
+                pid: Some(1),
+                tx: Some(tx),
+                stdin_open: true,
+                alive: true,
+            }),
             ready: true,
             over: false,
             players: Vec::new(),
@@ -1864,6 +1874,14 @@ fn play_match(st: &mut Core, id: u64, players: &[(u32, u32)]) {
         )
     })
     .unwrap();
+    lines
+        .try_iter()
+        .filter_map(|l| match l {
+            crate::hosts::HostOut::Line(s) => s.split_once(' ').map(|(_, rest)| rest.to_string()),
+            _ => None,
+        })
+        .filter_map(|s| s.split_once(' ').map(|(_, l)| l.to_string()))
+        .collect()
 }
 
 /// OWNER REPORT 2026-11-04 ("the bonus EXP passes are not supposed to be permanent items"): a bought pass is not
@@ -1980,6 +1998,243 @@ Itemtype=21
     let p = c.take(crate::msg::EXPIRY_PUSH);
     assert_eq!((u32_at(&p, 0xe), u32_at(&p, 0x12)), (1, uid as u32));
     assert_eq!(gains(&mut st), base, "a used-up pass pays nothing");
+}
+
+/// OWNER DIRECTION 2026-11-07 ("making sure the exp pass is working as expected"): the whole LG-200 / LG-201 chain
+/// through a played match. Five players finish the same match with the same score: a control, one with an EXP pass,
+/// one whose EXP pass was taken out of its slot, one with an EXP pass and a BOTH pass (the largest fraction counts),
+/// one with a period EXP pass. The EXP paid is base + round(base x ExpPercent), GP is unchanged, the `gain` line to the
+/// game server (which becomes the result screen's 0x65 bonus fields) carries the pass part in its bonus pair, a counted
+/// pass loses one per match and a period pass is left alone.
+// DC-DEFAULT: LG-200, LG-201, DSV-142
+#[test]
+fn an_exp_pass_pays_its_fraction_shows_it_as_bonus_and_counts_down_end_to_end() {
+    let mut st = rom_state();
+    let both = format!(
+        "{ITEMS}
+[UseItem30]
+ItemID=118
+SubType=15
+ExpPercent=0.5
+GpPercent=0.1
+IsCanUnEquip=1
+"
+    );
+    Arc::get_mut(&mut st.rom).unwrap().items = Some(ItemsTable::from_doc(ButeDoc::parse(&both)));
+    let mut who = Vec::new();
+    for (sid, login) in [
+        (1, "ctl"),
+        (2, "pass"),
+        (3, "out"),
+        (4, "both"),
+        (5, "days"),
+    ] {
+        who.push(player(&mut st, sid, login, login));
+    }
+    let [(_c0, ctl), (mut c1, pass), (mut c2, out), (mut c3, both_acct), (mut c4, days)] =
+        <[_; 5]>::try_from(who).ok().unwrap();
+    let slotted = |st: &Core, u: i64| -> i64 {
+        st.db
+            .query_row(
+                "SELECT COUNT(*) FROM function_slots WHERE uid = ?1",
+                [u],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    // the counted EXP pass, in use
+    let p1 = give(&st, pass, 9113, 3, 2);
+    assert_eq!(
+        u32_at(&use_window(&mut c1, &mut st, p1, "", 0, 0, 0, 0), 6),
+        1
+    );
+    // the same pass taken out of its slot again
+    let p2 = give(&st, out, 9113, 3, 2);
+    assert_eq!(
+        u32_at(&use_window(&mut c2, &mut st, p2, "", 0, 0, 0, 0), 6),
+        1
+    );
+    st.db
+        .execute("DELETE FROM function_slots WHERE uid = ?1", [p2])
+        .unwrap();
+    // an EXP pass (0.25) and a BOTH pass (0.5 / 0.1) at once
+    let p3 = give(&st, both_acct, 9113, 3, 2);
+    let p4 = give(&st, both_acct, 9118, 3, 2);
+    for u in [p3, p4] {
+        assert_eq!(
+            u32_at(&use_window(&mut c3, &mut st, u, "", 0, 0, 0, 0), 6),
+            1
+        );
+    }
+    assert_eq!((slotted(&st, p3), slotted(&st, p4)), (1, 1));
+    // a 7-day EXP pass: used, so it has an end, and no count
+    let p5 = give(&st, days, 9113, 1, 7);
+    assert_eq!(
+        u32_at(&use_window(&mut c4, &mut st, p5, "", 0, 0, 0, 0), 6),
+        1
+    );
+    let period = db::item(&st.db, p5).unwrap().unwrap();
+    assert!(period.end_time > 0, "the period pass has an end");
+    assert_eq!(crate::rewards::pass_fractions(&st, ctl), (0.0, 0.0));
+    assert_eq!(crate::rewards::pass_fractions(&st, pass), (0.25, 0.0));
+    assert_eq!(crate::rewards::pass_fractions(&st, out), (0.0, 0.0));
+    assert_eq!(
+        crate::rewards::pass_fractions(&st, both_acct),
+        (0.5, 0.1),
+        "the largest fraction of each kind counts"
+    );
+
+    let before = |st: &Core, u: u32| {
+        let c = st.character(u).unwrap();
+        (c.exp, c.gp)
+    };
+    let all = [ctl, pass, out, both_acct, days];
+    let was: Vec<_> = all.iter().map(|u| before(&st, *u)).collect();
+    let lines = play_match(
+        &mut st,
+        900,
+        &all.iter().map(|u| (*u, 3)).collect::<Vec<_>>(),
+    );
+    let gain: Vec<(i64, i64)> = all
+        .iter()
+        .enumerate()
+        .map(|(i, u)| {
+            let now = before(&st, *u);
+            (now.0 - was[i].0, now.1 - was[i].1)
+        })
+        .collect();
+    let base = gain[0];
+    assert!(base.0 >= 20 && base.1 > 0, "the control is paid: {base:?}");
+    let extra = |f: f64| (base.0 as f64 * f).round() as i64;
+    // (1) paid EXP = base + round(base x ExpPercent); GP unchanged
+    assert_eq!(gain[1], (base.0 + extra(0.25), base.1), "EXP pass");
+    // (4) a pass out of its slot pays nothing
+    assert_eq!(gain[2], base, "unslotted pass");
+    // (5) EXP pass + BOTH pass: the 0.5 of the BOTH pass, GP +10 % of the base GP
+    assert_eq!(
+        gain[3],
+        (
+            base.0 + extra(0.5),
+            base.1 + (base.1 as f64 * 0.1).round() as i64
+        ),
+        "largest fraction"
+    );
+    assert_eq!(gain[4], (base.0 + extra(0.25), base.1), "period pass pays");
+    assert_ne!(extra(0.25), 0);
+
+    // (2) the gain line carries the pass part in its bonus pair, next to the win bonus the control shows
+    let line = |u: u32| -> Vec<i64> {
+        let pre = format!("gain {u} ");
+        let l = lines
+            .iter()
+            .find(|l| l.starts_with(&pre))
+            .unwrap_or_else(|| panic!("no gain line for {u}: {lines:?}"));
+        l.split(' ').skip(2).map(|n| n.parse().unwrap()).collect()
+    };
+    let ctl_line = line(ctl);
+    assert_eq!(ctl_line[..2], [base.0, base.1]);
+    let (win_e, win_g) = (ctl_line[2], ctl_line[3]);
+    assert!(
+        win_e > 0,
+        "the win bonus is the control's bonus: {ctl_line:?}"
+    );
+    assert_eq!(
+        line(pass),
+        [gain[1].0, gain[1].1, win_e + extra(0.25), win_g]
+    );
+    assert_eq!(line(out), ctl_line);
+    let g3 = line(both_acct);
+    assert_eq!(
+        (g3[2], g3[3]),
+        (
+            win_e + extra(0.5),
+            win_g + (base.1 as f64 * 0.1).round() as i64
+        )
+    );
+
+    // (3) the counted passes lose one, the period pass and the unslotted counted pass are not touched
+    let remain = |u: i64| db::item(&st.db, u).unwrap().unwrap().remain;
+    assert_eq!((remain(p1), remain(p3), remain(p4)), (1, 1, 1));
+    assert_eq!(
+        remain(p2),
+        2,
+        "an unslotted pass is not active, not counted"
+    );
+    let period_after = db::item(&st.db, p5).unwrap().unwrap();
+    assert_eq!(
+        (period_after.remain, period_after.end_time),
+        (period.remain, period.end_time),
+        "a period pass is not counted"
+    );
+    // a second match uses the last count, the third pays nothing
+    play_match(&mut st, 901, &[(pass, 3), (ctl, 3)]);
+    assert!(db::item(&st.db, p1).unwrap().is_none(), "used up");
+    let w = before(&st, pass);
+    play_match(&mut st, 902, &[(pass, 3), (ctl, 3)]);
+    let after = before(&st, pass);
+    assert_eq!(after.0 - w.0, base.0, "a used-up pass pays only the base");
+}
+
+/// LG-200 against the real ROM (skipped without `CA_ROM`): every bonus pass row (SubType 13 / 14 / 15) resolves
+/// through `itemuse::use_key`, writes its percentage as a fraction (a number in (0, 10], 0.25 = +25 %) and
+/// `pass_fractions` pays exactly that for an active pass.
+// DC-DEFAULT: LG-200
+#[test]
+fn rom_bonus_pass_rows_write_fractions_the_lobby_pays() {
+    let Some(rom) = dc_rom::test_rom() else {
+        println!("skipped: CA_ROM unset");
+        return;
+    };
+    let mut st = state();
+    *Arc::get_mut(&mut st.rom).unwrap() = crate::rom::RomData::load(&rom);
+    let mut rows = Vec::new();
+    for no in 9000..9400i64 {
+        let kind = crate::itemuse::use_key(&st, no, "SubType").and_then(|v| v.parse::<i64>().ok());
+        if let Some(k @ 13..=15) = kind {
+            let f = |key: &str| crate::itemuse::use_key(&st, no, key);
+            println!(
+                "pass {no}: SubType {k} ExpPercent {:?} GpPercent {:?} IsCanUnEquip {:?}",
+                f("ExpPercent"),
+                f("GpPercent"),
+                f("IsCanUnEquip")
+            );
+            rows.push((no, k, f("ExpPercent"), f("GpPercent")));
+        }
+    }
+    assert!(!rows.is_empty(), "the ROM has bonus pass rows");
+    let (_c, a) = player(&mut st, 1, "a", "Alice");
+    for (no, k, e, g) in rows {
+        for (key, v) in [("ExpPercent", &e), ("GpPercent", &g)] {
+            let wants = matches!((k, key), (13 | 15, "ExpPercent") | (14 | 15, "GpPercent"));
+            assert_eq!(v.is_some(), wants, "{no}: {key} {v:?}");
+            if let Some(v) = v {
+                let n: f64 = v.trim_matches('"').parse().expect("a number");
+                assert!(n > 0.0 && n <= 10.0, "{no}: {key} {v} is a fraction");
+            }
+        }
+        // an active copy of the row pays what the row says
+        st.db.execute("DELETE FROM items", []).unwrap();
+        st.db.execute("DELETE FROM function_slots", []).unwrap();
+        let uid = give(&st, a, no, 3, 5);
+        st.db
+            .execute("UPDATE items SET used = 1 WHERE uid = ?1", [uid])
+            .unwrap();
+        st.db
+            .execute(
+                "INSERT INTO function_slots (uid, user_no, slot) VALUES (?1, ?2, 1)",
+                params![uid, a as i64],
+            )
+            .unwrap();
+        let want = |v: &Option<String>| {
+            v.as_ref()
+                .map_or(0.0, |s| s.trim_matches('"').parse::<f64>().unwrap())
+        };
+        assert_eq!(
+            crate::rewards::pass_fractions(&st, a),
+            (want(&e), want(&g)),
+            "{no}"
+        );
+    }
 }
 
 /// LG-406: the game server's `user` line carries the colour words (the ROM colour table's entries) of the player's

@@ -1026,6 +1026,8 @@ fn wave_ad_keys_parse_layer_and_validate() {
         ),
         (0, "all", 0x99)
     );
+    // CRATE-2 (amended 2026-11-07): three of four drops are Camo Crates unless the operator says otherwise
+    assert_eq!(d.hisec.camo_share, 75);
     let text = "[evars]\nmode = \"off\"\n[evars.extra]\nMyVar = \"1.5\"\n[combat]\nblast_inner = 0.5\n\
                 [room.round_secs]\nfallback = true\ndefault = 300\n1 = 900\n12 = 120\n\
                 [hisec]\ncase_product = 77\nannounce = \"channel\"\n[economy]\nhisec_case_odds = [[1, 1]]\n";
@@ -1094,6 +1096,18 @@ fn wave_ad_keys_parse_layer_and_validate() {
     assert!(has_err(
         &bad(&|c| c.hisec.no_key_reason = 0),
         "hisec.no_key_reason"
+    ));
+    assert!(has_err(
+        &bad(&|c| c.hisec.camo_share = 101),
+        "hisec.camo_share"
+    ));
+    assert!(!has_err(
+        &bad(&|c| c.hisec.camo_share = 0),
+        "hisec.camo_share"
+    ));
+    assert!(!has_err(
+        &bad(&|c| c.hisec.camo_share = 100),
+        "hisec.camo_share"
     ));
     assert!(has_err(
         &bad(&|c| c.economy.hisec_case_odds = vec![[1, 0]]),
@@ -1207,7 +1221,7 @@ fn check_identity_section() {
 
 #[test]
 fn a_partial_reward_table_fills_from_its_own_defaults() {
-    // CD-86: GP agent_win stays 0 (the EXP 30 must not leak in), CD-04 GP finish 20 / objective 25 stay too
+    // CD-86: GP agent_win stays 0 (the EXP 45 must not leak in), CD-04 GP finish 20 / objective 25 stay too
     let cfg = dc_config::parse_toml("[economy.gp]\nkill = 9\n").unwrap();
     let mut want = dc_config::schema::RewardRates::gp_default();
     want.kill = 9;
@@ -1216,7 +1230,7 @@ fn a_partial_reward_table_fills_from_its_own_defaults() {
     let cfg = dc_config::parse_toml("[economy.exp]\nkill = 9\n").unwrap();
     assert_eq!(
         (cfg.economy.exp.agent_win, cfg.economy.exp.finish),
-        (30, 10)
+        (45, 15)
     );
     assert!(dc_config::parse_toml("[economy.gp]\nbogus = 1\n").is_err());
 }

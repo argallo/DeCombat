@@ -1656,6 +1656,82 @@ fn a_throw_creates_an_object_then_blows_up_with_area_damage() {
     }
 }
 
+/// [`throw_tables`] with an incendiary-like row instead of the blast (made-up numbers in the ROM key shape): no area
+/// damage; progressive damage 4 per second of type 3 for 1 s after the last contact, within 300 units, lingering 2 s.
+fn hazard_tables(self_hurt: bool) -> (RomTables, ServerTuning) {
+    let mut t = throw_tables();
+    let a = t.weapons.ammo.get_mut(&41).unwrap();
+    a.area_damage = None;
+    a.area_damage_type = None;
+    a.area_radius = None;
+    a.prog_damage = Some(4.0);
+    a.prog_damage_type = Some(3);
+    a.prog_duration = Some(1.0);
+    a.prog_radius = Some(300.0);
+    a.prog_lifetime = Some(2.0);
+    let mut cfg = ServerTuning::default();
+    cfg.game.projectile.hazard_self = self_hurt;
+    (t, cfg)
+}
+
+/// DSV-635 (proposed; OWNER REPORT 2026-11-07 "incendiaries + gas grenades dont work"): a thrown round with
+/// progressive damage and a lifetime sends its blast record (the clients draw its fire or gas) and leaves a hazard:
+/// the thrower standing in it burns every 250 ms while it lasts and for the row's duration after its last step
+/// (9 renewing steps over 2 s, then burn steps up to 1 s after the last: 12 steps of 1), then nothing more; the enemy
+/// 630 units away (outside the 300 radius) takes nothing; with `hazard_self` off the thrower takes nothing either.
+#[test]
+fn a_thrown_fire_burns_who_stands_in_it_for_its_lifetime_and_the_rows_duration() {
+    for self_hurt in [true, false] {
+        let (t, cfg) = hazard_tables(self_hurt);
+        let mut net = Net::with(cfg, t, "room key=TDM type=1 goal=20 ff=0");
+        assert!(net.server.handle_line(0, "user 9 5 10 0 0 Cid"));
+        net.add(1, "Dave", 0.0);
+        net.add(2, "Big Erin", 0.0);
+        net.add(3, "Cid", 0.0);
+        assert!(net.run_until(20_000, |n| (0..3).all(|i| n.c(i).life_state() == 1)));
+        net.run_for(500);
+        net.cm(0).throw((40, 41), [0.0, -1.0, 0.0]);
+        net.run_for(300);
+        assert_eq!(net.server.game().flights_in_air(), 1);
+        // the fuse (1.8 s), the hazard (2 s) and the last burn (1 s), with room to spare
+        net.run_for(1_700);
+        assert_eq!(net.server.game().flights_in_air(), 0, "gone off");
+        let blasts = |n: &Net, i: usize| n.c(i).seen.effects.iter().filter(|e| e.1 == 0x06).count();
+        for i in 0..3 {
+            assert_eq!(
+                blasts(&net, i),
+                1,
+                "client {i}: the blast record (its fire is drawn)"
+            );
+        }
+        assert!(net.logs.iter().any(|l| l.contains("leaves a hazard")));
+        net.run_for(3_500);
+        let dmg = |n: &Net, i: usize| n.c(i).seen.damage.iter().map(|x| x.1).collect::<Vec<_>>();
+        let taken = dmg(&net, 0);
+        if self_hurt {
+            assert_eq!(taken, vec![1; 12], "the thrower burns 12 steps");
+            assert!(
+                net.c(0).seen.damage_forms.iter().all(|f| f.zone == 3),
+                "the row's damage type"
+            );
+        } else {
+            assert!(taken.is_empty(), "hazard_self off: {taken:?}");
+        }
+        assert!(dmg(&net, 1).is_empty(), "the enemy outside the radius");
+        assert!(
+            dmg(&net, 2).is_empty(),
+            "the team mate without friendly fire"
+        );
+        // nothing after the duration
+        net.run_for(2_000);
+        assert_eq!(
+            dmg(&net, 0).len(),
+            taken.len(),
+            "no step after the burn ended"
+        );
+    }
+}
+
 /// Throws a grenade of [`throw_tables`] with the given projectile-stream switch (`None`: the default) and runs it
 /// past its fuse. Returns the net, the id of the thrown object and, per client, the stream entries that named it and
 /// the last velocity streamed for it (both read just before the fuse).
@@ -2909,9 +2985,9 @@ fn camo_crate_drops_only_with_variants_and_reports_its_own_line() {
     use dc_dserver::rom_tables::HisecRow;
     let mut t = hisec_tables();
     t.hisec.rows.insert(
-        1,
+        2,
         HisecRow {
-            model: Some("PROPS\\SynthCase\\BlackCase.ltb".into()),
+            model: Some("PROPS\\SynthCase\\CrateCase.ltb".into()),
             skins: vec![],
             styles: vec![],
             scale: Some([1.0; 3]),
@@ -6038,4 +6114,144 @@ fn knife_swings_kill_in_range_and_do_nothing_beyond_it() {
                 .any(|l| l.contains("melee hit") && l.contains("row range 105")));
         }
     }
+}
+
+/// DSV-621: a rejoin is a new stay. Dave kills Erin, Erin kills Dave, then Dave's client goes silent and the server
+/// drops it (bye code 3 after the DSV-490 limit); Dave joins the running match again. His roster record starts at 0
+/// kills / 0 deaths on his own client and on Erin's, Erin's board holds one row for his account, the team score of
+/// his first stay stays, and the match result names only the second stay (one kill, no death). Owner playtest
+/// report 2026-11-07: "when plazma left and came back into the game his scoreboard didn't reset".
+// DC-DEFAULT: DSV-621 (proposed)
+#[test]
+fn a_rejoin_starts_with_a_fresh_scoreboard_row() {
+    let mut cfg = ServerTuning::default();
+    cfg.game.spawn_shield = false;
+    // no forfeit while Dave's team is empty (DSV-31): the match must still run when he comes back
+    cfg.game.team_empty_ms = 0;
+    let mut net = Net::with(cfg, tables(), "room key=TDM type=1 goal=3 ff=0 time=0");
+    net.add(1, "Dave", 0.0);
+    net.add(2, "Big Erin", 0.0);
+    assert!(net.run_until(20_000, |n| n.c(0).life_state() == 1
+        && n.c(1).life_state() == 1));
+    net.run_for(500);
+    let (dave, erin) = (net.pid(0), net.pid(1));
+    net.shoot(0, 1, 4, [0.0; 3]);
+    assert_eq!(net.c(0).seen.kills.len(), 1, "Dave's kill");
+    assert!(net.run_until(net.now + 10_000, |n| n.c(1).life_state() == 1));
+    net.run_for(500);
+    net.shoot(1, 0, 4, [0.0; 3]);
+    assert_eq!(net.c(1).seen.kills.len(), 2, "Erin's kill");
+    let st = net.server.game().stats();
+    assert_eq!((st[&7].kills, st[&7].deaths), (1, 1));
+    assert_eq!(net.c(1).seen.roster[&dave].kills, 1);
+    assert_eq!(net.c(1).seen.roster[&dave].deaths, 1);
+    // Dave's client goes silent: the server drops it through the leave path
+    let gone = net.peers.remove(0);
+    assert!(net.run_until(net.now + 25_000, |n| n
+        .pipe_lines()
+        .iter()
+        .any(|l| l.starts_with("@leave"))));
+    assert!(net.run_until(net.now + 1_000, |n| n
+        .c(0)
+        .seen
+        .players_left
+        .contains(&dave)));
+    drop(gone);
+    // ... and joins the running match again from a new address
+    net.add(3, "Dave", 0.0);
+    assert!(net.run_until(net.now + 20_000, |n| n.c(1).life_state() == 1));
+    net.run_for(1_000);
+    let again = net.pid(1);
+    let st = net.server.game().stats();
+    assert_eq!(
+        (
+            st[&7].kills,
+            st[&7].deaths,
+            st[&7].headshots,
+            st[&7].team_kills
+        ),
+        (0, 0, 0, 0),
+        "the server's counters of the new stay"
+    );
+    assert_eq!((st[&8].kills, st[&8].deaths), (1, 1), "Erin keeps hers");
+    // Erin's board: one row for Dave's account, at zero
+    let erin_view = &net.c(0).seen.roster;
+    let rows: Vec<_> = erin_view.values().filter(|r| r.account == 7).collect();
+    assert_eq!(rows.len(), 1, "{erin_view:?}");
+    assert_eq!((rows[0].kills, rows[0].deaths), (0, 0));
+    assert_eq!(erin_view[&again].account, 7);
+    if again != dave {
+        assert!(
+            !erin_view.contains_key(&dave),
+            "no stale row of the old client id"
+        );
+    }
+    // Dave's own board: his row at zero, Erin's as it stands
+    let own = &net.c(1).seen.roster;
+    assert_eq!((own[&again].kills, own[&again].deaths), (0, 0));
+    assert_eq!((own[&erin].kills, own[&erin].deaths), (1, 1));
+    // the team score of the first stay stays: one more kill and one by Erin's team leave 2 : 1 ...
+    net.shoot(1, 0, 4, [0.0; 3]);
+    assert_eq!(net.server.game().scores(), [2, 1]);
+    assert!(net.run_until(net.now + 10_000, |n| n.c(0).life_state() == 1));
+    net.run_for(500);
+    // ... and the deciding kill ends it; the result counts only the second stay
+    net.shoot(1, 0, 4, [0.0; 3]);
+    assert!(net.run_until(net.now + 2_000, |n| n
+        .pipe_lines()
+        .iter()
+        .any(|l| l.starts_with("@result"))));
+    let lines = net.pipe_lines();
+    let player = |uid: u32| {
+        lines
+            .iter()
+            .find(|l| l.starts_with(&format!("@player uid={uid} ")))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert!(
+        player(7).starts_with("@player uid=7 kills=2 deaths=0 "),
+        "{lines:?}"
+    );
+    assert!(
+        player(8).starts_with("@player uid=8 kills=1 deaths=3 "),
+        "{lines:?}"
+    );
+}
+
+/// DSV-621 with DSV-2: a new link of a player whose old link is still open (his client restarted and came back
+/// before the server noticed) replaces the old one and is a new stay too; Erin's board ends with one row for him.
+// DC-DEFAULT: DSV-621 (proposed); DSV-2 (staged proposal)
+#[test]
+fn a_new_link_that_replaces_an_open_one_starts_a_fresh_row() {
+    let mut cfg = ServerTuning::default();
+    cfg.game.spawn_shield = false;
+    let mut net = Net::with(cfg, tables(), "room key=TDM type=1 goal=5 ff=0 time=0");
+    net.add(1, "Dave", 0.0);
+    net.add(2, "Big Erin", 0.0);
+    assert!(net.run_until(20_000, |n| n.c(0).life_state() == 1
+        && n.c(1).life_state() == 1));
+    net.run_for(500);
+    net.shoot(0, 1, 4, [0.0; 3]);
+    assert_eq!(net.server.game().stats()[&7].kills, 1);
+    net.add(3, "Dave", 0.0);
+    assert!(net.run_until(net.now + 20_000, |n| n.c(2).life_state() == 1));
+    net.run_for(1_000);
+    assert_eq!(net.c(0).state(), ClientState::Dropped(3));
+    let st = &net.server.game().stats()[&7];
+    assert_eq!((st.kills, st.deaths), (0, 0));
+    let rows: Vec<_> = net
+        .c(1)
+        .seen
+        .roster
+        .values()
+        .filter(|r| r.account == 7)
+        .collect();
+    assert_eq!(rows.len(), 1, "{:?}", net.c(1).seen.roster);
+    assert_eq!((rows[0].kills, rows[0].deaths), (0, 0));
+    assert_eq!(
+        net.server.game().scores(),
+        [1, 0],
+        "the team keeps the kill"
+    );
 }

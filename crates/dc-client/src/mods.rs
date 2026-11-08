@@ -125,6 +125,10 @@ pub struct ServerModSet {
     /// `None` from a lobby that does not publish it (an older one, or a pinned directory entry), when the menu
     /// falls back to its own ROM's map row count. Not part of the set's hash.
     pub community_map_base: Option<u32>,
+    /// LG-429: the field-of-view range `[min, max]` the server lets its players choose (the 4:3-horizontal angle, 2009
+    /// = 90); `None` = none published (a vanilla server, an older lobby). Not part of the set's hash.
+    // DC-DEFAULT: LG-429 (proposed), see DC_DEFAULTS.md
+    pub client_fov: Option<(u32, u32)>,
 }
 
 /// `<64 lower-case hex digits>`: the only form a hash may take before it names a file.
@@ -140,6 +144,17 @@ impl ServerModSet {
             policy: Policy::Vanilla,
             mods: Vec::new(),
             community_map_base: None,
+            client_fov: None,
+        }
+    }
+
+    /// LG-429: the field-of-view range this server publishes, for a modded or curated set only (a vanilla server keeps
+    /// the 2009 field of view whatever its document says).
+    // DC-DEFAULT: LG-429 (proposed)
+    pub fn fov_range(&self) -> Option<(u32, u32)> {
+        match self.policy {
+            Policy::Vanilla => None,
+            Policy::Modded { .. } => self.client_fov,
         }
     }
 
@@ -232,10 +247,21 @@ impl ServerModSet {
         if policy == Policy::Vanilla && !mods.is_empty() {
             return Err("a vanilla server declares mods".into());
         }
+        // LG-429: `[min, max]` of whole degrees with min <= max; anything else counts as none published
+        let client_fov = o
+            .get("client_fov")
+            .and_then(|r| r.as_array())
+            .and_then(|r| match r.as_slice() {
+                [lo, hi] => Some((lo.as_u64()?, hi.as_u64()?)),
+                _ => None,
+            })
+            .filter(|&(lo, hi)| lo >= 1 && lo <= hi && hi <= 180)
+            .map(|(lo, hi)| (lo as u32, hi as u32));
         Ok(ServerModSet {
             policy,
             mods,
             community_map_base: None,
+            client_fov,
         })
     }
 
@@ -261,9 +287,15 @@ impl ServerModSet {
             Policy::Vanilla => serde_json::json!({"policy": "vanilla", "mods": mods}),
             Policy::Modded {
                 client_visual_allowed,
-            } => serde_json::json!({
-                "policy": "modded", "client_visual_allowed": client_visual_allowed, "mods": mods,
-            }),
+            } => {
+                let mut o = serde_json::json!({
+                    "policy": "modded", "client_visual_allowed": client_visual_allowed, "mods": mods,
+                });
+                if let Some((lo, hi)) = self.client_fov {
+                    o["client_fov"] = serde_json::json!([lo, hi]);
+                }
+                o
+            }
         }
     }
 

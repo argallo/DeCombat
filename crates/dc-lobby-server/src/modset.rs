@@ -53,6 +53,10 @@ pub struct ModEntry {
 pub struct ModSet {
     pub modded: bool,
     pub client_visual_allowed: bool,
+    /// LG-429: the field-of-view range `[min, max]` the clients of this set may choose (the 4:3-horizontal angle);
+    /// published as `client_fov` of a modded set only. No part of the set hash.
+    // DC-DEFAULT: LG-429 (proposed)
+    pub client_fov: Option<[u32; 2]>,
     pub mods: Vec<ModEntry>,
 }
 
@@ -61,6 +65,7 @@ impl ModSet {
         ModSet {
             modded: false,
             client_visual_allowed: false,
+            client_fov: None,
             mods: Vec::new(),
         }
     }
@@ -110,6 +115,13 @@ impl ModSet {
             "client_visual_allowed".to_string(),
             JsonValue::Bool(self.modded && self.client_visual_allowed),
         );
+        // LG-429: a vanilla set publishes no range (the 2009 field of view stays); a modded one its range
+        if let Some(r) = self.client_fov.filter(|_| self.modded) {
+            o.insert(
+                "client_fov".to_string(),
+                JsonValue::Array(r.iter().map(|&v| JsonValue::Number(f64::from(v))).collect()),
+            );
+        }
         let mods = self
             .mods
             .iter()
@@ -339,6 +351,8 @@ pub fn build(conf: &ServerConf, mods_dir: Option<&Path>) -> Built {
         set: ModSet {
             modded: true,
             client_visual_allowed: m.client_visual_allowed,
+            // DC-DEFAULT: LG-429 (proposed) a modded lobby publishes its range, the default without a key
+            client_fov: Some(m.client_fov.unwrap_or(dc_config::CLIENT_FOV_DEFAULT)),
             mods,
         },
         errors,
@@ -807,6 +821,8 @@ pub fn build_entry_sets(
         let set = ModSet {
             modded: true,
             client_visual_allowed: e.client_visual_allowed,
+            // DC-DEFAULT: LG-429 (proposed) a curated entry publishes its range, the default without a key
+            client_fov: Some(e.client_fov.unwrap_or(dc_config::CLIENT_FOV_DEFAULT)),
             mods,
         };
         let expected = crate::state::ExpectedMods {
@@ -1242,6 +1258,7 @@ sha256 = \"{}\"
         let s = ModSet {
             modded: true,
             client_visual_allowed: true,
+            client_fov: None,
             mods: vec![
                 entry("rules", "1.0.0", &a, Some("server_rules")),
                 entry("skins", "2.0.0", &c, Some("client_visual")),
@@ -1259,6 +1276,7 @@ sha256 = \"{}\"
         let cv = ModSet {
             modded: true,
             client_visual_allowed: true,
+            client_fov: None,
             mods: vec![entry("skins", "2.0.0", &c, Some("client_visual"))],
         };
         assert_eq!(cv.hash(), EMPTY_HASH);
@@ -1269,6 +1287,7 @@ sha256 = \"{}\"
         let s = ModSet {
             modded: true,
             client_visual_allowed: true,
+            client_fov: Some([70, 120]),
             mods: vec![entry("x", "1.2.3", &"d".repeat(64), Some("shared"))],
         };
         let j = s.fragment();
@@ -1296,12 +1315,57 @@ sha256 = \"{}\"
         let v = ModSet {
             modded: false,
             client_visual_allowed: true,
+            client_fov: Some([70, 120]),
             mods: Vec::new(),
         };
         let JsonValue::Object(o) = v.fragment() else {
             panic!()
         };
         assert_eq!(o["client_visual_allowed"].as_bool(), Some(false));
+        assert!(
+            !o.contains_key("client_fov"),
+            "LG-429: vanilla publishes no range"
+        );
+    }
+
+    /// LG-429: a modded set publishes `client_fov` as `[min, max]`; a vanilla one never does; a modded lobby's
+    /// range is the default without a key and the configured one with it; the hash does not move.
+    #[test]
+    fn the_fragment_carries_the_field_of_view_range_for_modded_sets_only() {
+        let range = |s: &ModSet| match s.fragment() {
+            JsonValue::Object(o) => o.get("client_fov").map(|v| v.to_json_string()),
+            _ => None,
+        };
+        let mut s = ModSet {
+            modded: true,
+            client_visual_allowed: false,
+            client_fov: Some([70, 120]),
+            mods: vec![entry("x", "1.2.3", &"d".repeat(64), Some("shared"))],
+        };
+        assert_eq!(range(&s).as_deref(), Some("[70,120]"));
+        let hash = s.hash();
+        s.client_fov = Some([90, 90]);
+        assert_eq!(
+            range(&s).as_deref(),
+            Some("[90,90]"),
+            "a locked range is still published"
+        );
+        assert_eq!(s.hash(), hash);
+        s.modded = false;
+        assert_eq!(range(&s), None);
+        assert_eq!(range(&ModSet::vanilla()), None);
+        // a modded lobby: the default without a key, its own range with one; a vanilla lobby none
+        let d = tmp("fov");
+        let built = |extra: &str, policy: &str| {
+            let p = d.join("server.toml");
+            std::fs::write(&p, format!("[mods]\npolicy = \"{policy}\"\n{extra}")).unwrap();
+            let conf = ServerConf::load_unchecked(Some(&p), &[]).unwrap().unwrap();
+            build(&conf, None).set.fragment().to_json_string()
+        };
+        assert!(built("", "modded").contains("\"client_fov\":[70,120]"));
+        assert!(built("client_fov = [90, 90]\n", "modded").contains("\"client_fov\":[90,90]"));
+        assert!(!built("", "vanilla").contains("client_fov"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     // MOD-22: world.full_visibility turns culling off: the dserver arg and the server-list flag follow it

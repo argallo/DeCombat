@@ -190,8 +190,8 @@ pub fn crosshair_drawn(
                 format!(
                     "image {t} tint {} at {:.0},{:.0} {:.0}x{:.0} px",
                     hex(*tint),
-                    dst[0] * vs.sx,
-                    dst[1] * vs.sy,
+                    dst[0] * vs.sx + vs.ox,
+                    dst[1] * vs.sy + vs.oy,
                     dst[2] * vs.sx,
                     dst[3] * vs.sy
                 ),

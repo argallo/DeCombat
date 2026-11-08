@@ -759,12 +759,22 @@ player's enabled `client_visual` mods under `<profile>/mods/local/` (such as `dr
 load after the entry's packs; the curated limit above still applies to the packs, and a local mod keeps the local rules
 (kind `client_visual` only, no render or HUD hooks).
 
+**Players' field of view.** On a modded lobby and on a curated entry the player may pick a field of view in Options (Graphic
+tab, "Field of View": 70 to 120 in steps of 5, the 4:3-horizontal angle; the 2009 view is 90, the default). The server
+publishes the range it allows as `client_fov: [min, max]` in its mod-set JSON (LG-429, CLI-1916); the client clamps the
+player's choice into it. Without a key the range is `[70, 120]`. A server that wants everyone on the 2009 view sets
+`client_fov = [90, 90]` in the `[[lobby.servers]]` entry (or `[mods] client_fov` on a modded lobby), which locks the row;
+`dc-config check` takes 60 to 130 with the minimum not above the maximum. A vanilla server publishes no range and the
+2009 view stays whatever the player saved. Only the world view changes: the first-person weapon and the shop views keep
+their fixed look.
+
 
 ### Weapon inspect
 
 A pack can give a gun an inspect: the player presses their inspect key (I by default, set on the Control tab) and the gun
 turns in the hands to show it off. It is drawn on their screen only, changes nothing in play, and firing, reloading, switching
-weapons, sprinting or zooming cancels it at once. A variant has its base gun's inspect. Set these with
+weapons, sprinting or zooming cancels it at once. A variant has its base gun's inspect, so one inspect for a gun covers
+every camo of it, including camos added later; a variant cannot set its own (the keys are not cosmetic keys). Set these with
 `mod.content.weapons:patch`; `examples/mods/inspect_g36e_l96a1` is a full example, and the rule is CLI-1845 in `DC_DEFAULTS.md`.
 
 | Key | Value |
@@ -782,10 +792,12 @@ A variant is a gun with a new look that plays the same as its base gun, in its o
 cosmetic keys, and a camo ships as your own pattern plus a path that paints it over the player's texture at load, so the pack
 holds no game pixels. `examples/mods/variant_candy_g36e` is a full example, and the rules are VAR-1 to VAR-3 in `DC_DEFAULTS.md`.
 A client older than this feature refuses an entry that has a variant pack, so a variant goes on an entry only after that client
-has shipped.
+has shipped. A camo can move: `fx=` drifts a pattern over the gun as light (VAR-4, `examples/mods/variant_galaxy_g36e`), and
+`flow=` makes the paint itself roll over the gun like a lava lamp (VAR-12, `examples/mods/variant_prism_scar`); a client
+without `flow` draws the plain gun.
 
-Players unlock the camos of an entry from the **Camo Crate** (CRATE-1 to CRATE-4, CRATE-10): on an entry with camos, half of the
-in-match case drops are Camo Crates. A crate holds every camo of the entry and, once each, the plain base gun of each camo (its
+Players unlock the camos of an entry from the **Camo Crate** (CRATE-1 to CRATE-4, CRATE-10): on an entry with camos, three of four of the
+in-match case drops are Camo Crates (the operator sets the share with `camo_share` in `server.toml` `[hisec]`; 75 by default). A crate holds every camo of the entry and, once each, the plain base gun of each camo (its
 `variant_of` row) as a regular gun. Opening one gives a regular gun 70 % of the time, or a camo: Common 18 %, Rare 8 %, Epic
 3 %, Legendary 1 %. Either lasts the days of a HiSec case: 7 days 50 %, 30 days 35 %, permanent 15 %. Within a tier each item is as likely,
 and a tier the crate holds nothing of gives its share to the others in proportion. Every player has the same odds, and the

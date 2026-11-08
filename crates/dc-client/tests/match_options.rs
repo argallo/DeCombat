@@ -150,6 +150,7 @@ fn a_vanilla_match_and_a_server_without_own_mods_say_so() {
         MatchModsInfo {
             policy: Some(refused),
             mods: Vec::new(),
+            fov_range: None,
         },
     );
     m.input(MenuInput::Command(CMD_TAB_MODS));
@@ -252,6 +253,58 @@ fn a_changed_value_reloads_the_match_mods_with_it() {
     };
     assert_eq!(style("circle").as_deref(), Some("circle"));
     assert_eq!(style("cross").as_deref(), Some("cross"));
+}
+
+/// CLI-1916: over a match the Graphic tab's Field of View row says "locked" on a server that published no range
+/// (vanilla, an older lobby) and shows the plain angle on one that did; with a range, a pick made in the box is handed
+/// to the match with OK (the window applies it, clamped into the range). Needs the ROM's Graphic layout for the rows.
+#[test]
+fn the_field_of_view_row_is_locked_without_a_range_and_applies_with_one() {
+    use dc_client::menu::options::{fov_text, LIST_FOV, ROW_CMD_BASE};
+    let Some(rom) = std::env::var_os("CA_ROM").map(PathBuf::from) else {
+        println!("skipped: CA_ROM unset");
+        return;
+    };
+    let value_words = |m: &mut Menu| -> Vec<String> {
+        m.items()
+            .into_iter()
+            .filter_map(|i| match i {
+                DrawItem::Label { text, .. } => Some(text),
+                _ => None,
+            })
+            .filter(|t| t.starts_with("90"))
+            .collect()
+    };
+    // no range: the row's word carries the hint
+    let mut m = open(Some(&rom), Settings::default(), MatchModsInfo::default());
+    assert!(has(&value_words(&mut m), &fov_text(90, None)), "{:?}", value_words(&mut m));
+    // a range: the plain angle, a pick (110) is handed to the match by OK
+    let info = MatchModsInfo::default().with_fov_range(Some((70, 120)));
+    let mut m = open(Some(&rom), Settings::default(), info);
+    assert!(has(&value_words(&mut m), "90"), "{:?}", value_words(&mut m));
+    let mut picked = false;
+    for r in 0..16 {
+        let cmd = ROW_CMD_BASE + 16 * r;
+        m.input(MenuInput::Command(cmd));
+        let Some(d) = m.dropdown() else { continue };
+        if d.list != LIST_FOV {
+            m.input(MenuInput::Command(cmd));
+            continue;
+        }
+        assert_eq!(d.items.first().map(String::as_str), Some("70"));
+        assert_eq!(d.items.last().map(String::as_str), Some("120"));
+        let at = d.row_point(8).unwrap(); // 110
+        m.input(MenuInput::Move(at));
+        m.input(MenuInput::Press(at));
+        m.input(MenuInput::Release(at));
+        picked = true;
+        break;
+    }
+    assert!(picked, "the Field of View row is on the Graphic tab");
+    m.input(MenuInput::Key(MenuKey::Enter));
+    assert!(!m.over_match_open());
+    let s = m.take_settings_change().expect("OK hands the settings over");
+    assert_eq!(s.fov, 110);
 }
 
 /// The lobby's options keep the 2009 four tabs: no Mods tab, its command does nothing.

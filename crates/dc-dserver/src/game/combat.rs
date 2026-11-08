@@ -38,6 +38,23 @@ pub(super) struct DamageSource {
     pub dtype: u8,
 }
 
+/// The damage types whose killerless death the 2009 kill feed draws with its own image: burn and poison.
+// SPEC: GAME_MESSAGES_2009_S2C.md §3.3.1 field 11 (`feed_value` with an empty killer: 3 burn, 9 poison, 7 barrel); the
+// damage types of the same numbers (cshell VA 0x375573f0 name table: 3 the burn type, 9 the poison type)
+pub const DAMAGE_BURN: u8 = 3;
+pub const DAMAGE_POISON: u8 = 9;
+
+/// `feed_value` of a death: a burn or poison death with no killer carries its damage type (the feed's burn / poison
+/// image), every other death the reference stack's value.
+// DC-DEFAULT: DSV-636 (proposed) the barrel form (7) is not used: a breakable's blast credits its breaker (DSV-119)
+pub fn killerless_feed(killer: Option<u8>, dtype: u8) -> u8 {
+    if killer.is_none() && matches!(dtype, DAMAGE_BURN | DAMAGE_POISON) {
+        dtype
+    } else {
+        super::TODO_KILL_FEED_VALUE
+    }
+}
+
 /// One hit split between the armour and the health: `(health damage, armour taken)`. `dmg` is the hit's damage
 /// after the zone multiplier, `base` the ammunition's damage before it, `share` the armour's share of this hit
 /// (damage type and location already applied) and `armour` the points left. While the armour lasts it takes `share`
@@ -671,7 +688,8 @@ impl Game {
         // sent the fall-hurt file before the 0x74 (DSV-152)
         let voiced = self.plunge_voice(vpid, lethal, now);
         if lethal {
-            self.kill_feed(vpid, killer, src.weapon, zone, now);
+            let feed = killerless_feed(killer, src.dtype);
+            self.kill_feed(vpid, killer, src.weapon, zone, feed, now);
         }
         // SPEC: CAPTURE_tdm4_KILL_VALIDATION.md §3.1 items 1-4 (`from_dir` = shot direction x health loss / 100,
         // `zone` = the ammunition's ROM damage type, `damage` = the rounded health loss; REFERENCE)
@@ -756,7 +774,7 @@ impl Game {
         if let Some(v) = self.players.get_mut(&vpid) {
             v.health = 0.0;
         }
-        self.kill_feed(vpid, killer, weapon, zone, now);
+        self.kill_feed(vpid, killer, weapon, zone, super::TODO_KILL_FEED_VALUE, now);
         self.death_states(vpid);
         self.death_presentation(vpid, head, [0.0, 0.0, 1.0]);
         self.death_note(vpid);
@@ -803,7 +821,15 @@ impl Game {
     // CAPTURE_tdm4_KILL_VALIDATION.md §3.2 (0x6d fields, then 0xb5 [team 1 kills][team 2 kills]; never 0x4a)
     // DC-DEFAULT: DC-KILL-3 (proposed) 0xb5 after each kill; DSV-33 (proposed) 0x6d values; DC-C2S-13 (amended,
     // staged DSV-105) multi-kill chain; DSV-106 (staged) team kill form
-    fn kill_feed(&mut self, vpid: u8, killer: Option<u8>, weapon: u16, zone: u8, now: Millis) {
+    fn kill_feed(
+        &mut self,
+        vpid: u8,
+        killer: Option<u8>,
+        weapon: u16,
+        zone: u8,
+        feed: u8,
+        now: Millis,
+    ) {
         let Some(vteam) = self.players.get(&vpid).map(|v| v.team) else {
             return;
         };
@@ -897,7 +923,7 @@ impl Game {
             relation: TODO_KILL_RELATION,
             keep_hud: false,
             streak_flag,
-            feed_value: super::TODO_KILL_FEED_VALUE,
+            feed_value: feed,
             no_count: false,
         };
         self.broadcast(&gs::kill(&k));

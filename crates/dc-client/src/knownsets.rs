@@ -128,6 +128,7 @@ mod tests {
         ServerModSet {
             policy: Policy::Modded { client_visual_allowed: true },
             community_map_base: None,
+            client_fov: None,
             mods: vec![ServerMod {
                 id: "hacking_mod".into(),
                 version: "1.0.0".into(),

@@ -475,6 +475,9 @@ pub struct Coop {
     pub kills: BTreeMap<u32, u32>,
     pub deaths: BTreeMap<u32, u32>,
     pub ai_killed: u32,
+    /// Points and deaths of earlier stays of rejoined accounts: still the team's (DSV-621).
+    pub banked_points: u32,
+    pub banked_deaths: u32,
     pub waves_cleared: u32,
     pub stage: Option<u8>,
     /// Accounts whose refused respawn request was logged since their last death.
@@ -622,6 +625,8 @@ impl Coop {
             waves_cleared: 0,
             stage: None,
             refusals_logged: std::collections::BTreeSet::new(),
+            banked_points: 0,
+            banked_deaths: 0,
             started: None,
             last_step: None,
             events: Vec::new(),
@@ -708,7 +713,11 @@ impl Coop {
     }
 
     fn total_points(&self) -> u32 {
-        self.points.values().sum()
+        self.banked_points + self.points.values().sum::<u32>()
+    }
+
+    fn total_deaths(&self) -> u32 {
+        self.banked_deaths + self.deaths.values().sum::<u32>()
     }
 }
 
@@ -826,6 +835,18 @@ impl Game {
             .as_ref()
             .and_then(|c| c.points.get(&k).copied())
             .unwrap_or(0)
+    }
+
+    /// A rejoined account's new stay: its own points, AI kills and deaths start at 0 (the team totals keep them);
+    /// its lives stay (FT-S9).
+    // DC-DEFAULT: DSV-621 (proposed); FT-S9 (proposed) the lives
+    pub(super) fn coop_new_stay(&mut self, uid: u32) {
+        let Some(c) = self.coop.as_mut() else {
+            return;
+        };
+        c.banked_points += c.points.remove(&uid).unwrap_or(0);
+        c.banked_deaths += c.deaths.remove(&uid).unwrap_or(0);
+        c.kills.remove(&uid);
     }
 
     /// A human was placed: its lives are set once per account (a rejoin keeps what is left).
@@ -1930,7 +1951,7 @@ impl Game {
                 c.total_points(),
                 c.waves_cleared,
                 c.ai_killed,
-                c.deaths.values().sum(),
+                c.total_deaths(),
                 0,
                 secs,
             ],

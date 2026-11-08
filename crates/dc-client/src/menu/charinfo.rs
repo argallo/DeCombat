@@ -608,7 +608,7 @@ impl Screen for CharInfo {
             if let (Some((full, short, flag)), Some(name)) =
                 (tables.countries.get(p.nation as usize), name)
             {
-                let sx = cat.size().0 as f32 / 1024.0;
+                let sx = cat.scaler().sx;
                 let width = cat
                     .assets
                     .fonts

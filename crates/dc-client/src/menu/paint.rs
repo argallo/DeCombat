@@ -82,8 +82,10 @@ impl MenuPainter {
         {
             return false;
         }
+        // CLI-1915: the screen clipped to the 2D band, the cursor over the whole window
+        let free = super::cursor::trailing(&items);
         self.layer
-            .update_items(ctx, &items, &mut menu.cat.assets, size);
+            .update_menu_items(ctx, &items, &mut menu.cat.assets, size, free);
         self.drawn = Some((items, size));
         self.builds += 1;
         laps.lap(Stage::HudUpload);

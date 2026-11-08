@@ -224,6 +224,8 @@ pub struct BodyRow {
     pub host_override: Option<u32>,
     /// `GearId`: the armour row this body wears (`None`: missing or negative).
     pub gear: Option<u32>,
+    /// `FaceIndex`: the face row this body always wears (`None`: missing or -1; the player's own face then).
+    pub face_index: Option<u32>,
 }
 
 /// One hit node of a skeleton row.
@@ -440,6 +442,18 @@ fn numbered(sec: &dc_bute::SectionMap, key: &str, max: u32) -> Vec<String> {
 }
 
 impl CharTables {
+    /// DSV-625: the face row a character wears: its body row's `FaceIndex` when the row names one (the character
+    /// items with a face of their own), else the player's face row.
+    // EVIDENCE: cshell+0x1e3430 (face = the model row's FaceIndex when it is not -1, else the look's own face)
+    // DC-DEFAULT: DSV-625 (proposed; playtest report 2026-11-07 "mei's head seems to not be on its shoulders but
+    // instead on the ground by its feet"): the server's model block names that face, as the 2009 client's own figure
+    pub fn face_row_of(&self, c: CharacterChoice) -> u32 {
+        self.bodies
+            .get(&c.model_row)
+            .and_then(|b| b.face_index)
+            .unwrap_or(c.face_row)
+    }
+
     pub fn from_docs(models: &ButeDoc, marks: Option<&ButeDoc>) -> Self {
         let mut t = CharTables::default();
         for (name, sec) in models.iter() {
@@ -477,6 +491,7 @@ impl CharTables {
                         infected_override: int(KEY_INFECTED_OVERRIDE),
                         host_override: int(KEY_HOST_OVERRIDE),
                         gear: gear_id(sec),
+                        face_index: int(KEY_FACE_INDEX),
                     },
                 );
             } else if let Some(n) = index_of(name, OVERRIDE_SECTION) {
@@ -896,7 +911,7 @@ pub fn character_assets(
     let rig = rig(&row.model)?;
     let mut body = vec![row.model.clone()];
     body.extend(rig.children.iter().cloned());
-    let face = t.faces.get(&c.face_row).map(|f| {
+    let face = t.faces.get(&t.face_row_of(c)).map(|f| {
         (
             f.model.clone(),
             f.skins.iter().take(1).cloned().collect(),
@@ -1007,6 +1022,38 @@ ModelFile = "B/b7.ltb"
         assert_eq!(voice_row(&t, None, Some(&with_char), 0), Some(7));
         assert_eq!(voice_row(&t, None, Some(&vest1), 0), Some(1));
         assert_eq!(voice_row(&t, None, None, 0), None);
+    }
+
+    /// DSV-625 (playtest report 2026-11-07, the female character's head at her feet): a body row that names its own
+    /// face wears it whatever the player's face; a row without one (or with -1) wears the player's face.
+    #[test]
+    fn a_body_row_with_its_own_face_wears_it() {
+        let doc = r#"[Model0]
+ModelFile = "B/b0.ltb"
+[Model4]
+ModelFile = "B/b4.ltb"
+FaceIndex = 8
+[Model5]
+ModelFile = "B/b5.ltb"
+FaceIndex = -1
+[Face0]
+ModelFile = "F/f0.ltb"
+[Face8]
+ModelFile = "F/f8.ltb"
+"#;
+        let t = CharTables::from_docs(&ButeDoc::parse(doc), None);
+        let choice = |model_row, face_row| CharacterChoice {
+            model_row,
+            skin: 0,
+            face_row,
+        };
+        assert_eq!(t.face_row_of(choice(4, 0)), 8);
+        assert_eq!(t.face_row_of(choice(4, 3)), 8);
+        assert_eq!(t.face_row_of(choice(5, 3)), 3, "FaceIndex -1");
+        assert_eq!(t.face_row_of(choice(0, 2)), 2, "no FaceIndex");
+        assert_eq!(t.face_row_of(choice(9, 2)), 2, "no such row");
+        let a = character_assets(&t, choice(4, 0), rig).expect("assets");
+        assert_eq!(a.face.map(|f| f.0).as_deref(), Some("F/f8.ltb"));
     }
 
     #[test]

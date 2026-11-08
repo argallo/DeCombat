@@ -8,7 +8,7 @@
 // SPEC: FMT_CRES_UI.md §1 (where layout lives), §3.2 (string table), §6.2 (layout sections), §6.3 (pages), §7.1
 // EVIDENCE: cshell+0x1d2670 (pages), cshell+0x64770 (screen table = section names)
 
-use crate::hud::compose::{compose, HudAssets, HudFonts, NoTextures, RomTextureSource};
+use crate::hud::compose::{compose_clipped, HudAssets, HudFonts, NoTextures, RomTextureSource};
 use crate::hud::items::DrawItem;
 use crate::overlay::text::RgbaImage;
 use dc_rom::PeFile;
@@ -921,9 +921,7 @@ impl Catalog {
 
     /// Width and line height of `text` in virtual pixels with font record `font` at cell `size` (0 = the record's).
     pub fn measure_text(&mut self, font: i32, size: i32, text: &str) -> Option<(f32, f32)> {
-        let (w, h) = self.size;
-        let sx = w as f32 / 1024.0;
-        let sy = h as f32 / 768.0;
+        let VirtualScaler { sx, sy, .. } = self.scaler();
         let a = self
             .assets
             .fonts
@@ -973,6 +971,11 @@ impl Catalog {
         self.size
     }
 
+    /// The virtual-to-screen scaler of the screen's size (CLI-1915: the centred 16:9 band on a wider screen).
+    pub fn scaler(&self) -> VirtualScaler {
+        VirtualScaler::new(self.size.0, self.size.1)
+    }
+
     /// The texture's size, when it resolves.
     pub fn tex_size(&mut self, path: &str) -> Option<(u32, u32)> {
         self.assets.texture(path).map(|t| (t.width, t.height))
@@ -981,7 +984,9 @@ impl Catalog {
     /// The display list drawn over an opaque black target.
     pub fn compose(&mut self, items: &[DrawItem]) -> RgbaImage {
         let (w, h) = self.size;
-        compose(&with_backdrop(items), &mut self.assets, w, h)
+        // CLI-1915: clipped to the 2D band (black side bands), the cursor over the whole window
+        let free = super::cursor::trailing(items);
+        compose_clipped(&with_backdrop(items), &mut self.assets, w, h, free)
     }
 }
 

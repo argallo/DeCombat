@@ -105,35 +105,82 @@ pub fn places_with_options(rel: [[i32; 2]; 3]) -> [[i32; 2]; 4] {
 // DC-DEFAULT: CLI-1907 (OBSERVED: the pictures of the 2009 system-menu buttons, read from the ROM and looked at
 // 2026-11-06: black glyph core, light one-pixel halo; the 2009 message box's own caption look is light grey on a blank
 // button picture, which is not what these three buttons show)
-const CAPTION_INK: u32 = 0xff00_0000;
-const CAPTION_EDGE: u32 = 0xffe4_e4e4;
+const CAPTION_INK: [u8; 4] = [0, 0, 0, 255];
+const CAPTION_EDGE: [u8; 4] = [0xe4, 0xe4, 0xe4, 255];
 
-/// The four offsets of the light edge (virtual pixels): up, left, right, down only; the diagonal copies made the
+/// The four offsets of the light edge (picture pixels): up, left, right, down only; the diagonal copies made the
 /// halo heavier than the baked words' (owner, 2026-11-06 "make the white border slightly smaller").
 const EDGE_OFFSETS: [[i32; 2]; 4] = [[0, -1], [-1, 0], [1, 0], [0, 1]];
 
-/// CLI-1907: `text` centred in the button `r` the way the other three buttons' baked words look: the light edge
-/// copies first, the black letters over them (our text renderer has no outline of its own).
+/// CLI-1907: the font record of the caption, drawn at the record's own height (14): the bold system face record
+/// (Tahoma, bold) at cell 14 / em 12 has the baked words' cap height (9 picture pixels), x-height (7) and two-pixel
+/// stems; at the message boxes' size 13 (em 11) it was one pixel smaller in both.
+// DC-DEFAULT: CLI-1907 (OBSERVED: the 2009 system-menu pictures read from the ROM 2026-11-07: capitals and ascenders
+// on 9 rows (10..18), lowercase on 7 (12..18), stems two pixels wide; the record 14 at its height measures the same)
+pub const CAPTION_RECORD: i32 = crate::menu::popup::CAPTION_FONT;
+
+/// CLI-1907: the name prefix of a caption picture; [`crate::hud::HudAssets::texture`] makes
+/// `{CAPTION_TEX}{w}x{h}:{text}` with [`caption_picture`].
+pub const CAPTION_TEX: &str = "@dc:caption:";
+
+/// CLI-1907: `text` over the button `r` the way the other three buttons' baked words look: a picture of the button's
+/// size in virtual pixels that holds the caption ([`caption_picture`]), drawn like the 2009 button pictures (one
+/// picture pixel per virtual pixel, scaled with the screen on both axes and filtered the same way), so it keeps their
+/// proportions, edge and softness at every window size. Drawn as text the words scaled with the vertical factor
+/// only (a quarter narrower than the baked words at 2560 x 1440) and their one-pixel edge became 2.5 screen pixels
+/// of solid light grey (owner report 2026-11-07, beta5 at 2560 x 1440: "visibly smaller", "white letters").
 fn push_edged_caption(text: &str, r: [i32; 4], out: &mut Vec<DrawItem>) {
-    let align = dc_ui_data::pages::Align {
-        first: crate::menu::sheet::ALIGN_CENTRE,
-        second: dc_ui_data::pages::ALIGN_SECOND_CENTRE,
-    };
-    let mut put = |dx: i32, dy: i32, colour: u32| {
-        out.push(crate::menu::sheet::place_text(
-            text,
-            [r[0] + dx, r[1] + dy],
-            [r[2], r[3]],
-            align,
-            crate::menu::popup::CAPTION_FONT,
-            crate::menu::popup::CAPTION_SIZE,
-            colour,
-        ));
-    };
-    for [dx, dy] in EDGE_OFFSETS {
-        put(dx, dy, CAPTION_EDGE);
+    out.push(crate::menu::sheet::image(
+        &caption_tex(text, [r[2], r[3]]),
+        [r[0], r[1]],
+        [r[2], r[3]],
+    ));
+}
+
+/// The caption picture's name for `text` on a button of `size` (virtual pixels).
+pub fn caption_tex(text: &str, size: [i32; 2]) -> String {
+    format!("{CAPTION_TEX}{}x{}:{text}", size[0], size[1])
+}
+
+/// CLI-1907: the caption picture named `name` ([`caption_tex`]): transparent, the text of [`CAPTION_RECORD`] at
+/// its own height drawn at 1024 x 768 size (one texel per virtual pixel), centred across, its capitals centred down
+/// the picture as the baked words sit (rows 10..18 of 30), the four light edge copies first and the black letters
+/// over them. The transparent texels carry the edge colour, so the filtered edge fades out instead of darkening.
+/// `None` for a malformed name or without a font.
+pub fn caption_picture(fonts: &mut crate::hud::HudFonts, name: &str) -> Option<crate::hud::Tex> {
+    let (size, text) = name.strip_prefix(CAPTION_TEX)?.split_once(':')?;
+    let (w, h) = size.split_once('x')?;
+    let (w, h): (u32, u32) = (w.parse().ok()?, h.parse().ok()?);
+    if w == 0 || h == 0 || w > dc_ui_data::VIRTUAL_WIDTH || h > dc_ui_data::VIRTUAL_HEIGHT {
+        return None;
     }
-    put(0, 0, CAPTION_INK);
+    let atlas = fonts.atlas_virtual(CAPTION_RECORD, None)?;
+    let cap = cap_height(&atlas);
+    let baseline = ((h as i32 - cap).div_euclid(2) + cap) as f32;
+    let x = ((w as f32 - atlas.measure(text)) / 2.0).round();
+    let e = CAPTION_EDGE;
+    let mut img = crate::overlay::RgbaImage::new(w, h, [e[0], e[1], e[2], 0]);
+    for [dx, dy] in EDGE_OFFSETS {
+        atlas.draw_rgba(&mut img, x + dx as f32, baseline + dy as f32, text, e);
+    }
+    atlas.draw_rgba(&mut img, x, baseline, text, CAPTION_INK);
+    Some(crate::hud::Tex {
+        width: w,
+        height: h,
+        rgba: img.rgba,
+    })
+}
+
+/// The rows of an "H" of `atlas` above its baseline (its capital height in pixels; the ascent for a font without one).
+fn cap_height(atlas: &crate::overlay::GlyphAtlas) -> i32 {
+    let mut cap = atlas.ascent.round() as i32;
+    atlas.layout(0.0, 0.0, "H", |_, bm, _, oy| {
+        let inked = |row: u32| (0..bm.width).any(|c| bm.alpha[(row * bm.width + c) as usize] > 0);
+        if let Some(row) = (0..bm.height).find(|&row| inked(row)) {
+            cap = -(oy + row as i32);
+        }
+    });
+    cap
 }
 
 /// The exit box: window rectangle and button rectangles in the virtual 1024 x 768 screen, and its images.
@@ -344,7 +391,8 @@ mod tests {
             b.push_items(&v, &mut out);
             out.iter()
                 .filter_map(|d| match d {
-                    DrawItem::Image { tex, .. } => Some(tex.clone()),
+                    // CLI-1907: not the Options caption picture
+                    DrawItem::Image { tex, .. } if !tex.starts_with(CAPTION_TEX) => Some(tex.clone()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -402,43 +450,68 @@ mod tests {
         }
     }
 
+    /// CLI-1907: the Options caption is one picture of the button's size over the button (the caption picture).
     #[test]
     fn the_options_button_draws_its_caption() {
         let b = ExitBox::fallback();
         let mut out = Vec::new();
         b.push_items(&LeaveView::default(), &mut out);
-        let labels: Vec<_> = out
+        let r = b.buttons[crate::loading::EXIT_OPTIONS];
+        let want = caption_tex(T_OPTIONS, [r[2], r[3]]);
+        let at: Vec<_> = out
             .iter()
             .filter_map(|d| match d {
-                DrawItem::Label { text, .. } => Some(text.as_str()),
+                DrawItem::Image { tex, dst, src, .. } if *tex == want => Some((*dst, *src)),
                 _ => None,
             })
             .collect();
-        assert!(labels.contains(&T_OPTIONS), "{labels:?}");
+        let [x, y, w, h] = r.map(|v| v as f32);
+        assert_eq!(at, [([x, y, w, h], [w, h])], "{out:?}");
+        assert!(
+            !out.iter().any(|d| matches!(d, DrawItem::Label { text, .. } if text == T_OPTIONS)),
+            "no text item: the caption is in the picture"
+        );
     }
 
-    /// CLI-1907: the caption looks like the baked words of the 2009 buttons: eight light edge copies, then the black
-    /// letters on top, all at the same place the black ones are drawn at (the edge copies one pixel around it).
+    /// CLI-1907: the caption picture has the baked words' look: black letters, a light edge of one picture pixel
+    /// round them (up, left, right, down), transparent elsewhere with the edge colour (no dark filtered fringe),
+    /// centred across the button; a malformed name makes nothing.
     #[test]
     fn the_options_caption_is_black_with_a_light_edge() {
-        let mut out = Vec::new();
-        push_edged_caption("Options", [100, 200, 170, 30], &mut out);
-        let labels: Vec<_> = out
-            .iter()
-            .filter_map(|d| match d {
-                DrawItem::Label {
-                    style, pos, text, ..
-                } if text == "Options" => Some((style.colour, *pos)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(labels.len(), 5, "{labels:?}");
-        let (ink, at) = labels[4];
-        assert_eq!(ink, [0, 0, 0, 255], "the black letters come last, on top");
-        for (colour, pos) in &labels[..4] {
-            assert_eq!(*colour, [0xe4, 0xe4, 0xe4, 255]);
-            let d = [(pos[0] - at[0]).abs(), (pos[1] - at[1]).abs()];
-            assert!(d == [1.0, 0.0] || d == [0.0, 1.0], "{pos:?}");
+        let mut fonts = crate::hud::HudFonts::new(Some((crate::testkit::synth_font(), 0)), 16.0, None, 1.0);
+        // the made-up font has an "A" and a "B" only
+        let pic = caption_picture(&mut fonts, &caption_tex("ABAB", [172, 30])).expect("a picture");
+        assert_eq!((pic.width, pic.height), (172, 30));
+        let px = |x: u32, y: u32| {
+            let o = ((y * pic.width + x) * 4) as usize;
+            [pic.rgba[o], pic.rgba[o + 1], pic.rgba[o + 2], pic.rgba[o + 3]]
+        };
+        let ink = |p: [u8; 4]| p[3] == 255 && p[0] < 0x40 && p[1] < 0x40 && p[2] < 0x40;
+        let (mut inked, mut edged, mut x0, mut x1, mut top) = (0, 0, u32::MAX, 0, None);
+        for y in 0..pic.height {
+            for x in 0..pic.width {
+                let p = px(x, y);
+                if ink(p) {
+                    inked += 1;
+                    (x0, x1) = (x0.min(x), x1.max(x));
+                    top.get_or_insert((x, y));
+                } else if p[3] == 255 {
+                    // the edge, or (an anti-aliased glyph's rim) ink over the edge
+                    assert!(p[0] == p[1] && p[1] == p[2] && p[0] <= CAPTION_EDGE[0], "{p:?} at ({x}, {y})");
+                    edged += usize::from(p == CAPTION_EDGE);
+                } else if p[3] == 0 {
+                    assert_eq!(p[..3], CAPTION_EDGE[..3], "a clear texel carries the edge colour");
+                }
+            }
+        }
+        assert!(inked > 50 && edged > 10, "ink {inked}, edge {edged}");
+        let (tx, ty) = top.expect("ink");
+        let above = px(tx, ty.saturating_sub(1));
+        assert!(ty > 0 && above[3] >= 0x80 && above[0] >= 0x80, "the edge above the first ink texel: {above:?}");
+        let centre = (x0 + x1 + 1) as f32 / 2.0;
+        assert!((centre - 86.0).abs() <= 2.0, "centred across: {x0}..={x1}");
+        for bad in ["@dc:caption:0x30:A", "@dc:caption:172:A", "@dc:caption:2000x30:A", "nope"] {
+            assert!(caption_picture(&mut fonts, bad).is_none(), "{bad}");
         }
     }
 }

@@ -243,6 +243,7 @@ fn start(
         },
         // the match fills these from the joined room (menu/window/ipad.rs), as the desktop path does
         mods: None,
+        client_fov: None,
         room_hacks: None,
         gun_ladder: Vec::new(),
         reticle: None,

@@ -307,6 +307,22 @@ impl OverlayRenderer {
         })
     }
 
+    /// [`OverlayRenderer::update_items`] for a menu screen: all but the last `free` items clipped to the 2D band
+    /// ([`super::hud_quads::menu_quads`], CLI-1915).
+    pub fn update_menu_items(
+        &mut self,
+        ctx: &GpuContext,
+        items: &[crate::hud::DrawItem],
+        assets: &mut crate::hud::HudAssets,
+        size: (u32, u32),
+        free: usize,
+    ) -> usize {
+        self.use_quads = true;
+        self.quads.build(ctx, |atlas, list| {
+            super::hud_quads::menu_quads(ctx, atlas, list, items, assets, size.0, size.1, free)
+        })
+    }
+
     /// The debug panel of `lines` in `font` as batched quads (the glyph sheet is uploaded once per font).
     /// Returns the number of quads.
     pub fn update_panel(&mut self, ctx: &GpuContext, font: &GlyphAtlas, lines: &[String]) -> usize {

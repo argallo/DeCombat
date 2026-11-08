@@ -20,7 +20,7 @@ pub struct RewardRule {
 
 #[derive(Clone, Debug)]
 pub struct Rules {
-    // DC-DEFAULT: CD-03 match EXP: finish 10, kill 4, assist 0, win +25 %, objective 15, team kill = -kill value
+    // DC-DEFAULT: CD-03 match EXP: finish 15, kill 6, assist 0, win +25 %, objective 22 (x1.5 2026-11-07), team kill = -kill value
     pub exp: RewardRule,
     // DC-DEFAULT: CD-04 match GP: finish 20, kill 6, win +25 %, objective 25
     pub gp: RewardRule,
@@ -123,12 +123,12 @@ impl Default for Rules {
     fn default() -> Self {
         Self {
             exp: RewardRule {
-                finish: 10.0,
-                kill: 4.0,
+                finish: 15.0,
+                kill: 6.0,
                 assist: 0.0,
                 win_bonus_pct: 25.0,
-                objective: 15.0,
-                agent_win: 30.0,
+                objective: 22.0,
+                agent_win: 45.0,
             },
             gp: RewardRule {
                 finish: 20.0,
@@ -490,12 +490,12 @@ mod tests {
         assert_eq!(
             r.exp,
             RewardRule {
-                finish: 10.0,
-                kill: 4.0,
+                finish: 15.0,
+                kill: 6.0,
                 assist: 0.0,
                 win_bonus_pct: 25.0,
-                objective: 15.0,
-                agent_win: 30.0,
+                objective: 22.0,
+                agent_win: 45.0,
             }
         );
         assert_eq!(

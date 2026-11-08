@@ -449,7 +449,7 @@ impl AwardBox {
                 PERIOD_SIZE,
                 PERIOD_COLOUR,
             ));
-            let sx = cat.size().0 as f32 / 1024.0;
+            let sx = cat.scaler().sx;
             let text = cat.text(self.message);
             let atlas = cat
                 .assets

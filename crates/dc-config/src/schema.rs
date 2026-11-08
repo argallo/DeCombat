@@ -256,6 +256,13 @@ pub struct ModRef {
     pub sha256: String,
 }
 
+/// LG-429: the field-of-view range a modded or curated entry publishes when its config names none (the 4:3-horizontal
+/// angle; the 2009 client's is 90).
+// DC-DEFAULT: LG-429 (proposed)
+pub const CLIENT_FOV_DEFAULT: [u32; 2] = [70, 120];
+/// LG-429: the bounds `dc-config check` accepts for a published field-of-view range.
+pub const CLIENT_FOV_BOUNDS: [u32; 2] = [60, 130];
+
 /// The mod-set declaration. `policy = "vanilla"` requires an empty set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -264,6 +271,11 @@ pub struct ModsSection {
     pub policy: String,
     /// Whether clients may add their own client-visual mods on this server.
     pub client_visual_allowed: bool,
+    /// LG-429: the field-of-view range `[min, max]` (the 4:3-horizontal angle, 2009 = 90) this modded lobby lets its
+    /// players choose; absent = [`CLIENT_FOV_DEFAULT`], `[90, 90]` locks it. Only on a modded lobby.
+    /// DC-DEFAULT: LG-429 (proposed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_fov: Option<[u32; 2]>,
     /// Per-mod download size cap served from `/mods/`, in bytes.
     pub max_zip_bytes: u64,
     /// Ordered mod set; the order is the load order the client must follow. `[[mods.set]]` in TOML.
@@ -278,6 +290,7 @@ impl Default for ModsSection {
         ModsSection {
             policy: "vanilla".into(),
             client_visual_allowed: false,
+            client_fov: None,
             max_zip_bytes: MAX_ZIP_BYTES,
             set: Vec::new(),
             catalog: Vec::new(),
@@ -362,6 +375,11 @@ pub struct LobbyServerCfg {
     /// Default false. DC-DEFAULT: LG-426 (proposed).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub client_visual_allowed: bool,
+    /// LG-429: the field-of-view range `[min, max]` (the 4:3-horizontal angle, 2009 = 90) the players of this curated
+    /// entry may choose; absent = [`CLIENT_FOV_DEFAULT`], `[90, 90]` locks it. Only on an entry with `mods`.
+    /// DC-DEFAULT: LG-429 (proposed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_fov: Option<[u32; 2]>,
     /// LG-272: `host:port` of ANOTHER lobby instance (its auth port), e.g. the modded instance on the same machine.
     /// Such an entry is no server of this lobby (no id, no channels, no host): our clients list it after this lobby's
     /// entries (push 0x3f02, `dc_wire::moddedlist`); the 2009 client never sees it. "" = an entry of this lobby.
@@ -584,16 +602,17 @@ pub struct RewardRates {
 }
 
 impl RewardRates {
-    /// DC-DEFAULT: CD-03 (EXP): finish 10, kill 4, assist 0, win +25 %, objective 15; CD-86 agent win 30.
+    /// DC-DEFAULT: CD-03 (EXP, x1.5 from 2026-11-07): finish 15, kill 6, assist 0, win +25 %, objective 22; CD-86
+    /// agent win 45.
     pub fn exp_default() -> Self {
         RewardRates {
-            finish: 10,
-            kill: 4,
+            finish: 15,
+            kill: 6,
             assist: 0,
             win_percent: 25,
-            objective: 15,
+            objective: 22,
             team_kill_penalty: -1,
-            agent_win: 30,
+            agent_win: 45,
         }
     }
     /// DC-DEFAULT: CD-04 (GP): finish 20, kill 6, win +25 %, objective 25; CD-86 agent win 0.
@@ -1387,6 +1406,11 @@ pub struct HisecSection {
     pub announce: String,
     /// DC-DEFAULT: HS-7 (proposed). 0x32f reason when no usable key is owned.
     pub no_key_reason: u32,
+    /// DC-DEFAULT: CRATE-2 (amended 2026-11-07, OWNER DIRECTION "the amount of hi-secs should be reduced now that camo
+    /// crates are in the mix"). Percent of the drops that are a Camo Crate instead of a HiSec case, in a match of an
+    /// entry that has camos (0..=100; 0 = never). The lobby passes it to every game server as `-hisec camo_share=<n>`
+    /// when the file sets it; the drop rate itself (about one per match, HS-1) does not change.
+    pub camo_share: u32,
 }
 
 impl Default for HisecSection {
@@ -1395,6 +1419,7 @@ impl Default for HisecSection {
             case_product: 0,
             announce: "all".into(),
             no_key_reason: 0x99,
+            camo_share: 75,
         }
     }
 }

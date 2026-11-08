@@ -273,6 +273,8 @@ this repository. What they do on our lobby:
 The test commands `/notice <text>`, `/expire`, `/shopver`, `/grade <n>` and `!hisec <item>` are GM-only on a public lobby. A ticker to everybody: `/notice <text>` as a
 GM. `/help` in the lobby chat lists the commands the player can use right there (the GM and test commands only for those who may use them, and the commands of the server entry's mods). A text at every login: `notice.login_ticker` and `notice.login_box` in `lobby.json` beside the database (OPS-10). `account grant`, `account loadout` and `account event` change a player's things; see `--help`.
 
+How often a match drops a HiSec case or a Camo Crate: about one drop a match (the game server's own rule). On an entry with camos, `camo_share` in `server.toml` `[hisec]` (0..100, default 75) is the percent of those drops that are Camo Crates; the rest are HiSec cases, and 0 means no crates. In `lobby.json` the same key is `"hisec.camo_share": 75`. The lobby passes it to each game server as `-hisec camo_share=<n>`, and `dc-config check` refuses a value above 100.
+
 ## 12. Reports
 
 A player's report goes in the `reports` table. With `mail.reports_to` and a mail server set (LG-316) it is also mailed. To read the table (`python3` is on the box; `apt install sqlite3` for a prompt):

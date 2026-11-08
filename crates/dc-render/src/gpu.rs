@@ -95,17 +95,61 @@ fn instance_for(backends: wgpu::Backends) -> wgpu::Instance {
     })
 }
 
+/// Whether an attempt takes an adapter of `kind`: an attempt that does not ask for the software fallback takes only
+/// a hardware adapter (CLI-1931). wgpu's adapter request without `force_fallback_adapter` still returns a software
+/// adapter (WARP on DX12, `DeviceType::Cpu`) when the backend has no hardware one, e.g. a DX12 driver wgpu does not
+/// expose; the game then ran on WARP instead of going on to the next backend.
+// ORIGINAL: CLI-1931 (wgpu 25 docs: RequestAdapterOptions::force_fallback_adapter, DeviceType::Cpu); no 2009 behaviour
+fn takes_adapter(kind: wgpu::DeviceType, fallback: bool) -> bool {
+    fallback || kind != wgpu::DeviceType::Cpu
+}
+
 fn request(
     instance: &wgpu::Instance,
     fallback: bool,
     surface: Option<&wgpu::Surface<'_>>,
 ) -> Result<wgpu::Adapter, String> {
-    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: fallback,
         compatible_surface: surface,
     }))
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let info = adapter.get_info();
+    if !takes_adapter(info.device_type, fallback) {
+        return Err(format!("only a software adapter: {}", describe(&info)));
+    }
+    Ok(adapter)
+}
+
+/// The attempts of a headless [`AdapterChoice`], in order: `Backends` tries their hardware adapter, then their
+/// software adapter (what one wgpu request on those backends returned before CLI-1931).
+fn headless_attempts(choice: AdapterChoice) -> Vec<(&'static str, wgpu::Backends, bool)> {
+    match choice {
+        AdapterChoice::Auto => auto_attempts().to_vec(),
+        AdapterChoice::Backends(b) => vec![
+            ("requested backends", b, false),
+            ("requested backends, software", b, true),
+        ],
+        AdapterChoice::Fallback => vec![("software fallback", wgpu::Backends::all(), true)],
+    }
+}
+
+/// The first attempt `run` builds a context with; every failure (no adapter, or a device request the adapter
+/// refused) goes on to the next attempt (CLI-1931: a refused device ended the search before). `Err` joins the
+/// failures in attempt order.
+fn first_working<T>(
+    attempts: &[(&'static str, wgpu::Backends, bool)],
+    mut run: impl FnMut(wgpu::Backends, bool) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut errors = Vec::new();
+    for &(name, backends, fallback) in attempts {
+        match run(backends, fallback) {
+            Ok(t) => return Ok(t),
+            Err(e) => errors.push(format!("{name}: {e}")),
+        }
+    }
+    Err(errors.join("; "))
 }
 
 /// The attempts of [`AdapterChoice::Auto`], in order.
@@ -177,30 +221,36 @@ impl fmt::Debug for GpuContext {
 impl GpuContext {
     /// A headless device (no surface).
     pub fn headless(choice: AdapterChoice) -> Result<GpuContext, RenderError> {
-        let attempts: Vec<(&'static str, wgpu::Backends, bool)> = match choice {
-            AdapterChoice::Auto => auto_attempts().to_vec(),
-            AdapterChoice::Backends(b) => vec![("requested backends", b, false)],
-            AdapterChoice::Fallback => vec![("software fallback", wgpu::Backends::all(), true)],
-        };
-        let mut errors = Vec::new();
-        for (name, backends, fallback) in attempts {
+        first_working(&headless_attempts(choice), |backends, fallback| {
             let instance = instance_for(backends);
-            match request(&instance, fallback, None) {
-                Ok(adapter) => return GpuContext::with_adapter(instance, adapter),
-                Err(e) => errors.push(format!("{name}: {e}")),
-            }
-        }
-        Err(RenderError::NoAdapter(errors.join("; ")))
+            let adapter = request(&instance, fallback, None)?;
+            GpuContext::with_adapter(instance, adapter).map_err(|e| e.to_string())
+        })
+        .map_err(RenderError::NoAdapter)
     }
 
-    /// A device for an adapter that can present to `surface` (window mode).
+    /// A device for an adapter that can present to `surface` (window mode): a hardware adapter, else the software
+    /// fallback adapter.
     pub fn for_surface(
         instance: wgpu::Instance,
         surface: &wgpu::Surface<'_>,
     ) -> Result<GpuContext, RenderError> {
-        let adapter = request(&instance, false, Some(surface))
-            .or_else(|_| request(&instance, true, Some(surface)))
-            .map_err(RenderError::NoAdapter)?;
+        GpuContext::for_surface_with(instance, surface, true)
+    }
+
+    /// [`GpuContext::for_surface`], with the software fallback adapter only when `software` (CLI-1931: a saved
+    /// renderer's first attempt takes no software adapter, so the window goes on to the other backends instead).
+    pub fn for_surface_with(
+        instance: wgpu::Instance,
+        surface: &wgpu::Surface<'_>,
+        software: bool,
+    ) -> Result<GpuContext, RenderError> {
+        let adapter = match request(&instance, false, Some(surface)) {
+            Err(e) if software => request(&instance, true, Some(surface))
+                .map_err(|e2| format!("{e}; software fallback: {e2}")),
+            r => r,
+        }
+        .map_err(RenderError::NoAdapter)?;
         GpuContext::with_adapter(instance, adapter)
     }
 
@@ -236,6 +286,8 @@ impl GpuContext {
         if timed {
             crate::perf::install_timer(&device, &queue);
         }
+        // CLI-1933: the slow-pipeline line of this thread names the backend
+        crate::warm::set_thread_backend(info.backend);
         Ok(GpuContext {
             instance,
             adapter,
@@ -2438,5 +2490,60 @@ impl WorldRenderer {
     /// ([`ModelPipelines::instantiate`]).
     pub fn instantiate_model(&self, ctx: &GpuContext, template: &ModelInstance) -> ModelInstance {
         self.models.instantiate(ctx, template)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_attempt_without_the_fallback_takes_no_software_adapter() {
+        use wgpu::DeviceType as D;
+        for kind in [D::DiscreteGpu, D::IntegratedGpu, D::VirtualGpu, D::Other] {
+            assert!(takes_adapter(kind, false), "{kind:?}");
+            assert!(takes_adapter(kind, true), "{kind:?}");
+        }
+        assert!(!takes_adapter(D::Cpu, false));
+        assert!(takes_adapter(D::Cpu, true));
+    }
+
+    #[test]
+    fn a_refused_device_goes_on_to_the_next_attempt() {
+        let attempts = auto_attempts();
+        let mut seen = Vec::new();
+        // the default backends find an adapter whose device is refused, DX12 has none, Vulkan works
+        let got = first_working(&attempts, |b, fallback| {
+            seen.push((b, fallback));
+            match seen.len() {
+                1 => Err("device request failed: limits".to_string()),
+                2 => Err("no adapter".to_string()),
+                _ => Ok(b),
+            }
+        });
+        assert_eq!(got, Ok(wgpu::Backends::VULKAN));
+        assert_eq!(seen.len(), 3);
+        let all = first_working(&attempts, |_, _| Err::<(), _>("x".to_string()));
+        assert_eq!(
+            all,
+            Err("default backends: x; dx12: x; vulkan: x; software fallback: x".to_string())
+        );
+    }
+
+    #[test]
+    fn requested_backends_try_hardware_then_their_software_adapter() {
+        let dx = wgpu::Backends::DX12;
+        assert_eq!(
+            headless_attempts(AdapterChoice::Backends(dx)),
+            vec![
+                ("requested backends", dx, false),
+                ("requested backends, software", dx, true)
+            ]
+        );
+        assert_eq!(
+            headless_attempts(AdapterChoice::Fallback),
+            vec![("software fallback", wgpu::Backends::all(), true)]
+        );
+        assert_eq!(headless_attempts(AdapterChoice::Auto).len(), 4);
     }
 }

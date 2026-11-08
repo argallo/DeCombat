@@ -1,6 +1,6 @@
 //! The menu's side of the diagnostic reports (CLI-1841, CLI-1843; project decision, no 2009 counterpart): the
-//! consent questions the first time, the box after a problem (send / test the connection / no), the connection
-//! test's result, the bug form's "attach diagnostics", the lobby chat's `/report`, `/diag` and `/nettest`, and the
+//! one notice line the first time a report goes by itself, the box after a problem (send / test the connection /
+//! no), the connection test's result, the bug form's "attach diagnostics", the lobby chat's `/report`, `/diag` and `/nettest`, and the
 //! connection test panel of the server screen. The boxes are the 2009 message box with our own words and button
 //! captions; they open only when no other box is up, so the 2009 box of a failure (the lost connection) comes first.
 //! What a report holds and where it goes: [`crate::diag`], docs/DIAGNOSTICS.md.
@@ -17,10 +17,6 @@ use std::time::{Duration, Instant};
 /// Which of our boxes is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// "Send reports automatically?" Yes = always, No = the second question.
-    Consent1,
-    /// "Ask each time instead?" Yes = ask, No = never.
-    Consent2,
     /// After a problem (consent ask): send / (test) / no.
     Ask,
     /// After a network problem whose report went (consent always): test / OK.
@@ -37,11 +33,9 @@ pub const T_SEND: &str = "Send report";
 pub const T_TEST: &str = "Test connection";
 pub const T_NO: &str = "No";
 pub const T_OK: &str = "OK";
-pub const T_CONSENT1: &str = "Send diagnostic reports to the server's owner automatically when the game has a \
-                              problem? A report holds your game logs and system details, never your password. \
-                              (No: more choices)";
-pub const T_CONSENT2: &str = "Ask you each time a problem happens instead? (No: never send reports.) You can change \
-                              this later with /diag in the lobby chat.";
+/// The one lobby chat line the first time a report goes without a choice of the player.
+pub const T_AUTO_NOTICE: &str = "A diagnostic report of the last problem was sent to the server owner (no passwords, \
+                                 no memory dumps). /diag never turns this off.";
 pub const T_ASK: &str = "Send a diagnostic report to the server's owner? It holds your game logs and system \
                          details, never your password.";
 pub const T_SENT_TEST: &str = "A diagnostic report goes to the server's owner. Test your connection to this server?";
@@ -111,12 +105,6 @@ pub fn match_json(data: &MenuData, end: &str) -> Value {
 
 fn consent(data: &MenuData) -> Consent {
     Consent::from_u8(data.settings.diag_consent)
-}
-
-fn set_consent(m: &mut Menu, c: Consent) {
-    m.data.settings.diag_consent = c.as_u8();
-    m.data.settings_changed = true;
-    store_settings(&mut m.data, &m.cat);
 }
 
 /// The connection test's targets: one per echo address (the lobby's web port number over UDP), named after the
@@ -196,6 +184,19 @@ fn ask_box(f: &Failure) -> Popup {
     }
 }
 
+/// The first report that goes without a choice of the player: says so once in the lobby chat and keeps the
+/// automatic mode as the player's setting (`/diag ask|never` changes it). `true`: the setting changed (store it).
+// DC-DEFAULT: CLI-1841 amend (USER REQUEST 2026-11-07): not chosen = automatic, one notice line
+fn announce_automatic(data: &mut MenuData) -> bool {
+    if Consent::from_u8(data.settings.diag_consent) != Consent::Unset {
+        return false;
+    }
+    data.say_in(T_AUTO_NOTICE.into(), NOTE_COLOUR);
+    data.settings.diag_consent = Consent::Always.as_u8();
+    data.settings_changed = true;
+    true
+}
+
 /// A problem goes by its plan.
 fn handle(m: &mut Menu, mut f: Failure) {
     if f.lobby.is_none() {
@@ -204,10 +205,6 @@ fn handle(m: &mut Menu, mut f: Failure) {
     f.keep_ips.extend(server_ips(&m.data));
     match diag::plan(consent(&m.data), f.kind, diag::off()) {
         Plan::Drop => diag::mark_seen(&f.artifacts),
-        Plan::AskConsent => {
-            m.diag.current = Some(f);
-            push(m, Popup::ask(T_CONSENT1.into(), BoxTag::Diag(Step::Consent1)));
-        }
         Plan::Ask { .. } => {
             let p = ask_box(&f);
             m.diag.current = Some(f);
@@ -215,6 +212,10 @@ fn handle(m: &mut Menu, mut f: Failure) {
             push(m, p);
         }
         Plan::Send { offer_test } => {
+            if !f.kind.is_explicit() && announce_automatic(&mut m.data) {
+                store_settings(&mut m.data, &m.cat);
+                m.dirty = true;
+            }
             diag::send(f.clone());
             if offer_test {
                 m.diag.current = Some(f);
@@ -315,22 +316,6 @@ pub fn tick(m: &mut Menu) {
 pub fn answer(m: &mut Menu, step: Step, chosen: Option<usize>, three: bool) {
     let first = chosen == Some(0);
     match step {
-        Step::Consent1 => {
-            if first {
-                set_consent(m, Consent::Always);
-                if let Some(f) = m.diag.current.take() {
-                    handle(m, f);
-                }
-            } else {
-                push(m, Popup::ask(T_CONSENT2.into(), BoxTag::Diag(Step::Consent2)));
-            }
-        }
-        Step::Consent2 => {
-            set_consent(m, if first { Consent::Ask } else { Consent::Never });
-            if let Some(f) = m.diag.current.take() {
-                handle(m, f);
-            }
-        }
         Step::Ask => match chosen {
             Some(0) => {
                 if let Some(f) = m.diag.current.take() {
@@ -716,6 +701,26 @@ mod tests {
             clan_only: 0,
             op_capacity: 0,
             op_current: 0,
+        }
+    }
+
+    /// The notice line comes once, with the first automatic report, and keeps the automatic mode; a chosen mode
+    /// is left alone.
+    #[test]
+    fn the_first_automatic_report_says_so_once() {
+        let mut d = MenuData::default();
+        assert_eq!(Consent::from_u8(d.settings.diag_consent), Consent::Unset);
+        assert!(announce_automatic(&mut d));
+        assert_eq!(d.chat.last().map(String::as_str), Some(T_AUTO_NOTICE));
+        assert_eq!(Consent::from_u8(d.settings.diag_consent), Consent::Always);
+        assert!(!announce_automatic(&mut d));
+        assert_eq!(d.chat.len(), 1);
+        for c in [Consent::Ask, Consent::Never] {
+            let mut d = MenuData::default();
+            d.settings.diag_consent = c.as_u8();
+            assert!(!announce_automatic(&mut d));
+            assert!(d.chat.is_empty());
+            assert_eq!(Consent::from_u8(d.settings.diag_consent), c);
         }
     }
 

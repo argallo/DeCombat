@@ -176,6 +176,11 @@ pub mod key {
     // (`SubControlleeWeaponID` -> row +0x228, default -1)
     pub const SUB_CONTROL: &str = "SubControlWeaponID";
     pub const CONTROLLEE: &str = "SubControlleeWeaponID";
+    // OBSERVED: ROM table keys WEAPONS.TXT [Weapon<n>] WhiteScreenDecl, CapturedDecl (read at run time)
+    // EVIDENCE: cshell+0x17de45..0x17de7d (row loader: -> row +0x318 / +0x31c), cshell+0x485a0 (the screen flash
+    // reads both from the drawn weapon's row every frame)
+    pub const WHITE_SCREEN: &str = "WhiteScreenDecl";
+    pub const CAPTURED: &str = "CapturedDecl";
 }
 
 /// The order class (2009 numbering) whose rows hand the hand over to their sub-control or controllee weapon after a
@@ -289,6 +294,10 @@ pub struct WeaponRow {
     pub controllee: Option<u16>,
     /// The row's sensor numbers (`SensorOption` and the battery, [`crate::hud::sensor`]); `None`: no sensor row.
     pub sensor: Option<crate::hud::sensor::SensorSpec>,
+    /// `WhiteScreenDecl` / `CapturedDecl` (row +0x318 / +0x31c): the screen flash's numbers while this weapon is
+    /// drawn ([`crate::hud::whiteout`]); `None`: the row has none, the binary's default applies.
+    pub white_screen: Option<f32>,
+    pub captured: Option<f32>,
 }
 
 /// The weapon rows of the ROM.
@@ -468,6 +477,8 @@ impl WeaponTable {
                     sub_control: weapon_id(sec.get(key::SUB_CONTROL)),
                     controllee: weapon_id(sec.get(key::CONTROLLEE)),
                     sensor: crate::hud::sensor::SensorSpec::of_row(&|k| num(sec.get(k))),
+                    white_screen: num(sec.get(key::WHITE_SCREEN)),
+                    captured: num(sec.get(key::CAPTURED)),
                 },
             );
         }
@@ -2141,6 +2152,15 @@ impl Arsenal {
     /// The row's `InfiniteAmmo` (false without a table).
     pub fn infinite_ammo(&self, weapon: u16) -> bool {
         self.row(weapon).is_some_and(|r| r.infinite_ammo)
+    }
+
+    /// The screen-flash numbers of `weapon`'s row (the binary's defaults for a row without them or no row).
+    pub fn flash_decl(&self, weapon: u16) -> crate::hud::whiteout::FlashDecl {
+        let r = self.row(weapon);
+        crate::hud::whiteout::FlashDecl::of_row(
+            r.and_then(|r| r.white_screen),
+            r.and_then(|r| r.captured),
+        )
     }
 
     /// The weapon is loaded: `InfiniteAmmo`, or a round in its slot (clip or stock).

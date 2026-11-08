@@ -465,6 +465,14 @@ The lobby must run a build that knows the key before the line goes in: an older 
 key and does not start. The set hash and the pick's claim do not change, so clients need no update; an older client
 keeps joining the entry and only its local mods stay off.
 
+Players may also pick their field of view (Options, Graphic tab, "Field of View", 70 to 120, the 4:3-horizontal angle;
+90 is the 2009 view) on this entry. The lobby publishes the range in the entry's set document as `client_fov: [min, max]`
+(LG-429, CLI-1916); without a key it is `[70, 120]`, so a Vanilla++ entry needs no line for it. `client_fov = [90, 90]` in
+the entry locks the row to the 2009 view; `dc-config check` takes 60 to 130 with the minimum not above the maximum, and
+refuses the key on an entry without `mods`. As with `client_visual_allowed`, the lobby must run a build that knows the
+key before a line goes in; the key is no part of the set hash, so clients need no update, and an older client keeps its
+2009 view.
+
 A separate modded lobby still offers maps the generic way: `[mods] policy = "modded"` with the map mods in `[[mods.set]]`
 (the steps at the top of this section, MAP-35 .. MAP-39). It is not how Vanilla++ works; it has its own DB, ports and
 mod consent prompt.

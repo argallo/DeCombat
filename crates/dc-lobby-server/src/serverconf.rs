@@ -674,6 +674,11 @@ impl ServerConf {
             "hisec.no_key_reason",
             num(c.hisec.no_key_reason.into()),
         );
+        put(
+            "hisec.camo_share",
+            "hisec.camo_share",
+            num(c.hisec.camo_share.into()),
+        );
         o
     }
 
@@ -1192,7 +1197,7 @@ kill = 4
             "a key the toml leaves out keeps the lobby.json value"
         );
         assert_eq!(
-            rules.exp.finish, 10.0,
+            rules.exp.finish, 15.0,
             "and an untouched key keeps the built-in default"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -1225,6 +1230,7 @@ hisec_case_odds = [[0, 1]]
 case_product = 31
 announce = \"channel\"
 no_key_reason = 77
+camo_share = 60
 ";
         let conf = ServerConf {
             cfg: dc_config::parse_toml(text).unwrap(),
@@ -1263,6 +1269,7 @@ no_key_reason = 77
             ),
             (31, crate::hisec::Announce::Channel, 77)
         );
+        assert_eq!(r.hisec.camo_share, Some(60));
         // only the keys the file sets go out: the switch and one class, no default
         let text = "[room.round_secs]
 fallback = false

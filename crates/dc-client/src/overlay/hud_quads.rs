@@ -22,6 +22,44 @@ pub fn hud_quads(
     height: u32,
 ) -> Result<(), AtlasFull> {
     list.clear((width, height));
+    push_prims(ctx, atlas, list, items, assets, width, height)
+}
+
+/// [`hud_quads`] for a menu screen: the items before the last `free` ones (the cursor) are clipped to the 2D band
+/// (CLI-1915: the side bands of a surface wider than 16:9 stay the frame's black), the last ones are not.
+#[allow(clippy::too_many_arguments)]
+pub fn menu_quads(
+    ctx: &GpuContext,
+    atlas: &mut Atlas,
+    list: &mut QuadList,
+    items: &[DrawItem],
+    assets: &mut HudAssets,
+    width: u32,
+    height: u32,
+    free: usize,
+) -> Result<(), AtlasFull> {
+    list.clear((width, height));
+    let split = items.len() - free.min(items.len());
+    let sc = dc_ui_data::VirtualScaler::new(width, height);
+    if sc.banded() {
+        let [x, y, w, h] = sc.band().map(|v| v as i32);
+        list.limit = Some([x, y, x + w, y + h]);
+    }
+    push_prims(ctx, atlas, list, &items[..split], assets, width, height)?;
+    list.limit = None;
+    push_prims(ctx, atlas, list, &items[split..], assets, width, height)
+}
+
+/// Appends the quads of `items` to `list` (not cleared).
+fn push_prims(
+    ctx: &GpuContext,
+    atlas: &mut Atlas,
+    list: &mut QuadList,
+    items: &[DrawItem],
+    assets: &mut HudAssets,
+    width: u32,
+    height: u32,
+) -> Result<(), AtlasFull> {
     for p in resolve(items, assets, width, height) {
         match p {
             Prim::Fill { rect, colour } => list.fill(rect, colour),

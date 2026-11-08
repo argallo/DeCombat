@@ -900,7 +900,7 @@ impl Rom {
 }
 
 /// Expected (exp, gp) of one match per the DeCombat rule.
-// DC-DEFAULT: CD-03 (exp: finish 10, kill 4, win +25 %, objective 15), CD-04 (gp: finish 20, kill 6, win +25 %,
+// DC-DEFAULT: CD-03 (exp: finish 15, kill 6, win +25 %, objective 22; x1.5 from 2026-11-07), CD-04 (gp: finish 20, kill 6, win +25 %,
 // objective 25), CD-54 (proposed: the lobby computes, reported numbers are advisory; round half away from zero)
 pub fn expected_reward(kills: i64, won: bool, team_kills: i64, factors: (f64, f64)) -> (i64, i64) {
     let one = |finish: f64, kill: f64, win_pct: f64, f: f64| {
@@ -913,7 +913,7 @@ pub fn expected_reward(kills: i64, won: bool, team_kills: i64, factors: (f64, f6
         (raw * f).round().max(0.0) as i64
     };
     (
-        one(10.0, 4.0, 25.0, factors.0),
+        one(15.0, 6.0, 25.0, factors.0),
         one(20.0, 6.0, 25.0, factors.1),
     )
 }

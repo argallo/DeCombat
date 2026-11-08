@@ -984,7 +984,7 @@ impl Studio {
 
     /// The design moves over time, so the picture has to keep drawing.
     pub fn animating(&self) -> bool {
-        self.design.fx.is_some()
+        self.design.fx.is_some() || self.design.flow.is_some()
     }
 
     /// Draws the gun into `target`.

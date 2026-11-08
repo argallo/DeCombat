@@ -90,6 +90,11 @@ pub fn item(size: [u32; 2], pointer: [f32; 2], target: (u32, u32)) -> DrawItem {
     }
 }
 
+/// How many items at the end of `items` are the cursor (drawn over the whole window, not clipped to the band).
+pub fn trailing(items: &[DrawItem]) -> usize {
+    items.iter().rev().take_while(|i| is_cursor(i)).count()
+}
+
 /// The item is the cursor image (the step runner's click probe leaves it out: a pointer move is not an effect).
 pub fn is_cursor(item: &DrawItem) -> bool {
     matches!(item, DrawItem::Image { tex, .. } if tex == CURSOR_ENTRY)

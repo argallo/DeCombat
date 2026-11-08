@@ -423,6 +423,67 @@ fn hazard_volume_hurts_in_steps_and_kills_without_a_killer() {
     assert!(net.c(0).seen.kills.is_empty());
 }
 
+/// DSV-607 amended (owner report 2026-11-07): in a Quarantine room a poison hazard volume of made-up name around both
+/// spawn points spares the infected player (no step, no health lost, he lives) while the human in the same volume
+/// keeps taking a step every 500 ms.
+#[test]
+fn quarantine_poison_volume_spares_the_infected_and_hurts_the_human() {
+    use dc_dserver::game::infect::COUNTDOWN_SECS;
+    use dc_dserver::game::Life;
+    use dc_dserver::killvol::{box_shape, HazardShape, DAMAGE_TYPE_POISON};
+    use dc_dserver::session::HAZARD_STEP_MS;
+    let mut w = world();
+    w.hazards.push(HazardShape {
+        shape: box_shape(b"Gas", [-500.0, -60.0, -300.0], [500.0, 200.0, 300.0], 0),
+        damage_per_sec: 2.0,
+        dtype: DAMAGE_TYPE_POISON,
+    });
+    let mut net = Net::with(
+        ServerTuning::default(),
+        w,
+        "room key=QRT type=11 goal=2",
+        &[DAVE, ERIN],
+    );
+    net.add(1, "Dave");
+    net.add(2, "Big Erin");
+    net.alive();
+    let limit = net.now + (COUNTDOWN_SECS + 5) * 1000;
+    assert!(net.run_until(limit, |n| !n.server.game().infect().infected.is_empty()));
+    net.run_for(HAZARD_STEP_MS);
+    let infected = *net.server.game().infect().infected.iter().next().unwrap();
+    let pid = |n: &Net, i: usize| n.c(i).seen.client_id.unwrap().0 as u8;
+    let (zi, hi) = if pid(&net, 0) == infected {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let human = pid(&net, hi);
+    assert!(
+        !net.c(hi).seen.damage_forms.is_empty(),
+        "the human was hurt before the outbreak"
+    );
+    let health = |n: &Net, p: u8| n.server.game().players()[&p].health;
+    let (z_forms, z_health) = (net.c(zi).seen.damage_forms.len(), health(&net, infected));
+    let (h_forms, h_health) = (net.c(hi).seen.damage_forms.len(), health(&net, human));
+    net.run_for(3000);
+    assert_eq!(
+        net.c(zi).seen.damage_forms.len(),
+        z_forms,
+        "the infected is spared"
+    );
+    assert_eq!(health(&net, infected), z_health);
+    assert_eq!(net.server.game().players()[&infected].life, Life::Alive);
+    let forms = &net.c(hi).seen.damage_forms[h_forms..];
+    assert!(forms.len() >= 5, "the human keeps taking steps: {forms:?}");
+    for f in forms {
+        assert_eq!((f.zone, f.dmg_kind, f.damage), (DAMAGE_TYPE_POISON, 0, 1));
+    }
+    for pair in forms.windows(2) {
+        assert_eq!(pair[1].at - pair[0].at, HAZARD_STEP_MS);
+    }
+    assert!(health(&net, human) < h_health);
+}
+
 /// A sliding door of made-up name next to the red spawn point: its model box, move direction and distance.
 fn world_with_door(near: [f32; 3]) -> WorldInfo {
     let mut w = world();

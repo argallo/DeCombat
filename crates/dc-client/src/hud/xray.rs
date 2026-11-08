@@ -370,8 +370,24 @@ pub fn push_info(
 }
 
 /// The projected screen rectangle of a body box (`centre` +- `half`), clipped to the virtual screen; `None` when a
-/// corner is behind the camera or nothing is left on screen.
+/// corner is behind the camera or nothing is left on screen (a target at 16:9 or narrower; [`body_rect_on`]).
 pub fn body_rect(camera: &dc_render::Camera, centre: [f32; 3], half: [f32; 3]) -> Option<[f32; 4]> {
+    body_rect_on(
+        camera,
+        centre,
+        half,
+        (dc_ui_data::VIRTUAL_WIDTH, dc_ui_data::VIRTUAL_HEIGHT),
+    )
+}
+
+/// [`body_rect`] on a `size` target: clipped to the whole target in virtual units (CLI-1915: a target wider than
+/// 16:9 reaches left of 0 and right of 1024).
+pub fn body_rect_on(
+    camera: &dc_render::Camera,
+    centre: [f32; 3],
+    half: [f32; 3],
+    size: (u32, u32),
+) -> Option<[f32; 4]> {
     let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
     for i in 0..8 {
         let s = |b: usize| if i & (1 << b) == 0 { -1.0 } else { 1.0 };
@@ -380,17 +396,14 @@ pub fn body_rect(camera: &dc_render::Camera, centre: [f32; 3], half: [f32; 3]) -
             centre[1] + s(1) * half[1],
             centre[2] + s(2) * half[2],
         ];
-        let q = super::project(camera, p)?;
+        let q = super::project_on(camera, p, size)?;
         for k in 0..2 {
             lo[k] = lo[k].min(q[k]);
             hi[k] = hi[k].max(q[k]);
         }
     }
-    let (vw, vh) = (
-        dc_ui_data::VIRTUAL_WIDTH as f32,
-        dc_ui_data::VIRTUAL_HEIGHT as f32,
-    );
-    let (x0, y0, x1, y1) = (lo[0].max(0.0), lo[1].max(0.0), hi[0].min(vw), hi[1].min(vh));
+    let [vl, vt, vr, vb] = dc_ui_data::VirtualScaler::new(size.0.max(1), size.1.max(1)).surface_virtual();
+    let (x0, y0, x1, y1) = (lo[0].max(vl), lo[1].max(vt), hi[0].min(vr), hi[1].min(vb));
     (x1 > x0 && y1 > y0 && [x0, y0, x1, y1].iter().all(|v| v.is_finite())).then_some([
         x0,
         y0,

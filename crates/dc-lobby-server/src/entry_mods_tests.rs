@@ -63,6 +63,7 @@ fn entry(name: &str, mods: Vec<dc_config::schema::ModRef>) -> dc_config::LobbySe
         features: Vec::new(),
         mods,
         client_visual_allowed: false,
+        client_fov: None,
         lobby: String::new(),
         fingerprint: String::new(),
         policy: String::new(),
@@ -868,6 +869,43 @@ fn an_entry_that_allows_local_mods_says_so_in_its_document_and_keeps_its_hash() 
         "an older client reads it as before and refuses local mods under its curated policy"
     );
     assert_eq!(on.hashes(), off.hashes(), "no part of the claim");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// LG-429: a curated entry publishes its field-of-view range in its document: the default without a key, its own with
+/// one (also a locked `[90, 90]`); the set hash and the 0x3f10 row do not change.
+#[test]
+fn a_curated_entry_publishes_its_field_of_view_range_in_its_document() {
+    let dir = temp("fov");
+    let pack_a = pack(&dir, "pack_a", "shared", &["content.weapons"], WEAPON_LUA);
+    let range = |doc: &str| {
+        dc_mod_lua::JsonValue::parse(doc)
+            .unwrap()
+            .get("mod_set")
+            .and_then(|m| m.get("client_fov"))
+            .map(|v| v.to_json_string())
+    };
+    let plain = featured(&dir, vec![pack_a.clone()]);
+    assert_eq!(
+        range(&plain.entry_mods[&3].doc).as_deref(),
+        Some("[70,120]")
+    );
+    let mut servers = entries(vec![pack_a]);
+    servers[2].client_fov = Some([80, 110]);
+    let sets = build_entry_sets(
+        &servers,
+        Some(&dir),
+        &dir,
+        1 << 24,
+        12,
+        &Arc::new(Logger::none()),
+    );
+    assert_eq!(range(&sets[&3].doc).as_deref(), Some("[80,110]"));
+    assert_eq!(
+        sets[&3].hashes(),
+        plain.entry_mods[&3].hashes(),
+        "no part of the claim"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

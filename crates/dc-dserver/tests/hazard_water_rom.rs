@@ -5,14 +5,21 @@
 //! water's top as the server's level model has it), one on a floor above the water and above the hazard volume.
 //! Checked: the one in the water takes damage steps of the poison type with no attacker (0x74 `zone` = the damage
 //! type, `dmg_kind` 0, `from_dir` up) every 500 ms and dies with no killer (0x6d killer 0xff), the one above takes
-//! none; after the outbreak an infected player in the water is hurt as well. A TDM room on the same world runs the
-//! map's TDM start trigger, which switches the hazard volume off: nobody is hurt there. Counts and comparisons only;
-//! no ROM name or value is written here.
+//! none; after the outbreak an infected player is spared by WarHead's sewer gas (DSV-607 amended, owner report
+//! 2026-11-07 "in warhead quarantine, infected should not be hurt by poison gas in the sewer"; the infected gear rows
+//! protect the poison type wholly, checked here too) and hurt and killed by Two Towers' deadly water (a poison volume
+//! at the lethal rate, owner report 2026-11-05). A TDM room on the same world runs the map's TDM start trigger, which
+//! switches the hazard volume off: nobody is hurt there. Counts and comparisons only; no ROM name or value is written
+//! here.
 // OBSERVED: the ROM WarHead and Two Towers worlds' hazard volumes, water volumes and start triggers (the TDM, TMM,
 // FFA, CTF and BNT start triggers send `off` to the hazard volume and the water, the Quarantine one does not; read at
 // run time, compared, not copied); ROM GAMEROOM / GMS tables (each mode's start trigger)
-// DC-DEFAULT: DSV-607 (proposed)
+// OBSERVED: ROM table keys MODELBUTES.TXT [Overidable_Model<n>] GearID, WEAPONS.TXT [Gear<n>] ProtectionType<i>,
+// Node*Protection<i>, Consumable<i> (read at run time, compared, not copied)
+// DC-DEFAULT: DSV-607 (proposed; amended 2026-11-07, infected)
 
+use dc_bute::ButeDoc;
+use dc_dserver::game::infect::INFECTED_LETHAL_HAZARD_RATE;
 use dc_dserver::killvol::DAMAGE_TYPE_POISON;
 use dc_dserver::rom_tables::RomTables;
 use dc_dserver::session::{Output, Server, ServerTuning, HAZARD_STEP_MS};
@@ -250,7 +257,8 @@ impl Match {
     }
 }
 
-fn check_world(rom: &std::path::Path, tables: &RomTables, upper: &str) {
+/// `infected_hurt`: whether an infected player in the water is hurt (deadly water) or spared (gas).
+fn check_world(rom: &std::path::Path, tables: &RomTables, upper: &str, infected_hurt: bool) {
     let Some((arg, data)) = world_named(rom, upper) else {
         println!("skipped: no {upper} world");
         return;
@@ -340,7 +348,7 @@ fn check_world(rom: &std::path::Path, tables: &RomTables, upper: &str) {
         died - t0
     );
 
-    // after the outbreak: an infected player in the water is hurt too
+    // after the outbreak: an infected player in the gas is spared, in deadly water hurt (DSV-607 amended)
     while m.now < t0 + 60_000 && m.server.game().infect().infected.is_empty() {
         m.hold(1, above);
         m.tick();
@@ -365,14 +373,43 @@ fn check_world(rom: &std::path::Path, tables: &RomTables, upper: &str) {
         m.tick();
     }
     let forms = &m.peers[k].client.seen.damage_forms[before..];
-    assert!(
-        !forms.is_empty(),
-        "{upper}: the infected is hurt in the water"
-    );
-    assert!(forms.iter().all(|d| d.zone == DAMAGE_TYPE_POISON));
     let after = &m.server.game().players()[&infected];
+    assert_eq!(
+        h.damage_per_sec >= INFECTED_LETHAL_HAZARD_RATE,
+        infected_hurt,
+        "{upper}: the volume's rate decides"
+    );
+    if infected_hurt {
+        assert!(
+            !forms.is_empty(),
+            "{upper}: the infected is hurt in the water"
+        );
+        assert!(forms.iter().all(|d| d.zone == DAMAGE_TYPE_POISON));
+        let kill = m.peers[k]
+            .client
+            .seen
+            .kills
+            .iter()
+            .find(|kl| kl.victim == infected)
+            .expect("the infected drowns");
+        assert_eq!(kill.killer, 0xff, "{upper}: no killer, as a human");
+    } else {
+        assert!(
+            forms.is_empty(),
+            "{upper}: the infected is spared in the gas: {forms:?}"
+        );
+        assert_eq!(
+            after.health, health,
+            "{upper}: the infected keeps his health"
+        );
+        assert_eq!(
+            m.peers[k].client.life_state(),
+            1,
+            "{upper}: the infected lives"
+        );
+    }
     println!(
-        "{upper}: an infected in the water: {} steps in 3 s, health {health:.0} -> {:.0} ({:?})",
+        "{upper}: an infected in the water 3 s: {} steps, health {health:.0} -> {:.0} ({:?})",
         forms.len(),
         after.health,
         after.life
@@ -406,7 +443,65 @@ fn check_world(rom: &std::path::Path, tables: &RomTables, upper: &str) {
 fn rom_the_quarantine_waters_hurt_and_the_floor_above_does_not() {
     let rom = dc_rez::dc_rom::rom_or_skip!();
     let (tables, _) = RomTables::load(&rom);
-    for upper in ["WARHEAD", "TWOTOWERS"] {
-        check_world(&rom, &tables, upper);
+    check_world(&rom, &tables, "WARHEAD", false);
+    check_world(&rom, &tables, "TWOTOWERS", true);
+}
+
+/// `[Gear<n>] Consumable<i>`: 0 when the protection slot's share is not paid from the armour.
+// OBSERVED: ROM table key WEAPONS.TXT [Gear<n>] Consumable<i>
+// EVIDENCE: cshell+0x17e750 (the client's gear row reader reads `Consumable`)
+const KEY_CONSUMABLE: &str = "Consumable";
+
+/// The basis of DSV-607 amended: every infected and host override row names a gear row that protects the poison
+/// damage type wholly (share 1 at the head, torso, arms and legs) and does not consume armour for it. Counts only.
+#[test]
+fn rom_the_infected_gear_rows_protect_the_poison_type_wholly() {
+    use dc_dserver::chars::{KEY_GEAR_ID, MODELBUTES_ENTRY, OVERRIDE_SECTION};
+    use dc_dserver::rom_tables::{
+        ATTRIBUTES_REZ, GEAR_SECTION, GEAR_SLOTS_MAX, KEY_NODE_PROTECTION, KEY_PROTECTION_TYPE,
+        WEAPONS_ENTRY,
+    };
+    let rom = dc_rez::dc_rom::rom_or_skip!();
+    let vfs = dc_rez::RezVfs::new(&rom);
+    let doc = |entry: &str| {
+        ButeDoc::try_from_vfs(&vfs, ATTRIBUTES_REZ, entry)
+            .expect("table")
+            .expect("entry")
+    };
+    let (models, weapons) = (doc(MODELBUTES_ENTRY), doc(WEAPONS_ENTRY));
+    let num = |sec: &dc_bute::SectionMap, key: &str| -> Option<f32> {
+        sec.iter()
+            .find(|(k, _)| dc_bute::eq_fold(k, key))
+            .and_then(|(_, v)| v.trim().parse().ok())
+    };
+    let mut rows = 0;
+    for n in 0.. {
+        let Some(sec) = models.get(&format!("{OVERRIDE_SECTION}{n}")) else {
+            break;
+        };
+        rows += 1;
+        let g = num(sec, KEY_GEAR_ID).expect("the override row names a gear row");
+        let gear = weapons
+            .get(&format!("{GEAR_SECTION}{}", g as u32))
+            .expect("the named gear row");
+        let slot = (0..GEAR_SLOTS_MAX)
+            .find(|i| {
+                num(gear, &format!("{KEY_PROTECTION_TYPE}{i}"))
+                    == Some(f32::from(DAMAGE_TYPE_POISON))
+            })
+            .expect("a poison protection slot");
+        for key in KEY_NODE_PROTECTION {
+            assert!(
+                num(gear, &format!("{key}{slot}")).is_some_and(|v| v >= 1.0),
+                "override row {n}: {key} protects the poison type wholly"
+            );
+        }
+        assert_eq!(
+            num(gear, &format!("{KEY_CONSUMABLE}{slot}")),
+            Some(0.0),
+            "override row {n}: not consumed"
+        );
     }
+    assert!(rows > 0, "override rows");
+    println!("{rows} infected override rows: their gear protects the poison type wholly");
 }

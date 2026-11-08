@@ -1264,8 +1264,23 @@ fn a_player_who_rejoins_before_the_end_is_not_a_leaver() {
     let eb = crate::db::character(&st.db, nb).unwrap().unwrap();
     st.scope(|st| game::on_line(st, id, &format!("@join 2 {nb} 2 1 Leaver")))
         .unwrap();
+    // DSV-621: the game server reports the new stay only (its counters started again at the rejoin)
+    st.scope(|st| {
+        game::on_line(
+            st,
+            id,
+            &format!("@player uid={nb} kills=1 deaths=0 team=2 tk=0 hs=0 name=Leaver"),
+        )
+    })
+    .unwrap();
     result_line_for(&mut st, id);
-    assert!(crate::db::character(&st.db, nb).unwrap().unwrap().exp > eb.exp);
+    let b2 = crate::db::character(&st.db, nb).unwrap().unwrap();
+    assert!(b2.exp > eb.exp);
+    assert_eq!(
+        (b2.kills, b2.deaths),
+        (eb.kills + 1, eb.deaths),
+        "the second stay's line"
+    );
     assert!(b.has(PROGRESS_PUSH));
 }
 
@@ -3156,6 +3171,7 @@ fn another_lobby_entry_rides_in_our_push_before_the_unchanged_server_list() {
         features: Vec::new(),
         mods: Vec::new(),
         client_visual_allowed: false,
+        client_fov: None,
         lobby: "203.0.113.7:11000".into(),
         fingerprint: "ab".repeat(32),
         policy: String::new(),
@@ -3366,6 +3382,7 @@ fn two_entries(st: &mut Core, second_features: &[&str]) {
         features: features.iter().map(|f| f.to_string()).collect(),
         mods: Vec::new(),
         client_visual_allowed: false,
+        client_fov: None,
         lobby: String::new(),
         fingerprint: String::new(),
         policy: String::new(),
@@ -3581,6 +3598,12 @@ fn possession_on_a_featured_entry_only() {
     assert_eq!(st.rooms[&key].weapon_limit, 0);
     assert_eq!(parse(&b.take(PUSH)), Some(true));
     assert_eq!(game::possession_args(&st, key), ["-possession"]);
+    // CRATE-2 (amended 2026-11-07): the operator's crate share reaches the game server only when set
+    assert!(game::hisec_args(&st).is_empty());
+    assert!(st
+        .rules
+        .apply("hisec.camo_share", &dc_mod_lua::JsonValue::Number(40.0)));
+    assert_eq!(game::hisec_args(&st), ["-hisec", "camo_share=40"]);
     // a ROM pick replaces it
     a.send(&mut st, ROOM_SETTING_CHANGE, &u32s(&[8, 0xe, 6, 0]));
     assert!(!st.rooms[&key].possession);

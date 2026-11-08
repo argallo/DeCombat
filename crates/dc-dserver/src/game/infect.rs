@@ -53,6 +53,11 @@ pub const INFECTED_OVERRIDE: i8 = 0;
 // each with its own face row and render styles)
 // DC-DEFAULT: DSV-214 (proposed) hosts row 2, the others row 0 (the man's rows for every body)
 pub const HOST_OVERRIDE: i8 = 2;
+/// Damage per second from which a poison hazard volume is deadly water rather than gas: it hurts the infected too
+/// (owner report 2026-11-05 "Quarantine infected walk in Two Towers water": the 2009 Two Towers water drowned them;
+/// the ROM worlds' poison volumes are at most 200 per second on gas and 10000 on that water).
+// DC-DEFAULT: DSV-607 (amended, infected; OWNER REPORT 2026-11-05 / 2026-11-07) 1000 per second
+pub const INFECTED_LETHAL_HAZARD_RATE: f32 = 1000.0;
 /// The claws: the host's and the infected's melee rows of the ROM weapon table (each with its own first-person hands
 /// model and skin, its fire sound and the infection kill image).
 // OBSERVED: ROM weapon table rows (melee order positions 11 / 12; the rows' names have these keys)
@@ -400,6 +405,22 @@ impl Game {
             return factor;
         }
         (factor * self.cfg.infected_head_scale).max(1.0)
+    }
+
+    /// Whether a hazard volume of damage type `dtype` and `per_sec` damage per second spares `pid`: an infected
+    /// player of a Quarantine room takes no damage from a survivable poison volume (Warhead's sewer gas); a poison
+    /// volume of [`INFECTED_LETHAL_HAZARD_RATE`] per second or more is deadly water and hurts him as a human. A human,
+    /// and any other damage type, is hurt as before.
+    // OBSERVED: ROM table keys MODELBUTES.TXT [Overidable_Model<n>] GearID (every infected and host row names one of
+    // two gear rows), WEAPONS.TXT [Gear<n>] ProtectionType<i>, Node*Protection<i>, Consumable<i> (both rows protect
+    // the poison type wholly at every location, not consumed); read at run time by test
+    // hazard_water_rom::rom_the_infected_gear_rows_protect_the_poison_type_wholly, no value copied
+    // DC-DEFAULT: DSV-607 (amended, infected; OWNER REPORT 2026-11-07)
+    pub(super) fn infected_spared_by_hazard(&self, pid: u8, dtype: u8, per_sec: f32) -> bool {
+        dtype == crate::killvol::DAMAGE_TYPE_POISON
+            && per_sec < INFECTED_LETHAL_HAZARD_RATE
+            && self.is_infect()
+            && self.infect.infected.contains(&pid)
     }
 
     /// The claws of an infected player (`None` for a human or without the ROM row): the host's for the outbreak's

@@ -147,6 +147,9 @@ pub struct WindowOptions {
     pub audio: crate::sound::AudioConfig,
     /// CLI-1619: the joined server's mod set as a recipe (`None`: vanilla); the match loads its own host from it.
     pub mods: Option<crate::mods::HostRecipe>,
+    /// CLI-1916: the field-of-view range the joined server published (modded and curated entries; `None`: vanilla, an
+    /// older lobby, no server): the player's Field of View setting applies inside it, `view` stays as it is without.
+    pub client_fov: Option<(u32, u32)>,
     /// LG-274: the room's Hacks setting (`dc_wire::roomhacks` bits; `None`: the lobby offered none). A room without
     /// the wallhacks bit gets no `render.entity_visibility` bridge (CLI-1620), as its server culls.
     pub room_hacks: Option<u32>,
@@ -1403,7 +1406,12 @@ fn open_gpu(
     first: bool,
     window: &Arc<Window>,
 ) -> Result<(wgpu::Surface<'static>, GpuContext), String> {
-    let attempt = |choice: AdapterChoice| -> Result<(wgpu::Surface<'static>, GpuContext), String> {
+    // CLI-1931: the saved renderer's first attempt takes only a hardware adapter (a DX12 instance whose driver
+    // wgpu does not expose offers only WARP); the default backends' attempt and an `--adapter` choice may still end
+    // on the software adapter
+    let attempt = |choice: AdapterChoice,
+                   software: bool|
+     -> Result<(wgpu::Surface<'static>, GpuContext), String> {
         let mut desc = wgpu::InstanceDescriptor::default();
         if let AdapterChoice::Backends(b) = choice {
             desc.backends = b;
@@ -1412,17 +1420,58 @@ fn open_gpu(
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| e.to_string())?;
-        let ctx = GpuContext::for_surface(instance, &surface).map_err(|e| e.to_string())?;
+        let ctx = GpuContext::for_surface_with(instance, &surface, software)
+            .map_err(|e| e.to_string())?;
         Ok((surface, ctx))
     };
-    match attempt(choice) {
-        Err(e) if first && matches!(choice, AdapterChoice::Backends(_)) => {
+    let fallback_next = first && matches!(choice, AdapterChoice::Backends(_));
+    let out = match attempt(choice, !fallback_next) {
+        Err(e) if fallback_next => {
             println!("dc-client window: the chosen renderer has no adapter ({e}); trying the default backends");
-            attempt(AdapterChoice::Auto)
+            attempt(AdapterChoice::Auto, true)
                 .map_err(|e2| format!("{e}; then the default backends: {e2}"))
         }
         r => r,
+    };
+    // CLI-1931: the adapter in the log at once (the run's end line never comes when the run crashes)
+    if let Ok((_, ctx)) = &out {
+        println!("dc-client window: GPU {}", gpu_line(&ctx.info));
     }
+    out
+}
+
+/// CLI-1932: the adapter choice of device-loss rebuild attempt `attempt` (1 = the first): the first attempt asks for
+/// the window's own choice; later ones, when that choice is the saved renderer (`first`), its other backend (DX12
+/// and Vulkan swap; the default backends still follow, `open_gpu`). An `--adapter` choice (`first` false) and the
+/// default backends stay as they are.
+fn rebuild_choice(choice: AdapterChoice, first: bool, attempt: u32) -> AdapterChoice {
+    match choice {
+        AdapterChoice::Backends(b) if first && attempt >= 2 => {
+            let other = if b == wgpu::Backends::DX12 {
+                wgpu::Backends::VULKAN
+            } else if b == wgpu::Backends::VULKAN {
+                wgpu::Backends::DX12
+            } else {
+                b
+            };
+            AdapterChoice::Backends(other)
+        }
+        c => c,
+    }
+}
+
+/// CLI-1931: the window's adapter as one log line: name, backend, device type, driver, vendor and device id.
+fn gpu_line(info: &wgpu::AdapterInfo) -> String {
+    let driver = format!("{} {}", info.driver, info.driver_info);
+    format!(
+        "{} ({:?}, {:?}); driver {}; vendor 0x{:04x} device 0x{:04x}",
+        info.name,
+        info.backend,
+        info.device_type,
+        driver.trim(),
+        info.vendor,
+        info.device
+    )
 }
 
 impl App {
@@ -1698,6 +1747,7 @@ impl App {
                 host.as_deref(),
                 self.opts.mods.as_ref().map(|r| r.policy),
             )
+            .with_fov_range(self.opts.client_fov)
         };
         crate::events::emit(
             "options_form",
@@ -1810,13 +1860,16 @@ impl App {
     /// volumes went with the sound director above. The key bindings, the frame-rate cap, Show FPS, the gamma and the
     /// anti-aliasing were published by the options' OK and the match reads them per frame; the resolution and the
     /// window look follow when the menu takes the window back, the renderer at the next start.
-    // DC-DEFAULT: CLI-1907 (proposed)
+    // DC-DEFAULT: CLI-1907 (proposed), CLI-1916 (proposed)
     fn apply_match_settings(&mut self, s: &crate::settings::Settings) {
         let v = s.sensitivity as f32;
         self.opts.look.sensitivity = v;
         self.input.set_sensitivity(v);
         self.opts.look.invert_y = s.invert_y;
         self.input.set_invert_y(s.invert_y);
+        // CLI-1916: the field of view, on a server that allows it: the camera and the scope's normal field read
+        // `opts.view` every frame
+        self.opts.view = self.opts.view.with_player_fov(s.fov, self.opts.client_fov);
     }
 
     /// CLI-1908: the match's mods loaded again with the player's new values (the way the next match loads them,
@@ -2173,7 +2226,13 @@ impl App {
         let live = self.live.as_mut().ok_or("no match window")?;
         let t0 = Instant::now();
         crate::prewarm::load_begins();
-        let (surface, ctx) = open_gpu(self.opts.adapter, self.opts.adapter_first, &live.window)?;
+        // CLI-1932: from the second attempt on, the saved renderer's other backend first
+        let attempt = self.recovering.as_ref().map_or(1, |r| r.attempts);
+        let choice = rebuild_choice(self.opts.adapter, self.opts.adapter_first, attempt);
+        if choice != self.opts.adapter {
+            println!("dc-client: GPU rebuild attempt {attempt} tries the other renderer first");
+        }
+        let (surface, ctx) = open_gpu(choice, self.opts.adapter_first, &live.window)?;
         // the new device is never dropped either (a queue of a lost device panics in its drop)
         let ctx = std::mem::ManuallyDrop::new(ctx);
         crate::gpulost::watch_keep_lost(&ctx.device);
@@ -2190,6 +2249,8 @@ impl App {
             .ok_or("surface has no formats")?;
         let mut config = live.config.clone();
         config.format = format;
+        // CLI-1932: the new device may be on the other backend
+        config.desired_maximum_frame_latency = dc_render::frame_latency_for(ctx.info.backend);
         if !caps.present_modes.contains(&config.present_mode) {
             config.present_mode = wgpu::PresentMode::Fifo;
         }
@@ -3308,6 +3369,8 @@ impl App {
             }
         }
         dc_hangdump::crumb_wait!("frame: present", frame.present());
+        // CLI-1932: enough frames shown: the start finished
+        crate::startguard::presented();
         live.laps.lap(PS::Present);
     }
 
@@ -4662,6 +4725,43 @@ mod tests {
         assert!(l
             .iter()
             .any(|x| x == "  exit: close requested; cursor released on exit: false"));
+    }
+
+    // CLI-1932: a rebuild after the first failed one asks for the saved renderer's other backend
+    #[test]
+    fn later_rebuild_attempts_try_the_other_renderer() {
+        let dx = AdapterChoice::Backends(wgpu::Backends::DX12);
+        let vk = AdapterChoice::Backends(wgpu::Backends::VULKAN);
+        assert_eq!(rebuild_choice(dx, true, 1), dx);
+        assert_eq!(rebuild_choice(dx, true, 2), vk);
+        assert_eq!(rebuild_choice(dx, true, 9), vk);
+        assert_eq!(rebuild_choice(vk, true, 2), dx);
+        // `--adapter` is exclusive, the default backends already hold both
+        assert_eq!(rebuild_choice(dx, false, 3), dx);
+        assert_eq!(
+            rebuild_choice(AdapterChoice::Auto, true, 3),
+            AdapterChoice::Auto
+        );
+        let metal = AdapterChoice::Backends(wgpu::Backends::METAL);
+        assert_eq!(rebuild_choice(metal, true, 2), metal);
+    }
+
+    // CLI-1931: the start line names the adapter, its backend and type, driver and ids
+    #[test]
+    fn the_gpu_line_names_the_adapter_and_its_driver() {
+        let info = wgpu::AdapterInfo {
+            name: "Intel(R) UHD Graphics 620".into(),
+            vendor: 0x8086,
+            device: 0x5917,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            driver: "31.0.101.2111".into(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Dx12,
+        };
+        assert_eq!(
+            gpu_line(&info),
+            "Intel(R) UHD Graphics 620 (Dx12, IntegratedGpu); driver 31.0.101.2111; vendor 0x8086 device 0x5917"
+        );
     }
 
     #[test]

@@ -64,6 +64,8 @@ pub struct MatchMod {
 pub struct MatchModsInfo {
     pub policy: Option<ModPolicy>,
     pub mods: Vec<MatchMod>,
+    /// CLI-1916: the field-of-view range the match's server published (`None`: none, the Field of View row is locked).
+    pub fov_range: Option<(u32, u32)>,
 }
 
 impl MatchModsInfo {
@@ -83,7 +85,17 @@ impl MatchModsInfo {
                 })
             })
             .collect();
-        MatchModsInfo { policy, mods }
+        MatchModsInfo {
+            policy,
+            mods,
+            fov_range: None,
+        }
+    }
+
+    /// This info with the match's field-of-view range (CLI-1916).
+    pub fn with_fov_range(mut self, range: Option<(u32, u32)>) -> MatchModsInfo {
+        self.fov_range = range;
+        self
     }
 
     /// The tab's status line and its colour: a vanilla match, a server that refuses the player's own mods, else the
@@ -374,6 +386,7 @@ mod tests {
                     settings: Vec::new(),
                 })
                 .collect(),
+            fov_range: None,
         }
     }
 

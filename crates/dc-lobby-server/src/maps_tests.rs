@@ -311,6 +311,7 @@ fn a_remote_host_channel_refuses_a_community_map_room_and_keeps_it_waiting() {
         features: Vec::new(),
         mods: Vec::new(),
         client_visual_allowed: false,
+        client_fov: None,
     }];
     let (mut a, _) = player(&mut st, 1, 2, "mapr", "Remote");
     let no = open_room(&mut st, &mut a, "");

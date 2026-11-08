@@ -64,6 +64,9 @@ struct Pass {
     fx_a: vec4<f32>,
     // x lowest gain, y highest gain, z seconds per pulse (0: steady at the highest gain), w unused
     fx_b: vec4<f32>,
+    // a camo flow (VAR-12): x on, y swirl in repeats, z seconds per swirl, w the stage whose texture it colours. The
+    // effect's tile, drift and repeats are then the paint's, and it adds no light.
+    flow: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> inst: Instance;
@@ -292,7 +295,7 @@ fn compare_pass(code: u32, a: f32, r: f32) -> bool {
 
 // A camo effect's light: the pattern, drifting and pulsing, where its mask lets it show. Our own effect, not the 2009 renderer's.
 fn fx_light(uv: vec2<f32>) -> vec3<f32> {
-    if (pass_u.fx_a.x < 0.5) {
+    if (pass_u.fx_a.x < 0.5 || pass_u.flow.x > 0.5) {
         return vec3<f32>(0.0);
     }
     let t = inst.eye.w;
@@ -304,9 +307,30 @@ fn fx_light(uv: vec2<f32>) -> vec3<f32> {
     return textureSample(fx_tile, fx_samp, moved).rgb * textureSample(fx_mask, fx_samp, uv).r * gain;
 }
 
+// A camo flow's colour (VAR-12): the pattern drifting and pushed about by two slow waves on each axis, so its blobs travel,
+// stretch and fold like a lava lamp. The texture holds only the gun's shading, painted grey (camo::FLOW_GREY = 170), so the
+// colour is the pattern times 255/170; where the mask keeps the gun's own look (a lens) it is 1. Whole-number wave counts
+// keep the swirl seamless where the pattern repeats. Our own effect, not the 2009 renderer's.
+fn flow_colour(uv: vec2<f32>) -> vec3<f32> {
+    if (pass_u.flow.x < 0.5) {
+        return vec3<f32>(1.0);
+    }
+    let tau = 6.2831853;
+    let t = inst.eye.w;
+    let p = uv * pass_u.fx_a.y + pass_u.fx_a.zw * t;
+    let a = tau * t / max(pass_u.flow.z, 1.0);
+    let wave = vec2<f32>(
+        sin(tau * p.y + a) + 0.6 * sin(tau * 2.0 * (p.x + p.y) - 1.7 * a),
+        cos(tau * p.x - 0.8 * a) + 0.6 * cos(tau * 2.0 * (p.x - p.y) + 1.3 * a),
+    );
+    let colour = textureSample(fx_tile, fx_samp, p + wave * (pass_u.flow.y / 1.6)).rgb * (255.0 / 170.0);
+    return mix(vec3<f32>(1.0), colour, textureSample(fx_mask, fx_samp, uv).r);
+}
+
 @fragment
 fn fs_model(i: VertexOut) -> @location(0) vec4<f32> {
     let fx = fx_light(i.uv);
+    let flow = flow_colour(i.uv);
     let dif = i.diffuse;
     var cur = dif;
     let n = u32(pass_u.alpha.z + 0.5);
@@ -316,6 +340,10 @@ fn fs_model(i: VertexOut) -> @location(0) vec4<f32> {
     texs[1] = sample_stage(1u, coords(pass_u.stages[1], i), pass_u.stages[1].extra.x);
     texs[2] = sample_stage(2u, coords(pass_u.stages[2], i), pass_u.stages[2].extra.x);
     texs[3] = sample_stage(3u, coords(pass_u.stages[3], i), pass_u.stages[3].extra.x);
+    if (pass_u.flow.x > 0.5) {
+        let k = min(u32(pass_u.flow.w + 0.5), 3u);
+        texs[k] = vec4<f32>(texs[k].rgb * flow, texs[k].a);
+    }
     for (var k = 0u; k < 4u; k = k + 1u) {
         if (k >= n) {
             break;

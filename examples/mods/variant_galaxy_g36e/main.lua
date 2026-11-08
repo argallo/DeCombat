@@ -8,7 +8,7 @@ return function(mod)
         id = "Weapon502",
         variant_of = 25,
         variant_name = "G36E Galaxy",
-        variant_rarity = "epic", -- CRATE-6: how often a Camo Crate gives it and how its opening is shown
+        variant_rarity = "legendary", -- CRATE-6: how often a Camo Crate gives it and how its opening is shown
         PVSkin1 = "@camo:paint:25:PVSkin1:keep=928,928,92:fx=0.02,0.012,0,0.65,0:" .. art,
         HHSkin0 = "@camo:paint:25:HHSkin0:keep=37,30,25:fx=0.02,0.012,0,0.65,0:" .. art,
     })

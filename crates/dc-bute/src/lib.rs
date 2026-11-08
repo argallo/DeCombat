@@ -755,9 +755,12 @@ impl ClanRoomPolicy {
 
 /// Round time of a room whose mode file gives none (GMD-2): every room has a time limit.
 ///
-/// Resolution in [`room_line_from_gms`]: a non-zero [`RoomConfig::time_override`] first, then a non-zero
-/// `TimeLimit` of the mode file's objective section, then the entry of this policy for the row's `GameType`
-/// (`per_class`, first match), else `default_secs`. A resolved 0 keeps DSV-20's "no timer".
+/// Resolution in [`room_line_from_gms`]: a non-zero [`RoomConfig::time_override`] first, then a non-zero class
+/// entry the operator configured (`configured`, set through [`RoundTimePolicy::set`]), then a non-zero
+/// `TimeLimit` of the mode file's objective section (not for the flag classes 7 / 8: GMD-2 amendment, their
+/// `[Object0] TimeLimit` 180 is a mission-object template value, not a match length), then the entry of this
+/// policy for the row's `GameType` (`per_class`, first match), else `default_secs`. A resolved 0 keeps DSV-20's
+/// "no timer".
 // DC-DEFAULT: GMD-2 (clarification, project decision "every room has a time limit"), see DC_DEFAULTS.md;
 // config `room.round_secs.<class>` / `room.round_secs.default` (dc-lobby-server lobby.json)
 // EVIDENCE: the 2009 room protocol carries no time (PROTOCOL_2009.md 0x382 / 0x389 / 0x3035 types 1..0xf); the
@@ -769,6 +772,9 @@ pub struct RoundTimePolicy {
     pub per_class: Vec<(i32, i32)>,
     /// Seconds for a class not listed.
     pub default_secs: i32,
+    /// Classes the operator set explicitly (`room.round_secs.<class>`); a non-zero one beats the mode file's
+    /// `TimeLimit` (GMD-2 amendment). The built-in table entries are not in this list.
+    pub configured: Vec<i32>,
 }
 
 impl Default for RoundTimePolicy {
@@ -781,6 +787,7 @@ impl Default for RoundTimePolicy {
         Self {
             per_class,
             default_secs: 600,
+            configured: Vec::new(),
         }
     }
 }
@@ -791,6 +798,7 @@ impl RoundTimePolicy {
         Self {
             per_class: Vec::new(),
             default_secs: 0,
+            configured: Vec::new(),
         }
     }
 
@@ -803,10 +811,21 @@ impl RoundTimePolicy {
             .max(0)
     }
 
-    /// Sets (or replaces) the entry of one class.
+    /// The operator's non-zero entry for a mode class, if any (the built-in table never counts).
+    pub fn override_for(&self, mode_class: i32) -> Option<i32> {
+        self.configured
+            .contains(&mode_class)
+            .then(|| self.secs_for(mode_class))
+            .filter(|s| *s > 0)
+    }
+
+    /// Sets (or replaces) the entry of one class as an operator override.
     pub fn set(&mut self, mode_class: i32, secs: i32) {
         self.per_class.retain(|(c, _)| *c != mode_class);
         self.per_class.insert(0, (mode_class, secs.max(0)));
+        if !self.configured.contains(&mode_class) {
+            self.configured.push(mode_class);
+        }
     }
 }
 
@@ -862,12 +881,20 @@ pub fn room_line_from_gms(
     let mode_key = md.get("Key").map(|s| s.as_str()).unwrap_or("TDM");
     let mode_kind = num_i32(Some(md), "GameType", 1);
 
-    // DC-DEFAULT: GMD-2 (clarification) the fallback when the room and the mode file give no time (RoundTimePolicy)
+    // DC-DEFAULT: GMD-2 (clarification + amendment) the order: room override, the operator's class entry, the mode
+    // file's TimeLimit (never for the flag classes 7 / 8), the class fallback (RoundTimePolicy)
+    let flag_class = matches!(mode_kind, 7 | 8);
+    let file_time = if flag_class {
+        0
+    } else {
+        num_i32(o, "TimeLimit", 0)
+    };
     let tlim = match room.time_override {
         Some(t) if t != 0 => t,
-        _ => match num_i32(o, "TimeLimit", 0) {
-            0 => opts.round_clock.secs_for(mode_kind),
-            t => t,
+        _ => match (opts.round_clock.override_for(mode_kind), file_time) {
+            (Some(t), _) => t,
+            (None, 0) => opts.round_clock.secs_for(mode_kind),
+            (None, t) => t,
         },
     };
 
@@ -2058,6 +2085,66 @@ TimeLimit = 0
         assert!(line(&class("TDM", "1"), &no_time, &o3).contains(" time=0 "));
     }
 
+    // DC-DEFAULT: GMD-2 (amendment) the flag classes ignore the mode file's mission-object TimeLimit 180; the
+    // operator's class entry beats the file's limit for every class
+    #[test]
+    fn room_line_flag_modes_ignore_the_template_time_limit() {
+        let ctf = gms("[ Object0 ]
+OffenceTeam = 1
+DefenceTeam = 2
+TimeLimit = 180
+");
+        let qrt = gms("[ Object0 ]
+TimeLimit = 3
+");
+        let class = |key: &str, t: &str| {
+            let mut m = md(key);
+            m.insert("GameType".to_string(), t.to_string());
+            m
+        };
+        let room = RoomConfig::default();
+        let line =
+            |m: &SectionMap, g: &ButeDoc, o: &RoomOptions| room_line_from_gms(m, g, &room, o);
+        let opts = RoomOptions::default();
+        assert!(line(&class("CTF", "7"), &ctf, &opts).contains(" time=600 "));
+        assert!(line(&class("CCTF", "8"), &ctf, &opts).contains(" time=600 "));
+        let mut p = RoundTimePolicy::default();
+        p.set(7, 900);
+        let o2 = RoomOptions {
+            round_clock: p.clone(),
+            ..RoomOptions::default()
+        };
+        assert!(line(&class("CTF", "7"), &ctf, &o2).contains(" time=900 "));
+        assert!(line(&class("CCTF", "8"), &ctf, &o2).contains(" time=600 "));
+        // a class set to 0 on purpose keeps "no clock"
+        p.set(7, 0);
+        let o3 = RoomOptions {
+            round_clock: p,
+            ..RoomOptions::default()
+        };
+        assert!(line(&class("CTF", "7"), &ctf, &o3).contains(" time=0 "));
+        // the room override stays first
+        let mut r2 = room.clone();
+        r2.time_override = Some(42);
+        assert!(room_line_from_gms(&class("CTF", "7"), &ctf, &r2, &o2).contains(" time=42 "));
+        // a file without TimeLimit still gets the class fallback
+        let tdm = gms("[ Object0 ]
+MapName=M
+");
+        assert!(line(&class("TDM", "1"), &tdm, &opts).contains(" time=600 "));
+        // the other modes keep the file's limit (Quarantine 3 = minutes, read by the game server) unless the
+        // operator configured the class
+        assert!(line(&class("QRT", "11"), &qrt, &opts).contains(" time=3 "));
+        let mut p = RoundTimePolicy::default();
+        p.set(1, 900);
+        let o4 = RoomOptions {
+            round_clock: p,
+            ..RoomOptions::default()
+        };
+        assert!(line(&class("TDM", "1"), &gms(GMS_FIXTURE), &o4).contains(" time=900 "));
+        assert!(line(&class("QRT", "11"), &qrt, &o4).contains(" time=3 "));
+    }
+
     #[test]
     fn room_line_ignores_environment() {
         // The library never reads CA_TEST_ROOM_TIME (or any variable).
@@ -2445,7 +2532,7 @@ TimeLimit = 0
         "2bb25e4b458f483b06a79020a376ed284a824f26799863b8514bdd826283202f";
     const MATRIX_ROWS: usize = 138;
     const ROOM_LINE_COUNT: usize = 136;
-    const ROOM_LINES_SHA: &str = "75055ae94311fec03e43f28b9cacfbe15bc5b0ddcd27466bd325232f5a3f08f0";
+    const ROOM_LINES_SHA: &str = "0c21e124aa5dec05688070ab161f790e342ea2c22ae9d93d87788622562b6236";
     const SHOP_VIEW_COUNT: usize = 1027;
     const SHOP_VIEW_SHA: &str = "1ae084277176d1e8403435608a709a6577f2273070f3c58e2d1a92bd9557c900";
 }

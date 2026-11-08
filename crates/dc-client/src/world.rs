@@ -897,6 +897,8 @@ pub struct FrameState {
     // EVIDENCE: cshell+0x5c270 (the speed penalty reads the held weapon's row, slot +0xc0 of the object at VA
     // 0x3759e110)
     pub held_weapon: Option<u16>,
+    /// The held weapon's screen-flash numbers (`None`: no weapon in hand or a local source), CLI-1926.
+    pub flash_decl: Option<crate::hud::whiteout::FlashDecl>,
     /// The own equipment from the lobby (item number per equipment slot, -1 empty; empty: unknown or a local
     /// source); the mover's head-gear, backpack and goggle speed rows follow it (CLI-1137).
     pub equipment: Vec<i32>,

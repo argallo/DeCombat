@@ -321,6 +321,12 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
                     "must be false on a vanilla server",
                 ));
             }
+            if m.client_fov.is_some() {
+                out.push(Issue::error(
+                    "mods.client_fov",
+                    "is for a modded lobby only; a vanilla server keeps the 2009 field of view",
+                ));
+            }
             // DC-DEFAULT: MOD-22 (proposed): only a declared mod (world.full_visibility) turns culling off
             if !cfg.vis.enabled {
                 out.push(Issue::error(
@@ -330,6 +336,9 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             }
         }
         "modded" => {
+            if let Some(r) = m.client_fov {
+                check_fov_range("mods.client_fov", r, &mut out);
+            }
             if m.set.is_empty() {
                 out.push(Issue::error(
                     "mods.set",
@@ -722,6 +731,13 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     );
     if cfg.hisec.no_key_reason == 0 || cfg.hisec.no_key_reason > 0xffff {
         out.push(Issue::error("hisec.no_key_reason", "must be 1..=65535"));
+    }
+    // DC-DEFAULT: CRATE-2 (amended 2026-11-07) a percent
+    if cfg.hisec.camo_share > 100 {
+        out.push(Issue::error(
+            "hisec.camo_share",
+            "must be 0..=100 (percent of the drops that are Camo Crates)",
+        ));
     }
     if cfg.hisec.case_product > 0xffff {
         out.push(Issue::error(
@@ -1123,6 +1139,9 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
             }
         }
         check_entry_mods(cfg, i, c, &mut out);
+        if let Some(r) = c.client_fov {
+            check_fov_range(&format!("lobby.servers[{i}].client_fov"), r, &mut out);
+        }
         if c.is_remote() {
             check_remote_server(i, c, &mut out);
             continue;
@@ -1146,6 +1165,23 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     out
 }
 
+/// LG-429: a published field-of-view range: inside the bounds, minimum not above the maximum.
+// DC-DEFAULT: LG-429 (proposed)
+fn check_fov_range(path: &str, r: [u32; 2], out: &mut Vec<Issue>) {
+    let [lo, hi] = crate::schema::CLIENT_FOV_BOUNDS;
+    if r[0] < lo || r[1] > hi {
+        out.push(Issue::error(
+            path.to_string(),
+            format!("must lie between {lo} and {hi} degrees"),
+        ));
+    } else if r[0] > r[1] {
+        out.push(Issue::error(
+            path.to_string(),
+            "the minimum must not be above the maximum",
+        ));
+    }
+}
+
 /// An entry's curated set (LG-313): only on an entry of a vanilla lobby with its web port on, well-formed references,
 /// each id once.
 // DC-DEFAULT: LG-313 (proposed)
@@ -1158,6 +1194,15 @@ fn check_entry_mods(cfg: &Config, i: usize, c: &LobbyServerCfg, out: &mut Vec<Is
             format!("lobby.servers[{i}].client_visual_allowed"),
             "is for an entry of this vanilla lobby with a curated set (mods = [...]) only; \
              a modded lobby says it in mods.client_visual_allowed",
+        ));
+    }
+    // DC-DEFAULT: LG-429 (proposed) the entry's field-of-view range belongs to a curated set of a vanilla lobby too
+    if c.client_fov.is_some() && (c.mods.is_empty() || c.is_remote() || cfg.mods.policy == "modded")
+    {
+        out.push(Issue::error(
+            format!("lobby.servers[{i}].client_fov"),
+            "is for an entry of this vanilla lobby with a curated set (mods = [...]) only; \
+             a modded lobby says it in mods.client_fov",
         ));
     }
     if c.mods.is_empty() {
@@ -1352,6 +1397,7 @@ mod feature_tests {
                 features: Vec::new(),
                 mods: vec![r("a", &sha)],
                 client_visual_allowed: false,
+                client_fov: None,
                 lobby: String::new(),
                 fingerprint: String::new(),
                 policy: String::new(),
@@ -1383,6 +1429,7 @@ mod feature_tests {
                 features: Vec::new(),
                 mods: vec![r("a", &sha)],
                 client_visual_allowed: true,
+                client_fov: None,
                 lobby: String::new(),
                 fingerprint: String::new(),
                 policy: String::new(),
@@ -1407,6 +1454,57 @@ mod feature_tests {
         assert!(toml_entry.client_visual_allowed);
         let plain: LobbyServerCfg = toml::from_str("name = \"V\"\ncapacity = 5").unwrap();
         assert!(!plain.client_visual_allowed, "off by default");
+    }
+
+    /// LG-429: a published field-of-view range lies in 60..=130 with min <= max, on a curated entry or a modded lobby only.
+    #[test]
+    fn a_client_fov_range_is_checked() {
+        use crate::schema::{LobbyServerCfg, ModRef};
+        let sha = "ab".repeat(32);
+        let entry = |fov: Option<[u32; 2]>, with_mods: bool| {
+            let mut e: LobbyServerCfg = toml::from_str("name = \"V\"\ncapacity = 5").unwrap();
+            if with_mods {
+                e.mods = vec![ModRef {
+                    id: "a".into(),
+                    version: "1.0.0".into(),
+                    sha256: sha.clone(),
+                }];
+            }
+            e.client_fov = fov;
+            e
+        };
+        let errors = |cfg: &Config| {
+            check(cfg, CheckOptions::default())
+                .into_iter()
+                .filter(|i| i.path.ends_with("client_fov") && i.severity == crate::Severity::Error)
+                .count()
+        };
+        let one = |fov: Option<[u32; 2]>, with_mods: bool| {
+            let mut cfg = Config::default();
+            cfg.lobby.servers = vec![entry(fov, with_mods)];
+            errors(&cfg)
+        };
+        assert_eq!(one(None, true), 0);
+        assert_eq!(one(Some([70, 120]), true), 0);
+        assert_eq!(one(Some([90, 90]), true), 0, "a locked range is fine");
+        assert_eq!(one(Some([60, 130]), true), 0, "the bounds");
+        assert_eq!(one(Some([59, 120]), true), 1);
+        assert_eq!(one(Some([70, 131]), true), 1);
+        assert_eq!(one(Some([100, 90]), true), 1, "min above max");
+        assert_eq!(one(Some([70, 120]), false), 1, "no curated set");
+        let mut cfg = Config::default();
+        cfg.mods.client_fov = Some([70, 120]);
+        assert_eq!(errors(&cfg), 1, "a vanilla lobby publishes none");
+        cfg.mods.policy = "modded".into();
+        assert_eq!(errors(&cfg), 0);
+        cfg.mods.client_fov = Some([20, 120]);
+        assert_eq!(errors(&cfg), 1);
+        let toml_entry: LobbyServerCfg =
+            toml::from_str("name = \"Vanilla++\"\ncapacity = 5\nmods = []\nclient_fov = [70, 120]")
+                .unwrap();
+        assert_eq!(toml_entry.client_fov, Some([70, 120]));
+        let plain: LobbyServerCfg = toml::from_str("name = \"V\"\ncapacity = 5").unwrap();
+        assert_eq!(plain.client_fov, None, "absent by default");
     }
 
     /// LG-388: the managed bots' total cap.
@@ -1439,6 +1537,7 @@ mod feature_tests {
             features,
             mods: Vec::new(),
             client_visual_allowed: false,
+            client_fov: None,
             lobby: lobby.into(),
             fingerprint: String::new(),
             policy: String::new(),

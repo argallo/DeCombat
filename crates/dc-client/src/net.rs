@@ -1474,6 +1474,20 @@ impl Shared {
                         },
                     ));
                 }
+                // CLI-1926: kind 0x0c is the screen flash, its first sub-byte the fade flag
+                // SPEC: GAME_MESSAGES_2009_S2C.md §2.2 row 0x66 kind 0x0c (cshell+0x49aeb..0x49afe)
+                GameEvent::Status(PlayerStatus::Value {
+                    kind: status_kind::SCREEN_FLASH,
+                    b1,
+                    value,
+                    ..
+                }) => self.hud_events.push((
+                    now,
+                    HudEvent::ScreenFlash {
+                        fade: b1 != 0,
+                        secs: value,
+                    },
+                )),
                 GameEvent::Status(PlayerStatus::Value { kind, value, .. }) => {
                     // SPEC: GAME_MESSAGES_2009_S2C.md row 0x66 (kind 0x13: `client_shell`+0xc3b0 := 5)
                     if kind == crate::loading::STATUS_RESET_KIND {
@@ -3712,6 +3726,7 @@ impl WorldSource for NetWorld {
             }),
             own_team,
             held_weapon: g.arsenal.held().map(|c| c.weapon),
+            flash_decl: g.arsenal.held().map(|c| g.arsenal.flash_decl(c.weapon)),
             sensor: g.sensor.view(),
             equipment: g.equipment.clone(),
         }

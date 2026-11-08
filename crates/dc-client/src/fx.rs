@@ -662,7 +662,8 @@ pub struct ParticleKey {
     pub spin: (f32, f32),
     pub blend: Blend,
     pub with_system: bool,
-    pub friction: f32,
+    /// The velocity fraction a particle keeps per second: 1 - the key's friction value (1 without it: no drag).
+    pub keep: f32,
     /// 0: per-axis velocity between the two bounds; 1: along the emission offset with the speed of the bounds' x.
     pub velocity_kind: i32,
 }
@@ -865,7 +866,15 @@ impl EffectKey {
                         ),
                         blend: Blend::of_choice(p.i(prop::BLEND, 0)),
                         with_system: p.i(prop::WITH_SYSTEM, 0) != 0,
-                        friction: p.f(prop::FRICTION, 1.0).clamp(0.0, 1.0),
+                        // the per-frame step scales the velocity by (1 - friction) to the power of the frame
+                        // seconds, and a key without the friction property has 0 (no drag)
+                        // EVIDENCE: clientfx+0x1f3ef..0x1f402 (1.0 - key +0x10c, pow with the frame seconds, the
+                        // velocity factor of clientfx+0x1f3a0), clientfx+0x1d640 (the friction property -> key
+                        // +0x10c, clamped 0..1), clientfx+0x1d530 (key +0x10c := 0)
+                        // CORRECTION 2026-11-07 (grenade-fx, CLI-1925; OWNER PLAYTEST "the smoke immediately
+                        // dissipates instead of lingering"): the value was taken as the fraction kept, so the smoke
+                        // grenade's cloud (friction near 1) flew apart at its full emission speed
+                        keep: 1.0 - p.f(prop::FRICTION, 0.0).clamp(0.0, 1.0),
                         velocity_kind: p.i(prop::VELOCITY_KIND, 0),
                     })
                 }
@@ -1215,9 +1224,9 @@ pub const IMPACT_SOUND_INNER: u8 = 26;
 // the doubled axes by the particle's angle at +0x2c), clientfx+0x1d290 (ClientFx writes the scale key value by life
 // fraction into that same +0x18). Sprites use the same camera axes undoubled (engine+0x1af730: half = texture size x
 // scale), so the doubling is the particle's own.
-// DC-DEFAULT: CLI-195 (friction part unchanged) friction = the velocity kept per second (the power's exponent is not
-// read; EVIDENCE clientfx+0x1f3a0 for the per-frame step: position += velocity dt, velocity = friction^dt' x velocity +
-// acceleration dt)
+// DC-DEFAULT: CLI-195 (friction part amended by CLI-1925) the velocity kept per second = 1 - the key's friction
+// (EVIDENCE clientfx+0x1f3a0 for the per-frame step: position += velocity dt, velocity = (1 - friction)^dt x velocity
+// + acceleration dt; the base 1.0 - key +0x10c at clientfx+0x1f3ef..0x1f402)
 pub const PARTICLE_HALF_PER_SIZE: f32 = 2.0;
 
 /// The ammunition `Type` of thrown weapons (their surface effect is the surface's grenade group).
@@ -1486,9 +1495,9 @@ fn plane_axes(n: Vec3) -> (Vec3, Vec3) {
 }
 
 /// Position of a particle `age` seconds after its emission with constant acceleration `a` and the velocity kept per
-/// second `friction` (closed form of the per-frame step).
-fn particle_at(p0: Vec3, v0: Vec3, a: Vec3, friction: f32, age: f32) -> Vec3 {
-    let k = -friction.clamp(1e-6, 1.0).ln();
+/// second `keep` (closed form of the per-frame step).
+fn particle_at(p0: Vec3, v0: Vec3, a: Vec3, keep: f32, age: f32) -> Vec3 {
+    let k = -keep.clamp(1e-6, 1.0).ln();
     if k < 1e-5 {
         return p0 + v0 * age + a * (0.5 * age * age);
     }
@@ -2503,14 +2512,14 @@ impl FxRunner {
                 };
                 let pos = if p.with_system {
                     // local frame: positions and velocities turn with the system
-                    emit(t) + rot * particle_at(off, vel, Vec3::from(p.accel), p.friction, age)
+                    emit(t) + rot * particle_at(off, vel, Vec3::from(p.accel), p.keep, age)
                 } else {
                     // left behind where the emitter was at the emission (a trail of a moving anchor)
                     particle_at(
                         emit(te) + off,
                         rot * vel,
                         Vec3::from(p.accel),
-                        p.friction,
+                        p.keep,
                         age,
                     )
                 };
@@ -3699,6 +3708,78 @@ mod tests {
         assert!(q.x > 0.0 && q.x < 20.0);
     }
 
+    #[test]
+    fn a_dragged_particle_cloud_stays_where_it_burst_for_its_whole_life() {
+        // CLI-1925: a one-shot burst of ten particles, 1000 units/s in any direction, living 8..10 s, friction 0.98
+        // (velocity kept per second 0.02): a particle goes at most 1000 / ln(50) ~ 256 units along each level axis
+        // (under 400 units in all) and the cloud lasts its life
+        let burst = ParticleKey {
+            texture: None,
+            interval: -1.0,
+            per_emission: 10,
+            accel: [0.0, 10.0, 0.0],
+            life: (8.0, 10.0),
+            radius: (0.0, 10.0),
+            plane: [0.0, 1.0, 0.0],
+            vel_min: [-1000.0, -1000.0, -200.0],
+            vel_max: [1000.0, 1000.0, 400.0],
+            shape: 0,
+            rotate: false,
+            spin: (0.0, 0.0),
+            blend: Blend::Alpha,
+            with_system: false,
+            keep: 1.0 - 0.98,
+            velocity_kind: 0,
+        };
+        let k = EffectKey {
+            offset: [0.0; 3],
+            scales: vec![(0.0, 200.0), (1.0, 300.0)],
+            colours: vec![
+                ColourKey {
+                    t: 0.0,
+                    rgb: [200.0; 3],
+                    alpha: 1.0,
+                },
+                ColourKey {
+                    t: 1.0,
+                    rgb: [200.0; 3],
+                    alpha: 1.0,
+                },
+            ],
+            ..key(KeyKind::Particles(burst.clone()), 0.0, 2.0)
+        };
+        let mut r = runner_with("cloud", 2.0, vec![k.clone()]);
+        assert!(r.start_group("cloud", Vec3::ZERO, Quat::IDENTITY, false, 0.0));
+        let cam = dc_render::Camera::looking(Vec3::new(0.0, 0.0, -2000.0), 0.0, 0.0, 1.5, 1.2);
+        let reach = |r: &mut FxRunner, ms: u32| -> (usize, f32) {
+            r.feed(ms, &[], None);
+            let d = r.draw(ms, &cam, None);
+            let far = d
+                .world
+                .iter()
+                .map(|q| q.centre.length())
+                .fold(0.0f32, f32::max);
+            (d.world.len(), far)
+        };
+        for ms in [500, 2000, 5000, 7900] {
+            let (n, far) = reach(&mut r, ms);
+            assert_eq!(n, 10, "{ms} ms: the whole cloud is drawn");
+            assert!(far < 420.0, "{ms} ms: a particle {far} units out");
+        }
+        assert_eq!(reach(&mut r, 10_100).0, 0, "gone after the longest life");
+        // the old reading (the value as the fraction kept) threw the cloud thousands of units out within its life
+        let mut old = runner_with(
+            "cloud",
+            2.0,
+            vec![EffectKey {
+                kind: KeyKind::Particles(ParticleKey { keep: 0.98, ..burst }),
+                ..k
+            }],
+        );
+        assert!(old.start_group("cloud", Vec3::ZERO, Quat::IDENTITY, false, 0.0));
+        assert!(reach(&mut old, 5000).1 > 1000.0);
+    }
+
     fn runner() -> FxRunner {
         FxRunner::new(tables(), EffectLibrary::default(), TextureStore::default())
     }
@@ -4004,7 +4085,7 @@ mod tests {
         match &g.keys[0].kind {
             KeyKind::Particles(p) => {
                 assert_eq!(
-                    (p.per_emission, p.blend, p.friction),
+                    (p.per_emission, p.blend, p.keep),
                     (1, Blend::Alpha, 1.0)
                 );
             }

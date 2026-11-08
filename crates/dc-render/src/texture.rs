@@ -35,6 +35,9 @@ pub struct TextureFx {
     pub gain: [f32; 2],
     /// Seconds per pulse (0: steady at the highest gain).
     pub seconds: f32,
+    /// A flow (VAR-12): swirl in repeats and seconds per swirl. The tile is then the paint's colour, multiplied into the
+    /// texture (which holds only the shading), and not light.
+    pub flow: Option<[f32; 2]>,
 }
 
 impl TextureImage {

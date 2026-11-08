@@ -32,9 +32,10 @@ pub const WEB_PORT_OFFSET: u16 = 8080;
 /// The ledger of stall / crash files already handled (sent, declined or never to be sent).
 pub const SEEN_FILE: &str = "diag_seen.txt";
 
-/// The player's choice (profile `[DeCombat] diag.consent`: 0 not asked yet, 1 always, 2 ask, 3 never).
+/// The player's choice (profile `[DeCombat] diag.consent`: 0 not chosen, 1 always, 2 ask, 3 never).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Consent {
+    /// Not chosen: reports go automatically until the player says otherwise (one notice line the first time).
     #[default]
     Unset,
     Always,
@@ -142,8 +143,6 @@ impl Kind {
 /// What the menu does with a problem, by the player's choice (docs/DIAGNOSTICS.md §1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plan {
-    /// Not asked yet: the consent questions first, then the plan of the answer.
-    AskConsent,
     /// A box: send / (test the connection) / no.
     Ask { offer_test: bool },
     /// Sent at once; a network failure's box still offers the connection test.
@@ -153,7 +152,8 @@ pub enum Plan {
 }
 
 /// The plan for a problem of `kind` under `consent` (`off`: `DC_DIAG=off`).
-// DC-DEFAULT: CLI-1841 (proposed, USER REQUEST 2026-11-02; the test button's place by project decision)
+// DC-DEFAULT: CLI-1841 (proposed, USER REQUEST 2026-11-02; the test button's place by project decision; amended
+// USER REQUEST 2026-11-07: not chosen = automatic)
 pub fn plan(consent: Consent, kind: Kind, off: bool) -> Plan {
     if off {
         return Plan::Drop;
@@ -163,8 +163,7 @@ pub fn plan(consent: Consent, kind: Kind, off: bool) -> Plan {
     }
     let offer_test = kind.is_network();
     match consent {
-        Consent::Unset => Plan::AskConsent,
-        Consent::Always => Plan::Send { offer_test },
+        Consent::Unset | Consent::Always => Plan::Send { offer_test },
         Consent::Ask => Plan::Ask { offer_test },
         Consent::Never => Plan::Drop,
     }
@@ -390,6 +389,14 @@ pub fn take_pending() -> Option<Failure> {
 /// Lines for the player (lobby chat): what became of a report.
 pub fn take_notices() -> Vec<String> {
     global().notices.drain(..).collect()
+}
+
+/// CLI-1932: a line for the player's lobby chat from outside the reports (printed by the caller).
+pub fn player_notice(s: String) {
+    let mut g = global();
+    if g.notices.len() < 16 {
+        g.notices.push_back(s);
+    }
 }
 
 fn notice(s: String) {
@@ -715,15 +722,16 @@ pub fn send(f: Failure) {
         notice("reports are off for this run (DC_DIAG=off)".into());
         return;
     }
-    mark_seen(&f.artifacts);
     let _ = std::thread::Builder::new()
         .name("dc-diag-send".into())
         .spawn(move || {
             let (packed, target) = build(&f);
             let Some(target) = target else {
+                // the files stay unhandled: the next start offers them again
                 notice("no lobby to send the diagnostic report to".into());
                 return;
             };
+            mark_seen(&f.artifacts);
             let qdir = global().cfg.profile.as_ref().map(|p| queue::dir(p));
             match qdir {
                 Some(q) => {
@@ -847,10 +855,20 @@ mod tests {
         assert_eq!(Consent::parse("maybe"), None);
     }
 
+    /// Nothing chosen yet: a crash, panic, GPU loss or stall goes at once, with no box and no connection test.
+    #[test]
+    fn an_unchosen_consent_sends_the_crash_kinds_automatically() {
+        for k in [Kind::Crash, Kind::Panic, Kind::GpuLost, Kind::Stall] {
+            assert_eq!(plan(Consent::Unset, k, false), Plan::Send { offer_test: false }, "{k:?}");
+            assert_eq!(plan(Consent::Unset, k, true), Plan::Drop, "{k:?} with DC_DIAG=off");
+        }
+    }
+
     #[test]
     fn the_plan_follows_the_consent() {
         use Kind::*;
-        assert_eq!(plan(Consent::Unset, LinkLost, false), Plan::AskConsent);
+        assert_eq!(plan(Consent::Unset, LinkLost, false), Plan::Send { offer_test: true });
+        assert_eq!(plan(Consent::Unset, Stall, false), Plan::Send { offer_test: false });
         assert_eq!(plan(Consent::Always, LinkLost, false), Plan::Send { offer_test: true });
         assert_eq!(plan(Consent::Always, Stall, false), Plan::Send { offer_test: false });
         assert_eq!(plan(Consent::Ask, JoinFailed, false), Plan::Ask { offer_test: true });

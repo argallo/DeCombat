@@ -161,7 +161,7 @@ fn skin_line(
     mode: &str,
     row: u32,
     keep: &[Circle],
-    fx: Option<camo::CamoFx>,
+    (fx, flow): (Option<camo::CamoFx>, Option<camo::CamoFlow>),
     art: &str,
     glow: Option<&str>,
 ) -> String {
@@ -172,6 +172,7 @@ fn skin_line(
         base_key: &key,
         keep: keep.to_vec(),
         fx,
+        flow,
         pattern: "\u{1}",
         fx_pattern: glow.map(|_| "\u{2}"),
     });
@@ -250,7 +251,9 @@ pub fn save(
     if let Some(p) = &design.paint {
         write_art(&dir, "pattern.dtx", p)?;
     }
-    if let Some(g) = &design.glow {
+    // VAR-12: a flow takes the place of the light effect, so a flowing design writes neither the effect nor its pattern
+    let glow_art = design.glow.as_ref().filter(|_| design.flow.is_none());
+    if let Some(g) = glow_art {
         write_art(&dir, "glow.dtx", g)?;
     }
     for v in &views {
@@ -260,7 +263,7 @@ pub fn save(
             View::FirstPerson => "first_person",
             View::ThirdPerson => "third_person",
         };
-        let glow = design.glow.as_ref().map(|_| "glow.dtx");
+        let glow = glow_art.map(|_| "glow.dtx");
         if let Some(f) = design.full.get(&(gun.row, *v)) {
             let file = format!("full_{tag}.dtx");
             write_art(&dir, &file, f)?;
@@ -269,7 +272,7 @@ pub fn save(
                 MODE_REPLACE,
                 gun.row,
                 keep,
-                design.fx,
+                (design.fx, None),
                 &file,
                 glow,
             ));
@@ -279,7 +282,10 @@ pub fn save(
                 MODE_PAINT,
                 gun.row,
                 keep,
-                design.fx,
+                match design.flow {
+                    Some(flow) => (None, Some(flow)),
+                    None => (design.fx, None),
+                },
                 "pattern.dtx",
                 glow,
             ));
@@ -439,6 +445,9 @@ pub fn open(dir: &Path) -> Result<Opened, String> {
         if let Some(fx) = c.fx {
             design.fx = Some(fx);
         }
+        if let Some(flow) = c.flow {
+            design.flow = Some(flow);
+        }
         if !c.keep.is_empty() {
             design.keep.insert((row, view), c.keep.clone());
         }
@@ -502,6 +511,15 @@ pub const EXAMPLES: &[Example] = &[
                 include_bytes!("../../../examples/mods/variant_toxic_l96a1/assets/toxic.dtx"),
             ),
         ],
+    ),
+    (
+        "SCAR-L Prism",
+        include_str!("../../../examples/mods/variant_prism_scar/manifest.json"),
+        include_str!("../../../examples/mods/variant_prism_scar/main.lua"),
+        &[(
+            "assets/prism.dtx",
+            include_bytes!("../../../examples/mods/variant_prism_scar/assets/prism.dtx"),
+        )],
     ),
 ];
 
@@ -642,6 +660,42 @@ mod tests {
     }
 
     #[test]
+    fn a_flowing_camo_saves_without_its_light_and_opens_with_its_flow() {
+        let dir = temp("flow");
+        let d = Design {
+            paint: Some(patterns::generate("tiger", None, 1).unwrap()),
+            glow: Some(patterns::generate("stars", None, 2).unwrap()),
+            fx: Some(CamoFx {
+                speed: [0.02, -0.01],
+                gain: [0.1, 0.6],
+                seconds: 2.0,
+            }),
+            flow: Some(camo::CamoFlow {
+                speed: [0.03, 0.01],
+                swirl: 0.1,
+                seconds: 8.0,
+            }),
+            ..Design::default()
+        };
+        let base = checker_base();
+        save(&d, &gun(), &|_| Some(base.clone()), &options(&dir)).unwrap();
+        let report = dc_modkit::validate_mod(&dir, None);
+        assert!(report.ok, "{:?}", report.errors);
+        let lua = std::fs::read_to_string(dir.join("main.lua")).unwrap();
+        assert!(lua.contains("flow=0.03,0.01,0.1,8:"), "{lua}");
+        assert!(
+            !lua.contains("fx=") && !dir.join("assets/glow.dtx").exists(),
+            "{lua}"
+        );
+        let back = open(&dir).unwrap();
+        assert_eq!(back.design.flow, d.flow);
+        assert_eq!(back.design.fx, None);
+        let t = back.design.painted(25, View::FirstPerson, &base).unwrap();
+        assert_eq!(t.fx.as_ref().and_then(|f| f.flow), Some([0.1, 8.0]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_full_texture_is_saved_as_a_replacing_skin() {
         let dir = temp("full");
         let mut d = Design::default();
@@ -727,16 +781,24 @@ mod tests {
     }
 
     #[test]
-    fn every_example_opens_and_two_of_them_move() {
+    fn every_example_opens_and_three_of_them_move() {
         let mut moving = 0;
         for (name, ..) in EXAMPLES {
             let o = open_example(name).unwrap();
             assert!(o.design.paint.is_some(), "{name}");
-            assert!(o.row == 25 || o.row == 27, "{name}");
-            assert!(!o.design.keep.is_empty(), "{name} keeps its lens clean");
-            moving += usize::from(o.design.fx.is_some());
+            assert!([25, 27, 33].contains(&o.row), "{name}");
+            // The SCAR-L (row 33) has no sight, so no lens to keep clean.
+            assert!(
+                o.row == 33 || !o.design.keep.is_empty(),
+                "{name} keeps its lens clean"
+            );
+            moving += usize::from(o.design.fx.is_some() || o.design.flow.is_some());
         }
-        assert_eq!(moving, 2, "Galaxy and Toxic");
+        assert_eq!(moving, 3, "Galaxy, Toxic and Prism");
+        assert!(
+            open_example("SCAR-L Prism").unwrap().design.flow.is_some(),
+            "Prism flows"
+        );
         assert!(open_example("nope").is_err());
     }
 

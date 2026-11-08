@@ -159,8 +159,10 @@ struct GameMon {
     match_id: i64,
     /// Account -> unix time of its first `@join`.
     joined: BTreeMap<u32, i64>,
-    /// Accounts whose `@linksum` arrived (a rejoin gives a second row).
-    summarized: BTreeSet<u32>,
+    /// (Account, game-server client id) -> unix time of that link's `@join`: the open stays, one per link. A stay is
+    /// the `joined` of its `@linksum` row (a rejoin is a new stay, DSV-621); the key keeps an old link's late summary
+    /// (a replaced or bye-waiting link closes after the new `@join`) from taking the new stay's start.
+    stays: BTreeMap<(u32, String), i64>,
     silent: u32,
     closed: bool,
 }
@@ -550,11 +552,25 @@ fn leave_kind(how: &str) -> &'static str {
 
 fn store_linksum(st: &mut Core, game: u64, match_id: i64, s: &LinkSum) {
     let now = crate::clock::unix_now();
+    // DC-DEFAULT: DSV-621 (proposed) the summary closes the stay of its own link, else the account's oldest open one
     let joined = st
         .monitor
         .games
-        .get(&game)
-        .and_then(|m| m.joined.get(&s.uid).copied())
+        .get_mut(&game)
+        .and_then(|m| {
+            let own = (s.uid, s.client.clone());
+            let key = if m.stays.contains_key(&own) {
+                Some(own)
+            } else {
+                m.stays
+                    .iter()
+                    .filter(|((u, _), _)| *u == s.uid)
+                    .min_by_key(|(_, &t)| t)
+                    .map(|(k, _)| k.clone())
+            };
+            key.and_then(|k| m.stays.remove(&k))
+                .or_else(|| m.joined.get(&s.uid).copied())
+        })
         .unwrap_or(now - s.secs as i64);
     let bot = !crate::lifecycle::is_human(st, s.uid);
     let nick = nick_of(st, s.uid);
@@ -595,7 +611,6 @@ fn store_linksum(st: &mut Core, game: u64, match_id: i64, s: &LinkSum) {
     }
     let silent = s.how == "silent";
     if let Some(m) = st.monitor.games.get_mut(&game) {
-        m.summarized.insert(s.uid);
         if silent {
             m.silent += 1;
         }
@@ -653,7 +668,8 @@ pub fn on_pipe(st: &mut Core, game: u64, line: &str, ev: &Event) {
                 .map(|m| {
                     let new = !m.joined.contains_key(uid);
                     m.joined.entry(*uid).or_insert(now);
-                    m.summarized.remove(uid);
+                    // DC-DEFAULT: DSV-621 (proposed) the next row of this account describes the new stay
+                    m.stays.insert((*uid, client.clone()), now);
                     new
                 })
                 .unwrap_or(false);
@@ -748,11 +764,7 @@ pub fn match_closed(st: &mut Core, game: u64, crashed: bool) {
     }
     m.closed = true;
     let joined: Vec<(u32, i64)> = m.joined.iter().map(|(&u, &t)| (u, t)).collect();
-    let missing: Vec<(u32, i64)> = joined
-        .iter()
-        .copied()
-        .filter(|(u, _)| !m.summarized.contains(u))
-        .collect();
+    let missing: Vec<(u32, i64)> = m.stays.iter().map(|(&(u, _), &t)| (u, t)).collect();
     let (ready, result) = st
         .games
         .get(&game)
@@ -2095,6 +2107,136 @@ mod tests {
         );
         let odd = parse_linksum("@linksum uid=5 how=<b>x rtt=-4 secs=nan").unwrap();
         assert_eq!((odd.how.as_str(), odd.rtt_mean, odd.secs), ("bx", 0.0, 0.0));
+    }
+
+    /// DSV-621: a rejoin is a new stay: the account's second row starts at the rejoin, not at its first `@join`.
+    #[test]
+    fn a_rejoined_players_second_row_starts_at_the_rejoin() {
+        let mut st = crate::state::testing::state();
+        let plaz = account(&st, "plaz", "Plaz");
+        st.games.insert(8, game(8));
+        st.scope(|st| {
+            match_started(st, 8);
+            Ok(())
+        })
+        .unwrap();
+        line(&mut st, 8, &format!("@join 0 {plaz} 11 0 Plaz"));
+        let first = crate::clock::unix_now() - 600;
+        if let Some(m) = st.monitor.games.get_mut(&8) {
+            m.joined.insert(plaz, first);
+            m.stays.insert((plaz, "0".into()), first);
+        }
+        line(&mut st, 8, &SUM.replace("UID", &plaz.to_string()));
+        let rejoin = crate::clock::unix_now();
+        line(&mut st, 8, &format!("@join 1 {plaz} 11 0 Plaz"));
+        line(&mut st, 8, "@end");
+        let rows: Vec<(String, i64)> = st
+            .db
+            .prepare("SELECT how, joined FROM ops_match_players WHERE user_no = ?1 ORDER BY id")
+            .unwrap()
+            .query_map([plaz], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!((rows[0].0.as_str(), rows[0].1), ("silent", first));
+        assert_eq!(rows[1].0, "unknown");
+        assert!(rows[1].1 >= rejoin, "{rows:?}");
+        let players = count(&st.db, "SELECT players FROM ops_matches WHERE game = 8");
+        assert_eq!(players, 1, "one person");
+    }
+
+    /// The player rows of `user` in insertion order: (how, joined, left_at).
+    fn stay_rows(st: &Core, user: u32) -> Vec<(String, i64, i64)> {
+        st.db
+            .prepare(
+                "SELECT how, joined, left_at FROM ops_match_players WHERE user_no = ?1 ORDER BY id",
+            )
+            .unwrap()
+            .query_map([user], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// Two links of one account that overlap: the new `@join` comes before the old link's `@linksum` (DSV-2 replace,
+    /// DSV-51 bye-wait), and the new link's summary comes last. Each row keeps its own link's start.
+    fn overlapping_stays(old_how: &str, new_how: &str) {
+        let mut st = crate::state::testing::state();
+        let plaz = account(&st, "plaz", "Plaz");
+        st.games.insert(8, game(8));
+        st.scope(|st| {
+            match_started(st, 8);
+            Ok(())
+        })
+        .unwrap();
+        line(&mut st, 8, &format!("@join 0 {plaz} 11 0 Plaz"));
+        let first = crate::clock::unix_now() - 600;
+        if let Some(m) = st.monitor.games.get_mut(&8) {
+            m.joined.insert(plaz, first);
+            m.stays.insert((plaz, "0".into()), first);
+        }
+        let rejoin = crate::clock::unix_now();
+        line(&mut st, 8, &format!("@join 1 {plaz} 11 0 Plaz"));
+        let sum = |client: &str, how: &str| {
+            SUM.replace("UID", &plaz.to_string())
+                .replace("client=0", &format!("client={client}"))
+                .replace("how=silent", &format!("how={how}"))
+        };
+        line(&mut st, 8, &sum("0", old_how));
+        line(&mut st, 8, &sum("1", new_how));
+        line(&mut st, 8, "@end");
+        let rows = stay_rows(&st, plaz);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(
+            (rows[0].0.as_str(), rows[0].1),
+            (old_how, first),
+            "{rows:?}"
+        );
+        assert_eq!(rows[1].0, new_how);
+        assert!(rows[1].1 >= rejoin, "{rows:?}");
+        assert!(rows[0].2 >= rows[1].1 && rows[1].2 >= rows[1].1, "{rows:?}");
+        let players = count(&st.db, "SELECT players FROM ops_matches WHERE game = 8");
+        assert_eq!(players, 1, "one person");
+    }
+
+    /// DSV-2: the replaced link's summary arrives after the replacing `@join`.
+    #[test]
+    fn a_replaced_link_keeps_its_own_start() {
+        overlapping_stays("replaced", "end");
+    }
+
+    /// DSV-51: the player left and rejoined before the old link closed.
+    #[test]
+    fn a_bye_waiting_link_keeps_its_own_start() {
+        overlapping_stays("bye", "bye");
+    }
+
+    /// The silent-drop order (summary before the new `@join`): both rows' joined and left_at.
+    #[test]
+    fn a_silent_drop_then_rejoin_gives_two_ordered_rows() {
+        let mut st = crate::state::testing::state();
+        let plaz = account(&st, "plaz", "Plaz");
+        st.games.insert(8, game(8));
+        st.scope(|st| {
+            match_started(st, 8);
+            Ok(())
+        })
+        .unwrap();
+        line(&mut st, 8, &format!("@join 0 {plaz} 11 0 Plaz"));
+        let first = crate::clock::unix_now() - 600;
+        if let Some(m) = st.monitor.games.get_mut(&8) {
+            m.stays.insert((plaz, "0".into()), first);
+        }
+        line(&mut st, 8, &SUM.replace("UID", &plaz.to_string()));
+        let rejoin = crate::clock::unix_now();
+        line(&mut st, 8, &format!("@join 1 {plaz} 11 0 Plaz"));
+        line(&mut st, 8, "@end");
+        let rows = stay_rows(&st, plaz);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!((rows[0].0.as_str(), rows[0].1), ("silent", first));
+        assert!(rows[0].2 >= first && rows[0].2 <= rejoin, "{rows:?}");
+        assert!(rows[1].1 >= rejoin && rows[1].2 >= rows[1].1, "{rows:?}");
     }
 
     #[test]

@@ -116,7 +116,9 @@ def publish(webhook, state_file, board, now, request=discord_request):
     if now < state.get("retry_at", 0):
         return
     digest = hashlib.sha256(board.encode()).hexdigest()
-    if digest == state.get("digest") and now - state.get("updated", 0) < 180:
+    # An unchanged board is re-stamped on every timer tick (30 s), so "Last checked" shows a stalled publisher
+    # within a minute; the guard only swallows a second run inside the same tick.
+    if digest == state.get("digest") and now - state.get("updated", 0) < 20:
         return
     payload = {"content": board + f"\nLast checked <t:{now}:R>.", "allowed_mentions": {"parse": []}}
     message = state.get("message")

@@ -642,6 +642,48 @@ fn rebinding_fire_on_the_control_tab_moves_the_key_the_match_reads() {
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
 }
 
+/// CLI-1916: the Graphic tab's Field of View row opens a list of 70..120 in steps of 5; a pick is kept with OK in the
+/// profile's own section (`fov`), also where the joined server does not allow it (the lobby here has no mod set: the
+/// row says "locked"), for the servers that do.
+#[test]
+fn the_field_of_view_row_saves_the_pick_for_servers_that_allow_it() {
+    use dc_client::menu::options::LIST_FOV;
+    use dc_client::settings::OWN_FOV;
+    if dc_rom::resolve_rom().is_err() {
+        println!("skipped: CA_ROM unset");
+        return;
+    }
+    let (mut m, file) = menu();
+    press(&mut m, CMD_BAR_PREFS);
+    assert_eq!(m.screen_name(), "options");
+    let mut found = false;
+    for r in 0..16 {
+        let cmd = ROW_CMD_BASE + 16 * r;
+        m.input(MenuInput::Command(cmd));
+        let Some(d) = m.dropdown() else { continue };
+        if d.list != LIST_FOV {
+            m.input(MenuInput::Command(cmd)); // a second click closes the list
+            continue;
+        }
+        let want: Vec<String> = (70..=120).step_by(5).map(|n| n.to_string()).collect();
+        assert_eq!(d.items, want);
+        let at = d.row_point(8).unwrap(); // 110
+        m.input(MenuInput::Move(at));
+        m.input(MenuInput::Press(at));
+        m.input(MenuInput::Release(at));
+        found = true;
+        break;
+    }
+    assert!(found, "the Field of View row is on the Graphic tab");
+    assert_eq!(m.data.settings.fov, 90, "not changed before OK");
+    press(&mut m, CMD_OK);
+    let after = m.take_settings_change().expect("OK reports a change");
+    assert_eq!(after.fov, 110);
+    let (doc, _) = m.data.profile_store.as_ref().unwrap().load().expect("readable");
+    assert_eq!(doc.own_get(OWN_FOV), Some("110"));
+    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+}
+
 /// CLI-1852: the Graphic tab's Renderer row (Windows only) opens a Vulkan / DirectX 12 list; a pick is kept with OK
 /// in the profile's own section, and applies at the next start (nothing of the run changes).
 #[test]

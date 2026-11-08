@@ -1075,7 +1075,7 @@ struct SpawnNote {
 /// The `combat.*` keys an operator may set (`-combat key=value[,key=value...]`, later a `[combat]` table of
 /// `server.toml`); every damage multiplier of DSV-30 is one of them.
 // DC-DEFAULT: DSV-30 (proposed) the multipliers are config keys; DSV-34 (proposed) the trace keys
-pub const COMBAT_KEYS: [&str; 35] = [
+pub const COMBAT_KEYS: [&str; 40] = [
     "health_scale",
     "head_factor",
     "body_factor",
@@ -1111,6 +1111,11 @@ pub const COMBAT_KEYS: [&str; 35] = [
     "mod_damage",
     "warmup_damage",
     "infected_head_scale",
+    "flash_secs",
+    "flash_behind",
+    "flash_damage",
+    "hazards",
+    "hazard_self",
 ];
 
 impl GameTuning {
@@ -1215,6 +1220,14 @@ impl GameTuning {
             "warmup_damage" => self.warmup_damage = switch("on", "off")?,
             // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05)
             "infected_head_scale" => self.infected_head_scale = num()?,
+            // DC-DEFAULT: DSV-630 (proposed; OWNER PLAYTEST 2026-11-07) the flash blast's screen flash
+            "flash_secs" => self.projectile.flash_secs = num()?.min(60.0),
+            "flash_behind" => self.projectile.flash_behind = num()?.min(1.0),
+            // DC-DEFAULT: DSV-631 (amended)
+            "flash_damage" => self.projectile.flash_damage = switch("on", "off")?,
+            // DC-DEFAULT: DSV-635 (proposed; OWNER REPORT 2026-11-07) the thrown rounds' fire and gas
+            "hazards" => self.projectile.hazards = switch("on", "off")?,
+            "hazard_self" => self.projectile.hazard_self = switch("on", "off")?,
             // DC-DEFAULT: DSV-482 (proposed) Hardcore
             "health_scale" => {
                 let s = num()?;
@@ -1375,6 +1388,26 @@ pub struct ProjectileTuning {
     /// 1.0 = the ROM row's `AreaDamage` with the falloff, as the 2009 captures show it.
     // DC-DEFAULT: DSV-165 (gameplay choice, user-tunable) 1.0
     pub blast_damage_scale: f32,
+    /// The screen flash of a flash blast (`-combat flash_secs`): its seconds for a player facing the blast in the
+    /// full-damage part of the radius, before the falloff ([`crate::game::projectile::flash_secs`]).
+    // DC-DEFAULT: DSV-630 (proposed) 6.0
+    pub flash_secs: f32,
+    /// Factor of the flash for a player whose view points away from the blast (`-combat flash_behind`).
+    // DC-DEFAULT: DSV-630 (proposed) 0.5
+    pub flash_behind: f32,
+    /// A flash blast also hurts by its row's area damage through the blast path (`-combat flash_damage=off`: it only
+    /// whites out the screens).
+    // OBSERVED: ROM table WEAPONS.TXT (the flash grenade's ammunition row: `AreaDamage` with `AreaDamageType` 34; gear
+    // rows' `ProtectionType<k>` 34: armour protects against it; 2026-11-07)
+    // DC-DEFAULT: DSV-631 (amended 2026-11-07) on
+    pub flash_damage: bool,
+    /// A thrown round with progressive damage and a lifetime leaves its fire or gas where it went off
+    /// (`-combat hazards=off`: the one-shot flame burst of DSV-455 instead).
+    // DC-DEFAULT: DSV-635 (proposed) on
+    pub hazards: bool,
+    /// The thrower's own fire or gas hurts him (`-combat hazard_self=off`: it does not).
+    // DC-DEFAULT: DSV-635 (proposed) on, as his own blast does (DSV-39)
+    pub hazard_self: bool,
 }
 
 impl Default for ProjectileTuning {
@@ -1391,6 +1424,11 @@ impl Default for ProjectileTuning {
             inner_fraction: projectile::BLAST_INNER_FRACTION,
             blast_los: projectile::BLAST_LOS,
             blast_damage_scale: 1.0,
+            flash_secs: projectile::FLASH_SECS,
+            flash_behind: projectile::FLASH_BEHIND,
+            flash_damage: true,
+            hazards: true,
+            hazard_self: true,
         }
     }
 }
@@ -1731,7 +1769,7 @@ pub struct Player {
     pub on_ground_report: bool,
 }
 
-/// Match counters of one account (survive reconnects).
+/// Match counters of one account's current stay (a rejoin starts them again, DSV-621).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Stats {
     pub entry: Option<RosterEntry>,
@@ -1856,6 +1894,8 @@ pub struct Game {
     next_flight: u32,
     /// Burning players (DSV-455).
     burns: Vec<projectile::Burn>,
+    /// Lingering fire and gas of thrown rounds (DSV-635).
+    hazards: Vec<projectile::Hazard>,
     /// Co-op state of a class-5 room (slice 1), the world's co-op objects and the world's announced path (the GMS
     /// of the room is the one naming this world).
     coop: Option<coop::Coop>,
@@ -1995,6 +2035,7 @@ impl Game {
             flights: Vec::new(),
             next_flight: 1,
             burns: Vec::new(),
+            hazards: Vec::new(),
             coop: None,
             coop_world: world.coop.clone(),
             world_announce: world.announce.clone(),
@@ -2466,10 +2507,28 @@ impl Game {
     // ------------------------------------------------------------------------------------------- players
 
     /// An account was identified by its hello (it gets a `@player` line at the end).
+    ///
+    /// A later hello of the same account (a rejoin after its link closed, or a new link that replaced the old one,
+    /// DSV-2) starts a new stay: the board counters and the `@player` numbers count from 0 again, the team score keeps
+    /// what the first stay added, and the co-op lives stay (FT-S9).
     // DC-DEFAULT: DSV-7 (staged proposal) `@player` per identified player
+    // OBSERVED: owner playtest 2026-11-07 (a player who was dropped and came back kept his board row)
+    // SPEC: GAME_MESSAGES_2009_S2C.md §3.2 (0x6c deletes the record; a new 0x6b carries absolute kills and deaths)
+    // DC-DEFAULT: DSV-621 (proposed) a rejoin is a new stay
     pub fn note_identified(&mut self, e: &RosterEntry) {
         let s = self.stats.entry(e.uid).or_default();
+        let rejoin = s.entry.is_some();
+        if rejoin {
+            *s = Stats::default();
+        }
         s.entry = Some(e.clone());
+        if rejoin {
+            self.coop_new_stay(e.uid);
+            self.log(format!(
+                "uid {}: identified again, a new stay (board counters from 0)",
+                e.uid
+            ));
+        }
     }
 
     /// A `user` line for `uid` arrived (the first one counts): a player announced before the round started is one
@@ -2874,6 +2933,13 @@ impl Game {
         // DC-DEFAULT: DSV-148 (proposed) a new player's FFA count starts at 0 (a client id may be reused)
         self.modes.ffa_kills.remove(&pid);
         self.modes.ffa_deaths.remove(&pid);
+        // DC-DEFAULT: DSV-621 (proposed) the other board counters kept by client id start at 0 too (a rejoin or
+        // another player may get the id of one who left)
+        self.ctf.scored.remove(&pid);
+        self.spy.points.remove(&pid);
+        self.spy.kills.remove(&pid);
+        self.spy.deaths.remove(&pid);
+        self.infect.infections.remove(&pid);
         let name16 = hello
             .map(|h| h.name16.clone())
             .filter(|n| !n.is_empty())
@@ -4639,6 +4705,7 @@ impl Game {
         self.tick_possession(now);
         self.tick_coop(now);
         self.tick_projectiles(now);
+        self.tick_hazards(now);
         self.tick_burns(now);
         self.tick_hisec(now);
         self.tick_drops(now);
@@ -8070,6 +8137,55 @@ mod tests {
         );
     }
 
+    /// DSV-607 amended: a poison hazard step below the lethal rate spares an infected player and hurts a human; at
+    /// the lethal rate (deadly water) it hurts the infected as the human; a non-poison step hurts the infected.
+    #[test]
+    fn quarantine_poison_spares_the_infected_below_the_lethal_rate_only() {
+        use super::infect::{COUNTDOWN_SECS, INFECTED_LETHAL_HAZARD_RATE};
+        use crate::killvol::DAMAGE_TYPE_POISON;
+        let mut g = quarantine_room("2", true);
+        g.tick(100);
+        g.tick(100 + COUNTDOWN_SECS * 1000 + 50);
+        let host = *g.infect().infected.iter().next().expect("outbreak");
+        let human = (0..3u8).find(|p| *p != host).unwrap();
+        assert!(matches!(g.phase(), RoundPhase::Running { .. }));
+        let health = |g: &Game, p: u8| g.players[&p].health;
+        let below = INFECTED_LETHAL_HAZARD_RATE - 1.0;
+        let (h0, z0) = (health(&g, human), health(&g, host));
+        g.hazard_damage(host, 5.0, DAMAGE_TYPE_POISON, below, 21_000);
+        g.hazard_damage(human, 5.0, DAMAGE_TYPE_POISON, below, 21_000);
+        assert_eq!(health(&g, host), z0, "gas spares the infected");
+        assert!(health(&g, human) < h0, "gas hurts the human");
+        g.hazard_damage(
+            host,
+            5.0,
+            DAMAGE_TYPE_POISON,
+            INFECTED_LETHAL_HAZARD_RATE,
+            21_500,
+        );
+        assert!(health(&g, host) < z0, "deadly water hurts the infected");
+        let z1 = health(&g, host);
+        g.hazard_damage(host, 5.0, 0, below, 22_000);
+        assert!(
+            health(&g, host) < z1,
+            "a non-poison volume hurts the infected"
+        );
+        // the lethal step kills him with no killer, as a human
+        let lethal = health(&g, host) + 1.0;
+        g.hazard_damage(
+            host,
+            lethal,
+            DAMAGE_TYPE_POISON,
+            INFECTED_LETHAL_HAZARD_RATE * 10.0,
+            22_500,
+        );
+        assert_ne!(
+            g.players[&host].life,
+            Life::Alive,
+            "the water kills the infected"
+        );
+    }
+
     /// DSV-565: a 7-round Quarantine ends after round 7 whoever wins each round (humans, infected, draws, mixed);
     /// before, the goal counted round wins, so a human win made the infected need an 8th round.
     #[test]
@@ -9749,6 +9865,274 @@ mod tests {
             (100.0 - g.players[&1].health - want).abs() < 1e-3,
             "after the window: {}",
             g.players[&1].health
+        );
+    }
+
+    /// DSV-630 / DSV-631: a flash blast (ammunition `AreaDamageType` [`projectile::DAMAGE_FLASH`]) sends every
+    /// living player in its radius the 0x66 kind 0x0c screen flash, fading, for the falloff x the facing factor of
+    /// the full seconds (the thrower too), and hurts by the row's area damage as a blast unless `flash_damage` is off.
+    #[test]
+    fn a_flash_blast_whites_out_the_players_in_reach_and_hurts_as_a_blast() {
+        let flash_game = |tuning: GameTuning| {
+            let mut t = tables();
+            // synthetic flash row 0 with ammunition row 0 (made-up numbers in the ROM key shape)
+            let doc = dc_bute::ButeDoc::parse(concat!(
+                "[Weapon0]
+Name = \"F\"
+AmmoName0 = \"B\"
+",
+                "[Ammo0]
+Name = \"B\"
+Type = 1
+AreaDamage = 25
+AreaDamageType = 34
+AreaDamageRadius = 1000
+",
+                "[WeaponOrder]
+Class0 = \"P\"
+P0 = \"F\"
+",
+            ));
+            t.weapons = crate::rom_tables::WeaponTable::from_doc(&doc);
+            let mut g = Game::new(tuning, &world(), t);
+            for (pid, uid, team, obj) in [(0u8, 7u32, 0u8, 1u16), (1, 8, 1, 3)] {
+                let e = entry(uid, team, "P");
+                g.note_identified(&e);
+                g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+                g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+                g.on_up(pid, Up::WorldReady, 20);
+            }
+            // the thrower at the blast; the other 600 units out along +Z, looking further along +Z (blast behind)
+            g.players.get_mut(&0).unwrap().pos = [0.0, 0.0, 0.0];
+            let p1 = g.players.get_mut(&1).unwrap();
+            p1.pos = [0.0, 0.0, 600.0];
+            p1.yaw = 0.0;
+            g.spawn_notes.clear();
+            g.take_out();
+            g.flights.push(projectile::Flight {
+                key: 1,
+                owner: 0,
+                owner_obj: g.players[&0].obj,
+                owner_team: g.players[&0].team,
+                weapon: 0,
+                ammo: 0,
+                origin: [0.0; 3],
+                pos: [0.0; 3],
+                vel: [0.0; 3],
+                gravity: 0.0,
+                detonate_at: 100,
+                last: 100,
+                resting: true,
+                impact: false,
+                burst: false,
+                mine: None,
+            });
+            g.tick_projectiles(100);
+            let out = g.take_out();
+            (g, out)
+        };
+        let flashes = |out: &[GameOut], pid: u8| -> Vec<Vec<u8>> {
+            out.iter()
+                .filter_map(|o| match o {
+                    GameOut::To(to, m) if *to == pid => Some(m.as_bytes().to_vec()),
+                    _ => None,
+                })
+                .filter(|b| {
+                    b.len() >= 3 && b[1] == gs::GS_PLAYER_STATUS && b[2] == gs::STATUS_SCREEN_FLASH
+                })
+                .collect()
+        };
+        let tuning = GameTuning {
+            move_check: false,
+            ..GameTuning::default()
+        };
+        let pt = tuning.projectile;
+        let (g, out) = flash_game(tuning.clone());
+        let full = gs::screen_flash(true, pt.flash_secs);
+        assert_eq!(
+            flashes(&out, 0),
+            vec![full.as_bytes().to_vec()],
+            "the thrower: full length"
+        );
+        let behind = projectile::flash_secs(
+            600.0,
+            1000.0,
+            pt.inner_fraction,
+            -1.0,
+            pt.flash_secs,
+            pt.flash_behind,
+        );
+        assert!(behind > 0.0 && behind < pt.flash_secs * pt.flash_behind);
+        assert_eq!(
+            flashes(&out, 1),
+            vec![gs::screen_flash(true, behind).as_bytes().to_vec()],
+            "the other: the falloff x the behind factor"
+        );
+        assert!(
+            g.players[&0].health < 100.0,
+            "the row's area damage at the centre"
+        );
+        assert!(
+            g.players[&1].health < 100.0 && g.players[&1].health > g.players[&0].health,
+            "less further out"
+        );
+        // flash_damage=off: the flash only
+        let mut t = tuning;
+        t.set_combat("flash_damage", "off").unwrap();
+        let (g, out) = flash_game(t);
+        assert_eq!(flashes(&out, 1).len(), 1);
+        assert_eq!(
+            g.players[&0].health, 100.0,
+            "no damage with flash_damage off"
+        );
+        assert_eq!(
+            g.players[&1].health, 100.0,
+            "no damage with flash_damage off"
+        );
+    }
+
+    /// A synthetic fire row (weapon 0, ammunition 0; made-up numbers in the ROM key shape): progressive damage 4 per
+    /// second of type 3 for 1 s after the last contact, within 300 units, lingering 2 s, no blast.
+    fn hazard_weapons() -> crate::rom_tables::WeaponTable {
+        crate::rom_tables::WeaponTable::from_doc(&dc_bute::ButeDoc::parse(concat!(
+            "[Weapon0]\nName = \"I\"\nAmmoName0 = \"IB\"\n",
+            "[Ammo0]\nName = \"IB\"\nType = 1\nAreaDamage = 0\nAreaDamageRadius = 0\nProgDamage = 4\n",
+            "ProgDamageType = 3\nProgDamageDuration = 1\nProgDamageRadius = 300\nProgDamageLifetime = 2\n",
+            "[WeaponOrder]\nClass0 = \"P\"\nP0 = \"I\"\n",
+        )))
+    }
+
+    /// The fire of [`hazard_weapons`] thrown by player 0 goes off at `at` at `pos`.
+    fn hazard_goes_off(g: &mut Game, pos: [f32; 3], at: Millis) {
+        g.flights.push(projectile::Flight {
+            key: 77,
+            owner: 0,
+            owner_obj: g.players[&0].obj,
+            owner_team: g.players[&0].team,
+            weapon: 0,
+            ammo: 0,
+            origin: pos,
+            pos,
+            vel: [0.0; 3],
+            gravity: 0.0,
+            detonate_at: at,
+            last: at,
+            resting: true,
+            impact: false,
+            burst: false,
+            mine: None,
+        });
+        g.tick_projectiles(at);
+    }
+
+    /// DSV-635 / DSV-566: during a bomb room's warm-up a thrown fire burns no one (its burns have no killer, so the
+    /// hold at the damage point would not see them); with `warmup_damage` on it burns as ever.
+    #[test]
+    fn a_thrown_fire_burns_no_one_while_the_warmup_holds_damage() {
+        let burnt = |warmup_damage: bool| {
+            let mut g = bomb_room_with(GameTuning {
+                move_check: false,
+                warmup_damage,
+                ..GameTuning::default()
+            });
+            g.tables.weapons = hazard_weapons();
+            assert!(g.in_warmup());
+            g.spawn_notes.clear();
+            g.players.get_mut(&0).unwrap().pos = [0.0; 3];
+            g.players.get_mut(&1).unwrap().pos = [100.0, 0.0, 0.0];
+            hazard_goes_off(&mut g, [0.0; 3], 1000);
+            let mut t = 1000;
+            while t < 5000 {
+                t += 50;
+                g.tick_hazards(t);
+                g.tick_burns(t);
+            }
+            assert!(g.in_warmup(), "still the warm-up");
+            100.0 - g.players[&1].health
+        };
+        assert_eq!(burnt(false), 0.0, "the warm-up holds the fire");
+        assert!(burnt(true) > 0.0, "warmup_damage on: it burns");
+    }
+
+    /// DSV-635: the thrower is known by his account: a newcomer given the thrower's client id while the fire lasts is
+    /// not taken for him (with `hazard_self` off the thrower is spared, the newcomer is not); a burn set by the
+    /// thrower carries his Spy Hunt damage factor; a hazard's renewal keeps a credited burn's burner.
+    #[test]
+    fn a_hazard_knows_its_thrower_by_account_and_keeps_a_credited_burn() {
+        let mut g = launcher_game(tables(), &[[0.0; 3], [5000.0, 0.0, 0.0]]);
+        g.tables.weapons = hazard_weapons();
+        g.cfg.projectile.hazard_self = false;
+        hazard_goes_off(&mut g, [0.0; 3], 4000);
+        g.tick_hazards(4000);
+        g.tick_burns(4300);
+        assert_eq!(g.players[&0].health, 100.0, "the thrower is spared");
+        // the thrower leaves; a newcomer of the other team takes client id 0 and stands in the fire
+        g.remove_player(0, false);
+        let e = entry(99, 1, "N");
+        g.note_identified(&e);
+        g.add_player(0, Some(&e), None, 41, [0.0; 3], [0.0; 3], 4400);
+        g.on_up(0, Up::PlayerInfo(Box::default()), 4410);
+        g.on_up(0, Up::WorldReady, 4420);
+        g.players.get_mut(&0).unwrap().pos = [0.0; 3];
+        g.spawn_notes.clear();
+        let mut t = 4400;
+        while t < 7000 {
+            t += 50;
+            g.tick_hazards(t);
+            g.tick_burns(t);
+        }
+        assert!(g.players[&0].health < 100.0, "the newcomer burns");
+        // the agent's factor (DSV-456) on a burn he set by a hazard; a renewal keeps a flame's burner and credit
+        let prog = g.tables.weapons.prog(0, 0).unwrap();
+        g.burns.clear();
+        g.spy.agent = Some(1);
+        g.cfg.agent_damage_scale = 3.0;
+        g.ignite(0, 1, 0, prog, 8000);
+        assert_eq!((g.burns[0].owner, g.burns[0].credit), (1, false));
+        g.burns[0].credit = true;
+        g.ignite(0, gs::SHOT_CLIENT_NONE, 0, prog, 8100);
+        assert_eq!(
+            (g.burns[0].owner, g.burns[0].credit),
+            (1, true),
+            "a credited burn keeps its burner"
+        );
+        g.burns[0].credit = false;
+        let before = g.players[&0].health;
+        g.tick_burns(8350);
+        assert!(
+            (before - g.players[&0].health - 3.0).abs() < 1e-3,
+            "3 x the row's 1 per step"
+        );
+    }
+
+    /// DSV-636: a burn or poison death with no killer carries its damage type as `feed_value` (the 2009 feed's burn
+    /// and poison images); a credited death and every other killerless death keep the reference value.
+    #[test]
+    fn a_killerless_burn_or_poison_death_takes_its_feed_image() {
+        use combat::{killerless_feed, DAMAGE_BURN, DAMAGE_POISON};
+        assert_eq!(killerless_feed(None, DAMAGE_BURN), 3);
+        assert_eq!(killerless_feed(None, DAMAGE_POISON), 9);
+        assert_eq!(killerless_feed(Some(1), DAMAGE_BURN), TODO_KILL_FEED_VALUE);
+        assert_eq!(killerless_feed(None, 7), TODO_KILL_FEED_VALUE);
+        assert_eq!(killerless_feed(None, 0), TODO_KILL_FEED_VALUE);
+    }
+
+    /// DSV-630: the flash's length rule.
+    #[test]
+    fn the_flash_falls_off_with_the_distance_and_halves_behind() {
+        use projectile::{facing_cos, flash_secs};
+        assert_eq!(flash_secs(100.0, 1000.0, 0.25, 1.0, 6.0, 0.5), 6.0);
+        assert_eq!(flash_secs(100.0, 1000.0, 0.25, -0.2, 6.0, 0.5), 3.0);
+        assert!((flash_secs(625.0, 1000.0, 0.25, 0.0, 6.0, 0.5) - 3.0).abs() < 1e-5);
+        assert_eq!(flash_secs(1000.0, 1000.0, 0.25, 1.0, 6.0, 0.5), 0.0);
+        // yaw 0 looks along +Z
+        assert!((facing_cos(0.0, [0.0; 3], [0.0, 0.0, 50.0]) - 1.0).abs() < 1e-6);
+        assert!((facing_cos(0.0, [0.0; 3], [0.0, 0.0, -50.0]) + 1.0).abs() < 1e-6);
+        assert!(facing_cos(std::f32::consts::FRAC_PI_2, [0.0; 3], [50.0, 0.0, 0.0]) > 0.999);
+        assert_eq!(
+            facing_cos(1.0, [0.0; 3], [0.0, 80.0, 0.0]),
+            1.0,
+            "straight above: facing"
         );
     }
 

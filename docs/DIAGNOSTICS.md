@@ -20,9 +20,11 @@ echo, storage, mail, CLI). Not yet tested against a real player's failure.
 
 ## 1. What the player sees
 
-- **The first problem** (or the first start after a crash) asks once: *"Send diagnostic reports automatically when
-  the game has a problem? ..."* Yes = **Always**. No asks a second question: *"Ask you each time instead?"* Yes =
-  **Ask each time**, No = **Never**. The answer is kept in the profile (`[DeCombat] diag.consent`).
+- **Automatic by default**: a player who has not chosen yet is not asked anything. When the game crashed, panicked, lost the
+  graphics driver or stalled, the report goes up by itself (the next start sends what the earlier run left behind). The
+  first time, the lobby chat shows one line: *"A diagnostic report of the last problem was sent to the server owner (no
+  passwords, no memory dumps). /diag never turns this off."* The mode is then kept in the profile
+  (`[DeCombat] diag.consent`) as **Always**. `/diag ask` makes every problem ask first, `/diag never` stops reports.
 - **Ask each time**: after the 2009 box of the failure (for example "the connection was lost") a box asks
   *"Send a diagnostic report to the server's owner?"* with **Send report** / **Test connection** / **No** (the test
   button only after a lost connection, a server that went away or a failed join). Test connection runs the test of

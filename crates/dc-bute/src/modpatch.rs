@@ -770,6 +770,47 @@ mod variant_tests {
         .unwrap()
     }
 
+    /// CLI-1845: a gun's weapon inspect is every one of its variants' too, whatever order the packs come in, and a variant
+    /// cannot set one of its own (the inspect keys are not cosmetic keys).
+    #[test]
+    fn a_guns_inspect_is_its_variants_inspect() {
+        let patch = |weapon: u16, op: PatchOp, fields: &[(&str, &str)]| WeaponPatch {
+            weapon,
+            op,
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+        let inspect = [
+            ("InspectLen", "3900"),
+            ("InspectPose1", "480 16 -50 -3 -2.6 0.4 2.9"),
+        ];
+        let camo = [("variant_of", "25"), ("PVSkin1", "@mod:p/assets/x.dtx")];
+        let c = WeaponContent::new(
+            vec![
+                patch(500, PatchOp::Register, &camo),
+                patch(25, PatchOp::Patch, &inspect),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+        let mut d = doc();
+        c.apply_to_doc(&mut d).unwrap();
+        for (k, v) in inspect {
+            assert_eq!(
+                d.sections["Weapon500"].get(k).map(String::as_str),
+                Some(v),
+                "{k}"
+            );
+        }
+        assert!(!is_cosmetic_key("InspectLen") && !is_cosmetic_key("InspectPose1"));
+        let own = [("variant_of", "25"), ("InspectLen", "100")];
+        let refused = WeaponContent::new(vec![patch(501, PatchOp::Register, &own)], Vec::new())
+            .and_then(|c| c.apply_to_doc(&mut doc()));
+        assert!(refused.is_err(), "a variant may not set its own inspect");
+    }
+
     /// VAR-2: a variant has its base row's every gameplay key, and differs only where it is allowed to.
     #[test]
     fn a_variant_keeps_every_gameplay_key_of_its_base() {

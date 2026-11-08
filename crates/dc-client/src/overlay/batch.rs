@@ -58,6 +58,9 @@ pub struct QuadList {
     pub pages: Vec<u16>,
     /// The canvas the rectangles are clipped to.
     pub canvas: (u32, u32),
+    /// CLI-1915: a pixel rectangle `[x0, y0, x1, y1)` the quads pushed while it is set are clipped to as well (the
+    /// menus' 2D band on a surface wider than 16:9).
+    pub limit: Option<[i32; 4]>,
 }
 
 impl QuadList {
@@ -65,12 +68,16 @@ impl QuadList {
         self.quads.clear();
         self.pages.clear();
         self.canvas = canvas;
+        self.limit = None;
     }
 
     /// Clips `r` (whole pixels) to the canvas; `None` when nothing is left.
     fn clip(&self, r: [i32; 4]) -> Option<[f32; 4]> {
         let (w, h) = (self.canvas.0 as i32, self.canvas.1 as i32);
-        let (x0, y0, x1, y1) = (r[0].max(0), r[1].max(0), r[2].min(w), r[3].min(h));
+        let (mut x0, mut y0, mut x1, mut y1) = (r[0].max(0), r[1].max(0), r[2].min(w), r[3].min(h));
+        if let Some(l) = self.limit {
+            (x0, y0, x1, y1) = (x0.max(l[0]), y0.max(l[1]), x1.min(l[2]), y1.min(l[3]));
+        }
         (x0 < x1 && y0 < y1).then_some([x0 as f32, y0 as f32, x1 as f32, y1 as f32])
     }
 

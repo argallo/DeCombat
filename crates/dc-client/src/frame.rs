@@ -54,6 +54,22 @@ impl ViewSettings {
         }
     }
 
+    /// CLI-1916: these settings with the player's field of view (`saved`, the 4:3-horizontal angle of the Field of View
+    /// row) on a server that published the range `allowed` (modded and curated entries); the saved value is clamped into
+    /// the range. Without a range (a vanilla server, an older lobby, no server) the settings stay as they are, the 2009
+    /// view (a 4:3-horizontal angle of 90, a vertical 75). Only the world view takes it: the first-person weapon view
+    /// and the shop and offscreen views have their own fixed projection.
+    // DC-DEFAULT: CLI-1916 (proposed), see DC_DEFAULTS.md
+    pub fn with_player_fov(self, saved: i32, allowed: Option<(u32, u32)>) -> ViewSettings {
+        match allowed {
+            Some((lo, hi)) if lo <= hi => ViewSettings {
+                fov_y_deg: player_fov_y_deg((saved.max(0) as u32).clamp(lo, hi) as f32),
+                ..self
+            },
+            _ => self,
+        }
+    }
+
     /// The render camera at `eye` looking along `view`, for a `w x h` target.
     // EVIDENCE: cshell+0x1f3cb0 (the horizontal field is derived from the vertical one and the target aspect)
     pub fn camera(&self, eye: dc_sim::V3, view: &ViewAngles, w: u32, h: u32) -> Camera {
@@ -68,6 +84,15 @@ impl ViewSettings {
         c.far_z = self.far_z;
         c
     }
+}
+
+/// CLI-1916: the vertical field (degrees) of the player's Field of View number `fov`: 90 is exactly the 2009 view
+/// (a vertical 75, `FovY`), the other numbers scale the half-angle's tangent with the number's, so the number reads as
+/// a 4:3-horizontal angle (the 2009 view's real horizontal angle at 4:3 is 91.3).
+// DC-DEFAULT: CLI-1916 (proposed), see DC_DEFAULTS.md; EVIDENCE: cshell+0x1f6fb0 (default FovY 75)
+pub fn player_fov_y_deg(fov: f32) -> f32 {
+    let half = (fov.clamp(1.0, 170.0).to_radians() * 0.5).tan();
+    (2.0 * ((dc_render::FOV_Y_DEFAULT_DEG.to_radians() * 0.5).tan() * half).atan()).to_degrees()
 }
 
 /// Frame rate over the last frames (a sliding window of frame times).
@@ -244,6 +269,45 @@ mod tests {
         assert_eq!(far(v.with_world_far(None)), dc_render::DEFAULT_FAR_Z);
         // only the far plane changes
         assert_eq!(v.with_world_far(Some(30_000.0)).fov_y_deg, v.fov_y_deg);
+    }
+
+    /// CLI-1916: the player's field of view sets the world view's vertical angle on an entry that published a range
+    /// (clamped into it); a server without a range (vanilla) keeps the 2009 view whatever the setting says; the
+    /// normal horizontal field the scope's zoom steps start from (`arms::set_normal_fov_x`) follows it.
+    #[test]
+    fn the_players_field_of_view_applies_only_inside_a_published_range() {
+        let base = ViewSettings::default();
+        let range = Some((70, 120));
+        // 110 on an allowed entry: tan(y / 2) = tan(37.5 degrees) * tan(55 degrees), a vertical 95.2
+        let v = base.with_player_fov(110, range);
+        let want = 2.0 * (37.5f32.to_radians().tan() * 55f32.to_radians().tan()).atan();
+        assert!((v.fov_y_deg - want.to_degrees()).abs() < 1e-3, "{}", v.fov_y_deg);
+        assert!((v.fov_y_deg - 95.24).abs() < 0.01, "{}", v.fov_y_deg);
+        // wider than the 2009 view at every aspect, with the horizontal field derived from it
+        let at = |s: &ViewSettings| s.camera(dc_sim::V3::new(0.0, 0.0, 0.0), &ViewAngles::default(), 640, 480);
+        assert!(at(&v).fov_x > at(&base).fov_x && at(&v).fov_y > at(&base).fov_y);
+        assert_eq!(v.far_z, base.far_z, "only the angle changes");
+        // 90 is exactly the 2009 view
+        let d = base.with_player_fov(90, range);
+        assert!((d.fov_y_deg - 75.0).abs() < 1e-3, "{}", d.fov_y_deg);
+        assert_eq!(at(&d), at(&base));
+        // the normal horizontal field the scope's zoom steps start from (arms::set_normal_fov_x) follows the view
+        let nx = |s: &ViewSettings| dc_render::fov_pair_2009(s.fov_y_deg, 1024, 768).0;
+        assert!(nx(&v) > nx(&base));
+        // a vanilla entry, an older lobby or no server publishes no range: the setting is ignored
+        assert_eq!(base.with_player_fov(110, None), base);
+        assert_eq!(base.with_player_fov(70, None).fov_y_deg, dc_render::FOV_Y_DEFAULT_DEG);
+        // the saved value is clamped into the range; a locked range pins it
+        let lo = player_fov_y_deg(80.0);
+        let hi = player_fov_y_deg(100.0);
+        assert!((base.with_player_fov(70, Some((80, 100))).fov_y_deg - lo).abs() < 1e-4);
+        assert!((base.with_player_fov(120, Some((80, 100))).fov_y_deg - hi).abs() < 1e-4);
+        assert!((base.with_player_fov(120, Some((90, 90))).fov_y_deg - 75.0).abs() < 1e-3);
+        // a broken range (min above max) counts as none
+        assert_eq!(base.with_player_fov(110, Some((120, 70))), base);
+        // a later change replaces the earlier one (the in-match options apply it live)
+        let live = v.with_player_fov(80, range);
+        assert!((live.fov_y_deg - player_fov_y_deg(80.0)).abs() < 1e-4);
     }
 
     #[test]

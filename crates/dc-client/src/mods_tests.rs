@@ -301,6 +301,7 @@ fn vanilla_unloads_a_loaded_local_mod_and_yields_the_empty_set_hash() {
         },
         mods: Vec::new(),
         community_map_base: None,
+        client_fov: None,
     };
     assert_eq!(empty_modded.hash(), EMPTY_SET_HASH);
     routes.lock().unwrap().insert(
@@ -813,6 +814,7 @@ fn declared(mods: &[(&str, &str, &str)]) -> ServerModSet {
             client_visual_allowed: true,
         },
         community_map_base: None,
+        client_fov: None,
         mods: mods
             .iter()
             .map(|(id, version, sha)| ServerMod {
@@ -1463,4 +1465,29 @@ fn join_entry_falls_back_to_the_hosts_records_and_the_document_wins_over_them() 
         .unwrap();
     assert!(mods.status.maps.is_empty(), "the lobby left it out: no row");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// LG-429: the mod-set fragment's `client_fov` is read as `[min, max]` for a modded set (kept by the fragment round
+/// trip); a vanilla set, a missing key and a broken range publish none.
+#[test]
+fn the_fragment_carries_the_field_of_view_range_of_a_modded_set_only() {
+    let read = |v: serde_json::Value| ServerModSet::from_fragment(&v).unwrap();
+    let modded = read(serde_json::json!({"policy": "modded", "client_fov": [70, 120], "mods": []}));
+    assert_eq!(modded.fov_range(), Some((70, 120)));
+    assert_eq!(read(modded.to_fragment()).fov_range(), Some((70, 120)), "round trip");
+    assert_eq!(
+        read(serde_json::json!({"policy": "modded", "client_fov": [90, 90], "mods": []})).fov_range(),
+        Some((90, 90)),
+        "a locked range is still a range"
+    );
+    for none in [
+        serde_json::json!({"policy": "modded", "mods": []}),
+        serde_json::json!({"policy": "modded", "client_fov": [120, 70], "mods": []}),
+        serde_json::json!({"policy": "modded", "client_fov": [70], "mods": []}),
+        serde_json::json!({"policy": "modded", "client_fov": "wide", "mods": []}),
+        serde_json::json!({"policy": "vanilla", "client_fov": [70, 120]}),
+    ] {
+        assert_eq!(read(none.clone()).fov_range(), None, "{none}");
+    }
+    assert_eq!(ServerModSet::vanilla().fov_range(), None);
 }

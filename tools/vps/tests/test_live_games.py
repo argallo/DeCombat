@@ -40,13 +40,14 @@ class BoardTest(unittest.TestCase):
         def request(method, path, payload):
             self.assertEqual(payload["allowed_mentions"], {"parse": []})
             calls.append((method, path))
-            if method == "PATCH" and len(calls) == 3:
+            if method == "PATCH" and len(calls) == 4:
                 raise board.DiscordError(404, 10008, 0)
             return {"id": next(ids)} if method == "POST" else {}
 
-        for content, now in [("first", 100), ("first", 130), ("changed", 140), ("new state", 200)]:
+        # 110: the same board inside the tick is skipped; 130: the same board a tick later is re-stamped
+        for content, now in [("first", 100), ("first", 110), ("first", 130), ("changed", 140), ("new state", 200)]:
             board.publish(self.hook, self.state, content, now, request)
-        self.assertEqual([c[0] for c in calls], ["POST", "PATCH", "PATCH", "POST"])
+        self.assertEqual([c[0] for c in calls], ["POST", "PATCH", "PATCH", "PATCH", "POST"])
         self.assertTrue(calls[1][1].endswith("/messages/71"))
         self.assertEqual(json.loads(self.state.read_text())["message"], "72")
 

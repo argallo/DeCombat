@@ -33,7 +33,7 @@ use super::{build_sheet, Ctx, Go, MenuData, MenuKey, Screen};
 use crate::hud::compose::part_of;
 use crate::hud::items::DrawItem;
 use crate::settings::{
-    scan_name, Renderer, Settings, WinStyle, ANTIALIAS_CHOICES, BGM_CHOICES, BGM_CLASSIC, FPS_CAP_CHOICES,
+    scan_name, Renderer, Settings, WinStyle, ANTIALIAS_CHOICES, FOV_CHOICES, BGM_CHOICES, BGM_CLASSIC, FPS_CAP_CHOICES,
     RENDERER_CHOICES,
     GAMMA_MAX, SENSITIVITY_MAX,
 };
@@ -186,6 +186,8 @@ const KEY_ROW_GAP: i32 = 8;
 pub const ROW_INSPECT: i32 = 103;
 /// CLI-1852: our "Renderer" row of the Graphic tab (Windows only), after "Show FPS".
 pub const ROW_RENDERER: i32 = 104;
+/// CLI-1916: our "Field of View" row of the Graphic tab, after the Renderer row.
+pub const ROW_FOV: i32 = 105;
 pub const OWN_LABEL_X: i32 = 24;
 pub const OWN_WORD_DX: i32 = STEP_SIZE[0] + 8;
 pub const OWN_ROW_BLANK: i32 = 13;
@@ -195,6 +197,25 @@ pub const LIST_ANTIALIAS: &str = "opt_antialias";
 pub const LIST_FRAME_RATE: &str = "opt_frame_rate";
 pub const LIST_BGM: &str = "opt_bgm";
 pub const LIST_RENDERER: &str = "opt_renderer";
+pub const LIST_FOV: &str = "opt_fov";
+/// CLI-1916: the value of a Field of View row the joined server does not allow (greyed).
+pub const LOCKED_COLOUR: u32 = 0xff90_9090;
+
+/// CLI-1916: whether the player may choose a field of view on the joined server: it published a range with room to
+/// choose in (a vanilla server, an older lobby and a `[90, 90]` entry did not).
+pub fn fov_allowed(range: Option<(u32, u32)>) -> bool {
+    matches!(range, Some((lo, hi)) if lo < hi)
+}
+
+/// CLI-1916: the Field of View row's word: the angle, with a hint when the joined server does not allow the choice
+/// (the value is still kept in the profile for the servers that do).
+pub fn fov_text(fov: i32, range: Option<(u32, u32)>) -> String {
+    if fov_allowed(range) {
+        fov.to_string()
+    } else {
+        format!("{fov} (locked)")
+    }
+}
 
 /// The anti-aliasing row's word for a sample count (CLI-1594: the 2009 list named the device's multisample types).
 pub fn antialias_text(samples: u32) -> String {
@@ -219,7 +240,8 @@ pub fn renderer_text(r: Renderer) -> &'static str {
     r.label()
 }
 
-/// CLI-1852: our rows appended to the Graphic tab, in order; the Renderer row only where `choosable` (Windows).
+/// CLI-1852: our rows appended to the Graphic tab, in order; the Renderer row only where `choosable` (Windows); the
+/// CLI-1916 Field of View row after it.
 fn graphic_own_rows(choosable: bool) -> Vec<(i32, i32, i32, Knob)> {
     let mut rows = vec![
         (ROW_FRAME_RATE, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::FrameRate),
@@ -228,6 +250,7 @@ fn graphic_own_rows(choosable: bool) -> Vec<(i32, i32, i32, Knob)> {
     if choosable {
         rows.push((ROW_RENDERER, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::Renderer));
     }
+    rows.push((ROW_FOV, TYPE_DROPDOWN, DROPDOWN_SIZE[1], Knob::Fov));
     rows
 }
 
@@ -270,6 +293,9 @@ pub enum Knob {
     /// CLI-1852: our "Renderer" row (appended to the Graphic tab, Windows only): Vulkan / DirectX 12, a real list;
     /// the choice applies at the next start of the client.
     Renderer,
+    /// CLI-1916: our "Field of View" row (appended to the Graphic tab after the Renderer row): 70..120 in steps of 5, a
+    /// real list; it applies in a match on a server that publishes a range (modded and curated entries).
+    Fov,
     /// CLI-1599: our "BGM Music" row (after the Sound tab's music switch): Classic / 2009, a real list.
     Bgm,
     /// Key boxes: the bindable command table rows of the boxes.
@@ -440,6 +466,8 @@ pub struct Options {
     split: Option<(i32, i32)>,
     /// CLI-1908: the Mods tab of the options over a match (`None` in the lobby: four tabs as in 2009).
     mods: Option<ModsTab>,
+    /// CLI-1916: the field-of-view range of the joined server (`None`: it publishes none).
+    fov_range: Option<(u32, u32)>,
 }
 
 impl Options {
@@ -463,6 +491,7 @@ impl Options {
             drop: None,
             split: None,
             mods: data.match_mods.clone().map(ModsTab::new),
+            fov_range: data.fov_range,
         };
         o.open_tab(cat, 0);
         o
@@ -797,6 +826,7 @@ impl Options {
             Knob::FrameRate => Some(("Frame Rate", &[])),
             Knob::ShowFps => Some(("Show FPS", &["On", "Off"])),
             Knob::Renderer => Some(("Renderer", &[])),
+            Knob::Fov => Some(("Field of View", &[])),
             Knob::Bgm => Some(("BGM Music", &[])),
             Knob::OwnKey(_) => Some(("Inspect Weapon", &[])),
             _ => None,
@@ -1167,6 +1197,13 @@ impl Options {
                     .map(|&r| (renderer_text(r).to_string(), r as i32))
                     .collect(),
             ),
+            Some(Knob::Fov) => (
+                LIST_FOV,
+                FOV_CHOICES
+                    .iter()
+                    .map(|&n| (n.to_string(), n))
+                    .collect(),
+            ),
             Some(Knob::Bgm) => (
                 LIST_BGM,
                 BGM_CHOICES
@@ -1221,6 +1258,7 @@ impl Options {
                 self.edit.fps_cap = d.fps_cap;
                 self.edit.show_fps = d.show_fps;
                 self.edit.renderer = d.renderer;
+                self.edit.fov = d.fov;
             }
             1 => {
                 self.edit.effects_volume = d.effects_volume;
@@ -1320,6 +1358,7 @@ impl Options {
                     Some(Knob::Antialias) => antialias_text(self.edit.antialias),
                     Some(Knob::FrameRate) => frame_rate_text(self.edit.fps_cap),
                     Some(Knob::Renderer) => renderer_text(self.edit.renderer).to_string(),
+                    Some(Knob::Fov) => fov_text(self.edit.fov, self.fov_range),
                     Some(Knob::Bgm) => bgm_text(self.edit.bgm),
                     _ => self
                         .edit
@@ -1329,11 +1368,17 @@ impl Options {
                         .unwrap_or(0)
                         .to_string(),
                 };
+                // CLI-1916: a Field of View the joined server does not allow is greyed
+                let colour = if row.knob == Some(Knob::Fov) && !fov_allowed(self.fov_range) {
+                    LOCKED_COLOUR
+                } else {
+                    VALUE_COLOUR
+                };
                 out.push(text(
                     &t,
                     [x + DROPDOWN_TEXT_X, top + DROPDOWN_SIZE[1] / 2],
                     centre,
-                    VALUE_COLOUR,
+                    colour,
                 ));
             } else if let Some(cmds) = key_refs(&row.knob) {
                 let first_col = usize::from(row.kind == TYPE_KEYS_RIGHT);
@@ -1657,6 +1702,7 @@ impl Screen for Options {
                             | Knob::Antialias
                             | Knob::FrameRate
                             | Knob::Renderer
+                            | Knob::Fov
                             | Knob::Bgm,
                         ) => {
                             self.open_list(ctx.cat, r);
@@ -1766,6 +1812,12 @@ impl Screen for Options {
                     self.edit.renderer = *r;
                 }
             }
+            // CLI-1916: saved with OK; the match takes it on a server that allows it (clamped into its range)
+            LIST_FOV => {
+                if let Some(n) = FOV_CHOICES.iter().find(|&&n| n == value) {
+                    self.edit.fov = *n;
+                }
+            }
             // CLI-1599: a sound row: heard at once like the switches (CLI-1030); Cancel restores the style
             LIST_BGM => {
                 if let Some(n) = BGM_CHOICES.iter().find(|&&n| n as i32 == value) {
@@ -1838,15 +1890,38 @@ mod tests {
         let knobs = |on: bool| -> Vec<Knob> {
             graphic_own_rows(on).into_iter().map(|r| r.3).collect()
         };
-        assert_eq!(knobs(false), vec![Knob::FrameRate, Knob::ShowFps], "hidden off Windows");
-        assert_eq!(knobs(true), vec![Knob::FrameRate, Knob::ShowFps, Knob::Renderer]);
+        assert_eq!(knobs(false), vec![Knob::FrameRate, Knob::ShowFps, Knob::Fov], "hidden off Windows");
+        assert_eq!(
+            knobs(true),
+            vec![Knob::FrameRate, Knob::ShowFps, Knob::Renderer, Knob::Fov]
+        );
         let rows = graphic_own_rows(true);
-        let last = rows.last().unwrap();
-        assert_eq!((last.0, last.1), (ROW_RENDERER, TYPE_DROPDOWN));
+        let renderer = rows.iter().find(|r| r.3 == Knob::Renderer).unwrap();
+        assert_eq!((renderer.0, renderer.1), (ROW_RENDERER, TYPE_DROPDOWN));
         // the build's own list follows the platform flag
         assert_eq!(
             graphic_own_rows(crate::settings::renderer_choosable()).len(),
-            if cfg!(windows) { 3 } else { 2 }
+            if cfg!(windows) { 4 } else { 3 }
         );
+    }
+
+    /// CLI-1916: the Field of View row (70..120 list, label "Field of View") comes after the Renderer row; its word is
+    /// the angle, with a hint when the joined server does not allow the choice.
+    #[test]
+    fn the_field_of_view_row_follows_the_renderer_and_says_when_it_is_locked() {
+        assert_eq!(
+            Options::own_row_label(&Knob::Fov).map(|(l, w)| (l, w.len())),
+            Some(("Field of View", 0))
+        );
+        let rows = graphic_own_rows(true);
+        let last = rows.last().unwrap();
+        assert_eq!((last.0, last.1, &last.3), (ROW_FOV, TYPE_DROPDOWN, &Knob::Fov));
+        assert_eq!(FOV_CHOICES.first(), Some(&70));
+        assert_eq!(FOV_CHOICES.last(), Some(&120));
+        assert!(FOV_CHOICES.windows(2).all(|w| w[1] - w[0] == 5));
+        assert_eq!(fov_text(110, Some((70, 120))), "110");
+        assert_eq!(fov_text(110, None), "110 (locked)", "vanilla / older lobby");
+        assert_eq!(fov_text(90, Some((90, 90))), "90 (locked)", "a locked entry");
+        assert!(fov_allowed(Some((70, 120))) && !fov_allowed(None) && !fov_allowed(Some((90, 90))));
     }
 }

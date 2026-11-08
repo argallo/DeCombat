@@ -2,7 +2,7 @@
 //! `dc_render::camo`, the same code as the game (VAR-3, VAR-4).
 
 use crate::guns::View;
-use dc_render::camo::{self, CamoFx, Circle};
+use dc_render::camo::{self, CamoFlow, CamoFx, Circle};
 use dc_render::TextureImage;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -103,6 +103,8 @@ pub struct Design {
     /// The pattern the effect moves over the gun as light (`None`: the painted pattern).
     pub glow: Option<Art>,
     pub fx: Option<CamoFx>,
+    /// The paint's colour itself moving, like a lava lamp (VAR-12). It takes the place of the light effect.
+    pub flow: Option<CamoFlow>,
     /// Texture painted to the gun's own layout, which replaces the texture, per gun and view.
     pub full: BTreeMap<(u32, View), Art>,
     /// The circles left as the gun drew them (a scope's lens), in texels of the texture, per gun and view.
@@ -119,7 +121,10 @@ impl Design {
 
     /// Whether this gun and view show anything but the game's own texture.
     pub fn changes(&self, row: u32, view: View) -> bool {
-        self.paint.is_some() || self.fx.is_some() || self.full.contains_key(&(row, view))
+        self.paint.is_some()
+            || self.fx.is_some()
+            || self.flow.is_some()
+            || self.full.contains_key(&(row, view))
     }
 
     /// The texture of a gun's main slot under this design. `None`: the gun's own texture stays.
@@ -145,6 +150,9 @@ impl Design {
             })
             .collect();
         let keep = scaled.as_slice();
+        if let (None, Some(p), Some(flow)) = (self.full.get(&(row, view)), &self.paint, self.flow) {
+            return camo::flowing(base, &p.image(), keep, flow);
+        }
         let mut out = match (self.full.get(&(row, view)), &self.paint) {
             (Some(full), _) => camo::replace(base, &full.image(), keep)?,
             (None, Some(p)) => camo::paint(base, &p.image(), keep)?,

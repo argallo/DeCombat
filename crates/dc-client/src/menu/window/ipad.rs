@@ -310,6 +310,7 @@ impl Shell {
                     &p.menu.data.room,
                     reticle,
                     prefs,
+                    p.menu.fov_range(),
                 );
                 let mut turn = Box::new(MatchTurn::new(Box::new(net), mopts, p.sound.take(), host));
                 turn.handler().resumed(el);

@@ -597,6 +597,15 @@ pub fn hardcore_args(st: &Core, key: RoomKey) -> Vec<String> {
     }
 }
 
+/// CRATE-2 (amended 2026-11-07): the game server's `-hisec` flag for the operator's `hisec.camo_share`, after the
+/// operator's own flags so that the lobby key wins; nothing while the key is unset (the server's default applies).
+pub fn hisec_args(st: &Core) -> Vec<String> {
+    match st.rules.hisec.camo_share {
+        Some(n) => vec!["-hisec".to_string(), format!("camo_share={n}")],
+        None => Vec::new(),
+    }
+}
+
 /// The flags of room `key`'s Hacks setting ([`hacks_args`]).
 pub fn room_hacks_args(st: &Core, key: RoomKey) -> Vec<String> {
     let value = st.rooms.get(&key).map_or(0, |r| r.hacks);
@@ -797,6 +806,9 @@ pub(crate) fn spawn(st: &mut Core, key: RoomKey) -> Result<u64, String> {
         cmd.arg(a);
     }
     for a in possession_args(st, key) {
+        cmd.arg(a);
+    }
+    for a in hisec_args(st) {
         cmd.arg(a);
     }
     // The game server runs in its own working directory (SPEC: DSERVER_PIPE addendum e2e C4), so a ROM named
@@ -1096,6 +1108,7 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
     args.extend(crate::gungame::args(st, key));
     args.extend(hardcore_args(st, key));
     args.extend(possession_args(st, key));
+    args.extend(hisec_args(st));
     let json = start_json(
         &world,
         &st.opts.dserver_guid,
@@ -2618,7 +2631,7 @@ ItemType=18
 
     #[test]
     fn bonus_is_the_rule_part_above_the_plain_reward() {
-        // DC-DEFAULT: DSV-142 (proposed) over CD-03 / CD-04 defaults (finish 10 / 20, kill 4 / 6, win +25 %)
+        // DC-DEFAULT: DSV-142 (proposed) over CD-03 / CD-04 defaults (finish 15 / 20, kill 6 / 6, win +25 %)
         let r = crate::config::Rules::default();
         let ctx = |team: i64, winner: i64, f: f64| RewardCtx {
             kills: 2,
@@ -2628,19 +2641,19 @@ ItemType=18
             gp_factor: f,
             ..Default::default()
         };
-        // winner, factor 1: (18, 32) plain, (23, 40) with the win bonus
+        // winner, factor 1: (27, 32) plain, (34, 40) with the win bonus
         let w = ctx(1, 1, 1.0);
         let got = rewards::base(&r, &w);
-        assert_eq!(got, (23, 40));
-        assert_eq!(bonus_of(&r, &w, got), (5, 8));
+        assert_eq!(got, (34, 40));
+        assert_eq!(bonus_of(&r, &w, got), (7, 8));
         // loser: no bonus
         let l = ctx(2, 1, 1.0);
         assert_eq!(bonus_of(&r, &l, rewards::base(&r, &l)), (0, 0));
         // map factor 2 on a loser: the doubled part is the bonus
         let l2 = ctx(2, 1, 2.0);
         let got2 = rewards::base(&r, &l2);
-        assert_eq!(got2, (36, 64));
-        assert_eq!(bonus_of(&r, &l2, got2), (18, 32));
+        assert_eq!(got2, (54, 64));
+        assert_eq!(bonus_of(&r, &l2, got2), (27, 32));
         // map factor below 1: never negative
         let l3 = ctx(2, 1, 0.5);
         assert_eq!(bonus_of(&r, &l3, rewards::base(&r, &l3)), (0, 0));

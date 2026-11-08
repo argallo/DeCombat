@@ -293,6 +293,10 @@ impl HudAssets {
                 }
                 // CRATE-7: the case reel's effect textures are made here
                 None if path.starts_with("@dc:reel_") => crate::menu::reelfx::texture_arc(path),
+                // CLI-1907: the exit box's Options caption, drawn as a picture like the baked words of the 2009 buttons
+                None if path.starts_with(super::exitbox::CAPTION_TEX) => {
+                    super::exitbox::caption_picture(&mut self.fonts, path).map(Arc::new)
+                }
                 // CLI-1893: our own flag pictures (the ROM catalogue puts them in the ROM flags' shape at load)
                 None if path.starts_with("@dc:flag_") => {
                     crate::menu::ownflag::texture(path, crate::menu::ownflag::OWN_SHAPE)
@@ -446,7 +450,52 @@ pub enum Prim<'a> {
 /// Resolves the display list on a `width` x `height` target: virtual-to-target scaling and rounding, the aim
 /// mark's covered ranges, the cross's pixel walk, image corners and turns, text pen positions. Items whose font or
 /// texture is missing, and empty images, resolve to nothing.
+///
+/// CLI-1915: on a surface wider than 16:9 the list is resolved on the centred 16:9 band ([`VirtualScaler::band`])
+/// exactly as on a surface of the band's size, then moved right by the band's whole-pixel origin; the aim marks
+/// stay on the surface's centre (the band's centre). Nothing is clipped here (a world-anchored mark may lie in a
+/// side band); the menus clip to the band themselves ([`compose_clipped`], the overlay's menu quads).
+// DC-DEFAULT: CLI-1915 (proposed) the 2D layer keeps the 16:9 stretch in a centred band
 pub fn resolve<'a>(
+    items: &'a [DrawItem],
+    assets: &mut HudAssets,
+    width: u32,
+    height: u32,
+) -> Vec<Prim<'a>> {
+    let sc = VirtualScaler::new(width, height);
+    let (bw, bh) = sc.band_size();
+    let mut out = resolve_on(items, assets, bw, bh);
+    if sc.banded() {
+        let dx = sc.ox as i32;
+        for p in &mut out {
+            shift_prim(p, dx);
+        }
+    }
+    out
+}
+
+/// Moves a resolved primitive `dx` whole pixels right.
+fn shift_prim(p: &mut Prim<'_>, dx: i32) {
+    match p {
+        Prim::Fill { rect, .. } => {
+            rect[0] += dx;
+            rect[2] += dx;
+        }
+        Prim::Text { x, .. } => *x += dx as f32,
+        Prim::Image {
+            bbox, rect, turn, ..
+        } => {
+            bbox[0] += dx;
+            bbox[2] += dx;
+            rect[0] += dx as f32;
+            rect[2] += dx as f32;
+            turn[0] += dx as f32;
+        }
+    }
+}
+
+/// [`resolve`] on a surface without side bands (`width` x `height` at 16:9 or narrower).
+fn resolve_on<'a>(
     items: &'a [DrawItem],
     assets: &mut HudAssets,
     width: u32,
@@ -633,13 +682,19 @@ pub fn resolve<'a>(
 /// Draws resolved primitives into a transparent `width` x `height` image (the CPU reference raster).
 pub fn raster(prims: &[Prim<'_>], width: u32, height: u32) -> RgbaImage {
     let mut img = RgbaImage::new(width, height, [0, 0, 0, 0]);
-    let (w, h) = (width as i32, height as i32);
+    raster_over(&mut img, prims);
+    img
+}
+
+/// Draws resolved primitives over `img` (in order, after what it holds).
+pub fn raster_over(img: &mut RgbaImage, prims: &[Prim<'_>]) {
+    let (w, h) = (img.width as i32, img.height as i32);
     for p in prims {
         match p {
             Prim::Fill { rect, colour } => {
                 for y in rect[1].max(0)..rect[3].min(h) {
                     for x in rect[0].max(0)..rect[2].min(w) {
-                        over(&mut img, x, y, *colour);
+                        over(img, x, y, *colour);
                     }
                 }
             }
@@ -649,7 +704,7 @@ pub fn raster(prims: &[Prim<'_>], width: u32, height: u32) -> RgbaImage {
                 baseline,
                 text,
                 colour,
-            } => atlas.draw_rgba(&mut img, *x, *baseline, text, *colour),
+            } => atlas.draw_rgba(img, *x, *baseline, text, *colour),
             Prim::Image {
                 tex,
                 bbox,
@@ -684,7 +739,7 @@ pub fn raster(prims: &[Prim<'_>], width: u32, height: u32) -> RgbaImage {
                             None => [255.0; 4],
                         };
                         over(
-                            &mut img,
+                            img,
                             px,
                             py,
                             [
@@ -699,12 +754,38 @@ pub fn raster(prims: &[Prim<'_>], width: u32, height: u32) -> RgbaImage {
             }
         }
     }
-    img
 }
 
 /// Draws the display list into a transparent `width` x `height` image ([`resolve`], then [`raster`]).
 pub fn compose(items: &[DrawItem], assets: &mut HudAssets, width: u32, height: u32) -> RgbaImage {
     raster(&resolve(items, assets, width, height), width, height)
+}
+
+/// [`compose`] for a menu screen: the items before the last `free` ones are clipped to the 2D band and the side
+/// bands outside it are opaque black (the menu's frame is black where the band does not reach), then the last
+/// `free` items (the cursor) are drawn over the whole surface. Without side bands this is [`compose`].
+// DC-DEFAULT: CLI-1915 (proposed) the menus show plain black left and right of the band
+pub fn compose_clipped(
+    items: &[DrawItem],
+    assets: &mut HudAssets,
+    width: u32,
+    height: u32,
+    free: usize,
+) -> RgbaImage {
+    let split = items.len() - free.min(items.len());
+    let mut img = raster(&resolve(&items[..split], assets, width, height), width, height);
+    let sc = VirtualScaler::new(width, height);
+    if sc.banded() {
+        let [bx, _, bw, _] = sc.band();
+        for y in 0..height {
+            for x in (0..bx).chain(bx + bw..width) {
+                let o = ((y * width + x) * 4) as usize;
+                img.rgba[o..o + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+    }
+    raster_over(&mut img, &resolve(&items[split..], assets, width, height));
+    img
 }
 
 #[cfg(test)]
@@ -877,5 +958,81 @@ mod tests {
         );
         assert_eq!(img.pixel(495, 350)[3], 0, "the width keeps the x scale");
         assert_eq!(img.pixel(530, 350)[3], 0, "the width keeps the x scale");
+    }
+
+    /// CLI-1915: a list on 3440 x 1440 is the 2560 x 1440 list moved 440 pixels right (the band); the menu's clipped
+    /// compose leaves the side bands black except for the free (cursor) items.
+    #[test]
+    fn an_ultrawide_target_draws_the_16_9_band_centred() {
+        let fonts = |h: u32| HudFonts::new(Some((crate::testkit::synth_font(), 0)), 16.0, None, h as f32 / 768.0);
+        let items = vec![
+            DrawItem::Fill {
+                rect: [0.0, 0.0, 1024.0, 768.0],
+                colour: [0, 0, 0, 255],
+            },
+            DrawItem::Image {
+                tex: "red".into(),
+                src: [4.0, 4.0],
+                dst: [-40.0, 100.0, 120.0, 50.0],
+                tint: [255; 4],
+                turn: Some(([20.0, 120.0], 0.3)),
+            },
+            DrawItem::Label {
+                style: TextStyle {
+                    font: -1,
+                    colour: [255; 4],
+                    size: Some(14),
+                },
+                pos: [491.0, 129.0],
+                text: "AB".into(),
+                anchor: [0.5, 0.5],
+            },
+            DrawItem::Fill {
+                rect: [1000.0, 700.0, 60.0, 30.0],
+                colour: [0, 200, 0, 255],
+            },
+            DrawItem::Fill {
+                rect: [-30.0, 10.0, 8.0, 8.0],
+                colour: [9, 9, 250, 255],
+            },
+        ];
+        let mut a = HudAssets::new(Box::new(Solid), fonts(1440));
+        let narrow = compose(&items, &mut a, 2560, 1440);
+        for w in [3440u32, 5120] {
+            let dx = (w - 2560) / 2;
+            let wide = compose(&items, &mut a, w, 1440);
+            for y in 0..1440 {
+                for x in 0..2560 {
+                    assert_eq!(wide.pixel(x + dx, y), narrow.pixel(x, y), "{w}: band pixel {x},{y}");
+                }
+            }
+            // unclipped: the image and the fills reach into the side bands
+            let red = (0..1440)
+                .flat_map(|y| (0..dx).map(move |x| (x, y)))
+                .filter(|&(x, y)| wide.pixel(x, y) == [200, 10, 10, 255])
+                .count();
+            assert!(red > 0, "{w}: the turned image reaches the left side band");
+            assert_eq!(wide.pixel(dx + 2560 + 10, 1340), [0, 200, 0, 255], "{w}");
+            // the menu's compose: black side bands, only the last (free) item drawn there
+            let menu = compose_clipped(&items, &mut a, w, 1440, 1);
+            for y in 0..1440 {
+                for x in (0..dx).chain(dx + 2560..w) {
+                    let want = if (dx as i32 - 75..dx as i32 - 55).contains(&(x as i32)) && (19..34).contains(&y) {
+                        [9, 9, 250, 255]
+                    } else {
+                        [0, 0, 0, 255]
+                    };
+                    assert_eq!(menu.pixel(x, y), want, "{w}: side pixel {x},{y}");
+                }
+            }
+            for y in 0..1440 {
+                for x in 0..2560 {
+                    assert_eq!(menu.pixel(x + dx, y), narrow.pixel(x, y), "{w}: menu band pixel {x},{y}");
+                }
+            }
+        }
+        // 16:9 and narrower: the clipped compose is the plain one
+        let mut b = HudAssets::new(Box::new(Solid), fonts(1440));
+        assert!(compose_clipped(&items, &mut b, 2560, 1440, 1).rgba == narrow.rgba);
     }
 }

@@ -370,6 +370,7 @@ impl Game {
                     Some(b) => {
                         b.until = until;
                         b.owner = gs::SHOT_CLIENT_NONE;
+                        b.credit = false;
                         b.weapon = cl.weapon;
                         b.per_second = cl.per_second;
                         b.damage_type = cl.damage_type;
@@ -377,6 +378,7 @@ impl Game {
                     None => self.burns.push(Burn {
                         victim: *vpid,
                         owner: gs::SHOT_CLIENT_NONE,
+                        credit: false,
                         weapon: cl.weapon,
                         per_second: cl.per_second,
                         damage_type: cl.damage_type,

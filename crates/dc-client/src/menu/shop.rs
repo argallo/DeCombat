@@ -3660,7 +3660,7 @@ impl Screen for ShopScreen {
         }
         // CLI-1263: a press on the character's part of the pane starts turning it; the press goes on to the controls
         if inside(FIGURE_DRAG_RECT, p) {
-            let sx = ctx.cat.size().0 as f32 / dc_ui_data::scale::VIRTUAL_WIDTH as f32;
+            let sx = ctx.cat.scaler().sx;
             self.figure_drag = Some((p[0], sx));
         }
         // CLI-1160 the X of a filled backpack row takes its weapon off (unequip, backpack slot 10 + row)
