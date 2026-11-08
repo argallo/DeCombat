@@ -784,11 +784,15 @@ pub struct BotSession {
     /// BOT-128: the place a Quarantine human falls back to and when it was picked; whether it walks back to the
     /// other humans.
     qrt_retreat: Option<([f32; 3], Millis)>,
-    qrt_regrouping: bool,
-    /// BOT-143: a Quarantine human's guard place near the group and when it was picked; whether it guards with the
-    /// group this tick (no roam).
-    qrt_guard: Option<([f32; 3], Millis)>,
+    /// BOT-160: a Quarantine human's own place at the stand (whether it was picked after the outbreak, and when);
+    /// whether it keeps to the stand this tick (no roam, no hunt).
+    qrt_guard: Option<([f32; 3], bool, Millis)>,
     qrt_camp: bool,
+    /// BOT-160: the round as the server's messages tell it (outbreak, infected, stand, chase), the world's ranked
+    /// stands, and the human's plan for the track.
+    qrt_round: crate::qrt::Round,
+    qrt_spots: Option<(String, Vec<[f32; 3]>)>,
+    qrt_plan: Option<&'static str>,
     /// BOT-143: the ROM speed rows (read once from the user's ROM; `None`: the neutral speeds), the Quarantine
     /// override row the server gave this bot (0xd3 sub 3), until when a hit slows the infected body, the sprint pair
     /// last sent (`UP_SPRINT_STATE`), and whether the bot lets its spent gauge refill before it sprints again.
@@ -937,9 +941,11 @@ impl BotSession {
             spy_guard: None,
             last_hurt: None,
             qrt_retreat: None,
-            qrt_regrouping: false,
             qrt_guard: None,
             qrt_camp: false,
+            qrt_round: Default::default(),
+            qrt_spots: None,
+            qrt_plan: None,
             speed_rows,
             speed_gear,
             speed_weapon: None,
@@ -2072,6 +2078,8 @@ impl BotSession {
             .is_some_and(|p| flat(p, pos) > NAV_TELEPORT)
         {
             self.nav_reset();
+            // BOT-162: a new life (or a move elsewhere): the places jumped from are forgotten
+            self.follow.forget_places();
         }
         self.nav_last_pos = Some(pos);
         let step = self.nav_cost.steps == 0 || since(now, self.nav_step) >= follow::STEP_MS;
@@ -2418,6 +2426,7 @@ impl BotSession {
                    "whole": s.whole, "failed": s.failed, "islands": s.islands, "jumps": s.jumps,
                    "stuck_replans": s.stuck_replans, "refusals": s.refusals,
                    "refusals_kept": s.refusals_kept, "traps": s.traps,
+                   "place_spent": s.place_spent, "out_of_reach": s.out_of_reach,
                    "waypoints": self.follow.points().len(),
                    "busy_us": c.busy_us, "steps": c.steps, "step_max_us": c.step_max_us,
                    "plan_max_us": s.plan_max_us, "grow_max_us": s.grow_max_us,
@@ -2917,15 +2926,37 @@ impl BotSession {
             // BOT-143: Quarantine sub 3 `[row:i8]` is the own override row (-1: human again), whose speed keys the
             // client's mover uses (DSV-320)
             // SPEC: GAME_MESSAGES_2009_S2C.md §3.5 row 0xd3; GAME_MODES_2009.md §5.7
-            crate::qrt::QRT_SHELL => {
-                if r.read_u8() == crate::qrt::QRT_SUB_OVERRIDE {
+            crate::qrt::QRT_SHELL => match r.read_u8() {
+                crate::qrt::QRT_SUB_OVERRIDE => {
                     let row = r.read_u8() as i8;
                     self.qrt_override = u32::try_from(row).ok();
                     self.shot_slow_until = None;
                     self.rec
                         .event("qrt_override", json!({"ms": self.ms(now), "row": row}));
                 }
-            }
+                // BOT-160: sub 0 `[team]([infector:u32] when infected)[pid:u32]` tells who is infected now, sub 1
+                // `[round][limit][flag][secs]` starts a round's countdown (humans only): the outbreak state comes
+                // from these, not from the bodies in view
+                // SPEC: GAME_MODES_2009.md §5.7 (subs 0 and 1)
+                crate::qrt::QRT_SUB_TEAM => {
+                    let team = r.read_u8();
+                    let infector = (team == crate::qrt::INFECTED).then(|| r.read_u32());
+                    let pid = r.read_u32();
+                    if let Ok(pid) = u8::try_from(pid) {
+                        self.qrt_round.on_team(pid, team);
+                        self.rec.event(
+                            "qrt_team",
+                            json!({"ms": self.ms(now), "pid": pid, "team": team,
+                                   "host": infector == Some(crate::qrt::NO_INFECTOR)}),
+                        );
+                    }
+                }
+                crate::qrt::QRT_SUB_COUNTDOWN => {
+                    let round = r.read_u8();
+                    self.qrt_round.on_countdown(round);
+                }
+                _ => {}
+            },
             shell_id::CONSOLE_TEXT => {
                 let t = String::from_utf8_lossy(&r.read_zstr8()).into_owned();
                 self.rec.event("console", json!({"text": t}));
@@ -3180,7 +3211,29 @@ impl BotSession {
             }),
             prefer,
             mates: self.spread_mates(now),
+            rushers: self.qrt_rushers(),
         }
+    }
+
+    /// BOT-161: a Quarantine human fires full-auto (and at the head of one coming head-on) at every infected, as the
+    /// server's messages and the roster name them.
+    // DC-DEFAULT: BOT-161 (proposed)
+    fn qrt_rushers(&self) -> Vec<u8> {
+        use crate::qrt;
+        if self.obs.mode_class != Some(qrt::QRT_CLASS) || self.own_team() != Some(qrt::HUMANS) {
+            return Vec::new();
+        }
+        let mut v: Vec<u8> = self
+            .obs
+            .roster
+            .values()
+            .filter(|r| r.team == qrt::INFECTED)
+            .map(|r| r.pid)
+            .chain(self.qrt_round.infected.iter().copied())
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// BOT-148: the bot's living team mates (player id, streamed place: not parked, streamed within
@@ -3552,6 +3605,7 @@ impl BotSession {
                     // BOT-128: a Quarantine human keeps away from the infected and regroups
                     let (qrt, qrt_hold) = if stay {
                         self.qrt_camp = false;
+                        self.qrt_plan = None;
                         (None, false)
                     } else {
                         self.qrt_goal(now)
@@ -3734,7 +3788,8 @@ impl BotSession {
                                "crouch": self.squad_order.is_some_and(|o| o.crouch),
                                "via": self.squad.via(), "team": self.own_team(),
                                "edge": self.nav_end.is_some(), "arrived": self.nav_arrived.is_some(),
-                               "tgt": tgt, "tgt_dist": tgt_dist, "sight": sight, "branch": self.branch}),
+                               "tgt": tgt, "tgt_dist": tgt_dist, "sight": sight, "branch": self.branch,
+                               "qrt": self.qrt_plan}),
                     );
                 }
             }
@@ -5680,13 +5735,13 @@ impl BotSession {
         use crate::qrt;
         let team = self.own_team();
         self.qrt_camp = false;
+        self.qrt_plan = None;
         if self.obs.mode_class != Some(qrt::QRT_CLASS) || team != Some(qrt::HUMANS) {
             self.qrt_retreat = None;
-            self.qrt_regrouping = false;
             self.qrt_guard = None;
             // BOT-143: an infected bot whose hunt has no goal (no target, or its place was lost) walks to the
-            // nearest living human it knows of
-            // DC-DEFAULT: BOT-143 (proposed)
+            // nearest living human it knows of; BOT-160: one it gains nothing on in 10 s is given up for 30 s
+            // DC-DEFAULT: BOT-143 (proposed), BOT-160 (proposed)
             if self.obs.mode_class == Some(qrt::QRT_CLASS)
                 && team == Some(qrt::INFECTED)
                 && self
@@ -5694,44 +5749,75 @@ impl BotSession {
                     .as_ref()
                     .is_some_and(|s| s.hunt_goal().is_none())
             {
-                let at = self.body.as_ref().map(|b| b.pos());
-                let humans: Vec<[f32; 3]> = self
+                let Some(at) = self.body.as_ref().map(|b| b.pos()) else {
+                    return (None, false);
+                };
+                let humans: Vec<(u8, [f32; 3])> = self
                     .living_others()
                     .iter()
-                    .filter(|o| o.1 == qrt::HUMANS)
-                    .map(|o| o.2)
+                    .filter(|o| o.1 == qrt::HUMANS && !self.qrt_round.infected.contains(&o.0))
+                    .map(|o| (o.0, o.2))
                     .collect();
-                let g = at.and_then(|a| qrt::chase(a, &humans));
-                return (g.map(|g| (g, "chase")), false);
+                let ms = self.ms(now);
+                let (g, gave_up) = self.qrt_round.chase_pick(ms, at, &humans);
+                if let Some(pid) = gave_up {
+                    self.rec.event(
+                        "qrt_chase_drop",
+                        json!({"ms": ms, "pos": at, "pid": pid, "next": g.map(|g| g.0)}),
+                    );
+                }
+                return (g.map(|g| (g.1, "chase")), false);
             }
+            // a hunt goal of the shooter's own: the chase clock starts again with the next chase
+            self.qrt_round.chase = None;
             return (None, false);
         }
         let Some(at) = self.body.as_ref().map(|b| b.pos()) else {
             return (None, false);
         };
+        // BOT-160: who is infected and whether the outbreak happened come from the server's messages (0xd3 sub 0, the
+        // roster's teams), never from the bodies in view (an infected out of view is parked by the server's
+        // culling and drops out of `living_others`)
+        // DC-DEFAULT: BOT-160 (proposed)
+        let ms = self.ms(now);
+        let own_pid = self.obs.client_id.map(|c| c.0 as u8);
+        let roster_infected = self
+            .obs
+            .roster
+            .values()
+            .any(|r| Some(r.pid) != own_pid && r.team == qrt::INFECTED);
+        let outbreak = self.qrt_round.outbreak(roster_infected);
         let others = self.living_others();
-        let infected: Vec<[f32; 3]> = others
-            .iter()
-            .filter(|o| o.1 == qrt::INFECTED)
-            .map(|o| o.2)
-            .collect();
-        let mates: Vec<[f32; 3]> = others
-            .iter()
-            .filter(|o| o.1 == qrt::HUMANS)
-            .map(|o| o.2)
-            .collect();
-        // BOT-143: the humans' middle as a safe standing place (a grid node out of kill and hazard volumes, no pit),
-        // not the raw middle that may lie over a pit or a gap
+        let is_infected =
+            |o: &(u8, u8, [f32; 3])| o.1 == qrt::INFECTED || self.qrt_round.infected.contains(&o.0);
+        let infected: Vec<[f32; 3]> = others.iter().filter(|o| is_infected(o)).map(|o| o.2).collect();
+        let mates: Vec<[f32; 3]> = others.iter().filter(|o| !is_infected(o)).map(|o| o.2).collect();
+        self.qrt_round.note_seen(ms, &infected);
+        let spot = self.qrt_spot(now);
+        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        // the nearest infected in view, or a place one was seen at moments ago (it went round a corner)
+        let recent = self.qrt_round.seen_within(ms, qrt::SEEN_THREAT_MS);
+        let threat = qrt::nearest(at, &infected)
+            .into_iter()
+            .chain(qrt::nearest(at, &recent))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let alone = mates.iter().all(|m| flat(*m, at) > qrt::ALONE);
+        // the pull of a fall-back: the stand, else the humans' middle as a safe place (BOT-143)
         let raw_mid = qrt::centroid(&mates);
         let nav = self.nav.as_ref();
-        let mid = qrt::regroup_place(raw_mid, &mates, |m| {
-            nav.and_then(|n| n.safe_node(m, qrt::REGROUP_SNAP))
+        let mid = spot.or_else(|| {
+            qrt::regroup_place(raw_mid, &mates, |m| {
+                nav.and_then(|n| n.safe_node(m, qrt::REGROUP_SNAP))
+            })
         });
-        let threat = qrt::nearest(at, &infected);
-        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
-        match qrt::human_move(threat.map(|t| t.1)) {
-            qrt::HumanMove::KeepAway => {
-                self.qrt_regrouping = false;
+        // a human in a running round never hunts nor roams: it keeps to the stand
+        self.qrt_camp = true;
+        match qrt::human_plan(outbreak, threat.map(|t| t.1), alone) {
+            qrt::Plan::FallBack => {
+                self.qrt_plan = Some("fall_back");
+                // and away from where infected were seen lately
+                let mut infected = infected;
+                infected.extend(self.qrt_round.seen_within(ms, qrt::SEEN_KEEP_MS));
                 if let Some((g, when)) = self.qrt_retreat {
                     if since(now, when) < qrt::RETREAT_MS && flat(g, at) > qrt::RETREAT_MIN * 0.5 {
                         return (Some((g, "keep_away")), true);
@@ -5768,56 +5854,125 @@ impl BotSession {
                 self.qrt_retreat = Some((g, now));
                 (Some((g, "keep_away")), true)
             }
-            m => {
+            qrt::Plan::Hold => {
+                // BOT-160: an infected within reach of the guns, none too close: stand and fire (BOT-150's focus)
                 self.qrt_retreat = None;
-                // BOT-143: no regroup before the outbreak (no infected yet): a huddle at the middle hands the first
-                // infected every human at once; the humans roam (BOT-117) and spread instead
-                let outbreak = !infected.is_empty();
-                let mid = mid.filter(|_| outbreak);
-                let g = qrt::regroup(at, mid, self.qrt_regrouping);
-                self.qrt_regrouping = g.is_some();
-                if let Some(g) = g {
+                self.qrt_plan = Some("hold");
+                (None, true)
+            }
+            qrt::Plan::Post => {
+                self.qrt_retreat = None;
+                // BOT-160: the own place at the stand: spread round it before the outbreak, at it after
+                let Some(spot) = spot else {
+                    self.qrt_plan = Some("no_stand");
+                    let g = mid.filter(|m| flat(*m, at) > qrt::REGROUP_NEAR);
+                    return (g.map(|g| (g, "regroup")), true);
+                };
+                let (min, max) = if outbreak && qrt::GATHER {
+                    (0.0, qrt::POST_RADIUS)
+                } else {
+                    (qrt::PRE_POST_MIN, qrt::PRE_POST_MAX)
+                };
+                // a new place with the outbreak (when the humans gather); before it, a place another human stands
+                // near is picked again
+                if self.qrt_guard.is_some_and(|g| {
+                    (qrt::GATHER && g.1 != outbreak)
+                        || (!outbreak
+                            && since(now, g.2) >= qrt::PRE_REPICK_MS
+                            && mates.iter().any(|m| flat(*m, g.0) < qrt::PRE_CROWD))
+                }) {
                     self.qrt_guard = None;
-                    return (Some((g, "regroup")), true);
                 }
-                if !outbreak {
+                // BOT-161: a place not reached in 15 s is given up for the round
+                if let Some(g) = self.qrt_guard.filter(|g| {
+                    since(now, g.2) >= qrt::POST_GIVE_UP_MS && flat(g.0, at) > qrt::POST_REACHED
+                }) {
+                    self.rec.event(
+                        "qrt_post_drop",
+                        json!({"ms": ms, "pos": at, "post": g.0}),
+                    );
+                    self.qrt_round.bad.push(g.0);
                     self.qrt_guard = None;
-                    return (None, m == qrt::HumanMove::Hold);
                 }
-                // BOT-143: after the outbreak a human with the group neither roams nor hunts toward the infected: it
-                // guards with the others, shifting between grid places near the middle (a new one every 6 s) and
-                // firing at what comes
-                self.qrt_camp = true;
-                let centre = mid.unwrap_or(at);
-                if let Some((g, when)) = self.qrt_guard {
-                    if since(now, when) < qrt::GUARD_MS
-                        && flat(g, centre) <= qrt::GUARD_RADIUS * 1.5
-                    {
-                        let g = (flat(g, at) > qrt::GUARD_REACHED).then_some((g, "guard"));
-                        return (g, true);
+                if self.qrt_guard.is_none() {
+                    let bad = self.qrt_round.bad.clone();
+                    let nodes: Vec<[f32; 3]> = self
+                        .nav
+                        .as_ref()
+                        .map(|n| n.links_near(spot, max))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|(p, l)| !l.is_empty() && bad.iter().all(|b| flat(*b, *p) > 64.0))
+                        .map(|(p, _)| p)
+                        .collect();
+                    let slot = own_pid.unwrap_or(0).wrapping_add(self.qrt_round.round);
+                    let crowd: &[[f32; 3]] = if outbreak { &[] } else { &mates };
+                    let cands = qrt::posts(spot, &nodes, min, max, slot, crowd);
+                    // BOT-161: only a place the grid has a short way to; else the reachable place nearest the stand
+                    let mut g = None;
+                    if let Some(nav) = self.nav.as_mut() {
+                        g = cands.iter().take(qrt::POST_TRIES).copied().find(|c| {
+                            nav.path(at, *c).is_some_and(|p| qrt::way_reaches(at, &p, *c))
+                        });
+                        if g.is_none() {
+                            g = nav
+                                .path(at, spot)
+                                .and_then(|p| p.last().copied())
+                                .filter(|p| bad.iter().all(|b| flat(*b, *p) > 64.0));
+                        }
                     }
+                    if let Some(g) = g {
+                        self.rec.event(
+                            "qrt_post",
+                            json!({"ms": ms, "pos": at, "spot": spot, "post": g, "outbreak": outbreak}),
+                        );
+                    }
+                    // no way known yet: toward the stand (the grid grows on the way), or stay once it was given up
+                    let g = g.unwrap_or(if bad.iter().any(|b| flat(*b, spot) <= 64.0) {
+                        at
+                    } else {
+                        spot
+                    });
+                    self.qrt_guard = Some((g, outbreak, now));
                 }
-                let mut x = self.roam_seed.max(1);
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                self.roam_seed = x;
-                let nodes: Vec<[f32; 3]> = self
-                    .nav
-                    .as_ref()
-                    .map(|n| n.links_near(centre, qrt::GUARD_RADIUS))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|(p, l)| {
-                        !l.is_empty() && (p[1] - centre[1]).abs() <= qrt::RETREAT_HEIGHT
-                    })
-                    .map(|(p, _)| p)
-                    .collect();
-                let g = qrt::guard_post(&nodes, x);
-                self.qrt_guard = g.map(|g| (g, now));
-                (g.map(|g| (g, "guard")), true)
+                let g = self.qrt_guard.map_or(spot, |g| g.0);
+                if flat(g, at) <= qrt::POST_REACHED {
+                    self.qrt_plan = Some("post_stand");
+                    (None, true)
+                } else {
+                    self.qrt_plan = Some("post");
+                    (Some((g, "post")), true)
+                }
             }
         }
+    }
+
+    /// BOT-160: the Quarantine humans' stand of this round: the world's spawn places ranked (once per world) by
+    /// [`crate::qrt::rank_spots`] (rays through the world's collision, no place in danger), the round's turn of
+    /// them. Every bot of the room reads the same world and round, so all pick the same stand.
+    // DC-DEFAULT: BOT-160 (proposed)
+    fn qrt_spot(&mut self, now: Millis) -> Option<[f32; 3]> {
+        use crate::qrt;
+        if let Some(s) = self.qrt_round.spot {
+            return Some(s);
+        }
+        let w = self.world.as_ref()?;
+        if self.qrt_spots.as_ref().is_none_or(|s| s.0 != w.sha16) {
+            let ranked = qrt::world_spots(&w.collision, &self.kill_now, &w.spawn_points);
+            self.rec.event(
+                "qrt_spots",
+                json!({"ms": self.ms(now), "spawns": w.spawn_points.len(),
+                       "ranked": ranked.iter().take(qrt::SPOT_TURNS).collect::<Vec<_>>()}),
+            );
+            self.qrt_spots = Some((w.sha16.clone(), ranked));
+        }
+        let s = qrt::spot_for_round(&self.qrt_spots.as_ref()?.1, self.qrt_round.round)?;
+        self.rec.event(
+            "qrt_spot",
+            json!({"ms": self.ms(now), "round": self.qrt_round.round, "spot": s}),
+        );
+        self.qrt_round.spot = Some(s);
+        Some(s)
     }
 
     /// BOT-125: the bot's flag job from its team's roster rows (logged when it changes), whether its own flag is off

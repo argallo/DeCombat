@@ -90,12 +90,14 @@ appearing on the site says nothing about trust; the text says so.
    examples); the review-list rows and the website links point at the pack repositories.
 2. **packs-sync**: `tools/vps/packs_sync.sh` with its test (`tools/vps/tests/packs_sync_test.sh`, a local fake
    release folder), `docs/VPS.md` and `docs/OPS.md` paragraphs. No lobby change yet.
-3. **packs-sources**: `[[packs.sources]]` in `dc-config` (check + `--fs` hint) and the dashboard's Sync packs action
+3. **packs-sources** (done, LG-434): `[[packs.sources]]` in `dc-config` (check + `--fs` hint) and the dashboard's Sync packs action
    calling the script; a correctness review at merge (lobby code).
 4. **gunkit-examples**: run-time examples, the packaging scripts fill `examples/` from the release; the five folders
    leave `examples/mods`.
-5. **vanilla-plus-release**: the optional `release` field on review-list and known-mods rows, the check, the 66 rows
-   filled in, `modrepo.py rows` printing it.
+5. **vanilla-plus-release** (done, LG-315 amended): the optional `release` field on review-list and known-mods rows,
+   the check, the 64 rows of DeCombat-mods v1 filled in (the two hand-exported maps name none), `modrepo.py rows
+   --release-tag` printing it. The shipped `community.json` keeps its known-mods rows without the field: clients
+   before 2026-11-09 refuse a directory row with an unknown field, so it goes in once they are gone.
 6. **website-packs**: `sync-packs.mjs` and the workshop listing.
 
 Steps 2 and 3 need a release to exist (the first tag of `DeCombat-mods`); step 1 needs the repositories pushed.

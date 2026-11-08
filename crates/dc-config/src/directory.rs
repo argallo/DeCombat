@@ -83,6 +83,11 @@ pub struct KnownMod {
     pub capabilities: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_url: Option<String>,
+    /// LG-315 (amended): the GitHub release page the zip was published on, when it came from a pack repository's
+    /// release. Clients before 2026-11-09 refuse a document that carries it (their row struct refuses unknown
+    /// fields), so the shipped community.json leaves it out until those clients are gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
 }
 
 /// A certificate fingerprint: 64 hex digits, optionally as 32 colon-separated pairs.
@@ -290,6 +295,14 @@ pub fn validate_community(doc: &Community) -> Vec<Issue> {
                 out.push(Issue::error(
                     format!("{p}.manifest_url"),
                     "must be an https URL",
+                ));
+            }
+        }
+        if let Some(r) = &k.release {
+            if !crate::schema::is_release_page(r) {
+                out.push(Issue::error(
+                    format!("{p}.release"),
+                    "must be a GitHub release page, https://github.com/<owner>/<repo>/releases/tag/<tag> (a tag, never a branch)",
                 ));
             }
         }

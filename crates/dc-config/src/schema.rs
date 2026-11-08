@@ -49,6 +49,73 @@ pub struct Config {
     pub hosts: HostsSection,
     pub client: ClientSection,
     pub deploy: DeploySection,
+    pub packs: PacksSection,
+}
+
+/// `[[packs.sources]]`: where this server's packs come from (docs/PACKS_FROM_REPOSITORIES.md): a pack repository's
+/// tagged release. A record for the dashboard's Sync packs action and `dc-config check --fs`; declaring a pack stays
+/// a `[[mods.set]]` / entry row, so a new release changes nothing until the operator pastes the row.
+// DC-DEFAULT: LG-434 (proposed, OWNER DECISION 2026-11-08 "utilize the repos to load maps, camos etc.")
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct PacksSection {
+    pub sources: Vec<PackSource>,
+}
+
+/// One pack repository release: `repo = "owner/repo"` on GitHub, `tag` a release tag (never a branch).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackSource {
+    pub repo: String,
+    pub tag: String,
+}
+
+/// LG-434: the most `[[packs.sources]]` a server declares (the dashboard syncs them one after the other).
+pub const MAX_PACK_SOURCES: usize = 8;
+
+/// Names that are branches, not releases: a branch moves, a pack is its hash.
+pub const BRANCH_NAMES: [&str; 7] = [
+    "main", "master", "latest", "HEAD", "develop", "dev", "trunk",
+];
+
+/// A GitHub `owner/repo`: two plain names (letters, digits, `.`, `_`, `-`), neither `.` or `..`, at most 100 characters.
+pub fn is_github_repo(s: &str) -> bool {
+    let plain = |p: &str| {
+        !p.is_empty()
+            && p != "."
+            && p != ".."
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    s.len() <= 100 && s.split('/').count() == 2 && s.split('/').all(plain)
+}
+
+/// LG-315 (amended): a GitHub release page, `https://github.com/<owner>/<repo>/releases/tag/<tag>` with a plain
+/// `owner/repo` and a release tag; nothing after the tag. The page a review-list or known-mods row names as the
+/// publication of its zip (`<id>-<version>.zip` among the release's assets).
+pub fn is_release_page(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("https://github.com/") else {
+        return false;
+    };
+    let Some((repo, tag)) = rest.split_once("/releases/tag/") else {
+        return false;
+    };
+    is_github_repo(repo) && is_release_tag(tag)
+}
+
+/// A release tag: `v1`, `v0.5.0-beta6`, `2026.11` (a `v` or a digit first, then letters, digits, `.`, `_`, `-`, at
+/// most 64 characters); never one of [`BRANCH_NAMES`].
+pub fn is_release_tag(s: &str) -> bool {
+    let mut it = s.bytes();
+    let first = it.next();
+    let rest_ok = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-');
+    !BRANCH_NAMES.contains(&s)
+        && s.len() <= 64
+        && match first {
+            Some(b'v') => s.as_bytes().get(1).is_some_and(u8::is_ascii_digit) && it.all(rest_ok),
+            Some(b) if b.is_ascii_digit() => it.all(rest_ok),
+            _ => false,
+        }
 }
 
 /// `deploy.*`: deploys from the dashboard (dc-lobby-server deploy.rs, docs/DEPLOY_FROM_ADMIN.md).

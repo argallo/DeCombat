@@ -2,7 +2,9 @@
 //! path and a message that says what to change.
 
 use crate::directory::{check_host_port, check_mod_ref, is_http_url, REGIONS};
-use crate::schema::{Config, LobbyServerCfg};
+use crate::schema::{
+    is_github_repo, is_release_tag, Config, LobbyServerCfg, BRANCH_NAMES, MAX_PACK_SOURCES,
+};
 use crate::Issue;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -116,6 +118,26 @@ pub fn official_release_download(url: &str) -> bool {
 }
 
 /// Validate `cfg`. Returns all issues (errors and warnings); the config is usable when none is an error.
+/// LG-434: what a missing zip's message adds when the server declares `[[packs.sources]]`: the sync command that
+/// installs it when a declared release holds it.
+fn packs_hint(cfg: &Config) -> String {
+    let cmds: Vec<String> = cfg
+        .packs
+        .sources
+        .iter()
+        .filter(|s| is_github_repo(&s.repo) && is_release_tag(&s.tag))
+        .map(|s| format!("tools/vps/packs_sync.sh {} {}", s.repo, s.tag))
+        .collect();
+    if cmds.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; a declared release may hold it: {} (or the dashboard's Sync packs)",
+            cmds.join(", ")
+        )
+    }
+}
+
 pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     let mut out = Vec::new();
     let s = &cfg.server;
@@ -407,12 +429,54 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
                 out.push(Issue::error(
                     format!("mods.set[{i}]"),
                     format!(
-                        "{} is missing from the mods dir (expected '{}')",
+                        "{} is missing from the mods dir (expected '{}'){}",
                         r.id,
-                        zip.display()
+                        zip.display(),
+                        packs_hint(cfg)
                     ),
                 ));
             }
+        }
+    }
+
+    // --- pack sources (LG-434) -------------------------------------------------------------
+    let p = &cfg.packs;
+    if p.sources.len() > MAX_PACK_SOURCES {
+        out.push(Issue::error(
+            "packs.sources",
+            format!("at most {MAX_PACK_SOURCES} sources"),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for (i, s) in p.sources.iter().enumerate() {
+        if !is_github_repo(&s.repo) {
+            out.push(Issue::error(
+                format!("packs.sources[{i}].repo"),
+                format!("'{}' is not a GitHub owner/repo", s.repo),
+            ));
+        }
+        if BRANCH_NAMES.contains(&s.tag.as_str()) {
+            out.push(Issue::error(
+                format!("packs.sources[{i}].tag"),
+                format!(
+                    "'{}' is a branch, not a release tag: a branch moves and a pack is its hash; pin a tag (v1, v0.5.0-beta6)",
+                    s.tag
+                ),
+            ));
+        } else if !is_release_tag(&s.tag) {
+            out.push(Issue::error(
+                format!("packs.sources[{i}].tag"),
+                format!(
+                    "'{}' is not a release tag (v1, v0.5.0-beta6, 2026.11)",
+                    s.tag
+                ),
+            ));
+        }
+        if !seen.insert((s.repo.as_str(), s.tag.as_str())) {
+            out.push(Issue::error(
+                format!("packs.sources[{i}]"),
+                format!("{} {} is listed twice", s.repo, s.tag),
+            ));
         }
     }
 

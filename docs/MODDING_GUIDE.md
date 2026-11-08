@@ -558,7 +558,8 @@ What the player sees (CLI-1616 .. CLI-1618, LG-272, CLI-1622, CLI-1623):
   MODDED badge, never its address; per mod the name, version, kind in plain words, author, the Verified / Accepted /
   Unverified mark and the capabilities in plain words, with the first screenshot once the package is downloaded; a
   vanilla server says "Vanilla: this server runs no mods". (b) **Downloaded mods on this PC**: every package in the
-  cache (`<profile>/mods/by-hash/`, unpacked under `mods/unpacked/`) with its name, version, author, size and which
+  cache (`<profile>/mods/by-hash/`, unpacked under `mods/unpacked/`; a `<sha>.complete` file beside a folder says it
+  was unpacked whole, so the next join uses it as it is) with its name, version, author, size and which
   known servers use it; **Remove** deletes the package (the next join that needs it downloads it again; a package the
   loaded mods use cannot be removed). An Accepted mark means you accepted that unverified mod before; **Forget
   consent** clears it and the next join asks again. (c) **Your own cosmetic mods** under `<profile>/mods/local/`
@@ -751,8 +752,10 @@ remote game host (`[[lobby.servers]]` `host`) is refused for them.
 1. Build the pack (`dc-modkit lint`, then `dc-modkit pack`) and test it against the original guns.
 2. Publish its source in a public repository, with no Nexon assets (section 8).
 3. Open a pull request that adds one row to `community/vanilla_plus.json`: `id`, `version`, the `sha256` of the zip,
-   `source_repo`, and in `reviewer_note` the reference gun and each difference from it. `dc-config check-vanilla-plus
-   community/vanilla_plus.json` must pass.
+   `source_repo`, and in `reviewer_note` the reference gun and each difference from it; when the zip is an asset of a
+   GitHub release, `release` names that page (`https://github.com/<owner>/<repo>/releases/tag/<tag>`; `modrepo.py
+   rows --release-tag <tag>` prints the row with it). `dc-config check-vanilla-plus community/vanilla_plus.json`
+   must pass.
 4. A community admin reviews every pack, guns and maps alike. Today the project maintainer is the only admin; later admins may approve as well. A merged row is the acceptance, and the note is rewritten to say what
    was reviewed.
 

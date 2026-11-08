@@ -89,6 +89,35 @@ one-time step: any dashboard deploy of a commit that has it installs it (install
 `/opt/decombat/tools`), and no unit changes. Until that deploy the old script deletes the request file unread and the
 button just times out after 90 s.
 
+## Sync packs (Content packs card)
+
+`server.toml` may name where the server's packs come from (docs/PACKS_FROM_REPOSITORIES.md):
+
+```toml
+[[packs.sources]]
+repo = "argallo/DeCombat-mods"
+tag = "v1"            # a release tag, never a branch (dc-config check refuses main / master / latest)
+```
+
+The Updates tab then shows a **Content packs** card with the sources and a **Sync packs** button: `POST
+/ops/updates/packs` (the same guard as a deploy: JSON, the page's `Origin`, the page token in `X-Admin-CSRF`) writes
+`requests/packs-<unix>.json` naming the sources and `paths.mods_dir`; root's unit runs `tools/vps/packs_sync.sh <repo>
+<tag> --mods-dir <that folder>` per source and keeps the outcome in `deploy/packs.json` (phase, the rows the script
+printed, its log tail), which the card shows. The lobby never runs the script and never edits `server.toml`: a synced
+pack is declared by pasting its row into the set or the entry and restarting, so a new release moves nothing under the
+players. Root trusts nothing in the request but its shape, and fetches only from repositories listed in
+`/opt/decombat/deploy/packs.allow` (root's file, one `owner/repo` per line; `deploy_setup.sh` writes it once with the
+project's two repositories; a `[[packs.sources]]` row naming another repository is refused until root adds the line).
+The folder must be the real path of an existing `mods` folder under `/opt/decombat` with no symbolic link in it,
+checked when the request is read and again right before each install; each repo is a GitHub `owner/repo`, each tag a
+release tag; `packs_sync.sh` itself accepts only plain zip, id and version names from the release's `packs.json` before
+it fetches anything, and runs under a 15 min timeout per source (`DC_DEPLOY_PACKS_TIMEOUT`). A sync that died half way
+is written off at the next run. Limits: 503 without sources, 409 while a deploy runs or waits (a deploy request beside
+a sync request goes first; the sync follows on the next run), 429 within 60 s of the last sync that succeeded (root
+keeps the same limit and notes an ignored press on the card). This needs the `deploy_from_git.sh` and `packs_sync.sh`
+of a build that has them in `/opt/decombat/tools`, as for Check now above, and `packs.allow` from a `deploy_setup.sh`
+run (or written by hand as root).
+
 ## Release card (dashboard)
 
 The Updates tab also has a **Public release** card: the state of the release job on the VPS (the public export, its

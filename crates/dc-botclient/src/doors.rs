@@ -468,6 +468,7 @@ mod tests {
             collision: full.clone(),
             ladders: Default::default(),
             player_spawns: 0,
+            spawn_points: Vec::new(),
             full,
             linked: vec![LinkedModel {
                 name: b"door".to_vec(),

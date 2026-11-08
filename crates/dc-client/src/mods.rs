@@ -35,7 +35,7 @@ pub use dc_mod_lua::EMPTY_SET_HASH;
 /// Largest `server_list.json` read.
 pub const SERVER_LIST_CAP: u64 = 64 * 1024;
 /// Largest mod package downloaded (and largest total unpacked size of one package).
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 pub const DEFAULT_MAX_MOD_BYTES: u64 = 32 * 1024 * 1024;
 /// Total size of the by-hash cache after a trim.
@@ -378,6 +378,73 @@ pub struct JoinReport {
     /// MAP-32: the map index of `maps[0]` as the lobby published it (`community_map_base` of its server list,
     /// MAP-35); `None` when the lobby did not say, and the menu falls back to its own ROM's map row count.
     pub community_map_base: Option<u32>,
+    /// CLI-1947: where the time of the join went.
+    pub timing: JoinTiming,
+}
+
+/// CLI-1947: the steps of a join and their time, for the `dc-client: mods:` line and the `menu_mods` event.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JoinTiming {
+    /// Client packs of the set (0 on vanilla).
+    pub packs: usize,
+    /// Packages fetched from the server this join.
+    pub downloaded: usize,
+    /// Folders written this join (a package without a complete folder).
+    pub unpacked: usize,
+    /// Folders found complete and left alone.
+    pub reused: usize,
+    /// Bytes the unpacks wrote.
+    pub unpack_bytes: u64,
+    /// The set document (entry join) or server list, ms.
+    pub set_ms: u64,
+    /// The cache check (one read and hash per package) and the downloads, ms.
+    pub fetch_ms: u64,
+    /// The unpack loop (marker checks, reads, writes), ms.
+    pub unpack_ms: u64,
+    /// The sandbox: every pack's Lua, then the local mods, ms.
+    pub lua_ms: u64,
+    /// From the start of the join to Ready (or the failure), ms.
+    pub total_ms: u64,
+}
+
+impl JoinTiming {
+    /// The log line body: `65 packs: 0 downloaded, 0 unpacked (0 KB), 65 reused; set 120 ms, fetch 310 ms, unpack
+    /// 40 ms, lua 900 ms, total 1400 ms`.
+    pub fn log_line(&self) -> String {
+        format!(
+            "{} packs: {} downloaded, {} unpacked ({} KB), {} reused; set {} ms, fetch {} ms, unpack {} ms, lua {} ms, total {} ms",
+            self.packs,
+            self.downloaded,
+            self.unpacked,
+            self.unpack_bytes / 1024,
+            self.reused,
+            self.set_ms,
+            self.fetch_ms,
+            self.unpack_ms,
+            self.lua_ms,
+            self.total_ms
+        )
+    }
+
+    /// The same as fields of the `menu_mods` event.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "packs": self.packs,
+            "downloaded": self.downloaded,
+            "unpacked": self.unpacked,
+            "reused": self.reused,
+            "unpack_bytes": self.unpack_bytes,
+            "set_ms": self.set_ms,
+            "fetch_ms": self.fetch_ms,
+            "unpack_ms": self.unpack_ms,
+            "lua_ms": self.lua_ms,
+            "ms": self.total_ms,
+        })
+    }
+}
+
+fn ms(t: Instant) -> u64 {
+    t.elapsed().as_millis() as u64
 }
 
 /// One mod of a [`HostRecipe`]: its unpacked folder, who put it there, and what it was when the link thread loaded it.
@@ -512,6 +579,11 @@ impl ModPaths {
     }
     pub fn unpacked(&self, sha: &str) -> PathBuf {
         self.root.join("unpacked").join(sha)
+    }
+    /// CLI-1947: the marker of a complete unpacked folder, `<data>/mods/unpacked/<sha>.complete` (`<sha> <files>
+    /// <bytes>`), written after the folder; the listings never read `unpacked/` by name, so it is not an entry.
+    pub fn complete(&self, sha: &str) -> PathBuf {
+        self.root.join("unpacked").join(format!("{sha}.complete"))
     }
     pub fn local(&self) -> PathBuf {
         self.root.join("local")
@@ -852,9 +924,21 @@ pub fn read_zip(b: &[u8], cap: u64, deflate: bool) -> Result<Vec<ZipFile>, Strin
     Ok(out)
 }
 
-/// Unpacks a verified package into `dest` (replaced as a whole: written next to it, then renamed).
-pub fn unpack_package(bytes: &[u8], dest: &Path, cap: u64) -> Result<(), String> {
+/// CLI-1947: what an unpacked folder holds: its files (folders not counted) and their bytes added up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unpacked {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Unpacks a verified package into `dest` (replaced as a whole: written next to it, then renamed). `Ok` = the files
+/// and bytes written.
+pub fn unpack_package(bytes: &[u8], dest: &Path, cap: u64) -> Result<Unpacked, String> {
     let files = read_package(bytes, cap)?;
+    let wrote = Unpacked {
+        files: files.iter().filter(|f| !f.name.ends_with('/')).count() as u64,
+        bytes: files.iter().map(|f| f.data.len() as u64).sum(),
+    };
     let parent = dest.parent().ok_or("no folder for the unpacked mod")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let part = dest.with_extension("part");
@@ -886,7 +970,67 @@ pub fn unpack_package(bytes: &[u8], dest: &Path, cap: u64) -> Result<(), String>
     std::fs::rename(&part, dest).map_err(|e| {
         let _ = std::fs::remove_dir_all(&part);
         format!("{}: {e}", dest.display())
-    })
+    })?;
+    Ok(wrote)
+}
+
+/// CLI-1947: the files and bytes under `dir` (every regular file, folders walked).
+fn measure_tree(dir: &Path, acc: &mut Unpacked) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let Ok(m) = e.metadata() else { continue };
+        if m.is_dir() {
+            measure_tree(&e.path(), acc);
+        } else if m.is_file() {
+            acc.files += 1;
+            acc.bytes += m.len();
+        }
+    }
+}
+
+/// CLI-1947: writes the marker of `sha`'s unpacked folder after a complete unpack.
+fn mark_complete(paths: &ModPaths, sha: &str, u: Unpacked) {
+    let _ = std::fs::write(
+        paths.complete(sha),
+        format!("{sha} {} {}\n", u.files, u.bytes),
+    );
+}
+
+/// CLI-1947: the unpacked folder of `sha` is complete: its marker names this sha, and the folder holds the marker's
+/// file count and byte total. A missing folder, a marker of another sha or a tree of another size fails (the marker
+/// is removed); the next unpack replaces the folder. Bytes changed in place at the same size are not seen here: a
+/// script is read by the host when it loads, an asset by the first match that uses it.
+pub fn unpacked_complete(paths: &ModPaths, sha: &str) -> bool {
+    let marker = paths.complete(sha);
+    let ok = std::fs::read_to_string(&marker).ok().is_some_and(|text| {
+        let mut it = text.split_whitespace();
+        let want = (
+            it.next(),
+            it.next().and_then(|n| n.parse::<u64>().ok()),
+            it.next().and_then(|n| n.parse::<u64>().ok()),
+        );
+        let (Some(s), Some(files), Some(bytes)) = want else {
+            return false;
+        };
+        if s != sha || !paths.unpacked(sha).is_dir() {
+            return false;
+        }
+        let mut got = Unpacked::default();
+        measure_tree(&paths.unpacked(sha), &mut got);
+        got == Unpacked { files, bytes }
+    });
+    if !ok {
+        let _ = std::fs::remove_file(&marker);
+    }
+    ok
+}
+
+/// Removes the unpacked folder of `sha` and its marker (CLI-1947).
+pub fn remove_unpacked(paths: &ModPaths, sha: &str) {
+    let _ = std::fs::remove_dir_all(paths.unpacked(sha));
+    let _ = std::fs::remove_file(paths.complete(sha));
 }
 
 /// Marks a cached package as just used (its modification time is the LRU clock).
@@ -925,7 +1069,7 @@ pub fn trim_cache(paths: &ModPaths, cap: u64, keep: &[&str]) -> Vec<String> {
             continue;
         }
         if std::fs::remove_file(paths.zip(&sha)).is_ok() {
-            let _ = std::fs::remove_dir_all(paths.unpacked(&sha));
+            remove_unpacked(paths, &sha);
             total -= len;
             removed.push(sha);
         }
@@ -1050,7 +1194,7 @@ pub fn prune_cache(
             }
         };
         if std::fs::remove_file(paths.zip(&sha)).is_ok() {
-            let _ = std::fs::remove_dir_all(paths.unpacked(&sha));
+            remove_unpacked(paths, &sha);
             removed.push(Pruned {
                 id,
                 version,
@@ -1134,28 +1278,41 @@ enum Fetched {
     },
 }
 
+/// CLI-1947: what [`prefetch_packages`] verified for this join: the hashes whose cached bytes hashed to their name
+/// or were downloaded (hashed before they were written), and how many were downloaded. Per join, never kept.
+#[derive(Debug, Default)]
+pub struct Prefetched {
+    pub verified: HashSet<String>,
+    pub downloaded: usize,
+}
+
 /// CLI-1608: downloads the packages of `needed` that are not in the cache yet, up to [`DOWNLOAD_PARALLEL`] at a
 /// time, each verified before it is written. The progress is one line for the whole fetch: `index` = packages
 /// finished + 1, `count` = packages to fetch, `done` = bytes received so far over all of them, `total` = the sum of
 /// their sizes once every one of them has told its size (else 0). The first failure in set order is the error; no
-/// new package starts after a failure.
+/// new package starts after a failure. `Ok` = every package of `needed` is in the cache and verified (CLI-1947).
 fn prefetch_packages(
     web: Option<SocketAddr>,
     paths: &ModPaths,
     needed: &[&ServerMod],
     cfg: &ModConfig,
     progress: &mut dyn FnMut(ModState),
-) -> Result<(), String> {
+) -> Result<Prefetched, String> {
+    let mut out = Prefetched::default();
     let mut missing: Vec<&ServerMod> = Vec::new();
     for m in needed {
-        if !missing.iter().any(|x| x.sha256 == m.sha256) && cached_package(paths, m, cfg).is_none()
-        {
+        if out.verified.contains(&m.sha256) || missing.iter().any(|x| x.sha256 == m.sha256) {
+            continue;
+        }
+        if cached_package(paths, m, cfg).is_some() {
+            out.verified.insert(m.sha256.clone());
+        } else {
             missing.push(m);
         }
     }
     let count = missing.len();
     if count == 0 {
-        return Ok(());
+        return Ok(out);
     }
     let web = web.ok_or("the server's web port is not known")?;
     progress(ModState::Downloading {
@@ -1231,20 +1388,33 @@ fn prefetch_packages(
     for r in results.into_iter().flatten() {
         r?;
     }
-    Ok(())
+    for m in missing {
+        out.verified.insert(m.sha256.clone());
+    }
+    out.downloaded = count;
+    Ok(out)
 }
 
-/// The package of `m`, from the cache when its bytes still hash to the name, else from the server (the joining
-/// loop reaches this after [`prefetch_packages`], so it is normally a cache read).
+/// The package of `m`: a plain read when this join's [`prefetch_packages`] verified it (CLI-1947: the bytes were
+/// hashed once already; the unpack checks every entry's CRC), else from the cache when its bytes still hash to the
+/// name, else from the server.
 fn fetch_package(
     web: Option<SocketAddr>,
     paths: &ModPaths,
     m: &ServerMod,
     cfg: &ModConfig,
+    verified: &HashSet<String>,
     index: usize,
     count: usize,
     progress: &mut dyn FnMut(ModState),
 ) -> Result<Vec<u8>, String> {
+    if verified.contains(&m.sha256) {
+        if let Ok(b) = std::fs::read(paths.zip(&m.sha256)) {
+            if b.len() as u64 <= cfg.max_mod_bytes {
+                return Ok(b);
+            }
+        }
+    }
     if let Some(b) = cached_package(paths, m, cfg) {
         return Ok(b);
     }
@@ -1653,15 +1823,17 @@ impl ClientMods {
         cfg: &ModConfig,
         progress: &mut dyn FnMut(ModState),
     ) -> Result<String, String> {
+        let started = Instant::now();
         self.unload();
         self.status = JoinReport::default();
         self.status.state = ModState::FetchingSet;
         progress(ModState::FetchingSet);
         let r = fetch_set(web, expected, cfg.timeout);
+        self.status.timing.set_ms = ms(started);
         if let Ok(set) = &r {
             store_set_previews(web, set, cfg);
         }
-        self.finish(web, r, cfg, progress)
+        self.finish(web, r, cfg, started, progress)
     }
 
     /// CLI-1618: the first half of a join behind the consent prompt: everything is unloaded and the set is read
@@ -1684,7 +1856,7 @@ impl ClientMods {
                 Ok(set)
             }
             Err(e) => {
-                let _ = self.finish(web, Err(e.clone()), cfg, progress);
+                let _ = self.finish(web, Err(e.clone()), cfg, Instant::now(), progress);
                 Err(e)
             }
         }
@@ -1716,6 +1888,7 @@ impl ClientMods {
         cfg: &ModConfig,
         progress: &mut dyn FnMut(ModState),
     ) -> Result<String, String> {
+        let started = Instant::now();
         self.unload();
         self.status = JoinReport::default();
         self.status.state = ModState::FetchingSet;
@@ -1724,8 +1897,9 @@ impl ClientMods {
             Ok(doc) => (Ok(doc.set), doc.maps),
             Err(e) => (Err(e), None),
         };
+        self.status.timing.set_ms = ms(started);
         self.curated = true;
-        let r = self.finish(web, set, cfg, progress);
+        let r = self.finish(web, set, cfg, started, progress);
         self.curated = false;
         self.status.curated = r.is_ok();
         if let (Ok(_), Some(maps)) = (&r, doc_maps) {
@@ -1744,14 +1918,17 @@ impl ClientMods {
     ) -> Result<String, String> {
         self.unload();
         self.status.curated = false;
-        self.finish(web, Ok(set), cfg, progress)
+        self.status.timing = JoinTiming::default();
+        self.finish(web, Ok(set), cfg, Instant::now(), progress)
     }
 
+    /// `started`: when the join began (CLI-1947: the timing's total).
     fn finish(
         &mut self,
         web: Option<SocketAddr>,
         set: Result<ServerModSet, String>,
         cfg: &ModConfig,
+        started: Instant,
         progress: &mut dyn FnMut(ModState),
     ) -> Result<String, String> {
         let r = set.and_then(|set| {
@@ -1790,11 +1967,13 @@ impl ClientMods {
                 self.status.community_map_base = set.community_map_base;
                 self.status.recipe = self.host_recipe();
                 self.status.state = ModState::Ready;
+                self.status.timing.total_ms = ms(started);
                 progress(ModState::Ready);
                 Ok(hash)
             }
             Err(e) => {
                 self.unload();
+                self.status.timing.total_ms = ms(started);
                 self.status.state = ModState::Failed(e.clone());
                 progress(ModState::Failed(e.clone()));
                 Err(e)
@@ -1828,16 +2007,41 @@ impl ClientMods {
         if self.curated && needed.len() != set.mods.len() {
             return Err("a curated set names a mod the client would not load".to_string());
         }
-        prefetch_packages(web, &paths, &needed, cfg, progress)?;
+        self.status.timing.packs = needed.len();
+        let t = Instant::now();
+        let got = prefetch_packages(web, &paths, &needed, cfg, progress)?;
+        self.status.timing.downloaded = got.downloaded;
+        self.status.timing.fetch_ms = ms(t);
+        let t = Instant::now();
         let mut dirs = Vec::with_capacity(needed.len());
         for (i, m) in needed.iter().enumerate() {
-            let bytes = fetch_package(web, &paths, m, cfg, i + 1, needed.len(), progress)?;
-            progress(ModState::Verifying);
             let dest = paths.unpacked(&m.sha256);
-            unpack_package(&bytes, &dest, cfg.max_mod_bytes)
+            // CLI-1947: a folder unpacked from this same package before is used as it is
+            if unpacked_complete(&paths, &m.sha256) {
+                self.status.timing.reused += 1;
+                dirs.push(dest);
+                continue;
+            }
+            let bytes = fetch_package(
+                web,
+                &paths,
+                m,
+                cfg,
+                &got.verified,
+                i + 1,
+                needed.len(),
+                progress,
+            )?;
+            progress(ModState::Verifying);
+            let wrote = unpack_package(&bytes, &dest, cfg.max_mod_bytes)
                 .map_err(|e| format!("mod '{}': {e}", m.id))?;
+            mark_complete(&paths, &m.sha256, wrote);
+            self.status.timing.unpacked += 1;
+            self.status.timing.unpack_bytes += wrote.bytes;
             dirs.push(dest);
         }
+        self.status.timing.unpack_ms = ms(t);
+        let t = Instant::now();
         progress(ModState::Loading);
         self.status.state = ModState::Loading;
         let mut host = ModHost::new();
@@ -1873,6 +2077,7 @@ impl ClientMods {
             }
         }));
         self.host = Some(host);
+        self.status.timing.lua_ms = ms(t);
         let keep: Vec<&str> = needed.iter().map(|m| m.sha256.as_str()).collect();
         trim_cache(&paths, cfg.cache_bytes, &keep);
         Ok(refused)

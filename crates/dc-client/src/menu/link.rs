@@ -2855,9 +2855,16 @@ impl Worker {
         if let Ok(mut g) = self.join_report.lock() {
             *g = self.mods.status.clone();
         }
+        // CLI-1947: where the join's time went, in the log and on the event
+        let timing = &self.mods.status.timing;
+        eprintln!(
+            "dc-client: mods: join {}: {}",
+            if r.is_ok() { "ok" } else { "failed" },
+            timing.log_line()
+        );
         self.rec.event(
             "menu_mods",
-            json!({"ok": r.is_ok(), "loaded": self.mods.loaded(), "hash": r.as_ref().ok()}),
+            json!({"ok": r.is_ok(), "loaded": self.mods.loaded(), "hash": r.as_ref().ok(), "timing": timing.to_json()}),
         );
         let hash = r.map_err(|e| format!("Cannot load the server's mods: {e}"))?;
         self.mod_set_hash = Some(hash);
@@ -3150,9 +3157,16 @@ impl Worker {
         if let Ok(mut g) = self.join_report.lock() {
             *g = self.mods.status.clone();
         }
+        // CLI-1947: where the entry join's time went, in the log and on the event
+        let timing = &self.mods.status.timing;
+        eprintln!(
+            "dc-client: mods: entry {id} {}: {}",
+            if r.is_ok() { "ok" } else { "failed" },
+            timing.log_line()
+        );
         self.rec.event(
             "menu_mods",
-            json!({"entry": id, "ok": r.is_ok(), "loaded": self.mods.loaded(), "hash": r.as_ref().ok()}),
+            json!({"entry": id, "ok": r.is_ok(), "loaded": self.mods.loaded(), "hash": r.as_ref().ok(), "timing": timing.to_json()}),
         );
         let set = r.map_err(|e| format!("Cannot load this server's content pack: {e}"))?;
         Ok(Some(dc_wire::entrymods::EntryHashes {

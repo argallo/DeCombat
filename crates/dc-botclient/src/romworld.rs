@@ -40,6 +40,9 @@ pub struct LoadedWorld {
     // SPEC: MOVEMENT_2009.md §11.1, §11.4; DC-DEFAULT: BOT-61 (proposed)
     pub ladders: Arc<ContainerVolumes>,
     pub player_spawns: usize,
+    /// BOT-160: the player spawn points' places (every mode's), in the file's order: the places every bot of a room
+    /// reads alike, from which the Quarantine humans pick their stand.
+    pub spawn_points: Vec<[f32; 3]>,
     /// BOT-110: the collision set with every linked world model in it, the linked models' place in it, and the state
     /// the server's objects gave them last ([`LoadedWorld::follow_server`]); `collision` is this set with the
     /// models the server has not made solid emptied.
@@ -234,6 +237,10 @@ pub fn world_from_bytes(name: &str, data: &[u8]) -> Result<LoadedWorld, String> 
         collision,
         ladders: Arc::new(ladder_volumes(&w)),
         player_spawns: w.objects_with_role(ObjectRole::PlayerSpawn).count(),
+        spawn_points: w
+            .objects_with_role(ObjectRole::PlayerSpawn)
+            .filter_map(|o| o.position())
+            .collect(),
         linked,
         solid: None,
         kill_volumes,

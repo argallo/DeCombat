@@ -500,6 +500,8 @@ impl BotConfig {
             loadout: loadout.to_vec(),
             rom,
             hit_node: self.hit_node,
+            head_node: rom_dir(self.use_rom, self.rom.as_ref())
+                .and_then(|d| crate::qrt::head_node_of_rom(&d)),
             seed: self.impairment.seed ^ 0x0005_4007,
             skill,
             throw_every_ms: self.throw_every_ms,

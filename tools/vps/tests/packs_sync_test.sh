@@ -142,5 +142,46 @@ out=$($RUN example/packs v9 --base-url "$T/nowhere" --mods-dir "$T/m7" 2>&1); rc
 check "no release: exit 1" test "$rc" -eq 1
 has "no release named" "$out" "SHA256SUMS of release v9 is not there"
 
+# ---- a release whose packs.json names a zip outside the work folder, or an id that is not a word: refused before any
+# fetch or write (the row's text is a stranger's)
+cp -r "$REL" "$T/rel_evil"
+"$PY" - "$T/rel_evil" "$T" <<'PY'
+import hashlib, json, os, sys
+rel, t = sys.argv[1], sys.argv[2]
+d = json.load(open(os.path.join(rel, "packs.json")))
+data = open(os.path.join(rel, "camo_a-1.0.0.zip"), "rb").read()
+sha = hashlib.sha256(data).hexdigest()
+d["packs"][0]["zip"] = "../../evil.zip"
+open(os.path.join(rel, "..", "evil.zip"), "wb").write(data)  # the asset the row points at, so only the name check can stop it
+open(os.path.join(rel, "packs.json"), "w").write(json.dumps(d))
+open(os.path.join(rel, "SHA256SUMS"), "a").write(f"{sha}  ../../evil.zip\n")
+PY
+out=$($RUN example/packs v1 --base-url "$T/rel_evil" --mods-dir "$T/m8" 2>&1); rc=$?
+check "zip name with a path: exit 1" test "$rc" -eq 1
+has "zip name with a path named" "$out" "the zip name is not a plain file name"
+check "zip name with a path: nothing installed" test "$(count_zips "$T/m8")" = 0
+cp -r "$REL" "$T/rel_evil2"
+"$PY" - "$T/rel_evil2" <<'PY'
+import json, os, sys
+rel = sys.argv[1]
+d = json.load(open(os.path.join(rel, "packs.json")))
+d["packs"][1]["id"] = "reel b; touch /tmp/x"
+open(os.path.join(rel, "packs.json"), "w").write(json.dumps(d))
+PY
+out=$($RUN example/packs v1 --base-url "$T/rel_evil2" --mods-dir "$T/m9" 2>&1); rc=$?
+check "id with spaces: exit 1" test "$rc" -eq 1
+has "id with spaces named" "$out" "not a plain word"
+check "id with spaces: nothing installed, the good pack included" test "$(count_zips "$T/m9")" = 0
+# a symbolic link in the mods path is refused right before the install (skipped where ln -s makes copies)
+if ln -s "$T/m1" "$T/mlink" 2>/dev/null && [ -L "$T/mlink" ]; then
+    rm -f "$T/m1/"*.zip
+    out=$($RUN example/packs v1 --base-url "$REL" --mods-dir "$T/mlink" 2>&1); rc=$?
+    check "a symlinked mods dir: exit 1" test "$rc" -eq 1
+    has "a symlinked mods dir named" "$out" "has a symbolic link in its path"
+    check "a symlinked mods dir: nothing installed" test "$(count_zips "$T/m1")" = 0
+else
+    echo "note: no symbolic links here, the symlinked mods dir case is skipped"
+fi
+
 printf 'packs_sync_test: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

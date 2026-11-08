@@ -116,6 +116,8 @@ pub struct Options {
     pub bots_max_total: u32,
     /// `[deploy] dir`: the deploy folder of tools/vps/deploy_setup.sh (LG-392); None = no deploys from the dashboard.
     pub deploy_dir: Option<PathBuf>,
+    /// LG-434: `[[packs.sources]]` (repo, tag), what the dashboard's Sync packs action asks root to sync.
+    pub pack_sources: Vec<(String, String)>,
     /// `--identity` / `identity.issue`: this lobby issues identity tokens (LG-68).
     pub identity_issue: bool,
     /// `--identity-issuer` / `identity.issuer`: the own (issuing) or trusted (accepting) issuer id.
@@ -459,6 +461,16 @@ pub fn resolve_with(m: &ArgMatches, conf: Option<&ServerConf>) -> Options {
             .unwrap_or(dc_config::BotsSection::default().managed_max_total),
         deploy_dir: cv(conf, "deploy.dir", |c| c.deploy.dir.trim().to_string())
             .and_then(|d| nonempty_path(&d)),
+        pack_sources: conf
+            .map(|c| {
+                c.cfg
+                    .packs
+                    .sources
+                    .iter()
+                    .map(|s| (s.repo.clone(), s.tag.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
         identity_issue: m.get_flag("identity")
             || cv(conf, "identity.issue", |c| c.identity.issue).unwrap_or(false),
         identity_issuer: id_s("identity-issuer", "identity.issuer", |c| {

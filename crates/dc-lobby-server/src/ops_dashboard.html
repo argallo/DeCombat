@@ -997,7 +997,8 @@ VIEWS.updates = async () => {
   // "Check now": wait (page polls every 3 s) until available.json's `checked` moves, at most 90 s
   if (updAsk && ((a.checked || 0) !== updAsk.from || Date.now() > updAsk.until)) updAsk = null;
   const checking = !!(updAsk || u.fetching);
-  updWatching = !!(u.deploying || u.pending || checking || (rel && (rel.pending || (rel.view && rel.view.busy))));
+  const pk = u.packs || {};
+  updWatching = !!(u.deploying || u.pending || checking || pk.pending || pk.running || (rel && (rel.pending || (rel.view && rel.view.busy))));
   clearTimeout(updTimer);
   if (updWatching) updTimer = setTimeout(() => { if ((location.hash.slice(1) || "live").startsWith("updates")) render(true); }, 3000);
   const offered = u.host_build;
@@ -1068,8 +1069,43 @@ VIEWS.updates = async () => {
     table(["Finished", "Commit", "To", "Requested by", "Outcome", "Detail"],
       (u.history || []).map(h => [$("span", { title: when(h.finished) }, ago(h.finished)), sha8(h.short || h.sha), targetText(h.targets),
         h.by || "-", okWord(h.ok, "Deployed", "Failed"), wrap(h.message || "")]), [], "No deploy from the dashboard yet."));
-  return [deployStatus(u), builds, commits, releaseCard(rel), triageCard(tri), hist];
+  return [deployStatus(u), builds, commits, packsCard(pk, u.set_up), releaseCard(rel), triageCard(tri), hist];
 };
+// the Content packs card (deploy.rs packs_request, LG-434): the [[packs.sources]] of server.toml, one Sync packs
+// button (root runs tools/vps/packs_sync.sh per source), and root's packs.json: outcome, the rows it printed for the
+// operator to paste into server.toml (the lobby never edits it), its log tail. Every field of the status is root's text.
+let pkSay = null;
+function packsCard(p, setUp) {
+  const card = kids => $("section", {}, $("h2", {}, "Content packs"), $("div", { class: "sheet rel" }, kids));
+  const say = $("span", { class: "err", role: "alert" });
+  if (pkSay) { say.className = pkSay.ok ? "quiet" : "err"; say.textContent = pkSay.text; }
+  pkSay = null;
+  const sources = p.sources || [];
+  if (!sources.length) {
+    return card($("div", { class: "dform" }, $("span", { class: "quiet" },
+      "No [[packs.sources]] in server.toml: name a pack repository release (docs/PACKS_FROM_REPOSITORIES.md) and the packs can be synced from here.")));
+  }
+  const s = p.status;
+  const busy = !!(p.pending || p.running);
+  const btn = $("button", { type: "button", ...(busy || !setUp ? { disabled: "" } : {}), on: async () => {
+    btn.disabled = true;
+    try { const out = await post("/ops/updates/packs", {}); pkSay = { ok: true, text: out.message }; }
+    catch (e) { pkSay = { ok: false, text: e.message }; }
+    render(true);
+  } }, p.pending ? "Sync requested..." : p.running ? "Syncing..." : "Sync packs");
+  const level = !s ? "none" : s.ok === true ? "good" : s.ok === false ? "bad" : "warn";
+  const headline = !s ? "Not synced from the dashboard yet." : s.ok === true ? "The last sync installed what the releases hold."
+    : s.ok === false ? "The last sync failed: " + (s.message || "?") : "A sync is running.";
+  const head = $("div", { class: "rhead" }, $("span", { class: "h " + level }, headline),
+    s && s.updated ? $("span", { class: "quiet", title: when(s.updated) }, "updated " + ago(s.updated)) : null);
+  const list = $("dl", { class: "rfacts" }, sources.map(x => $("div", {}, $("dt", {}, x.repo), $("dd", {}, "release " + x.tag))),
+    $("div", {}, $("dt", {}, "Installs to"), $("dd", {}, p.mods_dir || "-")));
+  const row = $("div", { class: "dform" }, btn, $("span", { class: "quiet" },
+    "Fetches each release's zips, checks them against SHA256SUMS and their rows, installs them under their hash; prints the rows to paste. server.toml is not changed."), say);
+  const rows = s && s.rows ? $("details", { open: "" }, $("summary", { class: "quiet" }, "Rows to paste into server.toml"), $("pre", { class: "tail" }, s.rows)) : null;
+  const tail = s && (s.log_tail || []).length ? $("details", s.ok === false ? { open: "" } : {}, $("summary", { class: "quiet" }, "Log tail"), $("pre", { class: "tail" }, s.log_tail.join("\n"))) : null;
+  return card([head, list, row, rows, tail]);
+}
 // every view refreshes on the timer, except while the operator is typing or has changed a field of it (a form would
 // lose its input), the long player list (it would lose the pages it loaded) and a hidden tab
 let edited = false;

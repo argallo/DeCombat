@@ -650,6 +650,11 @@ pub fn system_info() -> Value {
     if let (Some(o), Some(Value::Object(g))) = (v.as_object_mut(), gpu) {
         o.extend(g);
     }
+    // CLI-1948: the implicit Vulkan layers of this machine (the next crashing overlay is visible without a dump)
+    let layers = crate::vklayers::report_json();
+    if layers.as_array().is_some_and(|a| !a.is_empty()) {
+        v["vulkan_layers"] = layers;
+    }
     v
 }
 

@@ -4,7 +4,9 @@
 #
 #   deploy_from_git.sh fetch     what decombat-src-fetch.timer runs: fetch master into the mirror, write available.json
 #   deploy_from_git.sh run       what decombat-deploy.path starts: take the newest request of deploy/requests and deploy it
-#                                (a `fetch-<unix>.json` there is the dashboard's "Check now": one fetch, never a deploy)
+#                                (a `fetch-<unix>.json` there is the dashboard's "Check now": one fetch, never a deploy;
+#                                a `packs-<unix>.json` is the dashboard's "Sync packs": packs_sync.sh per declared
+#                                source into the named mods folder, never a deploy, LG-434)
 #   deploy_from_git.sh status    print deploy/status.json
 #
 # A request is a small JSON file the lobby (user decombat) drops into $DC_ROOT/deploy/requests. Nothing in it is trusted
@@ -39,6 +41,8 @@ NAME_RE='^[0-9]{1,12}-[0-9a-f]{8}\.json$'
 # LG-402: the dashboard's "Check now"; its content is never read (the lobby's ops event says who asked)
 FETCH_RE='^fetch-[0-9]{1,12}\.json$'
 RATE_FETCH=${DC_DEPLOY_RATE_FETCH:-30}
+PACKS_RE='^packs-[0-9]{1,12}\.json$'
+RATE_PACKS=${DC_DEPLOY_RATE_PACKS:-60}
 SIGN_NS=decombat-host-update
 SIGN_ID=decombat-deploy
 SSHKEYGEN=${DC_DEPLOY_SSHKEYGEN:-ssh-keygen}
@@ -237,15 +241,26 @@ d.update(phase="failed", ok=False, message="interrupted (the deploy service ende
 json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
 ' "$D/status.json" && mv -f "$D/status.json.tmp" "$D/status.json" && share "$D/status.json"
     fi
+    # LG-434: a pack sync that died half way is written off the same way (else the dashboard waits 3 h on it)
+    packs_write_off
     # the newest well-named request wins; older ones and anything else in the folder go (a symlink is removed, never
     # read), so the path unit does not start this again for a stray file
-    local f newest="" n want_fetch=0
+    local f newest="" n want_fetch=0 packs_req=""
     while IFS= read -r -d '' f; do
         n=${f##*/}
         if [ ! -L "$f" ] && [ -f "$f" ] && [[ $n =~ $FETCH_RE ]]; then
             # a check request: removed unread, answered below (never a deploy)
             rm -f -- "$f"
             want_fetch=1
+            continue
+        fi
+        if [ ! -L "$f" ] && [ -f "$f" ] && [[ $n =~ $PACKS_RE ]]; then
+            # LG-434: a pack sync request: the newest one is answered below (never a deploy), the others go
+            if [ -n "$packs_req" ]; then
+                if [[ ${n} > ${packs_req##*/} ]]; then rm -f -- "$packs_req"; packs_req=$f; else rm -f -- "$f"; fi
+            else
+                packs_req=$f
+            fi
             continue
         fi
         if [ -L "$f" ] || [ ! -f "$f" ] || ! [[ $n =~ $NAME_RE ]]; then
@@ -265,11 +280,15 @@ json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
         newest=$f
     done < <(find "$D/requests" -mindepth 1 -maxdepth 1 -print0)
     if [ -z "$newest" ]; then
+        # LG-434: a pack sync first (its own state file), then the check
+        [ -n "$packs_req" ] && packs_for_dashboard "$packs_req"
         # LG-402: the lock is held for one fetch only (ssh timeouts above); a deploy request skips it, a deploy fetches itself
         [ "$want_fetch" = 1 ] && fetch_for_dashboard
-        [ "$want_fetch" = 1 ] || say "no request"
+        [ "$want_fetch" = 1 ] || [ -n "$packs_req" ] || say "no request"
         exit 0
     fi
+    # a deploy request beside a pack sync request: the deploy goes first; the sync request stays for the next run
+    # (the path unit starts this again while requests/ is not empty)
     ID=$(basename "$newest" .json)
     STARTED=$(date +%s)
     LOG="$D/logs/$ID.log"
@@ -318,6 +337,257 @@ except (OSError, ValueError, AttributeError):
         return 0
     fi
     cmd_fetch || true
+}
+
+# ---- LG-434: the dashboard's "Sync packs": a packs-<unix>.json names the declared [[packs.sources]] and the mods
+# folder. Root trusts nothing in it but its shape, and syncs only from repositories the operator listed in
+# $D/packs.allow (root-owned, one `owner/repo` per line, never written by the lobby). The folder must be an existing
+# `mods` folder under $DC_ROOT with no symbolic link in its path, checked when the request is read and again right
+# before packs_sync.sh installs; packs_sync.sh does the fetching, checking and installing under a timeout, and its
+# output is kept in $D/packs.json for the dashboard (rows to paste, log tail). Never a deploy, never a change to
+# server.toml.
+PACKS_TIMEOUT=${DC_DEPLOY_PACKS_TIMEOUT:-900}
+
+# parse_packs_request FILE: KEY=value lines (by, mods_dir, then one `source=<repo> <tag>` per source), or exit 1
+parse_packs_request() {
+    "$DC_PYTHON" -c '
+import json, os, re, stat, sys
+p, root, allow_path = sys.argv[1], os.path.realpath(sys.argv[2]), sys.argv[3]
+branches = {"main", "master", "latest", "HEAD", "develop", "dev", "trunk"}
+def plain(s):
+    return isinstance(s, str) and re.fullmatch(r"[A-Za-z0-9._-]+", s) is not None and s not in (".", "..")
+def is_repo(s):
+    # the same rule as dc-config is_github_repo: two plain names, at most 100 characters in all
+    return isinstance(s, str) and len(s) <= 100 and s.count("/") == 1 and all(plain(h) for h in s.split("/"))
+def is_tag(s):
+    # the same rule as dc-config is_release_tag: v or a digit first, plain after, at most 64 characters, no branch name
+    return (isinstance(s, str) and s not in branches and len(s) <= 64
+            and re.fullmatch(r"(v[0-9]|[0-9])[A-Za-z0-9._-]*", s) is not None)
+def no_symlink(path):
+    acc = ""
+    drive, rest = os.path.splitdrive(path)
+    for c in rest.split(os.sep):
+        if not c:
+            continue
+        acc = acc + os.sep + c
+        if os.path.islink(drive + acc):
+            return False
+    return True
+try:
+    try:
+        allowed = {l.strip() for l in open(allow_path, encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")}
+    except OSError:
+        raise ValueError("no " + allow_path + ": root lists the pack repositories the dashboard may sync, one owner/repo per line")
+    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError("not a regular file")
+        raw = f.read(8193)
+    if len(raw) > 8192:
+        raise ValueError("over 8192 bytes")
+    d = json.loads(raw.decode("utf-8"))
+    if not isinstance(d, dict):
+        raise ValueError("not a JSON object")
+    mods = d.get("mods_dir")
+    if not isinstance(mods, str) or not mods or not mods.isprintable():
+        raise ValueError("mods_dir must be a plain path")
+    real = os.path.realpath(mods)
+    if not real.isprintable() or any(ord(c) < 32 for c in real):
+        raise ValueError("mods_dir must be a plain path")
+    if not os.path.isdir(real) or os.path.basename(real) != "mods" or not real.startswith(root + os.sep):
+        raise ValueError("mods_dir must be an existing mods folder under " + root)
+    if real != os.path.normpath(mods) or not no_symlink(real):
+        raise ValueError("mods_dir must be the real path of the folder, with no symbolic link in it")
+    src = d.get("sources")
+    if not isinstance(src, list) or not src or len(src) > 8:
+        raise ValueError("sources must be a list of 1 to 8 {repo, tag}")
+    out = []
+    for s in src:
+        repo, tag = (s.get("repo"), s.get("tag")) if isinstance(s, dict) else (None, None)
+        if not is_repo(repo):
+            raise ValueError("a source repo is not a GitHub owner/repo")
+        if not is_tag(tag):
+            raise ValueError("a source tag is not a release tag (a branch moves; a pack is its hash)")
+        if repo not in allowed:
+            raise ValueError("repo " + repo + " is not in " + allow_path + " (root lists the repositories the dashboard may sync)")
+        out.append(repo + " " + tag)
+    by = d.get("by", "")
+    by = "".join(c if c.isprintable() else " " for c in (by if isinstance(by, str) else ""))[:120]
+except (OSError, ValueError, UnicodeDecodeError, AttributeError) as e:
+    print(str(e)[:200])
+    sys.exit(1)
+print("by=" + by)
+print("mods_dir=" + real)
+for s in out:
+    print("source=" + s)
+' "$1" "$DC_ROOT" "$D/packs.allow"
+}
+
+# mods_dir_still_good DIR: the folder is still the real, link-free mods folder under the root (right before a write)
+mods_dir_still_good() {
+    "$DC_PYTHON" -c '
+import os, sys
+d, root = sys.argv[1], os.path.realpath(sys.argv[2])
+real = os.path.realpath(d)
+ok = real == os.path.normpath(d) and os.path.isdir(real) and os.path.basename(real) == "mods" and real.startswith(root + os.sep)
+acc = ""
+drive, rest = os.path.splitdrive(real)
+for c in rest.split(os.sep):
+    if c:
+        acc = acc + os.sep + c
+        if os.path.islink(drive + acc):
+            ok = False
+sys.exit(0 if ok else 1)
+' "$1" "$DC_ROOT"
+}
+
+# packs_status PHASE OK MESSAGE ROWS_FILE LOG_FILE: $D/packs.json for the dashboard
+packs_status() {
+    "$DC_PYTHON" -c '
+import json, sys, time
+out, phase, ok, msg, rows_f, log_f, by, sources, mods_dir, started = sys.argv[1:11]
+def tail(p, n):
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            return [l.rstrip("\n")[:300] for l in f.readlines()[-n:]]
+    except OSError:
+        return []
+try:
+    rows = open(rows_f, encoding="utf-8", errors="replace").read()[:16000]
+except OSError:
+    rows = ""
+now = int(time.time())
+doc = {"phase": phase, "ok": None if ok == "" else ok == "true", "message": msg, "by": by,
+       "sources": sources.split("\n") if sources else [], "mods_dir": mods_dir, "started": int(started),
+       "updated": now, "finished": None if ok == "" else now, "rows": rows, "log_tail": tail(log_f, 40)}
+with open(out + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(doc, f, indent=1)
+' "$D/packs.json" "$1" "$2" "$3" "$4" "$5" "$PK_BY" "$PK_SOURCES" "$PK_MODS" "$PK_STARTED" \
+        && mv -f "$D/packs.json.tmp" "$D/packs.json" && share "$D/packs.json"
+}
+
+# packs_note MESSAGE: a note on the last outcome (the dashboard shows it), the outcome itself kept
+packs_note() {
+    [ -f "$D/packs.json" ] || return 0
+    "$DC_PYTHON" -c '
+import json, sys, time
+p = sys.argv[1]
+try:
+    d = json.load(open(p, encoding="utf-8"))
+except (OSError, ValueError):
+    sys.exit(0)
+d["message"] = sys.argv[2][:300]
+d["updated"] = int(time.time())
+json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
+' "$D/packs.json" "$1" && mv -f "$D/packs.json.tmp" "$D/packs.json" && share "$D/packs.json"
+}
+
+# packs_write_off: a sync that died half way (the service ended before it finished) is written off before the next
+packs_write_off() {
+    [ -f "$D/packs.json" ] && grep -q '"finished": null' "$D/packs.json" || return 0
+    "$DC_PYTHON" -c '
+import json, sys, time
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d.update(phase="failed", ok=False, message="interrupted (the deploy service ended before the sync finished)", finished=int(time.time()), updated=int(time.time()))
+json.dump(d, open(p + ".tmp", "w", encoding="utf-8"), indent=1)
+' "$D/packs.json" && mv -f "$D/packs.json.tmp" "$D/packs.json" && share "$D/packs.json"
+}
+
+PK_BY="" PK_SOURCES="" PK_MODS="" PK_STARTED=0
+
+# packs_for_dashboard FILE: answer one Sync packs request (the file is removed first; its text never reaches a shell)
+packs_for_dashboard() {
+    local f=$1 fields age sync rows log ok=true msg="" src repo tag rc
+    fields=$(parse_packs_request "$f") || { sleep "$SETTLE"; fields=$(parse_packs_request "$f"); } || true
+    rm -f -- "$f"
+    PK_STARTED=$(date +%s)
+    PK_BY=$(printf '%s\n' "$fields" | sed -n 's/^by=//p')
+    if ! printf '%s\n' "$fields" | grep -q '^source='; then
+        PK_SOURCES="" PK_MODS=""
+        say "pack sync request refused: $fields"
+        packs_status failed false "request refused: $fields" /dev/null /dev/null
+        return 0
+    fi
+    # the rate limit counts from the last sync that succeeded (a refused request holds nobody back)
+    age=$("$DC_PYTHON" -c '
+import json, sys, time
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        d = json.load(f)
+    fin = d.get("finished")
+    print(int(time.time()) - int(fin) if d.get("ok") is True and isinstance(fin, int) else 999999)
+except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+    print(999999)
+' "$D/packs.json" 2>/dev/null || echo 999999)
+    case "$age" in ''|*[!0-9-]*) age=999999 ;; esac
+    if [ "$age" -ge 0 ] && [ "$age" -lt "$RATE_PACKS" ]; then
+        say "pack sync request ignored: synced ${age}s ago (limit $RATE_PACKS s)"
+        packs_note "sync request ignored: synced ${age} s ago; wait $RATE_PACKS s between syncs"
+        return 0
+    fi
+    PK_MODS=$(printf '%s\n' "$fields" | sed -n 's/^mods_dir=//p')
+    PK_SOURCES=$(printf '%s\n' "$fields" | sed -n 's/^source=//p')
+    sync="$DC_ROOT/tools/packs_sync.sh"
+    [ -f "$sync" ] || sync="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/packs_sync.sh"
+    mkdir -p "$D/logs"
+    log="$D/logs/packs-$PK_STARTED.log"
+    rows="$D/logs/packs-$PK_STARTED.rows"
+    : > "$log"; : > "$rows"
+    packs_status running "" "syncing $(printf '%s\n' "$PK_SOURCES" | wc -l | tr -d ' ') source(s)" "$rows" "$log"
+    while IFS= read -r src; do
+        [ -n "$src" ] || continue
+        repo=${src%% *}; tag=${src#* }
+        say "packs: $repo $tag -> $PK_MODS" >> "$log"
+        # the folder is checked again right before root writes into it (a swap for a link in between is refused)
+        if ! mods_dir_still_good "$PK_MODS"; then
+            ok=false; msg="$PK_MODS is no longer the real mods folder (changed since the request): nothing installed"
+            say "$msg" >> "$log"
+            break
+        fi
+        # DC_PACKS_BASE_URL (tests): a folder laid out as <base>/<owner>/<repo>/<tag>/ stands in for GitHub
+        if [ -n "${DC_PACKS_BASE_URL:-}" ]; then
+            set -- --base-url "$DC_PACKS_BASE_URL/$repo/$tag"
+        else
+            set --
+        fi
+        timeout "$PACKS_TIMEOUT" bash "$sync" "$repo" "$tag" --mods-dir "$PK_MODS" "$@" > "$log.part" 2>&1
+        rc=$?
+        cat "$log.part" >> "$log"
+        if [ "$rc" -ne 0 ]; then
+            if [ "$rc" -eq 124 ]; then
+                msg="$repo $tag: packs_sync.sh did not finish within $PACKS_TIMEOUT s"
+            else
+                msg="$repo $tag: packs_sync.sh failed (see the log tail)"
+            fi
+            ok=false
+            rm -f "$log.part"
+            break
+        fi
+        # the rows the script prints, kept for the operator to paste
+        printf '# %s %s\n' "$repo" "$tag" >> "$rows"
+        "$DC_PYTHON" -c '
+import sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+keep = []
+for l in text:
+    t = l.strip()
+    if (t.startswith("{ id = ") or t == "[[mods.set]]" or t.startswith(("id = ", "version = ", "sha256 = "))
+            or (t.startswith("# ") and "rows" in t)):
+        keep.append(l)
+print(chr(10).join(keep))
+' "$log.part" >> "$rows"
+        rm -f "$log.part"
+    done <<< "$PK_SOURCES"
+    if [ "$ok" = true ]; then
+        msg="installed or present: $(printf '%s\n' "$PK_SOURCES" | tr '\n' ';' | sed 's/;$//; s/;/, /g')"
+        say "pack sync done: $msg"
+        packs_status done true "$msg" "$rows" "$log"
+    else
+        say "pack sync failed: $msg"
+        packs_status failed false "$msg" "$rows" "$log"
+    fi
+    return 0
 }
 
 # recent SHA: seconds since the last finished deploy (of that commit, when given) if within the limit, else nothing

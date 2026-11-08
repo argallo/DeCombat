@@ -423,6 +423,11 @@ sudo -u decombat cp starter_map-0.1.0.zip /opt/decombat/data/mods/<sha256>.zip
 #    release's zips, checks each against SHA256SUMS and the declared hash, installs them under their hash and prints
 #    the rows; a branch name is refused, a re-run changes nothing, server.toml is not touched
 sudo bash /opt/decombat/tools/packs_sync.sh argallo/DeCombat-mods v1 [--only variant_prism_scar,case_reel]
+#    Or declare the release once in server.toml and press Sync packs on the dashboard's Updates tab
+#    (docs/DEPLOY_FROM_ADMIN.md); `dc-config check --fs` then names the command for a missing zip:
+#    [[packs.sources]]
+#    repo = "argallo/DeCombat-mods"
+#    tag = "v1"
 
 # 2. the lines, from the review list (the map's row in community/vanilla_plus.json, MODDING_GUIDE.md section 12)
 dc-config vanilla-plus-lines community/vanilla_plus.json

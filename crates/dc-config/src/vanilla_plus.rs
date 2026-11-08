@@ -3,12 +3,16 @@
 //!
 //! ```json
 //! {"version": 1, "packs": [{"id": "my_pack", "version": "1.0.0", "sha256": "<64 hex>",
-//!   "source_repo": "https://github.com/someone/my_pack", "reviewer_note": "..."}]}
+//!   "source_repo": "https://github.com/someone/my_pack", "reviewer_note": "...",
+//!   "release": "https://github.com/someone/my_pack/releases/tag/v1"}]}
 //! ```
+//!
+//! `release` (optional, LG-315 amended) is the GitHub release page the zip was published on
+//! (docs/PACKS_FROM_REPOSITORIES.md section 3); the asset there is `<id>-<version>.zip`.
 // DC-DEFAULT: LG-315 (proposed, project decision curated packs reviewed by the user alone)
 
 use crate::directory::{check_mod_ref, is_http_url};
-use crate::schema::ModRef;
+use crate::schema::{is_release_page, ModRef};
 use crate::Issue;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -24,6 +28,10 @@ pub struct ReviewedPack {
     pub sha256: String,
     pub source_repo: String,
     pub reviewer_note: String,
+    /// The release page the zip was published on (`https://github.com/<owner>/<repo>/releases/tag/<tag>`), when it
+    /// came from a pack repository's release; a pack with no release (a map exported by hand) leaves it out.
+    #[serde(default)]
+    pub release: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -83,6 +91,27 @@ pub fn validate(list: &ReviewList) -> Vec<Issue> {
                 format!("must say what was reviewed, 1..{MAX_NOTE_CHARS} characters"),
             ));
         }
+        if let Some(r) = &p.release {
+            if !is_release_page(r) {
+                out.push(Issue::error(
+                    format!("{path}.release"),
+                    "must be a GitHub release page, https://github.com/<owner>/<repo>/releases/tag/<tag> (a tag, never a branch)",
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The release pages the list names, each once, in first-seen order (what an operator syncs from).
+pub fn release_pages(list: &ReviewList) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in &list.packs {
+        if let Some(r) = &p.release {
+            if !out.contains(r) {
+                out.push(r.clone());
+            }
+        }
     }
     out
 }
@@ -127,7 +156,59 @@ mod tests {
     #[test]
     fn the_shipped_list_is_valid() {
         let text = include_str!("../../../community/vanilla_plus.json");
-        assert!(load(text).is_ok());
+        let list = load(text).unwrap();
+        // LG-315 amended: our packs name the mods repository's release; the two hand-exported maps name none
+        let pages = release_pages(&list);
+        assert_eq!(
+            pages,
+            ["https://github.com/argallo/DeCombat-mods/releases/tag/v1"]
+        );
+        let without: Vec<&str> = list
+            .packs
+            .iter()
+            .filter(|p| p.release.is_none())
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(without, ["shipping_container", "freight_hall"]);
+    }
+
+    #[test]
+    fn a_release_is_a_github_release_page_with_a_tag_never_a_branch() {
+        let sha = "ab".repeat(32);
+        let with = |r: &str| {
+            format!(
+                r#"{{"version":1,"packs":[{{"id":"my_pack","version":"1.0.0","sha256":"{sha}","source_repo":"https://example.org/p","reviewer_note":"n","release":"{r}"}}]}}"#
+            )
+        };
+        let good = load(&with("https://github.com/someone/my_pack/releases/tag/v1")).unwrap();
+        assert_eq!(
+            good.packs[0].release.as_deref(),
+            Some("https://github.com/someone/my_pack/releases/tag/v1")
+        );
+        assert_eq!(
+            release_pages(&good),
+            ["https://github.com/someone/my_pack/releases/tag/v1"]
+        );
+        for bad in [
+            "https://github.com/someone/my_pack/releases/tag/main",
+            "https://github.com/someone/my_pack/releases/tag/latest",
+            "https://github.com/someone/my_pack/releases",
+            "https://github.com/someone/my_pack/releases/tag/v1/extra",
+            "https://github.com/someone/releases/tag/v1",
+            "http://github.com/someone/my_pack/releases/tag/v1",
+            "https://gitlab.com/someone/my_pack/releases/tag/v1",
+            "",
+        ] {
+            let e = load(&with(bad)).unwrap_err();
+            assert_eq!(e.len(), 1, "{bad}: {e:?}");
+            assert_eq!(e[0].path, "packs[0].release", "{bad}");
+        }
+        // a row without the field is as before
+        assert!(load(&doc(&sha, "https://example.org/p", "n"))
+            .unwrap()
+            .packs[0]
+            .release
+            .is_none());
     }
 
     #[test]

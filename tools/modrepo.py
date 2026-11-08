@@ -7,7 +7,7 @@ buildable with `dc-modkit`, and prints the rows the directory files and a server
     python3 tools/modrepo.py init <dir> --github <owner/repo> --decombat-rev <DeCombat tag> [--name <title>]
     python3 tools/modrepo.py add <repo> <mod folder>... [--generator <dir>]
     python3 tools/modrepo.py build <repo> [--modkit <dc-modkit exe>] [--rom <client folder>] [--only <id>...]
-    python3 tools/modrepo.py rows <repo> --format vanilla-plus|known-mods|server-toml|catalog-toml
+    python3 tools/modrepo.py rows <repo> --format vanilla-plus|known-mods|server-toml|catalog-toml [--release-tag <tag>]
     python3 tools/modrepo.py verify <repo> --against <json file>...
     python3 tools/modrepo.py lock <repo>
     python3 tools/modrepo.py selftest
@@ -24,7 +24,9 @@ Layout of a repository made by `init`:
 
 `build` packs every `mods/<id>` with `dc-modkit pack` from a clean copy (`git archive`, so Windows line endings never
 change a hash), after `dc-modkit validate` and `dc-modkit lint`, and writes `dist/packs.json`: one row per pack with
-id, version, sha256, size, kind, tags, source_repo. `rows` turns that file into the review-list row
+id, version, sha256, size, kind, tags, source_repo. `rows` turns that file into the review-list row (with
+`--release-tag <tag>` each row also names its release page, `https://github.com/<owner>/<repo>/releases/tag/<tag>`;
+the workflow passes the tag it is publishing)
 (`community/vanilla_plus.json`), the known-mods row (`community/community.json`), or `[[mods.set]]` / `[[mods.catalog]]`
 blocks for a server's `server.toml`. `verify` compares the hashes in `dist/packs.json` with the rows of one or more
 directory files and exits 1 on a difference: the servers and the review list are keyed by hash, so a pack that does
@@ -143,8 +145,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 tools/modrepo.py rows . --format known-mods > dist/known_mods.json
-          python3 tools/modrepo.py rows . --format vanilla-plus > dist/vanilla_plus_rows.json
+          python3 tools/modrepo.py rows . --format known-mods --release-tag "${GITHUB_REF_NAME}" > dist/known_mods.json
+          python3 tools/modrepo.py rows . --format vanilla-plus --release-tag "${GITHUB_REF_NAME}" > dist/vanilla_plus_rows.json
           python3 tools/modrepo.py rows . --format server-toml > dist/server_toml_lines.txt
           gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/packs.json dist/SHA256SUMS dist/known_mods.json dist/vanilla_plus_rows.json dist/server_toml_lines.txt --title "${GITHUB_REF_NAME}" --notes-file dist/NOTES.md
 """
@@ -477,21 +479,46 @@ def toml_str(s):
     return json.dumps(s)
 
 
+def release_page(repo, tag):
+    """The GitHub release page of `tag` in this repository (modrepo.json's github URL), or None without a usable tag."""
+    if not tag:
+        return None
+    tag = tag.strip()
+    if tag in BRANCH_NAMES or not re.match(r"^v?[0-9][A-Za-z0-9._-]{0,63}$", tag):
+        die(f"--release-tag {tag!r}: a release tag (v1, v0.5.0-beta6), never a branch", 2)
+    meta = read_json(os.path.join(repo, "modrepo.json")) if os.path.isfile(os.path.join(repo, "modrepo.json")) else {}
+    url = (meta.get("github") or "").rstrip("/")
+    if not url.startswith("https://github.com/"):
+        die("--release-tag needs modrepo.json with the repository's GitHub URL (modrepo.py init --github owner/repo)", 2)
+    return f"{url}/releases/tag/{tag}"
+
+
 def cmd_rows(a):
     packs = load_packs(a.repo)
+    page = release_page(a.repo, a.release_tag)
     if a.format == "vanilla-plus":
-        out = [{
-            "id": p["id"], "version": p["version"], "sha256": p["sha256"],
-            "source_repo": p["source_repo"] or "https://github.com/<owner>/<repo>",
-            "reviewer_note": "<what the pack is; for a gun the reference gun and each difference; who approved and when>",
-        } for p in packs]
+        out = []
+        for p in packs:
+            row = {
+                "id": p["id"], "version": p["version"], "sha256": p["sha256"],
+                "source_repo": p["source_repo"] or "https://github.com/<owner>/<repo>",
+            }
+            if page:
+                row["release"] = page
+            row["reviewer_note"] = "<what the pack is; for a gun the reference gun and each difference; who approved and when>"
+            out.append(row)
         print(json.dumps(out, indent=2))
     elif a.format == "known-mods":
-        out = [{
-            "id": p["id"], "name": p["name"], "version": p["version"], "sha256": p["sha256"],
-            "source_repo": p["source_repo"] or "https://github.com/<owner>/<repo>",
-            "author": p["author"], "description": p["description"], "capabilities": p["capabilities"],
-        } for p in packs]
+        out = []
+        for p in packs:
+            row = {
+                "id": p["id"], "name": p["name"], "version": p["version"], "sha256": p["sha256"],
+                "source_repo": p["source_repo"] or "https://github.com/<owner>/<repo>",
+                "author": p["author"], "description": p["description"], "capabilities": p["capabilities"],
+            }
+            if page:
+                row["release"] = page
+            out.append(row)
         print(json.dumps(out, indent=2))
     elif a.format in ("server-toml", "catalog-toml"):
         table = "mods.set" if a.format == "server-toml" else "mods.catalog"
@@ -672,6 +699,16 @@ def cmd_selftest(_a):
         code, out = run(["rows", repo, "--format", "vanilla-plus"])
         rows = json.loads(out)
         assert rows[0]["id"] == "camo_x" and rows[0]["sha256"] == first and "reviewer_note" in rows[0]
+        assert "release" not in rows[0], "no tag, no release page"
+        # with the tag being published, every row names its release page; a branch name is refused
+        code, out = run(["rows", repo, "--format", "vanilla-plus", "--release-tag", "v3"])
+        rows = json.loads(out)
+        assert code == 0 and rows[0]["release"] == "https://github.com/example/packs/releases/tag/v3", out
+        assert list(rows[0]) == ["id", "version", "sha256", "source_repo", "release", "reviewer_note"], list(rows[0])
+        code, out = run(["rows", repo, "--format", "known-mods", "--release-tag", "v3"])
+        assert code == 0 and json.loads(out)[1]["release"].endswith("/releases/tag/v3"), out
+        code, out = run(["rows", repo, "--format", "vanilla-plus", "--release-tag", "main"])
+        assert code == 2 and "never a branch" in out, out
         code, out = run(["rows", repo, "--format", "known-mods"])
         assert json.loads(out)[0]["capabilities"] == ["content.weapons", "assets"]
         code, out = run(["rows", repo, "--format", "server-toml"])
@@ -735,6 +772,7 @@ def main(argv=None):
     p = sub.add_parser("rows", help="print directory rows or server.toml blocks from dist/packs.json")
     p.add_argument("repo")
     p.add_argument("--format", required=True, choices=["vanilla-plus", "known-mods", "server-toml", "catalog-toml"])
+    p.add_argument("--release-tag", help="the release tag being published: review-list and known-mods rows then name its page")
     p.set_defaults(fn=cmd_rows)
     p = sub.add_parser("verify", help="compare dist/packs.json with directory rows; exit 1 on a difference")
     p.add_argument("repo")

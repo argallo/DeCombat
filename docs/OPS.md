@@ -75,6 +75,10 @@ is left alone, so running it again is free. It prints the `mods = [...]` rows (o
 to paste into `server.toml`; it never edits the file, so a new release changes nothing until you paste the row and restart
 (`dc-config check --fs` first). A branch name (`main`, `latest`) is refused: a pack is its hash, a branch moves.
 
+With `[[packs.sources]]` in `server.toml` (repo + tag, docs/DEPLOY_FROM_ADMIN.md "Sync packs") the dashboard's Updates
+tab runs the same script for every declared source and shows the rows; `dc-config check --fs` names the sync command
+when a declared zip is missing.
+
 ## 5. Rollback
 
 The same deploy with the older `ref`. By hand: `install.sh` with the older tarball. **The database is not rolled back**, and a newer

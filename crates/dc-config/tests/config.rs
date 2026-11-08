@@ -436,6 +436,115 @@ fn check_fs_reports_missing_paths() {
     assert!(!has_err(&check(&c, CheckOptions::default()), "paths."));
 }
 
+// LG-434: `[[packs.sources]]` names a GitHub repository and a release tag, never a branch; a missing zip's message
+// names the sync command of the declared sources
+#[test]
+fn pack_sources_take_a_repository_and_a_release_tag_and_hint_at_a_missing_zip() {
+    let c = parse_toml(
+        r#"
+[[packs.sources]]
+repo = "argallo/DeCombat-mods"
+tag = "v1"
+[[packs.sources]]
+repo = "argallo/DeCombat-maps"
+tag = "2026.11"
+"#,
+    )
+    .unwrap();
+    assert_eq!(c.packs.sources.len(), 2);
+    assert!(errors(&check(&c, CheckOptions::default())).is_empty());
+    for (tag, why) in [
+        ("main", "is a branch"),
+        ("latest", "is a branch"),
+        ("HEAD", "is a branch"),
+        ("feature-x", "not a release tag"),
+        ("", "not a release tag"),
+        ("v", "not a release tag"),
+    ] {
+        let c = parse_toml(&format!(
+            "[[packs.sources]]\nrepo = \"a/b\"\ntag = \"{tag}\"\n"
+        ))
+        .unwrap();
+        let i = check(&c, CheckOptions::default());
+        assert!(has_err(&i, "packs.sources[0].tag"), "{tag}: {i:?}");
+        assert!(
+            i.iter().any(|x| x.message.contains(why)),
+            "{tag}: {why}: {i:?}"
+        );
+    }
+    let long = format!("{}/{}", "a".repeat(60), "b".repeat(60));
+    for repo in [
+        "a",
+        "a/b/c",
+        "../b",
+        "a/..",
+        "",
+        "a b/c",
+        "\u{e9}cole/x",
+        long.as_str(),
+    ] {
+        let c = parse_toml(&format!(
+            "[[packs.sources]]\nrepo = \"{repo}\"\ntag = \"v1\"\n"
+        ))
+        .unwrap();
+        assert!(
+            has_err(&check(&c, CheckOptions::default()), "packs.sources[0].repo"),
+            "{repo}"
+        );
+    }
+    let nine: String = (1..=9)
+        .map(|i| format!("[[packs.sources]]\nrepo = \"a/b\"\ntag = \"v{i}\"\n"))
+        .collect();
+    let i = check(&parse_toml(&nine).unwrap(), CheckOptions::default());
+    assert!(
+        i.iter()
+            .any(|x| x.path == "packs.sources" && x.message.contains("at most 8")),
+        "{i:?}"
+    );
+    let uni = parse_toml("[[packs.sources]]\nrepo = \"a/b\"\ntag = \"v1\u{e9}\"\n").unwrap();
+    assert!(has_err(
+        &check(&uni, CheckOptions::default()),
+        "packs.sources[0].tag"
+    ));
+    let twice = parse_toml(
+        "[[packs.sources]]\nrepo = \"a/b\"\ntag = \"v1\"\n[[packs.sources]]\nrepo = \"a/b\"\ntag = \"v1\"\n",
+    )
+    .unwrap();
+    assert!(has_err(
+        &check(&twice, CheckOptions::default()),
+        "packs.sources[1]"
+    ));
+    assert!(
+        parse_toml("[[packs.sources]]\nrepo = \"a/b\"\ntag = \"v1\"\nbranch = \"main\"\n").is_err()
+    );
+    // --fs: the missing zip's message names the sync command of a good source, not a bad one
+    let dir = std::env::temp_dir().join(format!("dc-config-packs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut c = parse_toml(
+        "[[packs.sources]]\nrepo = \"argallo/DeCombat-mods\"\ntag = \"v1\"\n[[packs.sources]]\nrepo = \"a/b\"\ntag = \"main\"\n",
+    )
+    .unwrap();
+    c.mods.policy = "modded".into();
+    c.paths.mods_dir = dir.display().to_string();
+    c.mods.set = vec![dc_config::ModRef {
+        id: "case_reel".into(),
+        version: "1".into(),
+        sha256: "a".repeat(64),
+    }];
+    let i = check(&c, CheckOptions { fs: true });
+    let m = i
+        .iter()
+        .find(|x| x.path == "mods.set[0]")
+        .map(|x| x.message.clone())
+        .unwrap_or_default();
+    assert!(
+        m.contains("tools/vps/packs_sync.sh argallo/DeCombat-mods v1") && !m.contains("a/b"),
+        "{m}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn derived_ports_follow_the_harness_rules() {
     let p = Config::default().resolved_ports();

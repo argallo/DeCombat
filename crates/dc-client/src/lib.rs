@@ -92,6 +92,7 @@ pub mod sound;
 pub mod spread;
 pub mod sprites;
 pub mod startguard;
+pub mod vklayers;
 pub mod steps;
 pub mod stress;
 #[doc(hidden)]

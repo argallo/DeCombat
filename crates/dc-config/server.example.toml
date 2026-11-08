@@ -53,6 +53,13 @@ client_visual_allowed = false   # must stay false when vanilla
 # client_fov = [70, 120]        # modded only: the field-of-view range players may choose (60..130); [90, 90] locks it
 max_zip_bytes = 33554432
 
+# where this server's packs come from (docs/PACKS_FROM_REPOSITORIES.md, LG-434): a pack repository's tagged release.
+# The dashboard's Sync packs action and `dc-config check --fs` use it; a pack is declared by its [[mods.set]] or
+# entry row, so a new release changes nothing until that row is pasted. A branch name (main, latest) is refused.
+# [[packs.sources]]
+# repo = "argallo/DeCombat-mods"
+# tag = "v1"
+
 # --- DeCombat gameplay defaults (DC_DEFAULTS.md); change only what you want to differ ---
 
 [auth]

@@ -33,6 +33,8 @@ const MAX_STATE: u64 = 1024 * 1024;
 const STALE_SECS: i64 = 3 * 3600;
 /// LG-402: the lobby asks for no check within this many seconds of the last one (root keeps its own limit).
 const FETCH_GAP: i64 = 30;
+/// LG-434: the lobby asks for no pack sync within this many seconds of the last one that finished.
+const PACKS_GAP: i64 = 60;
 /// The last deploys shown.
 const HISTORY: usize = 10;
 
@@ -143,25 +145,38 @@ fn in_progress(status: Option<&Value>, now: i64) -> bool {
         s.get("finished").is_none_or(Value::is_null)
             && s.get("updated")
                 .and_then(Value::as_i64)
-                .is_some_and(|u| now - u < STALE_SECS)
+                // a time root wrote; a hostile or broken far-off value is neither a running job nor a panic
+                .is_some_and(|u| now.saturating_sub(u).saturating_abs() < STALE_SECS)
     })
 }
 
-/// A request file waiting for root's unit (a deploy's; `fetch-*.json` is a check request, LG-402).
+/// A request file waiting for root's unit (a deploy's; `fetch-*.json` is a check request, LG-402, `packs-*.json` a
+/// pack sync, LG-434).
 fn pending(dir: &Path) -> bool {
-    waiting(dir, false)
+    waiting(dir, "")
 }
 
 /// A fetch request waiting for root's unit.
 fn fetch_pending(dir: &Path) -> bool {
-    waiting(dir, true)
+    waiting(dir, "fetch-")
 }
 
-fn waiting(dir: &Path, fetch: bool) -> bool {
+/// LG-434: a pack sync request waiting for root's unit.
+fn packs_pending(dir: &Path) -> bool {
+    waiting(dir, "packs-")
+}
+
+/// A `.json` request whose name starts with `kind` (`""`: a deploy's, which starts with neither `fetch-` nor `packs-`).
+fn waiting(dir: &Path, kind: &str) -> bool {
     std::fs::read_dir(dir.join("requests")).is_ok_and(|rd| {
         rd.flatten().any(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            n.ends_with(".json") && n.starts_with("fetch-") == fetch
+            n.ends_with(".json")
+                && if kind.is_empty() {
+                    !n.starts_with("fetch-") && !n.starts_with("packs-")
+                } else {
+                    n.starts_with(kind)
+                }
         })
     })
 }
@@ -291,7 +306,123 @@ pub fn updates_json(st: &Core, now: i64) -> Value {
         "fetching": dir.as_deref().is_some_and(fetch_pending),
         "status": status,
         "history": dir.as_deref().map(history).unwrap_or_default(),
+        "packs": packs_json(st, now),
     })
+}
+
+/// LG-434: the Content packs card: the declared sources, whether a sync waits or runs, and root's `packs.json`
+/// (phase, outcome, the rows it printed, its log tail).
+fn packs_json(st: &Core, now: i64) -> Value {
+    let dir = st.opts.deploy_dir.clone();
+    let status = dir.as_ref().and_then(|d| read_json(&d.join("packs.json")));
+    json!({
+        "sources": st.opts.pack_sources.iter().map(|(r, t)| json!({"repo": r, "tag": t})).collect::<Vec<_>>(),
+        "mods_dir": st.opts.mods_dir.as_ref().map(|p| p.display().to_string()),
+        "pending": dir.as_deref().is_some_and(packs_pending),
+        "running": in_progress(status.as_ref(), now),
+        "status": status,
+    })
+}
+
+/// `POST /ops/updates/packs` after the write guard (LG-434): one `requests/packs-<unix>.json` naming the declared
+/// sources and the mods folder, for root's unit to answer with `tools/vps/packs_sync.sh` per source. Refused without
+/// sources, while a deploy runs or waits, and within [`PACKS_GAP`] s of the last sync; a second press while one waits
+/// is the same request. The lobby never runs the script and never edits `server.toml`: the rows root prints are
+/// shown for the operator to paste.
+pub fn packs_request(st: &mut Core, by: &str, now: i64) -> Reply {
+    let Some(dir) = st.opts.deploy_dir.clone() else {
+        return refuse(
+            503,
+            "deploys from the dashboard are not set up on this server ([deploy] dir)",
+        );
+    };
+    let req_dir = dir.join("requests");
+    if !req_dir.is_dir() {
+        return refuse(
+            503,
+            "the deploy folder has no requests/: run tools/vps/deploy_setup.sh as root",
+        );
+    }
+    if st.opts.pack_sources.is_empty() {
+        return refuse(
+            503,
+            "no [[packs.sources]] in server.toml: name the pack repository release to sync from (docs/PACKS_FROM_REPOSITORIES.md)",
+        );
+    }
+    let Some(mods_dir) = st.opts.mods_dir.clone() else {
+        return refuse(
+            503,
+            "paths.mods_dir is not set: nowhere to install the packs",
+        );
+    };
+    let status = read_json(&dir.join("status.json"));
+    if in_progress(status.as_ref(), now) || pending(&dir) {
+        return refuse(
+            409,
+            "a deploy is running or waiting; sync the packs after it",
+        );
+    }
+    if packs_pending(&dir) {
+        return reply(
+            200,
+            json!({"ok": true, "message": "a pack sync is already requested"}),
+        );
+    }
+    let packs = read_json(&dir.join("packs.json"));
+    if in_progress(packs.as_ref(), now) {
+        return refuse(409, "a pack sync is running");
+    }
+    // the gap counts from the last sync that succeeded (a refusal holds nobody back); the times are root's text
+    let finished = packs
+        .as_ref()
+        .filter(|p| p.get("ok") == Some(&Value::Bool(true)))
+        .and_then(|p| p.get("finished").and_then(Value::as_i64))
+        .filter(|f| *f <= now);
+    if let Some(f) = finished {
+        let since = now.saturating_sub(f);
+        if since < PACKS_GAP {
+            return refuse(
+                429,
+                &format!("synced {since} s ago; wait {PACKS_GAP} s between syncs"),
+            );
+        }
+    }
+    let path = req_dir.join(format!("packs-{now}.json"));
+    let sources: Vec<Value> = st
+        .opts
+        .pack_sources
+        .iter()
+        .map(|(r, t)| json!({"repo": r, "tag": t}))
+        .collect();
+    let doc = json!({"by": by, "at": now, "mods_dir": mods_dir.display().to_string(), "sources": sources});
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, doc.to_string().as_bytes()));
+    if let Err(e) = written {
+        event(
+            st,
+            true,
+            &format!("pack sync could not be requested: {}: {e}", path.display()),
+        );
+        return refuse(500, &format!("could not write the request: {e}"));
+    }
+    let names: Vec<String> = st
+        .opts
+        .pack_sources
+        .iter()
+        .map(|(r, t)| format!("{r} {t}"))
+        .collect();
+    event(
+        st,
+        false,
+        &format!("pack sync of {} requested by {by}", names.join(", ")),
+    );
+    reply(
+        200,
+        json!({"ok": true, "message": format!("sync of {} requested; the server starts it within seconds", names.join(", "))}),
+    )
 }
 
 /// The subject of `sha` in `available.json` (new or older commits), if listed.
@@ -546,7 +677,7 @@ pub fn serve_at(
     let st = &mut *g;
     match (req.method.as_str(), path) {
         ("GET", "/ops/updates") => reply(200, updates_json(st, now)),
-        ("POST", "/ops/updates/deploy" | "/ops/updates/fetch") => {
+        ("POST", "/ops/updates/deploy" | "/ops/updates/fetch" | "/ops/updates/packs") => {
             // LG-393: on the loopback port the page's origin is http://<Host> and its token the per-process one; on the
             // admin web its own origin and the session's token
             let host = crate::betaweb::header(head, "host").unwrap_or("");
@@ -570,13 +701,16 @@ pub fn serve_at(
             }
             if path.ends_with("/fetch") {
                 fetch_request(st, &by, now)
+            } else if path.ends_with("/packs") {
+                packs_request(st, &by, now)
             } else {
                 request(st, body, &by, now)
             }
         }
-        (_, "/ops/updates" | "/ops/updates/deploy" | "/ops/updates/fetch") => {
-            refuse(405, "method not allowed")
-        }
+        (
+            _,
+            "/ops/updates" | "/ops/updates/deploy" | "/ops/updates/fetch" | "/ops/updates/packs",
+        ) => refuse(405, "method not allowed"),
         _ => refuse(404, "not found"),
     }
 }

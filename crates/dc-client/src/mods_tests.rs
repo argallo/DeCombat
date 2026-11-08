@@ -1647,6 +1647,162 @@ fn sixty_five_packs_download_faster_in_parallel_than_one_after_the_other() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// CLI-1947: the second join of the same set from the same cache downloads nothing, writes nothing (every folder is
+// found complete and its files keep their modification times) and still loads every pack; the first join unpacked
+// all of them.
+#[test]
+fn a_second_join_of_the_same_set_unpacks_nothing_and_writes_no_bytes() {
+    let root = temp("rejoin");
+    let (packs, hash) = many_packs(&root, 65);
+    let web = fake_lobby(serve_packs(&packs, &hash));
+    let c = cfg(&root.join("data"));
+    let paths = ModPaths::new(&root.join("data"));
+    let mut cm = ClientMods::new();
+    cm.join(Some(web), None, &c, &mut |_| {}).unwrap();
+    let first = cm.status.timing.clone();
+    assert_eq!(cm.loaded().len(), 65);
+    assert_eq!(
+        (first.packs, first.downloaded, first.unpacked, first.reused),
+        (65, 65, 65, 0),
+        "{first:?}"
+    );
+    assert!(
+        first.unpack_bytes > 0 && first.total_ms >= first.lua_ms,
+        "{first:?}"
+    );
+    for (_, e) in &packs {
+        assert!(
+            paths.complete(&e.sha256).is_file(),
+            "{} has no marker",
+            e.sha256
+        );
+        assert!(unpacked_complete(&paths, &e.sha256));
+    }
+    let probe = paths.unpacked(&packs[7].1.sha256).join("main.lua");
+    let stamp = std::fs::metadata(&probe).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    let mut again = ClientMods::new();
+    again.join(Some(web), None, &c, &mut |_| {}).unwrap();
+    let second = again.status.timing.clone();
+    assert_eq!(again.loaded().len(), 65);
+    assert_eq!(
+        (
+            second.packs,
+            second.downloaded,
+            second.unpacked,
+            second.unpack_bytes,
+            second.reused
+        ),
+        (65, 0, 0, 0, 65),
+        "{second:?}"
+    );
+    assert_eq!(
+        std::fs::metadata(&probe).unwrap().modified().unwrap(),
+        stamp,
+        "an unpacked file was written again"
+    );
+    assert!(
+        std::fs::read_dir(paths.root.join("unpacked"))
+            .unwrap()
+            .flatten()
+            .all(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                !n.ends_with(".part")
+            }),
+        "a .part folder was left"
+    );
+    eprintln!(
+        "65 packs: first join {}, second join {}",
+        first.log_line(),
+        second.log_line()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// CLI-1947: a marker that names another sha, a folder missing a file and a folder of another size are unpacked
+// again; the untouched one is reused. A removed package takes its marker with it.
+#[test]
+fn a_changed_marker_or_a_damaged_folder_unpacks_again() {
+    let root = temp("remark");
+    let (packs, hash) = many_packs(&root, 4);
+    let web = fake_lobby(serve_packs(&packs, &hash));
+    let c = cfg(&root.join("data"));
+    let paths = ModPaths::new(&root.join("data"));
+    let mut cm = ClientMods::new();
+    cm.join(Some(web), None, &c, &mut |_| {}).unwrap();
+    assert_eq!(cm.status.timing.unpacked, 4);
+    let sha = |i: usize| packs[i].1.sha256.clone();
+    // another sha in the marker: the zip is another package now
+    let text = std::fs::read_to_string(paths.complete(&sha(0))).unwrap();
+    std::fs::write(
+        paths.complete(&sha(0)),
+        text.replacen(&sha(0), &"f".repeat(64), 1),
+    )
+    .unwrap();
+    // a file gone from the folder (the script the host needs)
+    std::fs::remove_file(paths.unpacked(&sha(1)).join("main.lua")).unwrap();
+    // a file grown (same count, other size)
+    let grown = paths.unpacked(&sha(2)).join("screenshots").join("shot.png");
+    let mut b = std::fs::read(&grown).unwrap();
+    b.extend_from_slice(b"tail");
+    std::fs::write(&grown, b).unwrap();
+    assert!(!unpacked_complete(&paths, &sha(0)));
+    assert!(
+        !paths.complete(&sha(0)).exists(),
+        "a failed marker is removed"
+    );
+    let mut again = ClientMods::new();
+    again.join(Some(web), None, &c, &mut |_| {}).unwrap();
+    let t = &again.status.timing;
+    assert_eq!((t.downloaded, t.unpacked, t.reused), (0, 3, 1), "{t:?}");
+    assert_eq!(again.loaded().len(), 4);
+    assert!(paths.unpacked(&sha(1)).join("main.lua").is_file());
+    assert_eq!(
+        std::fs::read(&grown).unwrap().len(),
+        12,
+        "the grown file was replaced"
+    );
+    for i in 0..4 {
+        assert!(unpacked_complete(&paths, &sha(i)), "{i}");
+    }
+    // a package out of the cache takes its marker along
+    remove_unpacked(&paths, &sha(3));
+    assert!(!paths.complete(&sha(3)).exists() && !paths.unpacked(&sha(3)).exists());
+    let removed = trim_cache(&paths, 0, &[]);
+    assert_eq!(removed.len(), 4);
+    assert!((0..3).all(|i| !paths.complete(&sha(i)).exists()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// CLI-1947: the timing's line and event fields
+#[test]
+fn the_join_timing_has_a_log_line_and_event_fields() {
+    let t = JoinTiming {
+        packs: 65,
+        downloaded: 2,
+        unpacked: 3,
+        reused: 62,
+        unpack_bytes: 3 * 1024 * 1024,
+        set_ms: 120,
+        fetch_ms: 310,
+        unpack_ms: 40,
+        lua_ms: 900,
+        total_ms: 1400,
+    };
+    assert_eq!(
+        t.log_line(),
+        "65 packs: 2 downloaded, 3 unpacked (3072 KB), 62 reused; set 120 ms, fetch 310 ms, unpack 40 ms, lua 900 ms, total 1400 ms"
+    );
+    let j = t.to_json();
+    assert_eq!(j["ms"], 1400);
+    assert_eq!(j["reused"], 62);
+    assert_eq!(j["unpack_bytes"], 3 * 1024 * 1024);
+    // vanilla: a default timing, and a zero line
+    assert!(JoinTiming::default()
+        .log_line()
+        .starts_with("0 packs: 0 downloaded"));
+}
+
 /// CLI-1943: the set fragment's `tags` reach the client and survive a round trip; a fragment without them reads as none.
 #[test]
 fn the_set_fragment_keeps_the_tags() {

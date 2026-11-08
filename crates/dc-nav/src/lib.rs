@@ -1088,6 +1088,15 @@ impl NavGrid {
         self.jumps.iter().any(|(_, b)| *b == k)
     }
 
+    /// BOT-162: whether the place `p` lies at a ladder's top: within two lattice steps (flat) and [`LADDER_END`] in
+    /// height of a ladder's top end (the way's next point may be a node beside the end).
+    pub fn laddered_onto(&self, p: [f32; 3]) -> bool {
+        let q = V3::new(p[0], p[1], p[2]);
+        self.ladders
+            .iter()
+            .any(|(_, t, _)| flat(*t, q) <= STEP * 2.0 && (t.y - q.y).abs() <= LADDER_END)
+    }
+
     /// BOT-145: takes out every link that leads up onto the node at `top`, or onto a node beside it at its height
     /// (within [`REFUSE_NEAR`]), from a node more than a step below (a jump, a ladder or a stairway up: the body did not
     /// get up there, or its jump test refused the flight; the parallel links along the same ledge lead to the same

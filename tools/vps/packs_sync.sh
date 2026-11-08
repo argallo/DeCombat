@@ -75,7 +75,7 @@ fetch packs.json || die "packs.json of release $TAG is not there (the release wa
 
 # ---- the rows: id, version, sha256, zip name; packs.json's hash must equal the SHA256SUMS line of the same zip
 ROWS=$("$DC_PYTHON" - "$WORK/packs.json" "$WORK/SHA256SUMS" "$ONLY" <<'PY'
-import json, sys
+import json, re, sys
 sys.stdout.reconfigure(newline="\n")  # LF only, also from a Windows python
 packs = json.load(open(sys.argv[1], encoding="utf-8-sig"))
 packs = packs["packs"] if isinstance(packs, dict) else packs
@@ -86,10 +86,20 @@ for line in open(sys.argv[2], encoding="utf-8"):
         sums[parts[1].lstrip("*")] = parts[0].lower()
 only = [o for o in sys.argv[3].split(",") if o]
 bad = 0
+PLAIN = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+ZIP = re.compile(r"^[A-Za-z0-9._-]{1,200}\.zip$")
 for p in packs:
-    if only and p["id"] not in only:
+    # a remote row is a stranger's text: its id, version and zip name must be plain words before any of them is used
+    # as a path or passed through the shell (no slash, no space, no newline, no leading dash)
+    pid, ver = p.get("id"), p.get("version")
+    if not (isinstance(pid, str) and PLAIN.match(pid) and not pid.startswith("-")
+            and isinstance(ver, str) and PLAIN.match(ver) and not ver.startswith("-")):
+        print(f"BAD ? ? ? a row has an id or version that is not a plain word: nothing fetched"); bad += 1; continue
+    if only and pid not in only:
         continue
-    zip_name = p.get("zip") or f'{p["id"]}-{p["version"]}.zip'
+    zip_name = p.get("zip") or f'{pid}-{ver}.zip'
+    if not (isinstance(zip_name, str) and ZIP.match(zip_name) and not zip_name.startswith("-") and ".." not in zip_name.split(".")):
+        print(f"BAD {pid} {ver} ? the zip name is not a plain file name: nothing fetched"); bad += 1; continue
     declared = str(p.get("sha256", "")).lower()
     listed = sums.get(zip_name)
     if len(declared) != 64:
@@ -142,9 +152,25 @@ while read -r _ id version zip sha; do
 done <<< "$ROWS"
 [ "$fail" -eq 0 ] || die "a pack failed its check: nothing installed"
 
+# no_symlink_path PATH: true when no component of PATH is a symbolic link (checked right before root writes there:
+# a folder swapped for a link between the request and the install must not redirect the write)
+no_symlink_path() {
+    local p=$1 acc="" c
+    case "$p" in [A-Za-z]:*) acc=${p:0:2}; p=${p:2} ;; esac
+    local IFS=/
+    for c in $p; do
+        [ -n "$c" ] || continue
+        acc="$acc/$c"
+        [ -L "$acc" ] && return 1
+    done
+    return 0
+}
+
 # ---- phase 2: install what was checked
 if [ "$DRY" = 0 ]; then
+    no_symlink_path "$MODS_DIR" || die "$MODS_DIR has a symbolic link in its path: nothing installed"
     mkdir -p "$MODS_DIR"
+    no_symlink_path "$MODS_DIR" || die "$MODS_DIR has a symbolic link in its path: nothing installed"
     while read -r id version sha what; do
         [ -n "$id" ] || continue
         case "$what" in present|dry) continue ;; esac

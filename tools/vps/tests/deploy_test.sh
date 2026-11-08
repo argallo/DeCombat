@@ -412,5 +412,129 @@ run
 expect "a deploy request beside a check request deploys" phase_is done
 expect "and leaves no request behind" test -z "$(ls "$D/requests")"
 
+# ---- LG-434: the dashboard's "Sync packs" (a packs request: packs_sync.sh per source into the named mods folder,
+# never a deploy; the request's shape, the allowlist and the folder are checked; a refusal installs nothing)
+expect "setup writes the allowlist of pack repositories" has "$D/packs.allow" "argallo/DeCombat-mods"
+REL="$T/rel"
+mkdir -p "$REL/example/packs/v1" "$DC_ROOT/data/mods"
+"$PY" - "$REL/example/packs/v1" <<'PYEOF'
+import hashlib, json, os, sys, zipfile
+d = sys.argv[1]
+rows, sums = [], []
+for mid, ver in (("camo_a", "1.0.0"), ("map_b", "0.2.0")):
+    name = f"{mid}-{ver}.zip"
+    with zipfile.ZipFile(os.path.join(d, name), "w", compression=zipfile.ZIP_STORED) as z:
+        z.writestr("manifest.json", json.dumps({"id": mid, "name": mid, "version": ver, "kind": "shared"}))
+        z.writestr("main.lua", "return function(mod) end")
+    data = open(os.path.join(d, name), "rb").read()
+    sha = hashlib.sha256(data).hexdigest()
+    rows.append({"id": mid, "version": ver, "sha256": sha, "size": len(data), "file": name})
+    sums.append(f"{sha}  {name}")
+json.dump({"version": 1, "packs": rows}, open(os.path.join(d, "packs.json"), "w"))
+open(os.path.join(d, "SHA256SUMS"), "w").write("\n".join(sums) + "\n")
+open(os.path.join(d, "hash_a"), "w").write(rows[0]["sha256"])
+PYEOF
+HA=$(cat "$REL/example/packs/v1/hash_a")
+# the folder as the lobby would write it: a native path (Git Bash hands converted paths to python only as arguments)
+MODS_NATIVE=$(cygpath -m "$DC_ROOT/data/mods" 2>/dev/null || printf '%s' "$DC_ROOT/data/mods")
+ELSE_NATIVE=$(cygpath -m "$T/elsewhere/mods" 2>/dev/null || printf '%s' "$T/elsewhere/mods")
+OTHER_NATIVE=$(cygpath -m "$DC_ROOT/data/other" 2>/dev/null || printf '%s' "$DC_ROOT/data/other")
+preq() { # preq NAME JSON: a packs request
+    printf '%s' "$2" > "$D/requests/packs-$1.json"
+}
+prun() { DC_PACKS_BASE_URL="$REL" DC_DEPLOY_RATE_PACKS=${PRATE:-0} bash "$DEPLOY" run > "$T/out" 2>&1 < /dev/null; }
+pphase() { json "$D/packs.json" 'd["phase"]'; }
+SRC1='"sources":[{"repo":"example/packs","tag":"v1"}]'
+: > "$STUB_LOG"
+rm -f "$D/status.json"
+preq 1700000200 "{\"by\":\"the admin web \$(touch $T/pwned3)\",\"at\":1,\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+prun
+expect "a repo that is not in packs.allow is refused" test "$(pphase)" = failed
+expect "and names the allowlist" has "$D/packs.json" "is not in"
+expect "and installs nothing" test ! -f "$DC_ROOT/data/mods/$HA.zip"
+echo "example/packs" >> "$D/packs.allow"
+preq 1700000201 "{\"by\":\"the admin web \$(touch $T/pwned3)\",\"at\":1,\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+prun
+expect "an allowed repo's release installs its zips under their hash" test -f "$DC_ROOT/data/mods/$HA.zip"
+expect "the request is removed" test -z "$(ls "$D/requests")"
+expect "it never builds or installs a build" lacks "$STUB_LOG" "cargo"
+expect "and starts no deploy" test ! -f "$D/status.json"
+expect "its content never reaches a shell" test ! -e "$T/pwned3"
+expect "packs.json says done" test "$(pphase)" = done
+expect "packs.json names the source" test "$(json "$D/packs.json" 'd["sources"][0]')" = "example/packs v1"
+expect "packs.json holds rows to paste" test "$(json "$D/packs.json" '"camo_a" in d["rows"] and "sha256" in d["rows"]')" = "true"
+expect "and the log tail" test "$(json "$D/packs.json" 'len(d["log_tail"]) > 0')" = "true"
+rm -f "$DC_ROOT/data/mods/$HA.zip"
+# refusals: each installs nothing and says why
+refused() { # refused NAME JSON WHY
+    preq "$1" "$2"; prun
+    expect "$3: refused" test "$(pphase)" = failed
+    expect "$3: nothing installed" test ! -f "$DC_ROOT/data/mods/$HA.zip"
+}
+refused 1700000202 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[{\"repo\":\"example/packs\",\"tag\":\"main\"}]}" "a branch tag"
+expect "the reason names the tag rule" has "$D/packs.json" "not a release tag"
+refused 1700000203 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[{\"repo\":\"example/packs\",\"tag\":\"-v1\"}]}" "a tag with a leading dash"
+refused 1700000204 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[{\"repo\":\"example/packs\",\"tag\":\"v1;id\"}]}" "a tag with a semicolon"
+refused 1700000205 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[{\"repo\":\"example/packs\",\"tag\":\"v1\u00e9\"}]}" "a tag with a non-ascii letter"
+refused 1700000206 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[{\"repo\":\"../../etc\",\"tag\":\"v1\"}]}" "a repo that is not owner/repo"
+expect "the reason names the repo rule" has "$D/packs.json" "not a GitHub owner/repo"
+NINE=$(for i in 1 2 3 4 5 6 7 8 9; do printf '{"repo":"example/packs","tag":"v%s"},' "$i"; done)
+refused 1700000207 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[${NINE%,}]}" "nine sources"
+expect "the reason names the source limit" has "$D/packs.json" "1 to 8"
+mkdir -p "$T/elsewhere/mods"
+refused 1700000208 "{\"mods_dir\":\"$ELSE_NATIVE\",$SRC1}" "a mods folder outside the root"
+expect "the reason names the folder rule" has "$D/packs.json" "must be an existing mods folder"
+expect "and the outside folder gets nothing" test -z "$(ls "$T/elsewhere/mods")"
+mkdir -p "$DC_ROOT/data/other"
+refused 1700000209 "{\"mods_dir\":\"$OTHER_NATIVE\",$SRC1}" "a folder under the root that is not a mods folder"
+expect "and it gets nothing" test -z "$(ls "$DC_ROOT/data/other")"
+"$PY" -c 'import sys; sys.stdout.write("{\"pad\":\"" + "x" * 9000 + "\"}")' > "$D/requests/packs-1700000210.json"
+prun
+expect "an oversized request is refused" test "$(pphase)" = failed
+expect "and says so" has "$D/packs.json" "over 8192 bytes"
+if ln -s "$DC_ROOT/data" "$DC_ROOT/dlink" 2>/dev/null && [ -L "$DC_ROOT/dlink" ]; then
+    LINK_NATIVE=$(cygpath -m "$DC_ROOT/dlink/mods" 2>/dev/null || printf '%s' "$DC_ROOT/dlink/mods")
+    refused 1700000211 "{\"mods_dir\":\"$LINK_NATIVE\",$SRC1}" "a mods path through a symbolic link"
+    expect "the reason names the link rule" has "$D/packs.json" "no symbolic link"
+    preq 1700000212 "{\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+    ln -s "$D/requests/packs-1700000212.json" "$D/requests/packs-1700000213.json"
+    prun
+    expect "a symlinked request file is removed, the real one answered" test -z "$(ls "$D/requests")"
+    expect "and the real one installed" test -f "$DC_ROOT/data/mods/$HA.zip"
+    rm -f "$DC_ROOT/data/mods/$HA.zip" "$DC_ROOT/dlink"
+else
+    echo "note: no symbolic links here, the symlink cases are skipped"
+fi
+# a sync that died half way is written off at the next run, and the next request proceeds
+"$PY" -c 'import json,sys,time; json.dump({"phase":"running","ok":None,"finished":None,"updated":int(time.time()),"started":1,"message":"syncing","sources":[],"mods_dir":"","rows":"","log_tail":[]}, open(sys.argv[1],"w"))' "$D/packs.json"
+preq 1700000214 "{\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+prun
+expect "a dead sync is written off and the next request answered" test -f "$DC_ROOT/data/mods/$HA.zip"
+expect "and packs.json says done again" test "$(pphase)" = done
+# the rate limit counts from the last success only
+preq 1700000215 "{\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+PRATE=300 prun
+expect "a sync within the limit of the last finished one is ignored" has "$T/out" "pack sync request ignored"
+expect "and the outcome keeps its phase with a note" test "$(pphase)" = done
+expect "the note says why" has "$D/packs.json" "sync request ignored"
+expect "and its request is removed" test -z "$(ls "$D/requests")"
+rm -f "$DC_ROOT/data/mods/$HA.zip"
+refused 1700000216 "{\"mods_dir\":\"$MODS_NATIVE\",\"sources\":[{\"repo\":\"example/packs\",\"tag\":\"main\"}]}" "a refusal after a success"
+preq 1700000217 "{\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+PRATE=300 prun
+expect "a refusal does not hold the next press back" test "$(pphase)" = done
+printf '{}' > "$D/requests/packs-abc.json"
+prun
+expect "a badly named packs file is cleared" test -z "$(ls "$D/requests")"
+D2=$(commit "seventh: beside a pack sync")
+request 1700000218-00000218 "{\"sha\":\"$D2\",\"targets\":[\"hosts\"]}"
+preq 1700000218 "{\"mods_dir\":\"$MODS_NATIVE\",$SRC1}"
+prun
+expect "a deploy request beside a pack sync request deploys" phase_is done
+expect "and leaves the sync request for the next run" test -f "$D/requests/packs-1700000218.json"
+rm -f "$DC_ROOT/data/mods/$HA.zip"
+prun
+expect "which answers it" test -f "$DC_ROOT/data/mods/$HA.zip"
+
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

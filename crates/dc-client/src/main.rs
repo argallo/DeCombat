@@ -1746,6 +1746,8 @@ fn main() -> ExitCode {
     };
     // CLI-1941: the run stamp is the first line, so a log cut short (a kill, a power loss) still names its build
     println!("dc-client run: {}", dc_client::diag::run_stamp());
+    // CLI-1948: other programs' Vulkan layers known to crash the game are kept out before any Vulkan instance
+    dc_client::vklayers::guard();
     // CLI-1470: the trust-on-first-use fingerprints live in the profile folder
     if let Some(d) = dc_client::settings::own_profile_dir() {
         dc_botclient::tls::set_store(d.join(dc_botclient::tls::KNOWN_SERVERS_FILE));

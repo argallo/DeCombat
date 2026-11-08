@@ -24,6 +24,11 @@ pub const MARKER_FILE: &str = "renderer-start.txt";
 /// Presented frames after which the start counts as finished and the marker goes.
 // DC-DEFAULT: CLI-1932 300 frames (a few seconds of the menu or the match)
 pub const CLEAR_AFTER_FRAMES: u64 = 300;
+/// CLI-1949 (amends CLI-1932): and at least this long since the window start. A menu at its frame cap passes 300
+/// frames in well under a second, so a crash a few seconds into the start (report 2026-11-08: an overlay's Vulkan
+/// layer at present) never switched the backend; both conditions must hold, so a stalled present does not clear it
+/// early either.
+pub const CLEAR_AFTER_MS: u64 = 10_000;
 
 /// The marker file of one folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +115,13 @@ pub fn start_with(
 
 static ARMED: Mutex<Option<StartMarker>> = Mutex::new(None);
 static PRESENTED: AtomicU64 = AtomicU64::new(0);
+/// CLI-1949: when the window run started (`None` before [`at_window_start`]).
+static STARTED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// CLI-1949: the marker may go once `frames` were presented and `elapsed_ms` passed since the window start.
+pub fn clear_due(frames: u64, elapsed_ms: u64) -> bool {
+    frames >= CLEAR_AFTER_FRAMES && elapsed_ms >= CLEAR_AFTER_MS
+}
 
 /// The start of a window run with the saved renderer `saved` (no `--adapter`): only a double-click start
 /// (`DC_PACK_START`, its logs folder) keeps a marker; any other run keeps `saved` and writes nothing. A switch is
@@ -129,13 +141,30 @@ pub fn at_window_start(saved: Renderer, persist: impl FnOnce(Renderer)) -> Rende
     if let Ok(mut a) = ARMED.lock() {
         *a = Some(marker);
     }
+    if let Ok(mut s) = STARTED.lock() {
+        *s = Some(std::time::Instant::now());
+    }
     PRESENTED.store(0, Ordering::Relaxed);
     p.renderer
 }
 
-/// A window presented a frame: the [`CLEAR_AFTER_FRAMES`]-th clears the marker (one atomic add otherwise).
+/// A window presented a frame: from the [`CLEAR_AFTER_FRAMES`]-th on, once [`CLEAR_AFTER_MS`] passed since the
+/// window start, the marker goes (one atomic add per frame otherwise; nothing once it is gone).
 pub fn presented() {
-    if PRESENTED.fetch_add(1, Ordering::Relaxed) + 1 == CLEAR_AFTER_FRAMES {
+    let n = PRESENTED.fetch_add(1, Ordering::Relaxed) + 1;
+    if n < CLEAR_AFTER_FRAMES || n % 16 != 0 {
+        return;
+    }
+    let armed = ARMED.lock().is_ok_and(|a| a.is_some());
+    if !armed {
+        return;
+    }
+    let elapsed = STARTED
+        .lock()
+        .ok()
+        .and_then(|s| s.map(|t| t.elapsed().as_millis() as u64))
+        .unwrap_or(u64::MAX);
+    if clear_due(n, elapsed) {
         finished();
     }
 }
@@ -150,6 +179,16 @@ pub fn finished() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CLI-1949: frames alone do not clear the marker, time alone does not either.
+    #[test]
+    fn the_marker_clears_after_both_the_frames_and_the_seconds() {
+        assert!(!clear_due(CLEAR_AFTER_FRAMES, 0));
+        assert!(!clear_due(CLEAR_AFTER_FRAMES - 1, CLEAR_AFTER_MS));
+        assert!(!clear_due(100_000, CLEAR_AFTER_MS - 1));
+        assert!(clear_due(CLEAR_AFTER_FRAMES, CLEAR_AFTER_MS));
+        assert!(clear_due(100_000, 60_000));
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("dc-startguard-{name}-{}", std::process::id()));

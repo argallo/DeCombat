@@ -48,6 +48,28 @@ pub const WEAPON_OFFSET: [f32; 3] = [4.69, -4.27, 8.85];
 // DC-DEFAULT: BOT-12 (proposed) aim at centre + 0.5 x half height (the real client's hits were 26 above a centre
 // with half height 50, tdm4)
 pub const AIM_HEIGHT_FRACTION: f32 = 0.5;
+/// BOT-161: a rusher (an infected of a Quarantine human, `View::rushers`) within this distance is fired at full-auto
+/// (the clip in one burst, no pause); one crossing the line of sight slower than [`HEAD_ON_CROSSING`] units/s is
+/// aimed at [`HEAD_AIM_FRACTION`] of its half height above the centre (the head band: the top [`HEAD_BAND`] of the
+/// box height, as dc-dserver's geometric head test), and a hit landing in that band names the skeleton's head node.
+// DC-DEFAULT: BOT-161 (proposed) 600 units, 120 units/s, 0.8, the top 0.2
+pub const RUSH_RANGE: f32 = 600.0;
+pub const HEAD_ON_CROSSING: f32 = 120.0;
+pub const HEAD_AIM_FRACTION: f32 = 0.8;
+pub const HEAD_BAND: f32 = 0.2;
+
+/// BOT-161: the node a hit at `p` on a box at `centre` (half extents `half`) names: the head node when the shot was at
+/// a rusher coming head-on (`rush`) and `p` lies in the head band; `None`: the usual node.
+pub fn head_claim(
+    rush: Option<bool>,
+    head_node: Option<u8>,
+    p: [f32; 3],
+    centre: [f32; 3],
+    half: [f32; 3],
+) -> Option<u8> {
+    let band = centre[1] + half[1] - 2.0 * half[1] * HEAD_BAND;
+    head_node.filter(|_| rush == Some(true) && p[1] >= band)
+}
 /// `extra_kind` of a hit on a player (meaning UNPROVEN; the real client sent 24 for its first two hits, 11 later).
 // OBSERVED: tdm4 conn 6 0x82 extra block kind 24, 24, 11, 11
 pub const DEFAULT_HIT_NODE: u8 = 24;
@@ -387,6 +409,9 @@ pub struct ShooterConfig {
     pub loadout: Vec<i32>,
     pub rom: Option<Arc<RomWeapons>>,
     pub hit_node: u8,
+    /// BOT-161: the head node of the default body's skeleton (ROM `MODELBUTES.TXT`), named by a head hit on a
+    /// rusher; `None` without a ROM.
+    pub head_node: Option<u8>,
     pub rearm_ms: u32,
     pub reload_ms: u32,
     pub seed: u64,
@@ -413,6 +438,7 @@ impl Default for ShooterConfig {
             loadout: Vec::new(),
             rom: None,
             hit_node: DEFAULT_HIT_NODE,
+            head_node: None,
             rearm_ms: DEFAULT_REARM_MS,
             reload_ms: DEFAULT_RELOAD_MS,
             seed: 0x005e_ed0f_f1e5,
@@ -533,6 +559,8 @@ pub struct View {
     /// BOT-148: the bot's living team mates (player id, place) in the modes whose bots share the enemies out
     /// (`spread::spreads`); empty elsewhere (the nearest enemy, as before).
     pub mates: Vec<(u8, [f32; 3])>,
+    /// BOT-161: the enemies fired at full-auto and, coming head-on, at the head (a Quarantine human's infected).
+    pub rushers: Vec<u8>,
 }
 
 /// What the session should do.
@@ -627,6 +655,8 @@ pub struct Shooter {
     burst_left: u32,
     /// BOT-135: shots already fired in the current burst (the spray growth of the close-range floor).
     burst_fired: u32,
+    /// BOT-161: this poll's target is a rusher fired at full-auto (`Some`), coming head-on (`Some(true)`).
+    rush: Option<bool>,
     /// BOT-90: the engaged target's last streamed position and when (its velocity for the lagged aim point).
     track: Option<(u8, [f32; 3], Millis)>,
     /// BOT-90: the slow aim wander (yaw, pitch offsets, radians) and when it was last advanced.
@@ -686,6 +716,7 @@ impl Shooter {
             react_rng: AimRng::new(cfg.seed ^ 0x0e4c_7146),
             burst_left: 0,
             burst_fired: 0,
+            rush: None,
             track: None,
             wander: (0.0, 0.0, None),
             over: (0.0, 0.0),
@@ -1477,7 +1508,9 @@ impl Shooter {
                 time_ms: view.time_ms,
                 extra: hit.map(|(_, p)| FireExtra {
                     obj: t.obj,
-                    kind: self.cfg.hit_node,
+                    // BOT-161: a hit in the head band of a rusher coming head-on names the skeleton's head node
+                    kind: head_claim(self.rush, self.cfg.head_node, p, tpos, half_t)
+                        .unwrap_or(self.cfg.hit_node),
                     a: p,
                     b: HIT_VECTOR,
                 }),
@@ -1497,6 +1530,7 @@ impl Shooter {
     fn poll_skill(&mut self, now: Millis, view: &View, sk: Skill, out: &mut Vec<Action>) {
         let dt = self.last_poll.map_or(0, |t| since(now, t)).min(250);
         self.last_poll = Some(now);
+        self.rush = None;
         self.given_up.retain(|_, until| later(*until, now));
         let chosen = self.choose(now, view, out);
         let melee = self.held.is_some_and(|h| self.is_melee(&h));
@@ -1565,12 +1599,25 @@ impl Shooter {
                 tpos[2] - v[2] * lag,
             ]
         });
-        let aim_at = [tpos[0], tpos[1] + AIM_HEIGHT_FRACTION * half[1], tpos[2]];
-        let aim_lag = [
-            lagged[0],
-            lagged[1] + AIM_HEIGHT_FRACTION * half[1],
-            lagged[2],
-        ];
+        // BOT-161: a rusher (a Quarantine human's infected) within RUSH_RANGE is fired at full-auto; one coming nearly
+        // head-on (crossing slower than HEAD_ON_CROSSING) is aimed at the head band
+        let rush = view.rushers.contains(&target.pid)
+            && len(sub(tpos, eye)) <= RUSH_RANGE
+            && !self.held.is_some_and(|h| self.is_sniper(h.weapon) || self.is_melee(&h));
+        let head_on = rush
+            && vel.is_none_or(|v| {
+                let (dx, dz) = (tpos[0] - eye[0], tpos[2] - eye[2]);
+                let l = (dx * dx + dz * dz).sqrt().max(1.0);
+                ((v[0] * dz - v[2] * dx) / l).abs() < HEAD_ON_CROSSING
+            });
+        self.rush = rush.then_some(head_on);
+        let lift = if head_on {
+            HEAD_AIM_FRACTION
+        } else {
+            AIM_HEIGHT_FRACTION
+        };
+        let aim_at = [tpos[0], tpos[1] + lift * half[1], tpos[2]];
+        let aim_lag = [lagged[0], lagged[1] + lift * half[1], lagged[2]];
         // BOT-90: the wander drifts slowly (Ornstein-Uhlenbeck: the shots of a burst share it), the overshoot and
         // the recoil climb settle with their own time constants
         let dtf = dt as f32 / 1000.0;
@@ -1751,6 +1798,14 @@ impl Shooter {
                 h.stock -= take;
             }
         }
+        // BOT-161: at a rusher a burst pause already running is cut to the shot cycle
+        if let (Some(_), Some(t), Some(h)) = (self.rush, self.last_shot, self.held) {
+            let cycle = self.cfg.shot_period_ms.max(h.cycle_ms.unwrap_or(0)).max(1);
+            let earliest = t.wrapping_add(cycle);
+            if later(self.next_fire, earliest) {
+                self.next_fire = earliest;
+            }
+        }
         if later(ready, now) || later(self.next_fire, now) {
             return;
         }
@@ -1782,8 +1837,10 @@ impl Shooter {
         }
         if self.burst_left == 0 {
             // DC-DEFAULT: BOT-97 (proposed) a sniper rifle fires one aimed shot per burst (then the pause, at least the
-            // rifle's own shot cycle); other weapons burst as BOT-24
-            self.burst_left = if self.is_sniper(h.weapon) {
+            // rifle's own shot cycle); other weapons burst as BOT-24; BOT-161: at a rusher the clip in one burst
+            self.burst_left = if self.rush.is_some() {
+                h.clip.max(1)
+            } else if self.is_sniper(h.weapon) {
                 1
             } else {
                 self.aim_rng.range(sk.burst_min.max(1), sk.burst_max.max(1))
@@ -1826,8 +1883,8 @@ impl Shooter {
         self.last_shot = Some(now);
         self.burst_left -= 1;
         self.burst_fired += 1;
-        let gap = if self.burst_left == 0 {
-            // DC-DEFAULT: BOT-24 (proposed) the pause varies by +-25 %
+        let gap = if self.burst_left == 0 && self.rush.is_none() {
+            // DC-DEFAULT: BOT-24 (proposed) the pause varies by +-25 % (BOT-161: none at a rusher)
             (sk.burst_pause_ms as f32 * (0.75 + 0.5 * self.aim_rng.unit())) as u32
         } else {
             self.cfg.shot_period_ms
@@ -2531,6 +2588,7 @@ mod tests {
             moving: MoveState::default(),
             prefer: None,
             mates: Vec::new(),
+            rushers: Vec::new(),
         }
     }
 
@@ -3993,6 +4051,44 @@ mod tests {
             "{per_burst}"
         );
         assert_eq!(s.stats.bursts as usize, pauses + 1);
+    }
+
+    /// BOT-161: at a rusher within range the bot holds the trigger (no burst pause: every gap is the shot cycle) and,
+    /// the rusher coming head-on, its hits in the head band name the head node; at anyone else it bursts and names
+    /// the usual node.
+    #[test]
+    fn a_rusher_is_fired_at_full_auto_and_head_hits_name_the_head_node() {
+        let run = |rushers: Vec<u8>| {
+            let mut s = skilled(50);
+            s.cfg.head_node = Some(8);
+            let mut v = walled_view(vec![enemy(1, 40, [0.0, 50.0, 400.0])], (0.0, 0.0));
+            v.rushers = rushers;
+            let (mut times, mut nodes) = (Vec::new(), Vec::new());
+            for t in (0..6_000).step_by(10) {
+                let a = s.poll(t, &v);
+                for f in fires(&a) {
+                    times.push(t);
+                    nodes.extend(f.iter().filter_map(|r| r.extra.map(|e| e.kind)));
+                }
+                v.facing = s.look();
+            }
+            let gaps: Vec<u32> = times.windows(2).map(|w| w[1] - w[0]).collect();
+            (gaps, nodes)
+        };
+        let (gaps, nodes) = run(vec![1]);
+        assert!(gaps.len() > 20, "{gaps:?}");
+        assert!(gaps.iter().all(|g| *g < 2 * DEFAULT_FIRE_INTERVAL_MS), "{gaps:?}");
+        assert!(nodes.contains(&8), "head hits name the head node: {nodes:?}");
+        let (gaps, nodes) = run(Vec::new());
+        assert!(gaps.iter().any(|g| *g >= 2 * DEFAULT_FIRE_INTERVAL_MS), "{gaps:?}");
+        assert!(!nodes.is_empty() && nodes.iter().all(|n| *n == DEFAULT_HIT_NODE), "{nodes:?}");
+        // the head band is the top fifth of the box
+        let c = [0.0, 50.0, 0.0];
+        let h = [15.0, 50.0, 15.0];
+        assert_eq!(head_claim(Some(true), Some(8), [0.0, 85.0, 0.0], c, h), Some(8));
+        assert_eq!(head_claim(Some(true), Some(8), [0.0, 70.0, 0.0], c, h), None);
+        assert_eq!(head_claim(Some(false), Some(8), [0.0, 95.0, 0.0], c, h), None);
+        assert_eq!(head_claim(Some(true), None, [0.0, 95.0, 0.0], c, h), None);
     }
 
     // ----------------------------------------------------------------------------------------- the 2009 cone

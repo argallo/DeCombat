@@ -73,6 +73,20 @@ if [ "$DC_TEST" != 1 ]; then
     chown "$DC_USER:$DC_USER" "$D/requests"
 fi
 
+# ---- packs.allow (LG-434): the pack repositories the dashboard's Sync packs may fetch from, one owner/repo per line;
+# root's file, never written by the lobby. Written once with the project's repositories, then the operator's.
+if [ ! -f "$D/packs.allow" ]; then
+    {
+        echo "# Pack repositories the dashboard's Sync packs action may fetch releases from (docs/DEPLOY_FROM_ADMIN.md)."
+        echo "# One GitHub owner/repo per line; a [[packs.sources]] row of server.toml naming another repository is refused."
+        echo "argallo/DeCombat-mods"
+        echo "argallo/DeCombat-maps"
+    } > "$D/packs.allow"
+    chmod 0644 "$D/packs.allow"
+    [ "$DC_TEST" = 1 ] || chown root:root "$D/packs.allow"
+    say "wrote $D/packs.allow (the repositories Sync packs may use; edit as root)"
+fi
+
 # ---- deploy.conf: written once, then the operator's
 if [ ! -f "$D/deploy.conf" ]; then
     {

@@ -656,6 +656,18 @@ fn fetch_post(
     ctype: &str,
     now: i64,
 ) -> (u16, Value) {
+    action_post(sh, "fetch", origin, csrf, ctype, now)
+}
+
+/// A POST to `/ops/updates/<action>` from the loopback dashboard at unix time `now`.
+fn action_post(
+    sh: &Shared,
+    action: &str,
+    origin: &str,
+    csrf: Option<&str>,
+    ctype: &str,
+    now: i64,
+) -> (u16, Value) {
     let tok = match csrf {
         Some(t) => t.to_string(),
         None => {
@@ -665,11 +677,220 @@ fn fetch_post(
         }
     };
     let head = format!(
-        "POST /ops/updates/fetch HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nOrigin: {origin}\r\nContent-Type: {ctype}\r\nX-Admin-CSRF: {tok}\r\n\r\n"
+        "POST /ops/updates/{action} HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nOrigin: {origin}\r\nContent-Type: {ctype}\r\nX-Admin-CSRF: {tok}\r\n\r\n"
     );
     let req = parse_request(&head).unwrap();
     let (st, _, out) = serve_at(sh, &req, &head, b"{}", None, now);
     (st, serde_json::from_str(&out).unwrap())
+}
+
+// LG-434: "Sync packs" writes one packs-<unix>.json naming the declared sources and the mods folder; refused without
+// sources, behind the same guard, while a deploy runs or waits, and within 60 s of the last sync; it blocks neither a
+// deploy nor a check; the Updates JSON carries the sources and root's packs.json
+#[test]
+fn a_sync_packs_request_names_the_sources_and_is_neither_a_deploy_nor_held_by_one() {
+    let ok = "http://127.0.0.1:10090";
+    let d = tmp("packs");
+    root_files(&d);
+    let sh = shared_with(Some(&d));
+    // no sources: refused, nothing written
+    let (st, out) = action_post(&sh, "packs", ok, None, "application/json", NOW);
+    assert_eq!(st, 503, "{out}");
+    assert!(out["message"].as_str().unwrap().contains("packs.sources"));
+    assert!(fetch_files(&d).is_empty());
+    {
+        let mut g = sh.lock().unwrap();
+        g.opts.pack_sources = vec![
+            ("argallo/DeCombat-mods".into(), "v1".into()),
+            ("argallo/DeCombat-maps".into(), "v1".into()),
+        ];
+        g.opts.mods_dir = Some(PathBuf::from("/opt/decombat/data/mods"));
+    }
+    assert_eq!(
+        action_post(&sh, "packs", ok, None, "text/plain", NOW).0,
+        415
+    );
+    assert_eq!(
+        action_post(
+            &sh,
+            "packs",
+            "http://evil.example",
+            None,
+            "application/json",
+            NOW
+        )
+        .0,
+        403
+    );
+    assert_eq!(
+        action_post(&sh, "packs", ok, Some("wrong"), "application/json", NOW).0,
+        403
+    );
+    assert!(
+        fetch_files(&d).is_empty(),
+        "nothing written for a refused guard"
+    );
+    let (st, out) = action_post(&sh, "packs", ok, None, "application/json", NOW);
+    assert_eq!(st, 200, "{out}");
+    assert_eq!(fetch_files(&d), vec![format!("packs-{NOW}.json")]);
+    let doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(d.join("requests").join(format!("packs-{NOW}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(doc["by"], "the admin port");
+    assert_eq!(doc["mods_dir"], "/opt/decombat/data/mods");
+    assert_eq!(doc["sources"][1]["repo"], "argallo/DeCombat-maps");
+    assert_eq!(doc["sources"][0]["tag"], "v1");
+    // the tab: a sync waits, no deploy waits, no check under way; the sources are listed
+    let v = get(&sh);
+    assert_eq!(
+        (
+            v["pending"].clone(),
+            v["fetching"].clone(),
+            v["packs"]["pending"].clone()
+        ),
+        (json!(false), json!(false), json!(true))
+    );
+    assert_eq!(v["packs"]["sources"][0]["repo"], "argallo/DeCombat-mods");
+    // a second press while one waits is the same request
+    let (st, _) = action_post(&sh, "packs", ok, None, "application/json", NOW + 1);
+    assert_eq!((st, fetch_files(&d).len()), (200, 1));
+    // neither a deploy nor a check is held back by a waiting sync
+    assert_eq!(
+        fetch_post(&sh, ok, None, "application/json", NOW + 2).0,
+        200
+    );
+    assert_eq!(ok_post(&sh, json!({"sha": &C[..8]})).0, 200);
+    assert_eq!(fetch_files(&d).len(), 3);
+    // while a deploy waits, no sync
+    std::fs::remove_file(d.join("requests").join(format!("packs-{NOW}.json"))).unwrap();
+    assert_eq!(
+        action_post(&sh, "packs", ok, None, "application/json", NOW + 5).0,
+        409
+    );
+    // who asked is an ops event of kind deploy
+    let ev = deploy_events(&sh);
+    assert!(
+        ev.iter().any(|(p, t)| !p
+            && t == "pack sync of argallo/DeCombat-mods v1, argallo/DeCombat-maps v1 requested by the admin port"),
+        "{ev:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+
+    // root's packs.json: a running sync refuses, a finished one is shown and rate limits the next
+    let d = tmp("packs2");
+    root_files(&d);
+    let sh = shared_with(Some(&d));
+    {
+        let mut g = sh.lock().unwrap();
+        g.opts.pack_sources = vec![("argallo/DeCombat-mods".into(), "v1".into())];
+        g.opts.mods_dir = Some(PathBuf::from("/opt/decombat/data/mods"));
+    }
+    std::fs::write(
+        d.join("packs.json"),
+        json!({"phase": "running", "finished": null, "updated": NOW - 5}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        action_post(&sh, "packs", ok, None, "application/json", NOW).0,
+        409
+    );
+    assert_eq!(get(&sh)["packs"]["running"], json!(true));
+    std::fs::write(
+        d.join("packs.json"),
+        json!({"phase": "done", "ok": true, "finished": NOW - 30, "updated": NOW - 30, "rows": "mods = [\n]"}).to_string(),
+    )
+    .unwrap();
+    let (st, out) = action_post(&sh, "packs", ok, None, "application/json", NOW);
+    assert_eq!(st, 429, "{out}");
+    assert!(fetch_files(&d).is_empty());
+    let v = get(&sh);
+    assert_eq!(v["packs"]["status"]["rows"], "mods = [\n]");
+    assert_eq!(v["packs"]["running"], json!(false));
+    assert_eq!(
+        action_post(&sh, "packs", ok, None, "application/json", NOW + 31).0,
+        200
+    );
+    std::fs::remove_file(d.join("requests").join(format!("packs-{}.json", NOW + 31))).unwrap();
+    // a refused or failed sync holds nobody back
+    std::fs::write(
+        d.join("packs.json"),
+        json!({"phase": "failed", "ok": false, "finished": NOW - 1, "updated": NOW - 1})
+            .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        action_post(&sh, "packs", ok, None, "application/json", NOW).0,
+        200
+    );
+    std::fs::remove_file(d.join("requests").join(format!("packs-{NOW}.json"))).unwrap();
+    // root's text is not trusted: far-off or hostile numbers and a corrupt file neither panic nor block
+    for status in [
+        json!({"phase": "done", "ok": true, "finished": i64::MAX, "updated": i64::MAX}).to_string(),
+        json!({"phase": "running", "ok": null, "finished": null, "updated": i64::MIN}).to_string(),
+        json!({"phase": "running", "finished": null, "updated": "soon"}).to_string(),
+        "{not json".to_string(),
+        json!({"phase": "done", "ok": "yes", "finished": "now"}).to_string(),
+    ] {
+        std::fs::write(d.join("packs.json"), &status).unwrap();
+        let (st, out) = action_post(&sh, "packs", ok, None, "application/json", NOW);
+        assert_eq!(st, 200, "{status}: {out}");
+        assert_eq!(get(&sh)["packs"]["running"], json!(false), "{status}");
+        std::fs::remove_file(d.join("requests").join(format!("packs-{NOW}.json"))).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// LG-434: the rest of the guard and the refusals: no page token, no Host or Origin, GET, no requests/ folder, no
+// mods folder
+#[test]
+fn a_sync_packs_request_without_the_guard_or_the_setup_is_refused() {
+    let d = tmp("packs3");
+    root_files(&d);
+    let sh = shared_with(Some(&d));
+    {
+        let mut g = sh.lock().unwrap();
+        g.opts.pack_sources = vec![("argallo/DeCombat-mods".into(), "v1".into())];
+        g.opts.mods_dir = Some(PathBuf::from("/opt/decombat/data/mods"));
+    }
+    let raw = |head: &str| -> (u16, Value) {
+        let req = parse_request(head).unwrap();
+        let (st, _, out) = serve_at(&sh, &req, head, b"{}", None, NOW);
+        (st, serde_json::from_str(&out).unwrap())
+    };
+    // no X-Admin-CSRF header at all
+    let (st, out) = raw(
+        "POST /ops/updates/packs HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nOrigin: http://127.0.0.1:10090\r\nContent-Type: application/json\r\n\r\n",
+    );
+    assert_eq!(st, 403, "{out}");
+    assert!(out["message"].as_str().unwrap().contains("page token"));
+    // no Host and no Origin: nothing to check the request against
+    let (st, _) = raw("POST /ops/updates/packs HTTP/1.1\r\nContent-Type: application/json\r\n\r\n");
+    assert_eq!(st, 403);
+    // a Host without an Origin
+    let (st, _) = raw(
+        "POST /ops/updates/packs HTTP/1.1\r\nHost: 127.0.0.1:10090\r\nContent-Type: application/json\r\n\r\n",
+    );
+    assert_eq!(st, 403);
+    // GET is not an action
+    let (st, _) = raw("GET /ops/updates/packs HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n");
+    assert_eq!(st, 405);
+    assert!(
+        fetch_files(&d).is_empty(),
+        "nothing written for a refused request"
+    );
+    // the setup: no mods folder, then no requests/ folder
+    let ok = "http://127.0.0.1:10090";
+    sh.lock().unwrap().opts.mods_dir = None;
+    let (st, out) = action_post(&sh, "packs", ok, None, "application/json", NOW);
+    assert_eq!(st, 503, "{out}");
+    assert!(out["message"].as_str().unwrap().contains("mods_dir"));
+    sh.lock().unwrap().opts.mods_dir = Some(PathBuf::from("/opt/decombat/data/mods"));
+    std::fs::remove_dir_all(d.join("requests")).unwrap();
+    let (st, out) = action_post(&sh, "packs", ok, None, "application/json", NOW);
+    assert_eq!(st, 503, "{out}");
+    assert!(out["message"].as_str().unwrap().contains("requests/"));
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 fn fetch_files(d: &Path) -> Vec<String> {

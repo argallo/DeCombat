@@ -231,10 +231,24 @@ unreached-goal episodes with their positions. The metric definitions are in the 
 thresholds are constants at the top of the file:
 
 - mobility: stuck episodes (a goal more than 96 units away, the body within 48 units for 8 s or more), idle time
-  (no goal and no movement for 15 s), deaths without a killer, goals not reached within 60 s, floor coverage per
-  team (256-unit cells);
-- combat (respawn modes): kills per 2 minutes alive, team kill shares, kills per shot, the time from seeing an
-  enemy to the first shot;
-- objectives: Search and Destroy plants, defuses and round ends; Capture the Flag captures and dropped flags;
-  Spy Hunt pickups and stage times; Quarantine and Elimination Pro round ends;
+  (no goal and no movement for 15 s; a defender on a Hold job before the plant may stand 90 s), deaths without a
+  killer (a death at the bomb's detonation is the bomb, not a fall), goals not reached within 60 s, floor coverage
+  per team (256-unit cells), team mates standing within one body width (the first 3 s after a spawn do not
+  count), jumps (non-face stuck jumps per alive minute; ladder mounts and ledge climbs are logged as `face` and do
+  not count; pogo runs of 4 or more jumps within 96 units with gaps under 6 s, judged for bots with 3 or more alive
+  minutes and reported with their positions), and confinement (a bot alive 60 s or more inside a 512-unit box
+  while its goal is more than 300 units away, or the nav island count growing by 20 inside one life: none
+  allowed, the box and times are reported);
+- combat (respawn modes): kills per 2 minutes alive, team kill shares, hits per shot for bots with 100 or more
+  shots (Spy Hunt: hit rate by distance band, and at most a tenth of the hits closer than 20 units), the time from
+  seeing an enemy to the first shot (median of at least 20 samples, none instant, a short tail of slow ones) and
+  the spread of the bots' planned reaction delays;
+- objectives: Search and Destroy plants, defuses (including whether a defuse starts when a defender could reach
+  the site in 25 s) and round ends; Capture the Flag captures, dropped flags and balance (each team takes the
+  enemy flag, capture margin); Spy Hunt pickups, stage times, stage 2 ending by upload or death rather than the
+  timer, and how many hunters work the agent; Quarantine after the outbreak (length of the phase, how close the
+  humans stay together, how often they hunt instead of grouping, how fast the first claw lands, how much they
+  shoot when they see an infected); Elimination Pro round ends. Win shares (round wins in Search and Destroy and
+  Elimination Pro, human wins in Quarantine, agent wins in Spy Hunt) are judged pooled per mode in the "Per mode"
+  section of `summary.md`, since a single room has too few rounds;
 - flow: dropped bots, failed joins, panics, refusals by the server.

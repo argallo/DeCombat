@@ -103,6 +103,7 @@ pub fn remove_cached(paths: &ModPaths, sha: &str) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
+    let _ = std::fs::remove_file(paths.complete(sha));
     Ok(())
 }
 

@@ -1620,6 +1620,53 @@ fn release_requests_need_a_session_the_page_token_and_an_allowed_action() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+// LG-434: Sync packs behind the admin web: a session's POST writes the request with the admin web's name; without a
+// session it is refused; the Updates JSON lists the sources
+#[test]
+fn sync_packs_behind_the_admin_web_needs_a_session_and_names_the_admin_web() {
+    let t = setup();
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "a");
+    let s = t.login(&mut k);
+    let d = release_dir(&t, "packs", None);
+    {
+        let mut g = crate::net::lock(&t.sh);
+        g.opts.pack_sources = vec![("argallo/DeCombat-mods".into(), "v1".into())];
+        g.opts.mods_dir = Some(std::path::PathBuf::from("/opt/decombat/data/mods"));
+    }
+    std::fs::create_dir_all(d.join("requests")).unwrap();
+    // no session: refused (401, sign in) before anything is written
+    let (st, _) = t.post("/ops/updates/packs", None, json!({}));
+    assert_eq!(st, 401);
+    assert!(std::fs::read_dir(d.join("requests"))
+        .unwrap()
+        .next()
+        .is_none());
+    let v: Value = serde_json::from_str(&t.get("/ops/updates", Some(&s)).body).unwrap();
+    assert_eq!(v["packs"]["sources"][0]["repo"], "argallo/DeCombat-mods");
+    assert_eq!(v["packs"]["pending"], false);
+    let (st, out) = t.post("/ops/updates/packs", Some(&s), json!({}));
+    assert_eq!(st, 200, "{out}");
+    let files: Vec<String> = std::fs::read_dir(d.join("requests"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        files.len() == 1 && files[0].starts_with("packs-"),
+        "{files:?}"
+    );
+    let file: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("requests").join(&files[0])).unwrap())
+            .unwrap();
+    assert_eq!(file["by"], "the admin web");
+    assert_eq!(file["sources"][0]["tag"], "v1");
+    assert_eq!(file["mods_dir"], "/opt/decombat/data/mods");
+    let v: Value = serde_json::from_str(&t.get("/ops/updates", Some(&s)).body).unwrap();
+    assert_eq!(v["packs"]["pending"], true);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn the_release_state_is_read_checked_and_turned_into_the_cards_headline_and_buttons() {
     let t = setup();

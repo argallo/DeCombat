@@ -41,6 +41,15 @@ mod on their own modded server with no review.
 
 Yes. Start with [SERVER.md](SERVER.md). You need the client folder or a smaller server ROM ([SERVER_ROM.md](SERVER_ROM.md)).
 
+## The game crashes a moment after it starts
+
+Most often it is another program's overlay. Windows loads every registered Vulkan overlay layer into the game: the one
+of **FPS Monitor** (`fpsmonvk64.dll`) crashes the game at its first frames on the Vulkan renderer. Since 2026-11-08 the
+game keeps that layer out by itself and says so in `%LOCALAPPDATA%\DeCombat\logs\dc-client.out` (`Vulkan layer ... disabled`);
+with an older build, close or uninstall FPS Monitor, or switch to DirectX 12 (Options, Graphic, Renderer, or a shortcut
+with ` --adapter dx12`). A crash report names the module at fault: `crash.txt` in the logs folder, or the diagnostic
+report the game sends to the server owner, whose `vulkan_layers` list shows every overlay layer on the machine.
+
 ## How do I report a bug?
 
 In a match, press Escape and use the report button in the exit box. It goes to the server you're playing on. For a bug in the
