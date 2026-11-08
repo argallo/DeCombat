@@ -57,6 +57,7 @@ const PROP_FOG_COLOR: &str = "fog_color";
 const PROP_SKY_FOG_ENABLE: &str = "sky_fog_enable";
 const PROP_SKY_FOG_NEAR: &str = "sky_fog_near";
 const PROP_SKY_FOG_FAR: &str = "sky_fog_far";
+const PROP_TWO_SIDED: &str = "two_sided";
 const PROP_TO_AMBIENT: &str = "to_ambient";
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -515,7 +516,7 @@ pub fn brush_render(role: BrushRole) -> Option<bool> {
     match role {
         BrushRole::WorldModel | BrushRole::Breakable => Some(false),
         BrushRole::Sky => Some(true),
-        BrushRole::KillVolume | BrushRole::Ladder => None,
+        BrushRole::KillVolume | BrushRole::Ladder | BrushRole::Blocker => None,
     }
 }
 
@@ -644,7 +645,8 @@ pub fn brush_object(b: &Brush) -> SynthObject {
             p.push((PROP_HIT_POINTS, SynthValue::Real(BREAKABLE_HIT_POINTS)));
             p
         }
-        BrushRole::KillVolume | BrushRole::Ladder => Vec::new(),
+        // a blocker never becomes a brush model (build sends its faces to the blocker section)
+        BrushRole::KillVolume | BrushRole::Ladder | BrushRole::Blocker => Vec::new(),
         BrushRole::Sky => vec![
             (PROP_SKY_INDEX, SynthValue::Int(0.0)),
             (PROP_SKY_DIMS, SynthValue::Vec3(brush_half(b).to_array())),
@@ -661,28 +663,34 @@ pub fn brush_object(b: &Brush) -> SynthObject {
 }
 
 /// The generated `dc.world_settings` (DC-DEFAULT: MAP-46): `far_z`, the fog (sky fog = the same range) and the
-/// fog colour from the project settings.
+/// fog colour from the project settings, and `two_sided = true` when the project asks for both faces (MAP-118; off
+/// writes nothing, so a map without it builds the bytes it built before).
 pub fn world_settings_object(s: &WorldSettings, at: V3) -> SynthObject {
     let rgb = [
         s.fog_color[0] as f32,
         s.fog_color[1] as f32,
         s.fog_color[2] as f32,
     ];
+    let mut props = vec![
+        (PROP_FAR_Z, SynthValue::Real(s.far_z)),
+        (PROP_FOG_ENABLE, SynthValue::Bool(s.fog_enable)),
+        (PROP_FOG_NEAR, SynthValue::Real(s.fog_near)),
+        (PROP_FOG_FAR, SynthValue::Real(s.fog_far)),
+        (PROP_FOG_COLOR, SynthValue::Rgb(rgb)),
+        (PROP_SKY_FOG_ENABLE, SynthValue::Bool(s.fog_enable)),
+        (PROP_SKY_FOG_NEAR, SynthValue::Real(s.fog_near)),
+        (PROP_SKY_FOG_FAR, SynthValue::Real(s.fog_far)),
+    ];
+    // DC-DEFAULT: MAP-118
+    if s.two_sided {
+        props.push((PROP_TWO_SIDED, SynthValue::Bool(true)));
+    }
     SynthObject::dc(
         v::CLASS_WORLD_SETTINGS,
         WORLD_SETTINGS_NAME,
         at.to_array(),
         [0.0; 3],
-        &[
-            (PROP_FAR_Z, SynthValue::Real(s.far_z)),
-            (PROP_FOG_ENABLE, SynthValue::Bool(s.fog_enable)),
-            (PROP_FOG_NEAR, SynthValue::Real(s.fog_near)),
-            (PROP_FOG_FAR, SynthValue::Real(s.fog_far)),
-            (PROP_FOG_COLOR, SynthValue::Rgb(rgb)),
-            (PROP_SKY_FOG_ENABLE, SynthValue::Bool(s.fog_enable)),
-            (PROP_SKY_FOG_NEAR, SynthValue::Real(s.fog_near)),
-            (PROP_SKY_FOG_FAR, SynthValue::Real(s.fog_far)),
-        ],
+        &props,
     )
 }
 
@@ -1041,6 +1049,17 @@ mod tests {
             .any(|p| p.name == b"sky_dims" && p.value == SynthValue::Vec3([50.0, 25.0, 50.0])));
         let ws = world_settings_object(&WorldSettings::default(), V3::ZERO);
         assert!(ws.props.iter().any(|p| p.name == b"far_z"));
+        // MAP-118: both faces only when asked, and then as a bool
+        assert!(!ws.props.iter().any(|p| p.name == b"two_sided"));
+        let both = WorldSettings {
+            two_sided: true,
+            ..Default::default()
+        };
+        let ws = world_settings_object(&both, V3::ZERO);
+        assert!(ws
+            .props
+            .iter()
+            .any(|p| p.name == b"two_sided" && p.value == SynthValue::Bool(true)));
         let gl = global_light_object(&WorldSettings::default(), V3::ZERO);
         assert_eq!(gl.class, b"dc.global_light");
     }

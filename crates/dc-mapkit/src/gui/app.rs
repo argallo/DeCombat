@@ -1611,6 +1611,7 @@ impl Editor {
                     ambient: None,
                     sky_size: None,
                     sky_material: None,
+                    two_sided: None,
                 };
                 let mut any = false;
                 if let Op::SettingsSet {
@@ -1623,6 +1624,7 @@ impl Editor {
                     sun_color,
                     sun_bright,
                     ambient,
+                    two_sided,
                     ..
                 } = &mut op
                 {
@@ -1661,6 +1663,16 @@ impl Editor {
                     }
                     if let Some(c) = rgb_field(ui, "ambient", s.ambient) {
                         *ambient = Some(c);
+                        any = true;
+                    }
+                    // MAP-118
+                    let mut ts = s.two_sided;
+                    if ui
+                        .checkbox(&mut ts, "both faces")
+                        .on_hover_text("draw the back of every surface too: turn it on for a map with ROM pieces")
+                        .changed()
+                    {
+                        *two_sided = Some(ts);
                         any = true;
                     }
                 }
@@ -2133,6 +2145,7 @@ const ROLES: &[Option<BrushRole>] = &[
     Some(BrushRole::Ladder),
     Some(BrushRole::Breakable),
     Some(BrushRole::Sky),
+    Some(BrushRole::Blocker),
 ];
 
 fn role_name(r: Option<BrushRole>) -> &'static str {
@@ -2143,6 +2156,7 @@ fn role_name(r: Option<BrushRole>) -> &'static str {
         Some(BrushRole::Ladder) => "ladder",
         Some(BrushRole::Breakable) => "breakable",
         Some(BrushRole::Sky) => "sky model",
+        Some(BrushRole::Blocker) => "invisible wall",
     }
 }
 

@@ -36,6 +36,8 @@
 //! directory; required except on `schema` and `rom_list`): `new`, `info`, `validate`, `build`, `export`,
 //! `render` (the CLI's JSON answer: `view`, `image`, `width`, `height`, `triangles`, `legend`, `markers`,
 //! `grid_step`, `top_bounds`, plus `out` when given, and the PNG as image content), `apply`, `get`, `terrain`,
+//! `walk` (routes inline, a survey or the reach analysis, the CLI's JSON answer plus the picture as image content
+//! when one was drawn),
 //! `snapshot`, `history`, `revert`, `run` (inline script text), `rom_list`, `schema`, plus the flat typed twins
 //! `add_object`, `move_object`, `set_property`, `remove_object`, `terrain_noise`.
 
@@ -43,7 +45,7 @@ use crate::cli::{self, Outcome};
 use crate::diag::{Code, Diagnostic, Diagnostics};
 use crate::ops::{self, Op};
 use crate::project::Project;
-use crate::{build, render_sw, schema, script};
+use crate::{render_sw, schema, script};
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -83,8 +85,8 @@ pub const TYPED_TWINS: &[(&str, &str)] = &[
 
 /// The verb tools, in listing order.
 pub const VERB_TOOLS: &[&str] = &[
-    "new", "info", "validate", "build", "export", "render", "apply", "get", "terrain", "snapshot",
-    "asset", "history", "revert", "run", "rom_list", "schema",
+    "new", "info", "validate", "build", "export", "render", "walk", "apply", "get", "terrain",
+    "snapshot", "asset", "history", "revert", "run", "rom_list", "schema",
 ];
 
 /// Serve one session: read requests from `input` until EOF, write responses to `output`. Nothing but response
@@ -512,6 +514,31 @@ pub fn tools() -> Vec<Tool> {
             &["project"],
         ),
         verb(
+            "walk",
+            "Walk the map offline with the game's own movement and collision (the world composed with its ROM pieces, the client's collision, the server's kill volumes; MAP-119): each route from its start to its target reports reached, died (kill volume, lethal fall, fell out) or stuck (where, against what), with its path; or `survey` casts down every grid column for holes and kill floors and draws them on a top-view PNG (returned as image content); or `reach` (MAP-122) finds every floor of a grid and every move between neighbours with the game's mover, and reports the main component (by the spawns, `seed` or `seed_piece`), traps (reached but no way back, with their entry moves), deadly moves, islands, spawns outside the main component and a table per piece, with a top-view PNG. A route that dies or gets stuck, a trap or a deadly move is a warning, not an error.",
+            vec![
+                p(),
+                ("rom", prop("string", "ROM folder (else CA_ROM); the ROM pieces are composed from it")),
+                ("from", vec3("one route: the start [x, y, z] (the body is put on the floor under it)")),
+                ("to", vec3("one route: the target [x, y, z] (reached within 64 units in x / z)")),
+                ("routes", json!({"type": "array", "items": {"type": "object"}, "description": "routes instead of from / to: [{\"name\": ..., \"from\": [x, y, z], \"to\": [x, y, z], \"via\": [[x, y, z], ...]}] (via optional)"})),
+                ("seconds", prop("number", "the time limit of each route (default 60)")),
+                ("sprint", prop("boolean", "sprint instead of running (default false)")),
+                ("open_doors", prop("boolean", "leave doors out of the collision; in a match they open for a player who comes near (default false)")),
+                ("survey", prop("boolean", "survey instead of routes (default false)")),
+                ("reach", prop("boolean", "the reachability analysis instead of routes (default false)")),
+                ("seed", vec3("reach: a point [x, y, z] on a floor of the main component (default: the component holding the most player spawns)")),
+                ("seed_piece", prop("string", "reach: a piece id; the main component is the largest holding one of its player spawns")),
+                ("nodes", prop("string", "reach: write the main component's nodes to this JSON file ({\"step\": S, \"nodes\": [[x, y, z], ...]})")),
+                ("box", prop("string", "survey / reach: x0,z0,x1,z1 or a piece id (default: the box of every floor)")),
+                ("step", prop("number", "survey: grid spacing (default 128); reach: 48")),
+                ("width", prop("integer", "picture width (default: 1536 on the long side)")),
+                ("height", prop("integer", "picture height")),
+                ("out", prop("string", "the PNG (survey default <project>/build/walk/survey.png, reach <project>/build/walk/reach.png; routes draw their paths only with it)")),
+            ],
+            &["project"],
+        ),
+        verb(
             "apply",
             "Apply a batch of JSON ops ({\"op\": name, ...}; see the schema tool) all-or-nothing; the result echoes the new ids.",
             vec![
@@ -774,6 +801,21 @@ pub fn call_tool(tool: &Tool, args: &Map<String, Value>) -> ToolResult {
             }
             Err(d) => envelope("render", Err(d)),
         },
+        "walk" => match walk_tool(&dir, args) {
+            Ok(o) => {
+                let png = o.result["image"]
+                    .as_str()
+                    .and_then(|i| std::fs::read(i).ok());
+                let mut r = envelope("walk", Ok(o));
+                if let Some(png) = png {
+                    r.content.push(
+                        json!({"type": "image", "data": base64(&png), "mimeType": "image/png"}),
+                    );
+                }
+                r
+            }
+            Err(d) => envelope("walk", Err(d)),
+        },
         "apply" => {
             let Some(ops_v) = args.get("ops") else {
                 return usage(tool.name, "`ops` (an array of ops) is required");
@@ -1009,9 +1051,7 @@ fn render_tool(dir: &Path, args: &Map<String, Value>) -> Result<(Outcome, Vec<u8
         sun_dir: crate::geom::V3::from_array(p.settings.sun_dir),
         ..render_sw::RenderOptions::default()
     };
-    let level = build::level_of(&p, &h, &build::Assets::new(dir))?;
-    let mut scene = render_sw::Scene::from_level(&level, &opts);
-    scene.add_project_objects(&p);
+    let scene = render_sw::project_scene(dir, &p, &h, &opts, None)?;
     let r = render_sw::render_report(&scene, view.clone(), (w, hgt), &opts)?;
     let png = r.image.png();
     crate::project::write_atomic(&out, &png).map_err(|e| {
@@ -1056,6 +1096,114 @@ fn render_tool(dir: &Path, args: &Map<String, Value>) -> Result<(Outcome, Vec<u8
         },
         png,
     ))
+}
+
+/// `walk`: the CLI verb's request from the tool's arguments (routes inline), answered with the CLI's envelope.
+// DC-DEFAULT: MAP-119 (the tool takes `routes` as a JSON array instead of a file)
+fn walk_tool(dir: &Path, args: &Map<String, Value>) -> Result<Outcome, Diagnostics> {
+    use crate::reach::{ReachJob, Seed, REACH_STEP};
+    use crate::walk::{self, Job, WalkOptions, WalkRequest};
+    let bad =
+        |path: &str, msg: String| Diagnostics::one(Diagnostic::new(Code::OpInvalid, path, msg));
+    let point = |key: &str| -> Result<Option<[f32; 3]>, Diagnostics> {
+        match args.get(key) {
+            None => Ok(None),
+            Some(v) => serde_json::from_value::<[f32; 3]>(v.clone())
+                .map(Some)
+                .map_err(|_| bad(key, format!("`{key}` is [x, y, z]"))),
+        }
+    };
+    let (from, to) = (point("from")?, point("to")?);
+    let survey = arg_bool(args, "survey");
+    let reach = arg_bool(args, "reach");
+    let routes = args.get("routes");
+    let picked = [
+        survey,
+        reach,
+        from.is_some() || to.is_some(),
+        routes.is_some(),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    if picked != 1 {
+        return Err(bad(
+            "walk",
+            "give one of `from` and `to`, `routes`, `survey: true` or `reach: true`".into(),
+        ));
+    }
+    let (seed, seed_piece, nodes) = (
+        point("seed")?,
+        arg_str(args, "seed_piece"),
+        arg_str(args, "nodes"),
+    );
+    if !reach && (seed.is_some() || seed_piece.is_some() || nodes.is_some()) {
+        return Err(bad(
+            "walk",
+            "`seed`, `seed_piece` and `nodes` go with `reach: true`".into(),
+        ));
+    }
+    let job = if reach {
+        let seed = match (seed, seed_piece) {
+            (Some(_), Some(_)) => {
+                return Err(bad("seed", "give `seed` or `seed_piece`, not both".into()))
+            }
+            (Some(q), None) => Seed::Point(q),
+            (None, Some(id)) => Seed::Piece(id.trim().to_string()),
+            (None, None) => Seed::Spawns,
+        };
+        Job::Reach(ReachJob {
+            area: arg_str(args, "box")
+                .map(|b| walk::parse_area(b).map_err(|e| bad("box", e)))
+                .transpose()?,
+            step: arg_num(args, "step").map_or(REACH_STEP, |s| s as f32),
+            seed,
+            // as `out`: absolute or relative to the server's working directory
+            nodes_out: nodes.map(PathBuf::from),
+        })
+    } else if survey {
+        Job::Survey {
+            area: arg_str(args, "box")
+                .map(|b| walk::parse_area(b).map_err(|e| bad("box", e)))
+                .transpose()?,
+            step: arg_num(args, "step").map_or(walk::SURVEY_STEP, |s| s as f32),
+        }
+    } else if let Some(r) = routes {
+        let text = serde_json::to_string(r).expect("json");
+        Job::Routes(walk::parse_routes(&text).map_err(|e| bad("routes", e))?)
+    } else {
+        let (Some(from), Some(to)) = (from, to) else {
+            return Err(bad("walk", "`from` and `to` go together".into()));
+        };
+        Job::Routes(vec![walk::Route {
+            name: String::new(),
+            from,
+            to,
+            via: Vec::new(),
+        }])
+    };
+    let size = match (arg_num(args, "width"), arg_num(args, "height")) {
+        (None, None) => None,
+        (w, h) => {
+            let side = |n: Option<f64>, other: Option<f64>| {
+                n.or(other)
+                    .map_or(walk::PICTURE_SIDE, |n| (n as i64).clamp(16, 4096) as u32)
+            };
+            Some((side(w, h), side(h, w)))
+        }
+    };
+    walk::walk_project(&WalkRequest {
+        dir: dir.to_path_buf(),
+        rom: arg_str(args, "rom").map(PathBuf::from),
+        job,
+        options: WalkOptions {
+            seconds: arg_num(args, "seconds").map_or(walk::DEFAULT_SECONDS, |s| s as f32),
+            sprint: arg_bool(args, "sprint"),
+        },
+        open_doors: arg_bool(args, "open_doors"),
+        out: arg_str(args, "out").map(PathBuf::from),
+        size,
+    })
 }
 
 /// Standard base64 with padding (RFC 4648), enough for one PNG; no dependency needed.
@@ -1348,6 +1496,28 @@ mod tests {
                 json!({"project": d, "file": "no_such.glb", "own": true}),
                 Some(false),
             ),
+            (
+                "walk",
+                json!({"project": d, "routes": [{"name": "middle", "from": [-300, 60, 0], "to": [300, 60, 0]}], "seconds": 10}),
+                Some(true),
+            ),
+            (
+                "walk",
+                json!({"project": d, "survey": true, "step": 700, "width": 64, "height": 64}),
+                Some(true),
+            ),
+            ("walk", json!({"project": d}), Some(false)),
+            (
+                "walk",
+                json!({"project": d, "reach": true, "step": 700, "width": 64, "height": 64,
+                       "nodes": format!("{d}/build/reach_nodes.json")}),
+                Some(true),
+            ),
+            (
+                "walk",
+                json!({"project": d, "survey": true, "seed_piece": "piece_1"}),
+                Some(false),
+            ),
         ];
         let mut input = vec![
             req(
@@ -1578,6 +1748,41 @@ mod tests {
                 ("apply", 22) => assert_eq!(body["diagnostics"][0]["code"], "id.unknown"),
                 ("validate", 23) => assert!(body.as_str().unwrap().contains("project"), "{body}"),
                 ("terrain", 24) => assert_eq!(body["ok"], false),
+                ("walk", 26) => {
+                    let r = &body["result"]["routes"][0];
+                    assert_eq!(r["name"], "middle", "{body}");
+                    assert!(r["outcome"].is_string(), "{body}");
+                    assert!(r["path"].as_array().is_some_and(|p| !p.is_empty()));
+                }
+                ("walk", 27) => {
+                    assert!(body["result"]["columns"].as_u64().unwrap() > 0, "{body}");
+                    let content = resp["result"]["content"].as_array().unwrap();
+                    assert!(
+                        content.iter().any(|c| c["type"] == "image"),
+                        "the survey's picture: {body}"
+                    );
+                }
+                ("walk", 28) => assert_eq!(body["diagnostics"][0]["code"], "op.invalid"),
+                ("walk", 29) => {
+                    let r = &body["result"];
+                    assert!(r["nodes"].as_u64().unwrap() > 0, "{body}");
+                    assert!(r["main"]["nodes"].as_u64().unwrap() > 0, "{body}");
+                    assert_eq!(r["main"]["seed"]["by"], "spawns", "{body}");
+                    assert_eq!(r["nodes_written"], r["main"]["nodes"], "{body}");
+                    let file = r["nodes_file"].as_str().unwrap();
+                    let v: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+                    assert_eq!(v["step"], 700.0);
+                    assert_eq!(
+                        v["nodes"].as_array().unwrap().len() as u64,
+                        r["main"]["nodes"].as_u64().unwrap()
+                    );
+                    let content = resp["result"]["content"].as_array().unwrap();
+                    assert!(
+                        content.iter().any(|c| c["type"] == "image"),
+                        "the reach picture: {body}"
+                    );
+                }
+                ("walk", 30) => assert_eq!(body["diagnostics"][0]["code"], "op.invalid"),
                 _ => {}
             }
         }

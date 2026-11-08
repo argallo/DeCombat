@@ -1,5 +1,6 @@
 {
   "repository": "argallo/DeCombat",
+  "packRepositories": ["argallo/DeCombat-mods", "argallo/DeCombat-maps"],
   "branch": "master",
   "siteUrl": "https://decombat.com",
   "discordInvite": "https://discord.gg/hNWcXpTST",

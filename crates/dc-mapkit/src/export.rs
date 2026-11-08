@@ -378,6 +378,31 @@ pub fn export(
             }
         }
     }
+    // DC-DEFAULT: MAP-116 a map composed with ROM pieces ships their paths and digests only (players compose it
+    // from their own ROM), so it is never committed: --no-rom-paths refuses it like a ROM texture
+    for piece in &p.pieces {
+        if opts.no_rom_paths {
+            d.push(
+                Diagnostic::new(
+                    Code::ExportRomPiece,
+                    format!("pieces.{}", piece.id),
+                    format!("ROM piece `{}` (--no-rom-paths)", piece.world),
+                )
+                .with_fix(
+                    "a map with ROM pieces stays the mapper's own project, outside the repository",
+                ),
+            );
+        } else {
+            d.warn(
+                Code::PieceRom,
+                format!("pieces.{}", piece.id),
+                format!(
+                    "ROM piece `{}` is not shipped; every player's client and the game server compose it from their own ROM",
+                    piece.world
+                ),
+            );
+        }
+    }
     if d.has_errors() {
         return Err(d);
     }
@@ -698,6 +723,7 @@ mod tests {
             },
             dat,
             diagnostics: Diagnostics::new(),
+            composed: None,
         }
     }
 

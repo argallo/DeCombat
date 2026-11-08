@@ -112,6 +112,68 @@ pub struct RomEntry {
     pub height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumb: Option<String>,
+    /// A world's layout, for placing it as a ROM piece (MAP-116).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world: Option<WorldRow>,
+}
+
+/// What `rom worlds` tells of a world for placing it as a piece (MAP-116), in the world's own coordinates: read
+/// from the user's ROM at run time, never stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldRow {
+    /// The world's extents (they hold its sky box and far scenery: far more than is played).
+    pub extent: crate::project::BoxF,
+    /// The box around its player spawns, item spawns and blockers: where it is played.
+    pub play: Option<crate::project::BoxF>,
+    /// The median height of its player spawns.
+    pub floor: Option<f32>,
+    pub player_spawns: usize,
+    pub item_spawns: usize,
+    /// A region to start from: the play box grown by [`PIECE_MARGIN`] across, from [`PIECE_BELOW`] under the
+    /// floor to [`PIECE_ABOVE`] over the play box.
+    pub region: Option<crate::project::BoxF>,
+}
+
+/// The suggested region of a piece: the play box plus this much on each side (its walls and near scenery).
+// DC-DEFAULT: MAP-116
+pub const PIECE_MARGIN: f32 = 1200.0;
+/// ... from this far under the floor (pits, cellars) ...
+pub const PIECE_BELOW: f32 = 1500.0;
+/// ... to this far over the play box (towers, the near sky).
+pub const PIECE_ABOVE: f32 = 2500.0;
+
+impl WorldRow {
+    /// The row of a parsed world.
+    pub fn of(w: &dc_world::World<'_>) -> WorldRow {
+        let info = dc_world::compose::piece_info(w);
+        let b = |a: &dc_world::compose::clip::Aabb| crate::project::BoxF {
+            min: a.min,
+            max: a.max,
+        };
+        let region = info.play.map(|p| {
+            let floor = info.floor.unwrap_or(p.min[1]);
+            crate::project::BoxF::new(
+                [
+                    p.min[0] - PIECE_MARGIN,
+                    floor - PIECE_BELOW,
+                    p.min[2] - PIECE_MARGIN,
+                ],
+                [
+                    p.max[0] + PIECE_MARGIN,
+                    p.max[1].max(floor + 500.0) + PIECE_ABOVE,
+                    p.max[2] + PIECE_MARGIN,
+                ],
+            )
+        });
+        WorldRow {
+            extent: b(&info.extent),
+            play: info.play.as_ref().map(b),
+            floor: info.floor,
+            player_spawns: info.player_spawns,
+            item_spawns: info.item_spawns,
+            region,
+        }
+    }
 }
 
 impl RomEntry {
@@ -125,6 +187,7 @@ impl RomEntry {
             width: None,
             height: None,
             thumb: None,
+            world: None,
         }
     }
 }
@@ -492,8 +555,21 @@ pub fn list(rom: &Path, query: &RomQuery) -> Result<Vec<RomEntry>, Diagnostics> 
     for (_, a) in &archives {
         for (path, _, size) in a.entries() {
             if has_extension(path, ext) && passes(filter, path) {
+                // a world's layout for placing it as a piece (MAP-116): read and parsed at run time only
+                let world = (query.kind == RomKind::Worlds)
+                    .then(|| a.entry_raw(path).ok().flatten())
+                    .flatten()
+                    .and_then(|bytes| {
+                        dc_world::World::parse_with(
+                            &bytes,
+                            dc_world::ParseOptions { render: false },
+                        )
+                        .ok()
+                        .map(|w| WorldRow::of(&w))
+                    });
                 rows.push(RomEntry {
                     size: Some(*size as u64),
+                    world,
                     ..RomEntry::path_only(path.clone())
                 });
             }

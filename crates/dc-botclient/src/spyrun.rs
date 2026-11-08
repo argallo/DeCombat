@@ -7,7 +7,7 @@
 // SPEC: GAME_MODES_2009.md §4.3 (zone record order, kind 8), §4.4 (kind 3), §5.6 (0xcb sub 0 `[value][team][pid]`,
 // sub 1 `[total][dropped][spies]`); GAME_MESSAGES_2009_S2C.md §8.2 (type-0x17 blob head)
 // DC-DEFAULT: BOT-75 (proposed), BOT-127 (proposed), BOT-137 (proposed), BOT-140 (proposed), BOT-151 (proposed),
-// BOT-152 (proposed), BOT-155 (proposed)
+// BOT-152 (proposed), BOT-155 (proposed), BOT-163 (proposed), BOT-164 (proposed)
 
 use crate::objects::ObjectTable;
 use dc_wire::udp::BitWriter;
@@ -127,6 +127,30 @@ pub const CHASE_STALL_MS: u32 = 10_000;
 pub const CHASE_NO_WAY_MS: u32 = 8_000;
 pub const CHASE_DROP_MS: u32 = 30_000;
 
+/// BOT-163: a case place at which the bot counted [`FAIL_MAX`] failed attempts is out of its reach for the rest of
+/// the match (its count survives the bot's deaths; it starts afresh once no case lies there any more: somebody took
+/// it). A failed attempt: a walk to it that stalls (BOT-127 / BOT-141), the bot's death while it walked to it within
+/// [`FAIL_NEAR`] units (flat) of it and more than [`UNDER_RISE`] below it, the death of another holder one case short
+/// (he loses his cases) as near under it (his place seen within [`FAIL_SEEN_MS`]), a player (the bot under the case it
+/// walks to, or another holder one case short) standing [`UNDER_FLAT`] units (flat) or nearer
+/// under it, more than [`UNDER_RISE`] below its point, for [`UNDER_MS`] (the server's "across from intel but off in
+/// height"); at most one count per place every [`FAIL_GAP_MS`], one per player standing under it every
+/// [`UNDER_GAP_MS`]. Before, a case a grid node lay near but no way led onto (Gray Hammer's deck case at (2251, 304,
+/// -2030)) drew 16 holders of 4 to their deaths under it in 220 s: each died inside the stall time, and the stall's
+/// block lasted 60 s.
+// DC-DEFAULT: BOT-163 (proposed)
+pub const FAIL_MAX: u32 = 3;
+pub const FAIL_NEAR: f32 = 400.0;
+pub const FAIL_GAP_MS: u32 = 3_000;
+pub const UNDER_FLAT: f32 = 128.0;
+pub const UNDER_RISE: f32 = 96.0;
+pub const UNDER_MS: u32 = 3_000;
+pub const UNDER_GAP_MS: u32 = 10_000;
+pub const FAIL_SEEN_MS: u32 = 3_000;
+/// BOT-163: a case place that passed the reach test only because the bot's grid was still growing is tested again
+/// after this long.
+pub const RECHECK_MS: u32 = 5_000;
+
 /// Why a case is no goal for a bot (BOT-137).
 pub const NO_REACH: &str = "reach";
 pub const IN_DANGER: &str = "danger";
@@ -138,8 +162,9 @@ pub const NO_FLOOR: &str = "void";
 /// [`FLOOR_BELOW`] (the void); [`NO_REACH`] when the bot's grid is grown in full and has no node within [`REACH`]
 /// (flat) and [`REACH_RISE`] (height) of it (a case on a post top or a roof no way leads to; a grid still growing
 /// may not have got there yet and is given the benefit). Points, not the bot's box: the case is taken from 56 units
-/// across (DSV-231), so a case by a wall or a water edge is a goal (a box test refused those).
-// DC-DEFAULT: BOT-137 (proposed)
+/// across (DSV-231), so a case by a wall or a water edge is a goal (a box test refused those). BOT-163: the session
+/// tests a pass while the grid grows again later ([`SpyRun::note_reach`]).
+// DC-DEFAULT: BOT-137 (proposed), BOT-163 (proposed)
 pub fn case_reach(
     nav: &mut crate::nav::NavGrid,
     world: &dc_sim::CollisionWorld,
@@ -162,8 +187,10 @@ pub fn case_reach(
         return Some(NO_FLOOR);
     }
     let fits = |s: [f32; 3]| flat(s, c) <= REACH && (s[1] - c[1]).abs() <= REACH_RISE;
-    let node =
-        nav.growing() || nav.is_empty() || nav.links_near(c, REACH).iter().any(|n| fits(n.0));
+    if nav.growing() || nav.is_empty() {
+        return None;
+    }
+    let node = nav.links_near(c, REACH).iter().any(|n| fits(n.0));
     (!node).then_some(NO_REACH)
 }
 
@@ -228,6 +255,22 @@ pub struct SpyRun {
     guard_base: Option<f32>,
     /// BOT-155: players this bot gave its chase of up, until when.
     dropped: BTreeMap<u32, u32>,
+    /// BOT-163: failed attempts per case place this match; places that passed the reach test only provisionally (the
+    /// grid grew) and when; a case place given up that the session has not yet told of.
+    fails: Vec<CaseFails>,
+    provisional: Vec<([f32; 3], u32)>,
+    pub just_given_up: Option<[f32; 3]>,
+    lost_holders: Vec<([f32; 3], u32)>,
+}
+
+/// BOT-163: the failed attempts at one case place: how many, when the last one counted, and the players standing
+/// under it (pid, since when, when last counted).
+#[derive(Debug, Clone, PartialEq)]
+struct CaseFails {
+    at: [f32; 3],
+    count: u32,
+    last: Option<u32>,
+    under: Vec<(u32, u32, Option<u32>)>,
 }
 
 /// BOT-141: what the bot's follower knows of its way to `target`: the way left along it, or that the grid is still
@@ -404,6 +447,19 @@ pub fn guard_place(nodes: &[[f32; 3]], u: [f32; 3], base: f32, k: usize) -> Opti
         })
         .min_by(|a, b| off(a).total_cmp(&off(b)))
         .copied()
+}
+
+/// BOT-164: the player a chaser fights from where it stands: the one its `goal` chases, when he is the shooter's
+/// target in clear sight (`fighting`, the target's pid while the shooter has a clear line to it). Like the TDM hunt
+/// (no hunt walk while the target is in sight) the chaser stops closing in and fights; it walks its chase again once
+/// he is out of sight. Before, the chase goal was the holder's own place while in sight: 30..52 % of Spy Hunt hits
+/// landed under 20 units (TDM 0..1 %).
+// DC-DEFAULT: BOT-164 (proposed)
+pub fn chase_engages(goal: Option<&SpyGoal>, fighting: Option<u32>) -> Option<u32> {
+    match goal {
+        Some(SpyGoal::Chase(pid, _)) if fighting == Some(*pid) => Some(*pid),
+        _ => None,
+    }
 }
 
 /// BOT-151: the angle (round the vertical) from `u` to `p`.
@@ -586,8 +642,16 @@ impl SpyRun {
                 // BOT-127: who holds cases (a spy, team 2); a hunter again holds none
                 if team == SPY_TEAM && v > 0 {
                     self.holders.insert(pid, v);
-                } else {
-                    self.holders.remove(&pid);
+                } else if self
+                    .holders
+                    .remove(&pid)
+                    .is_some_and(|n| n + 1 >= self.total)
+                    && Some(pid) != own
+                {
+                    // BOT-163: another holder one case short lost his cases (he died): checked in goal()
+                    if let Some(l) = self.last_seen.get(&pid) {
+                        self.lost_holders.push(*l);
+                    }
                 }
                 if Some(pid) == own {
                     self.held = v;
@@ -696,14 +760,134 @@ impl SpyRun {
             .iter()
             .any(|(b, at)| same(*b, *c) && now.wrapping_sub(*at) < BLOCK_MS)
             || self.unreachable.iter().any(|(b, _)| same(*b, *c))
+            || self.given_up(c)
+    }
+
+    /// BOT-163: whether the bot gave the case place `c` up for the match ([`FAIL_MAX`] failed attempts).
+    pub fn given_up(&self, c: &[f32; 3]) -> bool {
+        self.fail_count(c) >= FAIL_MAX
+    }
+
+    /// BOT-163: the failed attempts counted at the case place `c`.
+    pub fn fail_count(&self, c: &[f32; 3]) -> u32 {
+        self.fails
+            .iter()
+            .find(|f| same(f.at, *c))
+            .map_or(0, |f| f.count)
+    }
+
+    fn fails_of(&mut self, c: [f32; 3]) -> &mut CaseFails {
+        let i = match self.fails.iter().position(|f| same(f.at, c)) {
+            Some(i) => i,
+            None => {
+                self.fails.push(CaseFails {
+                    at: c,
+                    count: 0,
+                    last: None,
+                    under: Vec::new(),
+                });
+                self.fails.len() - 1
+            }
+        };
+        &mut self.fails[i]
+    }
+
+    /// BOT-163: one failed attempt at the case place `c` at `now` (none within [`FAIL_GAP_MS`] of the last one).
+    pub fn fail(&mut self, c: [f32; 3], now: u32) {
+        let f = self.fails_of(c);
+        if f.count >= FAIL_MAX || f.last.is_some_and(|t| now.wrapping_sub(t) < FAIL_GAP_MS) {
+            return;
+        }
+        f.count += 1;
+        f.last = Some(now);
+        if f.count >= FAIL_MAX {
+            self.just_given_up = Some(c);
+            if self.current.is_some_and(|x| same(x, c)) {
+                self.current = None;
+            }
+        }
+    }
+
+    /// BOT-163: the bot died at `at` at `now`: a failed attempt at the case it walked to when that lay within
+    /// [`FAIL_NEAR`] (flat) and more than [`UNDER_RISE`] above it.
+    pub fn on_died(&mut self, at: [f32; 3], now: u32) {
+        if let Some(c) = self
+            .current
+            .filter(|c| flat(*c, at) <= FAIL_NEAR && c[1] - at[1] > UNDER_RISE)
+        {
+            self.fail(c, now);
+        }
+    }
+
+    /// BOT-163: the players standing under the lying `cases` (`players`: the holders of cases, pid and place; `own`:
+    /// the bot, its place and the case it walks to): one standing under a case for [`UNDER_MS`] is a failed attempt
+    /// at it; the bot counts only under the case it walks to. A place no case lies at any more (somebody took it)
+    /// starts its count afresh.
+    fn watch_under(
+        &mut self,
+        cases: &[[f32; 3]],
+        players: &[(u32, [f32; 3])],
+        own: Option<(u32, [f32; 3], [f32; 3])>,
+        now: u32,
+    ) {
+        self.fails.retain(|f| cases.iter().any(|c| same(*c, f.at)));
+        for c in cases {
+            let mine = own.filter(|o| same(o.2, *c)).map(|o| (o.0, o.1));
+            let under: Vec<u32> = players
+                .iter()
+                .copied()
+                .chain(mine)
+                .filter(|(_, p)| flat(*p, *c) <= UNDER_FLAT && c[1] - p[1] > UNDER_RISE)
+                .map(|(pid, _)| pid)
+                .collect();
+            if under.is_empty() && !self.fails.iter().any(|f| same(f.at, *c)) {
+                continue;
+            }
+            let f = self.fails_of(*c);
+            // (a player no longer under it starts afresh when he comes back; when he last counted is kept)
+            f.under.retain(|u| under.contains(&u.0) || u.2.is_some());
+            for u in f.under.iter_mut().filter(|u| !under.contains(&u.0)) {
+                u.1 = u32::MAX;
+            }
+            let mut count = false;
+            for pid in under {
+                match f.under.iter_mut().find(|u| u.0 == pid) {
+                    Some(u) if u.1 == u32::MAX => u.1 = now,
+                    Some(u) => {
+                        let gap = u.2.is_none_or(|t| now.wrapping_sub(t) >= UNDER_GAP_MS);
+                        if now.wrapping_sub(u.1) >= UNDER_MS && gap {
+                            u.2 = Some(now);
+                            u.1 = now;
+                            count = true;
+                        }
+                    }
+                    None => f.under.push((pid, now, None)),
+                }
+            }
+            if count {
+                self.fail(*c, now);
+            }
+        }
     }
 
     /// BOT-137: the places of the lying cases not yet checked for reach (the session checks each once,
     /// [`case_reach`], and tells [`Self::note_reach`]); a case that moves (taken, dropped, back at a spawn point)
     /// lies at a new place and is checked again.
-    pub fn unchecked(&mut self, table: &ObjectTable) -> Vec<[f32; 3]> {
+    pub fn unchecked(&mut self, table: &ObjectTable, now: u32) -> Vec<[f32; 3]> {
         let cases = places(table, is_intel);
-        self.checked.retain(|c| cases.iter().any(|x| same(*x, *c)));
+        // BOT-163: a provisional pass (the grid was growing) is tested again after a while
+        let due: Vec<[f32; 3]> = self
+            .provisional
+            .iter()
+            .filter(|(_, t)| now.wrapping_sub(*t) >= RECHECK_MS)
+            .map(|x| x.0)
+            .collect();
+        self.provisional.retain(|(c, t)| {
+            now.wrapping_sub(*t) < RECHECK_MS && cases.iter().any(|x| same(*x, *c))
+        });
+        self.checked.retain(|c| {
+            cases.iter().any(|x| same(*x, *c)) && !due.iter().any(|d| same(*d, *c))
+        });
         self.unreachable
             .retain(|(c, _)| cases.iter().any(|x| same(*x, *c)));
         cases
@@ -713,8 +897,12 @@ impl SpyRun {
     }
 
     /// BOT-137: the reach check of the case at `c`: `why` it is out of reach, `None` when the bot can take it.
-    pub fn note_reach(&mut self, c: [f32; 3], why: Option<&'static str>) {
+    /// BOT-163: a pass while the grid still grows (`provisional`) is tested again after [`RECHECK_MS`].
+    pub fn note_reach(&mut self, c: [f32; 3], why: Option<&'static str>, provisional: bool, now: u32) {
         self.checked.push(c);
+        if provisional && why.is_none() {
+            self.provisional.push((c, now));
+        }
         if let Some(w) = why {
             self.unreachable.push((c, w));
         }
@@ -792,6 +980,37 @@ impl SpyRun {
         }
         let cases = places(table, is_intel);
         let me = own.unwrap_or(u32::MAX);
+        // BOT-163: holders one case short standing under a case count as failed attempts at it, and so does the bot
+        // under the case it walks to (not while its grid grows a way there)
+        let players: Vec<(u32, [f32; 3])> = others
+            .iter()
+            .copied()
+            .filter(|o| {
+                o.0 != me
+                    && self
+                        .holders
+                        .get(&o.0)
+                        .is_some_and(|n| n + 1 >= self.total)
+            })
+            .collect();
+        let growing = self.way.is_some_and(|w| w.growing);
+        let own_case = self.current.filter(|_| !growing).map(|c| (me, at, c));
+        self.watch_under(&cases, &players, own_case, now);
+        // BOT-163: another holder who died under a case (within FAIL_NEAR of it, more than UNDER_RISE below it, his
+        // place seen within FAIL_SEEN_MS) failed at it
+        for (p, t) in std::mem::take(&mut self.lost_holders) {
+            if now.wrapping_sub(t) > FAIL_SEEN_MS {
+                continue;
+            }
+            let under = cases
+                .iter()
+                .filter(|c| flat(**c, p) <= FAIL_NEAR && c[1] - p[1] > UNDER_RISE)
+                .min_by(|a, b| flat(**a, p).total_cmp(&flat(**b, p)))
+                .copied();
+            if let Some(c) = under {
+                self.fail(c, now);
+            }
+        }
         let pick = spread(
             &cases,
             |c| !self.is_blocked(c, now),
@@ -901,6 +1120,8 @@ impl SpyRun {
             self.blocked.push((c, now));
             self.current = None;
             self.just_blocked = Some(c);
+            // BOT-163: and a failed attempt for the match's count
+            self.fail(c, now);
         }
     }
 }
@@ -1200,13 +1421,13 @@ mod tests {
         // the session checks each place once and the spread leaves the bad one alone
         let t = table(&[(10, intel(), wet), (11, intel(), floor)]);
         let mut s = SpyRun::default();
-        let fresh = s.unchecked(&t);
+        let fresh = s.unchecked(&t, 0);
         assert_eq!(fresh, vec![wet, floor]);
         for c in fresh {
             let why = case_reach(&mut nav, &w, &water, c);
-            s.note_reach(c, why);
+            s.note_reach(c, why, false, 0);
         }
-        assert!(s.unchecked(&t).is_empty());
+        assert!(s.unchecked(&t, 0).is_empty());
         assert!(s.is_blocked(&wet, 0) && !s.is_blocked(&floor, 0));
         // the bot stands right by the wet case: it still walks to the floor one
         let at = [450.0, 50.0, 0.0];
@@ -1214,9 +1435,96 @@ mod tests {
         // the wet case went back to a spawn point on the floor: it is checked again and taken
         let back = [-200.0, 50.0, 300.0];
         let t = table(&[(12, intel(), back), (11, intel(), floor)]);
-        assert_eq!(s.unchecked(&t), vec![back]);
-        s.note_reach(back, None);
+        assert_eq!(s.unchecked(&t, 0), vec![back]);
+        s.note_reach(back, None, false, 0);
         assert!(!s.is_blocked(&wet, 0) && !s.is_blocked(&back, 0));
+        // BOT-163: a pass while the grid grew is tested again 5 s later, a final one never
+        s.note_reach([0.0; 3], None, true, 100);
+        let t = table(&[(13, intel(), [0.0; 3]), (11, intel(), floor)]);
+        assert!(s.unchecked(&t, 100 + RECHECK_MS - 1).is_empty());
+        assert_eq!(s.unchecked(&t, 100 + RECHECK_MS), vec![[0.0; 3]]);
+    }
+
+    /// BOT-163: failed attempts at a case place add up over the bot's lives (a death by the case it walks to, a
+    /// stall, a holder standing under it for 3 s); at 3 the place is out of its reach for the match and the bot takes
+    /// another case; once no case lies there (taken) the count starts afresh.
+    #[test]
+    fn a_case_that_defeats_three_attempts_is_given_up_for_the_match() {
+        let deck = [0.0, 300.0, 0.0];
+        let other = [3000.0, 0.0, 0.0];
+        let t = table(&[(10, intel(), deck), (11, intel(), other)]);
+        let mut s = SpyRun::default();
+        let under = [30.0, 60.0, 0.0];
+        // the bot walks to the deck case and dies under it, twice; the count survives its deaths
+        assert_eq!(s.goal(&t, Some(1), under, &[], 0), Some(SpyGoal::Case(deck)));
+        s.on_died(under, 1_000);
+        // (a second count within 3 s of the first is the same attempt)
+        s.on_died(under, 2_000);
+        assert_eq!(s.fail_count(&deck), 1);
+        assert_eq!(s.goal(&t, Some(1), [500.0, 0.0, 0.0], &[], 20_000), Some(SpyGoal::Case(deck)));
+        s.on_died([300.0, 60.0, 0.0], 21_000);
+        assert_eq!(s.fail_count(&deck), 2);
+        // far from the case a death is no attempt at it
+        s.on_died([900.0, 60.0, 0.0], 40_000);
+        assert_eq!(s.fail_count(&deck), 2);
+        assert!(!s.is_blocked(&deck, 40_000));
+        // a holder (player 5 holds a case) stands under it for 3 s: the third attempt
+        s.on_bounty(&sub0(1, 2, 5), Some(1));
+        let others = [(5u32, [10.0, 60.0, 10.0])];
+        let at = [1500.0, 0.0, 0.0];
+        s.goal(&t, Some(1), at, &others, 50_000);
+        s.goal(&t, Some(1), at, &others, 52_000);
+        assert_eq!(s.fail_count(&deck), 2);
+        s.goal(&t, Some(1), at, &others, 53_000);
+        assert_eq!(s.fail_count(&deck), 3);
+        assert_eq!(s.just_given_up.take(), Some(deck));
+        // out of its reach for the match: long after BOT-127's minute it still takes the other case
+        assert!(s.is_blocked(&deck, 500_000));
+        assert_eq!(s.goal(&t, Some(1), [0.0, 60.0, 0.0], &[], 500_000), Some(SpyGoal::Case(other)));
+        // somebody took the deck case: when a case lies there again it is a goal again
+        let gone = table(&[(11, intel(), other)]);
+        s.goal(&gone, Some(1), at, &[], 501_000);
+        assert!(!s.is_blocked(&deck, 502_000));
+        assert_eq!(s.fail_count(&deck), 0);
+        // a hunter (no case) under it is no attempt; the bot under a case it does not walk to neither
+        let mut h = SpyRun::default();
+        let near = [(6u32, [10.0, 60.0, 10.0])];
+        for k in 0..10u32 {
+            h.goal(&t, Some(1), [2950.0, 0.0, 0.0], &near, k * 1_000);
+        }
+        assert_eq!(h.fail_count(&deck), 0);
+        // another holder loses his cases (he died) under the deck case: an attempt; one by a floor case: none
+        let away = [2950.0, 0.0, 0.0];
+        // (a holder of 1 of 5 is not one case short: his death there is no attempt)
+        let mut n = SpyRun::default();
+        n.on_bounty(&sub1(5), Some(1));
+        n.on_bounty(&sub0(1, 2, 5), Some(1));
+        n.goal(&t, Some(1), away, &[(5, [200.0, 60.0, 0.0])], 1_000);
+        n.on_bounty(&sub0(0, 1, 5), Some(1));
+        n.goal(&t, Some(1), away, &[], 1_500);
+        assert_eq!(n.fail_count(&deck), 0);
+        let mut d = SpyRun::default();
+        d.on_bounty(&sub1(2), Some(1));
+        d.on_bounty(&sub0(1, 2, 5), Some(1));
+        d.on_bounty(&sub0(2, 2, 6), Some(1));
+        d.goal(&t, Some(1), away, &[(5, [200.0, 60.0, 0.0]), (6, [2800.0, 0.0, 0.0])], 1_000);
+        d.on_bounty(&sub0(0, 1, 5), Some(1));
+        d.on_bounty(&sub0(0, 1, 6), Some(1));
+        d.goal(&t, Some(1), away, &[], 1_500);
+        assert_eq!(d.fail_count(&deck), 1);
+        assert_eq!(d.fail_count(&other), 0);
+    }
+
+    /// BOT-164: a chaser fights the player it chases from where it stands while he is its target in clear sight;
+    /// not another target, not a case walk.
+    #[test]
+    fn a_chaser_with_the_chased_player_in_sight_stands_and_fights() {
+        let chase = SpyGoal::Chase(4, [100.0, 0.0, 0.0]);
+        assert_eq!(chase_engages(Some(&chase), Some(4)), Some(4));
+        assert_eq!(chase_engages(Some(&chase), Some(5)), None);
+        assert_eq!(chase_engages(Some(&chase), None), None);
+        assert_eq!(chase_engages(Some(&SpyGoal::Case([0.0; 3])), Some(4)), None);
+        assert_eq!(chase_engages(None, Some(4)), None);
     }
 
     /// BOT-137: loose cases go to the players who hold some (a holder of n costs 1 / (1 + n) of his distance), and a

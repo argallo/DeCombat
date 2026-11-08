@@ -161,6 +161,7 @@ impl Jobs {
                     with_mods: Vec::new(),
                     loadout: None,
                     inventory: None,
+                    steps: None,
                 },
             )))
         });

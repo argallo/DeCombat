@@ -221,6 +221,11 @@ pub struct SceneMesh {
     /// (build order): the server's sky table picks which of them the sky pass draws ([`crate::GpuScene`]).
     // EVIDENCE: engine+0x188c0 (the scene's sky-object list is the sky table's ids resolved to objects)
     pub sky_models: Vec<SceneModel>,
+    /// Draw both faces of [`SceneMesh::batches`] (the level and the opaque world models, but for filler and cut-out
+    /// cards, [`crate::GpuScene::two_sided`]; not the sky, not the translucent world models): the world's `two_sided`
+    /// setting ([`world_two_sided`]). False for every ROM world.
+    // DC-DEFAULT: MAP-118
+    pub two_sided: bool,
 }
 
 /// One world model of the scene: the name of its nested render world and the index range `[first_index,
@@ -271,11 +276,31 @@ enum Target {
 // DC-DEFAULT: MAP-26 (the renderer reads the vocabulary names through `Key::matches`)
 use dc_world::names::{
     BLEND_ADDITIVE, BLEND_OPAQUE, PROP_ALPHA, PROP_BLEND, PROP_HIDDEN, PROP_START_HIDDEN,
-    PROP_VISIBLE,
+    PROP_TWO_SIDED, PROP_VISIBLE,
 };
 
 fn named(name: &[u8], key: &dc_world::Key) -> bool {
     key.matches(name)
+}
+
+/// Whether the world asks for both faces of its geometry: the `two_sided` property of its world-settings object (the
+/// first object of that role). A map built from pieces of ROM worlds sets it, because a ROM world faces its surfaces
+/// only towards its own play area and the composed map shows them from outside too. The key is DeCombat's own and is
+/// read through [`dc_world::Object::prop_named`], so only a `dc.world_settings` object carries it (MAP-2): a ROM world
+/// is always one-sided. `true` (or a non-zero number, as the fog switch reads, [`crate::world_fog`]) turns it on.
+// DC-DEFAULT: MAP-118
+pub fn world_two_sided(world: &World<'_>) -> bool {
+    world
+        .objects
+        .iter()
+        .find(|o| o.role == Some(ObjectRole::WorldSettings))
+        .and_then(|o| o.prop_named(&PROP_TWO_SIDED))
+        .is_some_and(|p| match p.value {
+            dc_world::FieldValue::Bool(b) => b,
+            dc_world::FieldValue::Real(v) => v != 0.0 && !v.is_nan(),
+            dc_world::FieldValue::Int(v) | dc_world::FieldValue::Bits(v) => v != 0,
+            _ => false,
+        })
 }
 
 /// How the main pass treats a nested render model.
@@ -667,6 +692,7 @@ impl SceneMesh {
         if b.opts.fog {
             (b.mesh.fog, b.mesh.sky_fog) = crate::fog::world_fog(world);
         }
+        b.mesh.two_sided = world_two_sided(world);
         // SPEC: RENDER_2009.md §5.1 step 5 (buckets flushed in index order 0..22)
         b.mesh.batches.sort_by_key(|x| x.bucket);
         b.mesh

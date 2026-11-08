@@ -55,6 +55,7 @@ use dc_mod_lua::mlua::{self, Lua, MultiValue, Table, Value};
 use dc_mod_lua::{LuaError, LuaSandbox, SandboxLimits};
 use serde_json::{json, Map, Value as Json};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 /// The default instruction budget of a generator (DC-DEFAULT: MAP-57): the mod default of 10 M stops a per-cell
@@ -119,6 +120,8 @@ pub fn generate(
         heights: heights.clone(),
         ops: Vec::new(),
         refusal: None,
+        probes: BTreeMap::new(),
+        spawn_lists: BTreeMap::new(),
     }));
     let setup = |e: LuaError| {
         Diagnostics::one(Diagnostic::new(
@@ -167,6 +170,60 @@ struct State {
     heights: Heights,
     ops: Vec<Op>,
     refusal: Option<(i32, Diagnostic)>,
+    /// The collision of the ROM worlds `map.probe` has read, by world path (MAP-116): read once per run.
+    probes: BTreeMap<String, Rc<dc_sim::CollisionWorld>>,
+    /// The player and item spawns of the ROM worlds `map.piece_spawns` has read (MAP-123): read once per run.
+    spawn_lists: BTreeMap<String, SpawnList>,
+}
+
+/// A ROM world's spawns: position, and whether it is a player spawn (else an item spawn).
+type SpawnList = Rc<Vec<([f32; 3], bool)>>;
+
+impl State {
+    /// The collision of a ROM world (its level and solid brushes, no blockers), read from the ROM once.
+    fn probe_world(&mut self, world: &str) -> Result<Rc<dc_sim::CollisionWorld>, String> {
+        if let Some(c) = self.probes.get(world) {
+            return Ok(Rc::clone(c));
+        }
+        let (rom, _) = crate::romlist::discover_rom(None)
+            .ok_or_else(|| format!("no ROM was found ({})", crate::romlist::ROM_ATTEMPTS))?;
+        let bytes = dc_world::compose::rom_reader(&rom)(world)?;
+        let w = dc_world::World::parse_with(&bytes, dc_world::ParseOptions { render: false })
+            .map_err(|e| format!("{world}: {e}"))?;
+        let filter = dc_sim::from_world::WorldFilter {
+            blockers: false,
+            ..dc_sim::from_world::WorldFilter::default()
+        };
+        let c = Rc::new(dc_sim::from_world::collision_world(&w, &filter));
+        self.probes.insert(world.to_string(), Rc::clone(&c));
+        Ok(c)
+    }
+
+    /// The player spawns (true) and item spawns (false) of a ROM world, read from the ROM once.
+    fn spawn_list(&mut self, world: &str) -> Result<SpawnList, String> {
+        if let Some(l) = self.spawn_lists.get(world) {
+            return Ok(Rc::clone(l));
+        }
+        let (rom, _) = crate::romlist::discover_rom(None)
+            .ok_or_else(|| format!("no ROM was found ({})", crate::romlist::ROM_ATTEMPTS))?;
+        let bytes = dc_world::compose::rom_reader(&rom)(world)?;
+        let w = dc_world::World::parse_with(&bytes, dc_world::ParseOptions { render: false })
+            .map_err(|e| format!("{world}: {e}"))?;
+        let mut list = Vec::new();
+        for (role, player) in [
+            (dc_world::ObjectRole::PlayerSpawn, true),
+            (dc_world::ObjectRole::ItemSpawn, false),
+        ] {
+            list.extend(
+                w.objects_with_role(role)
+                    .filter_map(dc_world::Object::position)
+                    .map(|p| (p, player)),
+            );
+        }
+        let l = Rc::new(list);
+        self.spawn_lists.insert(world.to_string(), Rc::clone(&l));
+        Ok(l)
+    }
 }
 
 type Shared = Rc<RefCell<State>>;
@@ -477,6 +534,7 @@ fn queue(lua: &Lua, st: &Shared, op: Op) -> Result<Vec<String>, String> {
         heights,
         ops: queued,
         refusal,
+        ..
     } = &mut *s;
     match ops::apply(project, heights, std::slice::from_ref(&op)) {
         Ok(a) => {
@@ -652,6 +710,87 @@ fn build_map_table(lua: &Lua, st: &Shared) -> mlua::Result<Table> {
     )?;
     // DC-DEFAULT: MAP-56: the project's seed, the one `math.random` is seeded from
     map.raw_set("seed", st.borrow().project.seed as i64)?;
+
+    // ROM pieces (MAP-116): `map.piece{world, pos, region = {min, max}, cuts?, spawns?, items?, sky?,
+    // clear_terrain?}`, `map.piece_set(id, {...})`, `map.piece_cut(id, {min, max, world?})`, `map.pieces()`, and
+    // `map.rom_worlds()`: the user's ROM worlds with their play box, floor and a region to start from (read from
+    // the ROM `dc-mapkit` finds, at run time; nothing of it is kept in the project but the paths)
+    host(
+        lua,
+        &map,
+        st,
+        "piece",
+        "piece",
+        Rc::new(|lua, st, args| {
+            let op = op_from("piece.add", arg_object(args, 0)?)?;
+            Ok(first_id(queue(lua, st, op)?))
+        }),
+    )?;
+    host(
+        lua,
+        &map,
+        st,
+        "piece_set",
+        "piece_set",
+        Rc::new(|lua, st, args| {
+            let id = arg_text(args, 0)?;
+            let mut t = arg_object(args, 1)?;
+            t.insert("id".into(), Json::String(id));
+            let op = op_from("piece.set", t)?;
+            Ok(first_id(queue(lua, st, op)?))
+        }),
+    )?;
+    host(
+        lua,
+        &map,
+        st,
+        "piece_cut",
+        "piece_cut",
+        Rc::new(|lua, st, args| {
+            let id = arg_text(args, 0)?;
+            let mut t = arg_object(args, 1)?;
+            t.insert("id".into(), Json::String(id));
+            let op = op_from("piece.cut", t)?;
+            Ok(first_id(queue(lua, st, op)?))
+        }),
+    )?;
+    host(
+        lua,
+        &map,
+        st,
+        "pieces",
+        "pieces",
+        Rc::new(|_lua, st, _args| {
+            let s = st.borrow();
+            Ok(serde_json::to_value(&s.project.pieces).unwrap_or(Json::Null))
+        }),
+    )?;
+    host(
+        lua,
+        &map,
+        st,
+        "rom_worlds",
+        "rom_worlds",
+        Rc::new(|_lua, _st, _args| {
+            let (rom, _) = crate::romlist::discover_rom(None)
+                .ok_or_else(|| format!("no ROM was found ({})", crate::romlist::ROM_ATTEMPTS))?;
+            let rows = crate::romlist::list(
+                &rom,
+                &crate::romlist::RomQuery {
+                    kind: crate::romlist::RomKind::Worlds,
+                    filter: None,
+                    thumbs: None,
+                },
+            )
+            .map_err(|d| {
+                d.items
+                    .first()
+                    .map(|x| x.message.clone())
+                    .unwrap_or_else(|| "the ROM's worlds could not be listed".into())
+            })?;
+            Ok(serde_json::to_value(&rows).unwrap_or(Json::Null))
+        }),
+    )?;
 
     // objects
     host(
@@ -944,6 +1083,99 @@ fn build_map_table(lua: &Lua, st: &Shared) -> mlua::Result<Table> {
             let (x, z) = (arg_num(args, 0)?, arg_num(args, 1)?);
             let s = st.borrow();
             Ok(ops::ground_height(&s.project, &s.heights, x, z).map_or(Json::Null, |y| json!(y)))
+        }),
+    )?;
+
+    // DC-DEFAULT: MAP-116 `map.probe(x, z [, from_y])`: the first floor straight down at (x, z) the way players
+    // meet it: inside a ROM piece's region its world's own collision (read from the ROM, moved by the piece's
+    // `pos`, sky faces passed through, the cuts not applied), else the map's own floor (`map.ground`); nil when
+    // nothing is there. From `from_y` when given, else from the top of the piece's region.
+    host(
+        lua,
+        &map,
+        st,
+        "probe",
+        "probe",
+        Rc::new(|_, st, args| {
+            let (x, z) = (arg_num(args, 0)?, arg_num(args, 1)?);
+            let from = match args.get(2) {
+                None | Some(Value::Nil) => None,
+                Some(_) => Some(arg_num(args, 2)?),
+            };
+            let mut s = st.borrow_mut();
+            let piece = s
+                .project
+                .pieces
+                .iter()
+                .find(|p| {
+                    let r = p.world_region();
+                    x >= r.min[0] && x <= r.max[0] && z >= r.min[2] && z <= r.max[2]
+                })
+                .cloned();
+            let Some(piece) = piece else {
+                return Ok(ops::ground_height(&s.project, &s.heights, x, z)
+                    .map_or(Json::Null, |y| json!(y)));
+            };
+            let cw = s.probe_world(&piece.world)?;
+            let r = piece.world_region();
+            let t = piece.pos;
+            let mut top = from.unwrap_or(r.max[1]) - t[1];
+            let bottom = r.min[1] - t[1];
+            let (lx, lz) = (x - t[0], z - t[2]);
+            for _ in 0..16 {
+                if top <= bottom {
+                    break;
+                }
+                let a = dc_sim::V3::new(lx, top, lz);
+                let b = dc_sim::V3::new(lx, bottom, lz);
+                let Some(hit) = cw.ray(a, b) else {
+                    return Ok(Json::Null);
+                };
+                let y = top + (bottom - top) * hit.t;
+                if hit.surface_flags & 0x10 != 0 {
+                    top = y - 1.0;
+                    continue;
+                }
+                return Ok(json!(y + t[1]));
+            }
+            Ok(Json::Null)
+        }),
+    )?;
+
+    // DC-DEFAULT: MAP-123 `map.piece_spawns(id)`: the player and item spawns of a piece's world, read from the ROM,
+    // moved by the piece's `pos`: `{{x, y, z, kind = "player" | "item"}, ...}`. The original map guarantees these
+    // stand in its play (on its floors, inside its invisible walls, out of its kill volumes), so a generator anchors
+    // doorways and links at them.
+    host(
+        lua,
+        &map,
+        st,
+        "piece_spawns",
+        "piece_spawns",
+        Rc::new(|_, st, args| {
+            let id = arg_text(args, 0)?;
+            let mut s = st.borrow_mut();
+            let piece = s
+                .project
+                .pieces
+                .iter()
+                .find(|p| p.id == id)
+                .cloned()
+                .ok_or_else(|| format!("no piece `{id}`"))?;
+            let list = s.spawn_list(&piece.world)?;
+            let t = piece.pos;
+            Ok(Json::Array(
+                list.iter()
+                    .map(|(p, player)| {
+                        json!({
+                            "x": p[0] + t[0],
+                            "y": p[1] + t[1],
+                            "z": p[2] + t[2],
+                            "kind": if *player { "player" } else { "item" },
+                        })
+                    })
+                    .collect(),
+            ))
         }),
     )?;
 

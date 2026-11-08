@@ -216,7 +216,7 @@ const SKY_MODEL: [PropSpec; 3] = [
         "inner percentages; the readers serve it as the ROM's three reals",
     ),
 ];
-const WORLD_SETTINGS: [PropSpec; 10] = [
+const WORLD_SETTINGS: [PropSpec; 11] = [
     p("far_z", PropKind::Real, true, None, "far plane distance"),
     p("fog_enable", PropKind::Bool, false, Some("false"), "fog on"),
     p("fog_near", PropKind::Real, false, Some("0"), "fog start"),
@@ -256,6 +256,14 @@ const WORLD_SETTINGS: [PropSpec; 10] = [
         false,
         Some("false"),
         "every sky portal open",
+    ),
+    // DC-DEFAULT: MAP-118
+    p(
+        "two_sided",
+        PropKind::Bool,
+        false,
+        Some("false"),
+        "the client draws both faces of the level and its opaque world models (a map built from ROM pieces, MAP-118)",
     ),
 ];
 const GLOBAL_LIGHT: [PropSpec; 3] = [
@@ -480,7 +488,7 @@ pub const CLASSES: [ClassSpec; 17] = [
         ObjectRole::WorldSettings,
         &names::CLASS_WORLD_SETTINGS,
         Geometry::Point,
-        "dserver evars, dc-render fog (`ObjectRole::WorldSettings`)",
+        "dserver evars, dc-render fog and `two_sided` (`ObjectRole::WorldSettings`)",
         &WORLD_SETTINGS,
     ),
     own_class(

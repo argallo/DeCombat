@@ -336,12 +336,14 @@ pub struct Level {
     /// Polygons of hidden materials: in the collision model, in no render world (DC-DEFAULT: MAP-104).
     pub hidden: Vec<Poly>,
     pub hidden_sources: Vec<String>,
+    /// Faces of blocker solids: the world's blocker section, players only, never drawn (DC-DEFAULT: MAP-124).
+    pub blockers: Vec<Poly>,
     pub extent_min: V3,
     pub extent_max: V3,
 }
 
 impl Level {
-    /// Recompute `extent_min/max` over every polygon (level, sky and brushes).
+    /// Recompute `extent_min/max` over every polygon (level, sky, hidden, blockers and brushes).
     pub fn update_extent(&mut self) {
         let mut first = true;
         let mut lo = V3::ZERO;
@@ -351,6 +353,7 @@ impl Level {
             .iter()
             .chain(self.sky_faces.iter())
             .chain(self.hidden.iter())
+            .chain(self.blockers.iter())
             .chain(self.brushes.iter().flat_map(|b| b.polys.iter()));
         for p in all {
             for c in &p.corners {

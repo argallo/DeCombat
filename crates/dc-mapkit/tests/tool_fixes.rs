@@ -401,13 +401,16 @@ fn an_empty_fit_is_refused() {
 fn a_generator_can_set_the_world_settings() {
     let made = make(Template::Flat, "S", "tester", 11);
     let (mut p, mut h) = (made.project, made.heights);
+    assert!(!p.settings.two_sided);
     run_script(
         &mut p,
         &mut h,
-        "map.settings{ fog_near = 1234, ambient = { 1, 2, 3 } }",
+        "map.settings{ fog_near = 1234, ambient = { 1, 2, 3 }, two_sided = true }",
     );
     assert_eq!(p.settings.fog_near, 1234.0);
     assert_eq!(p.settings.ambient, [1, 2, 3]);
+    // MAP-118: both faces drawn, for a map with ROM pieces
+    assert!(p.settings.two_sided);
 }
 
 #[test]

@@ -794,6 +794,7 @@ mod tests {
             ambient: Some([1, 2, 3]),
             sky_size: None,
             sky_material: None,
+            two_sided: Some(true),
         }));
         let ops = ops_of(&g, &p);
         let a = apply(&mut p, &mut h, &ops).unwrap();
@@ -802,6 +803,7 @@ mod tests {
         assert_eq!(p.settings.far_z, 9000.0);
         assert_eq!(p.settings.ambient, [1, 2, 3]);
         assert_eq!(p.settings.sun_bright, 0.5);
+        assert!(p.settings.two_sided);
         let g = Gesture::Meta(Box::new(Op::MetaSet {
             name: Some("Renamed".into()),
             version: None,
@@ -854,6 +856,7 @@ mod tests {
             ambient: None,
             sky_size: None,
             sky_material: None,
+            two_sided: None,
         };
         assert!(apply(&mut p, &mut h, &[bad]).is_err());
         let bad = Op::SettingsSet {
@@ -870,6 +873,7 @@ mod tests {
             ambient: None,
             sky_size: None,
             sky_material: Some("nope".into()),
+            two_sided: None,
         };
         assert_eq!(
             apply(&mut p, &mut h, &[bad]).unwrap_err().items[0].code,

@@ -32,8 +32,30 @@ pub const STRUCTS: &[(&str, &str, Fields)] = &[
             ("settings", "WorldSettings", "fog, far plane, sun, ambient, sky box"),
             ("mod_meta", "ModMeta", "what export writes into the mod manifest and the map record"),
             ("build", "BuildSettings", "BSP cell size and the vertex-light bake"),
+            ("pieces", "[RomPiece]", "parts of the user's ROM worlds the map is composed with at load time (MAP-116); left out when empty"),
         ],
     ),
+    (
+        "RomPiece",
+        "A part of one of the user's ROM worlds (MAP-116). Every program that loads the map reads it from its own ROM at load time; the project names it by path. `region` and `cuts` are in the world's own coordinates.",
+        &[
+            ("id", "text", "piece_<n>"),
+            ("world", "text", "the ROM world as `dc-mapkit rom worlds` lists it (WORLDS\\NAME.DAT)"),
+            ("pos", "vec3", "added to every coordinate of the world"),
+            ("region", "BoxF", "the part kept, in the world's own coordinates"),
+            ("cuts", "[BoxF]", "boxes taken out of the region (doorways), in the world's own coordinates"),
+            ("spawns", "text", "ffa: the world's player spawns as team-less spawns; none"),
+            ("items", "bool", "the world's item spawns as dc.item_spawn"),
+            ("sky", "bool", "this world's sky is the map's sky (at most one piece)"),
+            ("clear_terrain", "bool", "the map's terrain is left out of the region"),
+            ("blockers", "bool", "keep the world's invisible walls; false opens it (players walk out where its geometry lets them; its kill volumes are kept to its play area)"),
+            ("fill", "bool", "lay the map's ground where the world has no floor in the region outside its play area"),
+            ("fill_y", "num", "height of that floor (map coordinates)"),
+            ("min_light", "int", "the least light of the world's lightmaps and vertex colours, 0..255 (0 = as it is): lifts the outer faces it never lit"),
+            ("drop_spawns", "[vec3]", "points in the map's coordinates: the world's player spawns within 48 across (96 up or down) are left out (MAP-125); a spawn the original map left in a kill volume or a place nobody gets out of"),
+        ],
+    ),
+    ("BoxF", "A box by two corners.", &[("min", "vec3", "low corner"), ("max", "vec3", "high corner")]),
     (
         "Terrain",
         "A grid of (cells_x + 1) x (cells_z + 1) u16 heights in `file`; world y = origin[1] + raw / 65535 * height_scale.",
@@ -82,7 +104,7 @@ pub const STRUCTS: &[(&str, &str, Fields)] = &[
             ("material", "text", "material id of every face without an override"),
             ("faces", "{face: material id}", "per-face override: top, bottom, north (+z), south (-z), east (+x), west (-x), back, slope, side_<i> or side"),
             ("group", "text|null", "a free grouping name (prefab source, GUI selection)"),
-            ("brush", "\"world_model\" | \"kill_volume\" | \"ladder\" | \"breakable\" | \"sky\" | null", "the brush role, or null for level geometry"),
+            ("brush", "\"world_model\" | \"kill_volume\" | \"ladder\" | \"breakable\" | \"sky\" | \"blocker\" | null", "the brush role, or null for level geometry; a blocker is an invisible wall for players only (MAP-124)"),
         ],
     ),
     (
@@ -136,6 +158,7 @@ pub const STRUCTS: &[(&str, &str, Fields)] = &[
             ("ambient", "rgb", "ambient light"),
             ("sky_size", "vec3", "sky box dimensions"),
             ("sky_material", "text", "material of the sky box's inside faces"),
+            ("two_sided", "bool", "optional, default false (left out of the file): the client draws both faces of the level and its opaque world models; turn it on for a map with ROM pieces (MAP-118)"),
         ],
     ),
     (
@@ -186,10 +209,10 @@ pub const OPS: &[(&str, &str, Fields)] = &[
             ("ground", "bool", "snap y to the floor plus the standing offset (default false)"),
         ],
     ),
-    ("remove", "Remove any placed thing by id.", &[("id", "text", "the id")]),
+    ("remove", "Remove any placed thing by id (pieces too).", &[("id", "text", "the id")]),
     (
         "clear",
-        "Remove placed things in bulk so a generator can run again. With no field: every object, solid, prefab and import (materials, terrain, settings and metadata stay, ids start over). With a field: only that.",
+        "Remove placed things in bulk so a generator can run again. With no field: every object, solid, prefab, import and piece (materials, terrain, settings and metadata stay, ids start over). With a field: only that.",
         &[
             ("group", "text|null", "only the solids of this group"),
             ("class", "text|null", "only the objects of this class"),
@@ -222,7 +245,7 @@ pub const OPS: &[(&str, &str, Fields)] = &[
             ("material", "text", "material id (must exist)"),
             ("faces", "{face: material}", "per-face overrides (default none)"),
             ("group", "text|null", "grouping name"),
-            ("brush", "role|null", "world_model, kill_volume, ladder, breakable, sky, or null"),
+            ("brush", "role|null", "world_model, kill_volume, ladder, breakable, sky, blocker, or null"),
             ("ground", "bool", "rest the bottom on the floor (default false)"),
             ("rises", "\"north\" | \"east\" | \"south\" | \"west\" | null", "a wedge only: which way it climbs (north is +z, east is +x), instead of rot_y_deg; size stays [width across, height, run along the slope]"),
         ],
@@ -327,6 +350,55 @@ pub const OPS: &[(&str, &str, Fields)] = &[
         ],
     ),
     (
+        "piece.add",
+        "Place a part of one of the user's ROM worlds (MAP-116); returns its id. Every program that loads the map composes it from its own ROM; `dc-mapkit rom worlds --json` lists each world's play box and floor.",
+        &[
+            ("world", "text", "the ROM world (WORLDS\\NAME.DAT)"),
+            ("pos", "vec3", "added to every coordinate of the world (default [0, 0, 0])"),
+            ("region", "BoxF", "the part kept, in the world's own coordinates"),
+            ("cuts", "[BoxF]", "boxes taken out (doorways), world's own coordinates (default none)"),
+            ("spawns", "text", "ffa (default) or none"),
+            ("items", "bool", "item spawns as dc.item_spawn (default true)"),
+            ("sky", "bool", "this world's sky is the map's sky (default false)"),
+            ("clear_terrain", "bool", "leave the map's terrain out of the region (default true)"),
+            ("blockers", "bool", "keep the world's invisible walls (default true); false opens the piece"),
+            ("fill", "bool", "floor the bare columns outside the play area with the map's ground (default false)"),
+            ("fill_y", "num", "height of that floor (default 0)"),
+            ("min_light", "int", "least light of its lightmaps and vertex colours, 0..255 (default 0: as it is)"),
+            ("drop_spawns", "[vec3]", "spawn points to leave out (map coordinates; default none)"),
+        ],
+    ),
+    (
+        "piece.set",
+        "Change a piece; every field but id optional.",
+        &[
+            ("id", "text", "the piece"),
+            ("world", "text|null", "the ROM world"),
+            ("pos", "vec3|null", "offset"),
+            ("region", "BoxF|null", "the part kept (world's own coordinates)"),
+            ("cuts", "[BoxF]|null", "replaces every cut"),
+            ("spawns", "text|null", "ffa or none"),
+            ("items", "bool|null", "item spawns"),
+            ("sky", "bool|null", "this world's sky"),
+            ("clear_terrain", "bool|null", "leave the terrain out of the region"),
+            ("blockers", "bool|null", "keep the invisible walls"),
+            ("fill", "bool|null", "floor the bare columns outside the play area"),
+            ("fill_y", "num|null", "height of that floor"),
+            ("min_light", "int|null", "least light of its lightmaps and vertex colours"),
+            ("drop_spawns", "[vec3]|null", "spawn points to leave out"),
+        ],
+    ),
+    (
+        "piece.cut",
+        "Take a box out of a piece: its walls, floors, blockers and kill volumes there are gone (a doorway).",
+        &[
+            ("id", "text", "the piece"),
+            ("min", "vec3", "a corner"),
+            ("max", "vec3", "the other corner"),
+            ("world", "bool", "true (default): the corners are in the map's coordinates; false: in the world's own"),
+        ],
+    ),
+    (
         "settings.set",
         "Change the world settings (fog, far plane, sun, ambient, sky); every field optional, only the given ones change.",
         &[
@@ -343,6 +415,7 @@ pub const OPS: &[(&str, &str, Fields)] = &[
             ("ambient", "rgb|null", "ambient colour 0..255 (the baked base light)"),
             ("sky_size", "vec3|null", "sky box size, > 0 on every axis"),
             ("sky_material", "text|null", "material id of the sky box faces (must exist)"),
+            ("two_sided", "bool|null", "draw both faces of the level and its opaque world models (a map with ROM pieces: true; MAP-118)"),
         ],
     ),
     (
@@ -370,7 +443,7 @@ pub const CLASSES: &[(&str, &str)] = &[
     (v::CLASS_BOMB_SITE, "extent (vec3 HALF extents), number (0 = A, 1 = B), modes, defuse_team (optional \"1\" / \"2\")"),
     (v::CLASS_FLAG_ZONE, "extent, team, modes"),
     (v::CLASS_CAPTURE_FLAG, "team, model (text; empty = default look)"),
-    (v::CLASS_WORLD_SETTINGS, "far_z, fog_enable, fog_near, fog_far, fog_color, sky_fog_enable, sky_fog_near, sky_fog_far, wind, all_sky_portals (the build fills these from settings)"),
+    (v::CLASS_WORLD_SETTINGS, "far_z, fog_enable, fog_near, fog_far, fog_color, sky_fog_enable, sky_fog_near, sky_fog_far, wind, all_sky_portals, two_sided (the build fills these from settings)"),
     (v::CLASS_GLOBAL_LIGHT, "color, bright, to_ambient; direction = rot (the build fills these from settings)"),
     (v::CLASS_POINT_LIGHT, "color, radius (> 0), bright, cone, lights_objects (characters only)"),
     ("dc.end_camera", "the overview camera at the round result: pos is the place, rot x looks down, rot y turns; without one, build adds an overview"),
@@ -516,7 +589,23 @@ mod tests {
     #[test]
     fn every_project_struct_key_is_documented_and_vice_versa() {
         let checks: Vec<(&str, BTreeSet<String>)> = vec![
-            ("Project", keys(&Project::default())),
+            (
+                "Project",
+                // `pieces` is left out of the file when it is empty
+                keys(&Project {
+                    pieces: vec![RomPiece::default()],
+                    ..Default::default()
+                }),
+            ),
+            (
+                "RomPiece",
+                // `drop_spawns` is left out of the file when it is empty
+                keys(&RomPiece {
+                    drop_spawns: vec![[0.0; 3]],
+                    ..Default::default()
+                }),
+            ),
+            ("BoxF", keys(&BoxF::default())),
             ("Terrain", keys(&Terrain::default())),
             ("TerrainLayer", keys(&TerrainLayer::default())),
             (
@@ -532,7 +621,14 @@ mod tests {
             ("PrefabInstance", keys(&PrefabInstance::default())),
             ("Import", keys(&Import::default())),
             ("MapObject", keys(&MapObject::default())),
-            ("WorldSettings", keys(&WorldSettings::default())),
+            (
+                "WorldSettings",
+                // `two_sided` is left out of the file when it is off
+                keys(&WorldSettings {
+                    two_sided: true,
+                    ..Default::default()
+                }),
+            ),
             ("ModMeta", keys(&ModMeta::default())),
             ("Players", keys(&Players::default())),
             ("BuildSettings", keys(&BuildSettings::default())),

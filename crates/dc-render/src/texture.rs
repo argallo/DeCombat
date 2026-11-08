@@ -89,6 +89,22 @@ impl TextureImage {
         TextureImage::rgba(1, 1, vec![255; 4])
     }
 
+    /// One flat colour: every texel of the largest level within 2 of the first on each channel, alpha included (an
+    /// image without texels counts too). A two-sided world treats the vertex-lit surfaces painted with such a texture
+    /// as filler ([`crate::GpuScene::two_sided`], MAP-118).
+    pub fn is_flat(&self) -> bool {
+        let Some(level) = self.levels.first() else {
+            return true;
+        };
+        let texels = level.as_chunks::<4>().0;
+        let Some(first) = texels.first() else {
+            return true;
+        };
+        texels
+            .iter()
+            .all(|t| t.iter().zip(first).all(|(a, b)| a.abs_diff(*b) <= 2))
+    }
+
     /// Adds the box-filtered levels down to 1x1 that a single-level image lacks. Off by default in the viewer:
     /// the 2009 uploader creates only the stored levels (FMT_DTX.md §6 rule 3).
     pub fn generate_mips(&mut self) {
@@ -334,6 +350,30 @@ impl<'i> RomTextures<'i> {
 mod tests {
     use super::*;
     use dc_tex::{DtxHeader, HEADER_LEN};
+
+    /// MAP-118: one colour within 2 per channel, alpha included, on the largest level only.
+    #[test]
+    fn flat_images_are_one_colour() {
+        assert!(TextureImage::white().is_flat());
+        assert!(TextureImage::unbound().is_flat());
+        assert!(TextureImage::rgba(2, 2, [128, 128, 130, 255].repeat(4)).is_flat());
+        let near = [[100u8, 100, 100, 255], [102, 98, 101, 253]]
+            .concat()
+            .repeat(2);
+        assert!(TextureImage::rgba(2, 2, near).is_flat());
+        let two = [[100u8, 100, 100, 255], [103, 100, 100, 255]]
+            .concat()
+            .repeat(2);
+        assert!(!TextureImage::rgba(2, 2, two).is_flat());
+        let cut = [[100u8, 100, 100, 255], [100, 100, 100, 0]]
+            .concat()
+            .repeat(2);
+        assert!(!TextureImage::rgba(2, 2, cut).is_flat(), "alpha counts");
+        assert!(!TextureImage::missing().is_flat());
+        let mut chain = TextureImage::rgba(2, 2, [[0u8, 0, 0, 255], [255; 4]].concat().repeat(2));
+        chain.generate_mips();
+        assert!(!chain.is_flat(), "the largest level decides");
+    }
 
     fn bgra_file(w: u16, h: u16, levels: u16, flags: u32, cmd: &str) -> Vec<u8> {
         let mut hd = DtxHeader {

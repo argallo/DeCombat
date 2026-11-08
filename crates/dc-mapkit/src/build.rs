@@ -67,13 +67,22 @@ pub struct BuildStats {
     pub lightmap_pages: usize,
     pub lightmap_bytes: usize,
     pub bytes: usize,
+    /// ROM pieces, and the composed world's size when the ROM was at hand (MAP-116).
+    #[serde(default)]
+    pub pieces: usize,
+    #[serde(default)]
+    pub composed_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
+    /// The map's own world (what ships): with ROM pieces, their records and nothing of the ROM.
     pub dat: Vec<u8>,
     pub stats: BuildStats,
     pub diagnostics: Diagnostics,
+    /// The world composed with the ROM pieces from this machine's ROM (MAP-116), when the map has pieces and the
+    /// ROM was at hand: what every player's client and the game server load. Never shipped.
+    pub composed: Option<Vec<u8>>,
 }
 
 /// The surface data of a material at index `i` (flags from the material's flags).
@@ -262,8 +271,96 @@ pub fn level_of(p: &Project, h: &Heights, assets: &Assets) -> Result<Level, Diag
             );
             return Err(diags);
         };
+        // DC-DEFAULT: MAP-116 the terrain is left out of every ROM piece's region (its footprint, at every height):
+        // the piece brings its own ground there
+        let holes: Vec<dc_world::compose::clip::Aabb> = p
+            .pieces
+            .iter()
+            .filter(|x| x.clear_terrain && x.world_region().is_valid())
+            .map(|x| {
+                let r = x.world_region();
+                dc_world::compose::clip::Aabb::new(
+                    [r.min[0], -1.0e9, r.min[2]],
+                    [r.max[0], 1.0e9, r.max[2]],
+                )
+            })
+            .collect();
+        // DC-DEFAULT: MAP-121 the terrain's cut faces: where a region cuts the terrain, a wall of the terrain's
+        // surface runs from the cut edge down to the region's floor, facing into the region, so a world whose
+        // ground lies under the terrain there shows a bank at its edge (not the sky under a floating sheet) and
+        // nobody walks out of it into the space under the terrain
+        let bottoms: Vec<f32> = p
+            .pieces
+            .iter()
+            .filter(|x| x.clear_terrain && x.world_region().is_valid())
+            .map(|x| x.world_region().min[1])
+            .collect();
+        // the part of a terrain edge that borders a hole: on one of its sides, within its length (the clipper
+        // leaves an edge that runs on past the hole's corner whole), with the normal into the hole and its floor
+        let bank = |a: geom::V3, b: geom::V3| -> Option<(geom::V3, geom::V3, geom::V3, f32)> {
+            const E: f32 = 0.01;
+            let (pa, pb) = (a.to_array(), b.to_array());
+            for (hole, &bottom) in holes.iter().zip(&bottoms) {
+                for (axis, other) in [(0usize, 2usize), (2, 0)] {
+                    for (side, inward) in [(hole.min[axis], 1.0f32), (hole.max[axis], -1.0)] {
+                        if (pa[axis] - side).abs() >= E || (pb[axis] - side).abs() >= E {
+                            continue;
+                        }
+                        let d = pb[other] - pa[other];
+                        if d.abs() < E {
+                            continue;
+                        }
+                        let (t_lo, t_hi) = (
+                            (hole.min[other] - pa[other]) / d,
+                            (hole.max[other] - pa[other]) / d,
+                        );
+                        let (t0, t1) = (t_lo.min(t_hi).max(0.0), t_lo.max(t_hi).min(1.0));
+                        if t1 - t0 < 1.0e-4 {
+                            continue;
+                        }
+                        let at = |t: f32| a + (b - a) * t;
+                        let mut n = [0.0f32; 3];
+                        n[axis] = inward;
+                        return Some((at(t0), at(t1), geom::V3::from_array(n), bottom));
+                    }
+                }
+            }
+            None
+        };
+        let mut banks = Vec::new();
         for poly in geom::terrain_polys(t, h, &|_, _| s) {
-            level.push_from(poly, "terrain");
+            if holes.is_empty() {
+                level.push_from(poly, "terrain");
+                continue;
+            }
+            let mut parts: Vec<Vec<[f32; 3]>> =
+                vec![poly.corners.iter().map(|c| c.to_array()).collect()];
+            for hole in &holes {
+                parts = parts
+                    .into_iter()
+                    .flat_map(|c| dc_world::compose::clip::minus_box(&c, hole))
+                    .collect();
+            }
+            for c in parts {
+                let corners: Vec<geom::V3> = c.into_iter().map(geom::V3::from_array).collect();
+                for k in 0..corners.len() {
+                    let (a, b) = (corners[k], corners[(k + 1) % corners.len()]);
+                    if let Some((a, b, inward, bottom)) = bank(a, b) {
+                        if a.y > bottom + 1.0 || b.y > bottom + 1.0 {
+                            let low = |v: geom::V3| geom::V3::new(v.x, bottom.min(v.y), v.z);
+                            banks.push((vec![a, b, low(b), low(a)], inward));
+                        }
+                    }
+                }
+                let mut q = poly.clone();
+                q.corners = corners;
+                level.push_from(q, "terrain");
+            }
+        }
+        for (quad, inward) in banks {
+            if let Some(q) = geom::Poly::new(quad, inward, s, None) {
+                level.push_from(q, "terrain");
+            }
         }
     }
     for (i, s) in p.solids.iter().enumerate() {
@@ -302,6 +399,8 @@ pub fn level_of(p: &Project, h: &Heights, assets: &Assets) -> Result<Level, Diag
                     level.push_from(poly, &s.id);
                 }
             }
+            // DC-DEFAULT: MAP-124 a blocker solid: its faces are the world's invisible walls, nothing else
+            Some(BrushRole::Blocker) => level.blockers.extend(polys),
             Some(role) => level.brushes.push(Brush {
                 name: s.id.clone(),
                 role,
@@ -394,12 +493,64 @@ pub fn texture_names(p: &Project, diags: &mut Diagnostics) -> Vec<Vec<u8>> {
     out
 }
 
-/// Build the world file from a project (the project-level checks run first; their errors refuse the build).
+/// Build the world file from a project (the project-level checks run first; their errors refuse the build). ROM
+/// pieces are composed from the ROM `romlist::discover_rom` finds; [`build_with`] names it.
 pub fn build(
     p: &Project,
     h: &Heights,
     assets: &Assets,
     settings: &BuildSettings,
+) -> Result<Built, Diagnostics> {
+    let rom = if p.pieces.is_empty() {
+        None
+    } else {
+        crate::romlist::discover_rom(None).map(|(path, _)| path)
+    };
+    build_with(p, h, assets, settings, rom.as_deref())
+}
+
+/// [`build`] with the ROM the pieces are read from (`None`: their records carry no digest and the world-level
+/// checks see the map's own world only, warned `piece.rom`).
+pub fn build_with(
+    p: &Project,
+    h: &Heights,
+    assets: &Assets,
+    settings: &BuildSettings,
+    rom: Option<&Path>,
+) -> Result<Built, Diagnostics> {
+    let mut read = rom.map(dc_world::compose::rom_reader);
+    let mut size = rom.map(dc_world::compose::rom_texture_size);
+    build_with_sources(
+        p,
+        h,
+        assets,
+        settings,
+        read.as_mut()
+            .map(|r| r as &mut dc_world::compose::RomRead<'_>),
+        size.as_mut()
+            .map(|s| s as &mut dc_world::compose::TexSize<'_>),
+    )
+}
+
+/// [`build_with`] with the reader of the ROM's worlds itself (a test hands in its own made-up worlds).
+pub fn build_with_reader(
+    p: &Project,
+    h: &Heights,
+    assets: &Assets,
+    settings: &BuildSettings,
+    rom_read: Option<&mut dc_world::compose::RomRead<'_>>,
+) -> Result<Built, Diagnostics> {
+    build_with_sources(p, h, assets, settings, rom_read, None)
+}
+
+/// [`build_with_reader`] with the ROM's texture sizes as well (placeholder faces of pieces, MAP-120).
+pub fn build_with_sources(
+    p: &Project,
+    h: &Heights,
+    assets: &Assets,
+    settings: &BuildSettings,
+    mut rom_read: Option<&mut dc_world::compose::RomRead<'_>>,
+    mut tex_size: Option<&mut dc_world::compose::TexSize<'_>>,
 ) -> Result<Built, Diagnostics> {
     let mut diags = crate::validate::validate(&assets.dir, p, h);
     if diags.has_errors() {
@@ -662,7 +813,7 @@ pub fn build(
 
     // extents and the light grid
     let margin = geom::V3::new(EXTENT_MARGIN, EXTENT_MARGIN, EXTENT_MARGIN);
-    let (extent_min, extent_max) = if level.polys.is_empty()
+    let (mut extent_min, mut extent_max) = if level.polys.is_empty()
         && level.sky_faces.is_empty()
         && level.brushes.iter().all(|b| b.polys.is_empty())
     {
@@ -670,6 +821,49 @@ pub fn build(
     } else {
         (level.extent_min - margin, level.extent_max + margin)
     };
+    // DC-DEFAULT: MAP-116 the regions of the ROM pieces are inside the map's extents, so the map's own world and
+    // the composed one share their box; each piece is a record object (its world's digest from this ROM). A
+    // record always pins its world's digest (a pack without one is refused at load), so a map with pieces is
+    // built with the ROM at hand and every piece's world must be in it.
+    if !p.pieces.is_empty() && rom_read.is_none() {
+        diags.error(
+            Code::RomMissing,
+            "pieces",
+            "a map with ROM pieces is built with the ROM at hand: each piece pins its world's digest (--rom, CA_ROM, <profile>/mapkit.toml)",
+        );
+        return Err(diags);
+    }
+    for piece in &p.pieces {
+        let r = piece.world_region();
+        extent_min = extent_min.min(geom::V3::from_array(r.min) - margin);
+        extent_max = extent_max.max(geom::V3::from_array(r.max) + margin);
+        let sha256 = match rom_read.as_mut().map(|read| read(&piece.world)) {
+            Some(Ok(bytes)) => dc_rom::sha256_hex(&bytes),
+            Some(Err(e)) => {
+                diags.push(
+                    Diagnostic::new(Code::RomRead, format!("pieces.{}", piece.id), e)
+                        .with_fix("pick a world `dc-mapkit rom worlds` lists"),
+                );
+                return Err(diags);
+            }
+            None => return Err(diags),
+        };
+        // DC-DEFAULT: MAP-120 the fill floor takes the terrain's first layer: its texture, tile, surface and the
+        // light an upward face gets from this map's bake
+        let fill = if piece.fill {
+            fill_of(p, &bake_in, piece)
+        } else {
+            None
+        };
+        if piece.fill && fill.is_none() {
+            diags.warn(
+                Code::PieceRom,
+                format!("pieces.{}", piece.id),
+                "fill needs a terrain whose first layer names a material: the piece is not filled",
+            );
+        }
+        objects.push(piece_record(piece, sha256, fill));
+    }
     let span = extent_max - extent_min;
     let a = p.settings.ambient;
     let flat_grid = (
@@ -700,7 +894,18 @@ pub fn build(
         grid_cell,
         grid_dims,
         grid_rgb,
-        blockers: Vec::new(),
+        // SPEC: FMT_DAT85.md (the blocker soup: plane normal, distance, corners per polygon)
+        blockers: level
+            .blockers
+            .iter()
+            .map(|p| {
+                (
+                    p.plane.n.to_array(),
+                    p.plane.d,
+                    p.corners.iter().map(|c| c.to_array()).collect(),
+                )
+            })
+            .collect(),
         particle_blockers: Vec::new(),
         render,
         grids: Vec::new(),
@@ -712,18 +917,279 @@ pub fn build(
     names.dedup();
     stats.textures = names.len();
 
-    diags.extend(crate::validate::check_world(&dat));
+    stats.pieces = p.pieces.len();
+    let mut composed = None;
+    if p.pieces.is_empty() {
+        diags.extend(crate::validate::check_world(&dat));
+    } else if let Some(read) = rom_read.as_mut() {
+        // the world-level checks run on what players load: the map composed with its pieces
+        let result = match tex_size.as_mut() {
+            Some(size) => dc_world::compose::compose_with(&dat, &mut **read, &mut **size),
+            None => dc_world::compose::compose(&dat, &mut **read),
+        };
+        match result {
+            Ok(Some(c)) => {
+                stats.composed_bytes = c.bytes.len();
+                diags.extend(crate::validate::check_composed(&dat, &c.bytes));
+                composed = Some(c.bytes);
+            }
+            Ok(None) => diags.extend(crate::validate::check_world(&dat)),
+            Err(e) => diags.error(Code::PieceRom, "pieces", e.to_string()),
+        }
+    } else {
+        diags.warn(
+            Code::PieceRom,
+            "pieces",
+            "no ROM at hand: the pieces were not composed, so the world-level checks saw the map's own world only",
+        );
+        diags.extend(crate::validate::check_world(&dat));
+    }
     Ok(Built {
         dat,
         stats,
         diagnostics: diags,
+        composed,
     })
+}
+
+/// The record object of a piece in the map's own world (MAP-116): its world, digest, offset, region and cuts in
+/// the map's coordinates and its options, read back by `dc_world::compose`.
+/// The fill floor of a piece (MAP-120) from the terrain's first layer: its texture name as the world writes it, its
+/// tile and surface id, and the colour [`crate::bake`] gives an upward face at the region's centre.
+fn fill_of(
+    p: &Project,
+    bake_in: &BakeInput<'_>,
+    piece: &crate::project::RomPiece,
+) -> Option<dc_world::compose::Fill> {
+    let layer = p.terrain.as_ref()?.layers.first()?;
+    let i = p.material_index(&layer.material)?;
+    let m = &p.materials[i];
+    let r = piece.world_region();
+    let (cx, cz) = ((r.min[0] + r.max[0]) * 0.5, (r.min[2] + r.max[2]) * 0.5);
+    let y = piece.fill_y;
+    let corners = vec![
+        geom::V3::new(cx - 8.0, y, cz - 8.0),
+        geom::V3::new(cx - 8.0, y, cz + 8.0),
+        geom::V3::new(cx + 8.0, y, cz + 8.0),
+        geom::V3::new(cx + 8.0, y, cz - 8.0),
+    ];
+    let poly = geom::Poly::new(
+        corners,
+        geom::V3::new(0.0, 1.0, 0.0),
+        surface_of(m, i),
+        None,
+    )?;
+    let argb = bake::bake_polys(bake_in, &[poly])
+        .first()
+        .and_then(|c| c.first().copied())
+        .unwrap_or(0xFF80_8080);
+    let ch = |shift: u32| ((argb >> shift) & 0xFF) as f32;
+    Some(dc_world::compose::Fill {
+        y,
+        texture: String::from_utf8_lossy(&worldgen::texture_name(m, &p.mod_meta.id)).into_owned(),
+        tile: m.tile.max(1.0),
+        color: [ch(16), ch(8), ch(0)],
+        surface: m.surface_id as u16,
+    })
+}
+
+pub fn piece_record(
+    piece: &crate::project::RomPiece,
+    sha256: String,
+    fill: Option<dc_world::compose::Fill>,
+) -> dc_world::synth::SynthObject {
+    use dc_world::compose::{clip::Aabb, Piece, Spawns};
+    let r = piece.world_region();
+    Piece {
+        name: piece.id.clone(),
+        world: piece.world.clone(),
+        sha256,
+        offset: piece.pos,
+        region: Aabb::new(r.min, r.max),
+        cuts: piece
+            .world_cuts()
+            .iter()
+            .map(|c| Aabb::new(c.min, c.max))
+            .collect(),
+        spawns: Spawns::parse(&piece.spawns).unwrap_or(Spawns::Ffa),
+        items: piece.items,
+        sky: piece.sky,
+        blockers: piece.blockers,
+        fill,
+        min_light: piece.min_light,
+        drop_spawns: piece.drop_spawns.clone(),
+    }
+    .to_object()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::project::{BrushRole, MaterialFlags, Solid, Terrain, TerrainLayer, TextureRef};
+
+    /// A map with a ROM piece (MAP-116), on the made-up fixture world of `dc_world::compose::fixture`: the terrain
+    /// is gone under the region, the map's own world carries the piece record and nothing of the world, and the
+    /// composed world (what players load) is built from the reader, parses and passes the checks.
+    #[test]
+    fn a_piece_clears_its_terrain_and_composes_from_the_reader() {
+        use dc_world::compose::fixture;
+        let dir =
+            std::env::temp_dir().join(format!("dc-mapkit-build-piece-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let made = crate::template::make(crate::template::Template::Flat, "Piece", "tests", 1);
+        for file in &made.files {
+            std::fs::write(dir.join(&file.path), &file.bytes).unwrap();
+        }
+        let (mut p, mut h) = (made.project, made.heights);
+        let op: crate::ops::Op = serde_json::from_value(serde_json::json!({
+            "op": "piece.add", "world": fixture::WORLD, "pos": [0.0, 0.0, 0.0],
+            "region": {"min": [-900.0, -600.0, -900.0], "max": [600.0, 1100.0, 900.0]}
+        }))
+        .unwrap();
+        crate::ops::apply(&mut p, &mut h, &[op]).unwrap();
+        let mut read = fixture::reader();
+        let b = build_with_reader(
+            &p,
+            &h,
+            &Assets::new(&dir),
+            &p.build,
+            Some(&mut read as &mut dc_world::compose::RomRead<'_>),
+        )
+        .unwrap();
+        assert!(!b.diagnostics.has_errors(), "{:?}", b.diagnostics);
+        assert_eq!(b.stats.pieces, 1);
+        let own = dc_world::World::parse(&b.dat).unwrap();
+        let rec = dc_world::compose::pieces_of(&own).unwrap();
+        assert_eq!(rec.len(), 1);
+        assert_eq!(rec[0].sha256, dc_rom::sha256_hex(&fixture::rom_world()));
+        // no terrain polygon of the map's own level reaches into the region's footprint
+        let lm = own
+            .models
+            .iter()
+            .find(|m| own.object_named(m.name).is_none())
+            .unwrap();
+        for poly in &lm.polygons {
+            let c: Vec<[f32; 3]> = lm
+                .polygon_points(poly)
+                .iter()
+                .map(|&i| lm.points[i as usize])
+                .collect();
+            if c.len() < 3 || c.iter().any(|q| q[1] != 0.0) {
+                continue;
+            }
+            let (mx, mz) = (
+                c.iter().map(|q| q[0]).sum::<f32>() / c.len() as f32,
+                c.iter().map(|q| q[2]).sum::<f32>() / c.len() as f32,
+            );
+            assert!(
+                !(mx > -899.0 && mx < 599.0 && mz > -899.0 && mz < 899.0),
+                "terrain inside the region at {mx}, {mz}"
+            );
+        }
+        // MAP-121: the terrain's cut face on the region's east side (x 600): a wall from the terrain (y 0) down to
+        // the region's floor (y -600), facing into the region
+        let mut bank = 0.0f32;
+        for poly in &lm.polygons {
+            let c: Vec<[f32; 3]> = lm
+                .polygon_points(poly)
+                .iter()
+                .map(|&i| lm.points[i as usize])
+                .collect();
+            if c.len() < 3 || !c.iter().all(|q| (q[0] - 600.0).abs() < 0.01) {
+                continue;
+            }
+            let n = lm.planes[poly.plane as usize].normal;
+            assert!(n[0] < -0.99, "{n:?}");
+            let bb = dc_world::compose::clip::Aabb::of_points(c.iter()).unwrap();
+            assert!(bb.min[1] >= -600.01 && bb.max[1] <= 0.01, "{bb:?}");
+            bank += (bb.max[1] - bb.min[1]) * (bb.max[2] - bb.min[2]);
+        }
+        // as far as the terrain reaches along that side
+        let t = p.terrain.as_ref().unwrap();
+        let (z0, z1) = (
+            t.origin[2].max(-900.0),
+            (t.origin[2] + t.cells_z as f32 * t.cell_size).min(900.0),
+        );
+        let want = (z1 - z0) * 600.0;
+        assert!((bank - want).abs() < want * 1.0e-4, "{bank} {z0} {z1}");
+        let composed = dc_world::World::parse(b.composed.as_ref().unwrap()).unwrap();
+        composed.check_layout().unwrap();
+        // under the piece's floor, walking east out of the region, a player meets the bank
+        let cw = dc_sim::from_world::collision_world(
+            &composed,
+            &dc_sim::from_world::WorldFilter::default(),
+        );
+        let hit = cw
+            .ray(
+                dc_sim::V3::new(400.0, -300.0, 0.0),
+                dc_sim::V3::new(800.0, -300.0, 0.0),
+            )
+            .expect("the bank");
+        assert!((400.0 + 400.0 * hit.t - 600.0).abs() < 0.5, "{}", hit.t);
+        let names: Vec<String> = composed
+            .objects
+            .iter()
+            .filter_map(|o| o.name().map(|n| String::from_utf8_lossy(n).into_owned()))
+            .filter(|n| n.contains('~'))
+            .collect();
+        let crate_name = format!("{}~crate", p.pieces[0].id);
+        assert!(
+            composed.object_named(crate_name.as_bytes()).is_some(),
+            "{names:?}"
+        );
+        assert!(composed
+            .objects
+            .iter()
+            .all(|o| !o.class_name.eq_ignore_ascii_case(b"dc.rom_piece")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A blocker solid (MAP-124) is an invisible wall for players: its six faces are the world's blocker section, it
+    /// makes no model and no object, and a body moving into it from either side stops at its face.
+    #[test]
+    fn a_blocker_solid_is_an_invisible_wall_for_players() {
+        use dc_sim::from_world::{collision_world, WorldFilter};
+        let dir =
+            std::env::temp_dir().join(format!("dc-mapkit-build-blocker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let made = crate::template::make(crate::template::Template::Flat, "Blocker", "tests", 1);
+        for file in &made.files {
+            std::fs::write(dir.join(&file.path), &file.bytes).unwrap();
+        }
+        let (mut p, mut h) = (made.project, made.heights);
+        let material = p.materials.first().map(|m| m.id.clone()).unwrap();
+        let op: crate::ops::Op = serde_json::from_value(serde_json::json!({
+            "op": "solid.add", "kind": "box", "pos": [0.0, 100.0, 0.0], "size": [400.0, 200.0, 32.0],
+            "material": material, "brush": "blocker"
+        }))
+        .unwrap();
+        crate::ops::apply(&mut p, &mut h, &[op]).unwrap();
+        let id = p.solids.last().unwrap().id.clone();
+        let b = build_with(&p, &h, &Assets::new(&dir), &p.build, None).unwrap();
+        let w = dc_world::World::parse(&b.dat).unwrap();
+        assert_eq!(w.blockers.polys.len(), 6);
+        assert!(w.object_named(id.as_bytes()).is_none());
+        assert!(w.models.iter().all(|m| m.name != id.as_bytes()));
+        // a body's ray at chest height stops at the near face, from the south and from the north
+        let cw = collision_world(&w, &WorldFilter::default());
+        let south = cw
+            .ray(
+                dc_sim::V3::new(0.0, 60.0, -200.0),
+                dc_sim::V3::new(0.0, 60.0, 200.0),
+            )
+            .expect("from the south");
+        assert!((-200.0 + 400.0 * south.t + 16.0).abs() < 0.5, "{}", south.t);
+        let north = cw
+            .ray(
+                dc_sim::V3::new(0.0, 60.0, 200.0),
+                dc_sim::V3::new(0.0, 60.0, -200.0),
+            )
+            .expect("from the north");
+        assert!((200.0 - 400.0 * north.t - 16.0).abs() < 0.5, "{}", north.t);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A hidden core stops a shot and is not drawn; a see-through model is drawn and stops nothing, and however
     /// dense it is it does not reach the collision tree (MAP-104), all read back through the world file.

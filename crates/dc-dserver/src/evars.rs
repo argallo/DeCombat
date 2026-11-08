@@ -360,6 +360,47 @@ mod tests {
         assert_eq!(WORLD_VARS[0].client, k.hash_len());
     }
 
+    /// MAP-118: DeCombat's own `two_sided` world setting (read by the client's renderer only) matches no row, so a
+    /// world-settings object that carries it sends exactly the variables it sends without it.
+    #[test]
+    fn the_two_sided_setting_sends_no_variable() {
+        use dc_world::synth::{SynthObject, SynthValue, SynthWorld};
+        let bytes = |two_sided: Option<bool>| {
+            let mut props = vec![
+                ("far_z", SynthValue::Real(9000.0)),
+                ("fog_enable", SynthValue::Bool(true)),
+                ("wind", SynthValue::Vec3([1.0, 2.0, 3.0])),
+            ];
+            if let Some(b) = two_sided {
+                props.push(("two_sided", SynthValue::Bool(b)));
+            }
+            SynthWorld {
+                tree_shape: vec![false],
+                objects: vec![SynthObject::dc(
+                    "dc.world_settings",
+                    "settings",
+                    [0.0; 3],
+                    [0.0; 3],
+                    &props,
+                )],
+                ..SynthWorld::default()
+            }
+            .build()
+        };
+        let vars = |b: &[u8]| {
+            let w = dc_world::World::parse_with(b, dc_world::ParseOptions { render: false })
+                .expect("parse");
+            world_vars(&w)
+        };
+        let plain = vars(&bytes(None));
+        assert_eq!(plain.len(), 5, "far_z, fog_enable, wind_x/y/z");
+        assert_eq!(vars(&bytes(Some(true))), plain);
+        assert_eq!(vars(&bytes(Some(false))), plain);
+        assert!(WORLD_VARS
+            .iter()
+            .all(|r| r.prop != dc_world::names::PROP_TWO_SIDED));
+    }
+
     #[test]
     fn preload_order_follows_the_reference() {
         // every world row and both constants have a place; no key twice

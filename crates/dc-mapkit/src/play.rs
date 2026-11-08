@@ -78,6 +78,9 @@ pub struct PlayOptions {
     pub loadout: Option<String>,
     /// Items a new character owns in the inventory, not equipped (`27,502`).
     pub inventory: Option<String>,
+    /// A dc-client step file the player runs in the match (`--steps`; a walk through a doorway, shots on the way),
+    /// its shots under `build/play/shots` (MAP-116's walk tests; DC-DEFAULT: MAP-117).
+    pub steps: Option<PathBuf>,
 }
 
 /// The shape of the play instance (MAP-68, MAP-89).
@@ -1086,6 +1089,16 @@ pub fn play(dir: &Path, opts: &PlayOptions) -> Result<PlayReport, Diagnostics> {
                 .open(&client_log)
                 .map_err(|e| io_diag(Code::ProjectIo, &client_log, &e))?,
         ));
+    if let Some(steps) = &opts.steps {
+        // DC-DEFAULT: MAP-117 the step file runs inside the client (window or headless); its shots land with the
+        // run's other pictures
+        let steps =
+            std::fs::canonicalize(steps).map_err(|e| io_diag(Code::ProjectIo, steps, &e))?;
+        cmd.arg("--steps")
+            .arg(steps)
+            .arg("--shot-dir")
+            .arg(out.join("shots"));
+    }
     if opts.headless {
         cmd.args(["--name", PILOT_LOGIN, "--login-password", PILOT_LOGIN])
             .args(["--identity", "off"])

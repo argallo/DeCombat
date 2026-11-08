@@ -38,7 +38,7 @@ pre-release; a plain `v0.2.0` is not.
 | `DeCombat-mac-<tag>.zip` | DeCombat.app, universal, README |
 | `DeCombat-iOS-<tag>.ipa` or `DeCombat-iOS-<tag>-unsigned.ipa` | the iPad app, see "iOS"; optional: a failed iOS build leaves it out |
 | `DeCombat-MapKit-win-<tag>.zip`, `DeCombat-MapKit-mac-<tag>.zip` | the community map builder |
-| `DeCombat-GunKit-win-<tag>.zip`, `DeCombat-GunKit-mac-<tag>.zip` | the camo studio |
+| `DeCombat-GunKit-win-<tag>.zip`, `DeCombat-GunKit-mac-<tag>.zip` | the camo studio, with the five example camos of the pack repository release named in `tools/gunkit_examples.txt` (fetched and hash-checked at package time; a mismatch fails the job) |
 | `decombat-servers-linux-x86_64-<tag>.tar.gz` | the servers, for people hosting their own |
 | `SHA256SUMS` | the checksums of all of the above |
 

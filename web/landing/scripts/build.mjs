@@ -92,6 +92,11 @@ await versionAssets(
   ["style.css", "app.js", "site-core.js", "beta.css", "beta.js"],
   ["index.html", "privacy.html", "404.html"],
 );
+let packCount = 0;
+try {
+  const packs = JSON.parse(await readFile(path.join(root, "data/packs.json"), "utf8"));
+  packCount = (packs.sources || []).reduce((n, s) => n + (s.packs || []).length, 0);
+} catch {}
 console.log(
-  `Built ${dest}\n${publicDirectory.known_mods.length} publishable verified mods · ${publicDirectory.servers.length} public server listings`,
+  `Built ${dest}\n${publicDirectory.known_mods.length} publishable verified mods · ${publicDirectory.servers.length} public server listings · ${packCount} release packs`,
 );

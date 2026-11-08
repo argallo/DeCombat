@@ -780,6 +780,8 @@ pub struct BotSession {
     /// BOT-151: the hunter the agent fights (its preferred target) and since when it was last near.
     spy_focus: Option<(u8, Millis)>,
     spy_guard: Option<(usize, Option<[f32; 3]>, Millis)>,
+    /// BOT-164: the player the chaser fights from where it stands (in clear sight), none while it walks its chase.
+    spy_engaged: Option<u32>,
     last_hurt: Option<Millis>,
     /// BOT-128: the place a Quarantine human falls back to and when it was picked; whether it walks back to the
     /// other humans.
@@ -939,6 +941,7 @@ impl BotSession {
             spy_no_way: None,
             spy_focus: None,
             spy_guard: None,
+            spy_engaged: None,
             last_hurt: None,
             qrt_retreat: None,
             qrt_guard: None,
@@ -1769,9 +1772,10 @@ impl BotSession {
             None
         } else if let Some(path) = self.cfg.world_file.clone() {
             let label = path.display().to_string();
+            let rom_dir = self.rom.as_ref().map(|r| r.rom().to_path_buf());
             Some((
                 label,
-                Box::new(move || crate::romworld::load_world_file(&path)),
+                Box::new(move || crate::romworld::load_world_file(&path, rom_dir.as_deref())),
             ))
         } else if let Some(path) = self
             .cfg
@@ -1780,9 +1784,10 @@ impl BotSession {
             .and_then(|cache| crate::romworld::mod_world_path(cache, &name))
         {
             let label = path.display().to_string();
+            let rom_dir = self.rom.as_ref().map(|r| r.rom().to_path_buf());
             Some((
                 label,
-                Box::new(move || crate::romworld::load_world_file(&path)),
+                Box::new(move || crate::romworld::load_world_file(&path, rom_dir.as_deref())),
             ))
         } else if let Some(rom) = &self.rom {
             match rom.resolve(name.as_bytes()) {
@@ -2995,6 +3000,10 @@ impl BotSession {
         match ev {
             Some(LifeEvent::Died { state }) => {
                 self.rec.event("died", json!({"ms": ms, "state": state}));
+                // BOT-163: a death by the case the bot walked to is a failed attempt at it
+                if let Some(p) = self.body.as_ref().map(|b| b.pos()) {
+                    self.spy.on_died(p, now);
+                }
             }
             Some(LifeEvent::Armed { via, a, b }) => {
                 self.rec.event(
@@ -3598,8 +3607,10 @@ impl BotSession {
                     may_roam = !stay && !cautious;
                     let spy = if stay { None } else { self.spy_goal(now) };
                     // DC-DEFAULT: BOT-140 (proposed)
+                    // (BOT-164: a chaser fighting the chased player where it stands is not free)
                     spy_free = !stay
                         && spy.is_none()
+                        && self.spy_engaged.is_none()
                         && self.obs.mode_class == Some(crate::spyrun::SPY_CLASS)
                         && self.spy.held == 0;
                     // BOT-128: a Quarantine human keeps away from the infected and regroups
@@ -5267,8 +5278,9 @@ impl BotSession {
 
     /// Spy Hunt (class 9): the uplink with every case, the agent while another player is, else the case of the
     /// bot's spread or the spy with the most cases (the shooter still fires on the way).
-    // DC-DEFAULT: BOT-75 (proposed), BOT-127 (proposed), BOT-137 (proposed)
+    // DC-DEFAULT: BOT-75 (proposed), BOT-127 (proposed), BOT-137 (proposed), BOT-163 (proposed), BOT-164 (proposed)
     fn spy_goal(&mut self, now: Millis) -> Option<([f32; 3], &'static str)> {
+        let was_engaged = self.spy_engaged.take();
         if self.obs.mode_class != Some(9) {
             return None;
         }
@@ -5281,7 +5293,7 @@ impl BotSession {
             .collect();
         // BOT-137: a case where no body stands near it, or in danger (the water, a fall volume), is no goal while it
         // lies there
-        let fresh = self.spy.unchecked(&self.table);
+        let fresh = self.spy.unchecked(&self.table, now);
         if !fresh.is_empty() {
             let ms = self.ms(now);
             let world = self.world.as_ref().map(|w| w.collision.clone());
@@ -5297,8 +5309,10 @@ impl BotSession {
             kill.retain(|k| !hazard.contains(k));
             if let (Some(w), Some(nav)) = (world, self.nav.as_mut()) {
                 for c in fresh {
+                    // BOT-163: a pass while the grid grows is tested again later
+                    let provisional = nav.growing() || nav.is_empty();
                     let why = crate::spyrun::case_reach(nav, &w, &kill, c);
-                    self.spy.note_reach(c, why);
+                    self.spy.note_reach(c, why, provisional, now);
                     if let Some(why) = why {
                         self.rec.event(
                             "spy_blocked",
@@ -5324,8 +5338,27 @@ impl BotSession {
             .map(|r| u32::from(r.pid))
             .collect();
         let mut g = self.spy.goal(&self.table, own, at, &others, now);
-        // BOT-155: a chase with no headway is given up
-        if let Some(crate::spyrun::SpyGoal::Chase(pid, p)) = g {
+        // BOT-164: a chaser with the chased player in clear sight fights him from where it stands (the TDM hunt's
+        // engagement), and walks its chase again once he is out of sight
+        let fighting = self.shooter.as_ref().and_then(|s| {
+            s.target()
+                .filter(|_| s.target_dist().is_some())
+                .map(u32::from)
+        });
+        let engaged = crate::spyrun::chase_engages(g.as_ref(), fighting);
+        if engaged.is_some() && was_engaged != engaged {
+            self.rec.event(
+                "spy_engage",
+                json!({"ms": self.ms(now), "pos": at, "pid": engaged,
+                       "dist": self.shooter.as_ref().and_then(Shooter::target_dist)}),
+            );
+        }
+        self.spy_engaged = engaged;
+        // BOT-155: a chase with no headway is given up (not while the bot fights the chased player where it stands)
+        if engaged.is_some() {
+            self.spy_chase_watch = None;
+            self.spy_no_way = None;
+        } else if let Some(crate::spyrun::SpyGoal::Chase(pid, p)) = g {
             if self.spy_chase_stalled(now, at, pid, p) {
                 self.spy.drop_chase(pid, now);
                 g = self.spy.goal(&self.table, own, at, &others, now);
@@ -5337,7 +5370,15 @@ impl BotSession {
         if let Some(c) = self.spy.just_blocked.take() {
             self.rec.event(
                 "spy_blocked",
-                json!({"ms": self.ms(now), "case": c, "pos": at, "why": "stall"}),
+                json!({"ms": self.ms(now), "case": c, "pos": at, "why": "stall",
+                       "fails": self.spy.fail_count(&c)}),
+            );
+        }
+        // BOT-163: a case place that defeated the bot's attempts is out of its reach for the match
+        if let Some(c) = self.spy.just_given_up.take() {
+            self.rec.event(
+                "spy_unreachable",
+                json!({"ms": self.ms(now), "case": c, "pos": at, "fails": self.spy.fail_count(&c)}),
             );
         }
         // BOT-151: the agent waits away from the hunters until the uplink is about to open; a guard holds its
@@ -5357,6 +5398,11 @@ impl BotSession {
             }
             Some(crate::spyrun::SpyGoal::Guard(k, u, base)) => {
                 return Some(self.guard_goal(now, at, k, u, base));
+            }
+            // BOT-164: no walk while the chaser fights the chased player in sight (the hunt goal is none then too)
+            Some(crate::spyrun::SpyGoal::Chase(..)) if engaged.is_some() => {
+                self.spy_retreat = None;
+                return None;
             }
             _ => {}
         }

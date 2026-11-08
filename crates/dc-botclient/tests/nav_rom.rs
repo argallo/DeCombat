@@ -1220,3 +1220,51 @@ fn rom_bots_get_off_the_islands_they_were_confined_to() {
     eprintln!("Rattlesnake deck: {walk:?}");
     assert!(walk.is_ok(), "Rattlesnake deck: {walk:?}");
 }
+
+/// BOT-163: Gray Hammer's Spy Hunt intel points (the world's 17 item spawn points of the mode, case places 5 above
+/// them) with the grid grown in full from a spawn point: two lie where no way leads (no node within 128 units flat and
+/// 60 in height): the deck point (2251, 299, -2030), which drew 16 holders of 4 to their deaths under it in a
+/// 6-minute room (out_boteval matrix4 BNT_01; it blocked matrix1 too), and (644, 211, 272). The others have nodes by
+/// them. OBSERVED 2026-11-08 (EU-test ROM, offline walks of the
+/// session's follower from three spawn points, 90 s each): every other point was taken from at least two of them;
+/// the two points from none (the walks ended under them, at y 68 / -14 / 74). Since the server places 5 cases and the
+/// agent needs all 5, a room that places either one cannot reach stage 2 with bots alone: a grid growth question.
+#[test]
+fn rom_grayhammer_two_spy_hunt_intel_points_are_out_of_the_grids_reach() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let pts: [[f32; 3]; 17] = [
+        [-537.0, 277.0, 723.5],
+        [644.0, 211.0, 272.5],
+        [416.0, 72.0, 447.5],
+        [-508.0, 99.0, 370.5],
+        [1099.0, -172.0, -163.5],
+        [-2098.0, 88.0, -726.5],
+        [-1628.0, 88.0, -1352.5],
+        [-93.0, 88.0, -1102.5],
+        [-1465.0, 88.0, -2078.5],
+        [474.0, 88.0, -2807.5],
+        [-515.0, 296.0, -2424.5],
+        [164.0, 315.0, -1398.5],
+        [1077.0, 299.0, -1767.5],
+        [2251.0, 299.0, -2030.5],
+        [1779.0, 89.0, -329.5],
+        [1477.0, 89.0, 227.5],
+        [59.0, -118.0, -1367.5],
+    ];
+    let room = spy_room(&r, 1);
+    let (mut nav, _) = room.grown();
+    assert!(!nav.growing());
+    let mut out = Vec::new();
+    for p in pts {
+        let c = [p[0], p[1] + 5.0, p[2]];
+        let why = dc_botclient::spyrun::case_reach(&mut nav, &room.w.collision, &room.kill, c);
+        eprintln!("{c:?}: {why:?}");
+        if why.is_some() {
+            out.push(p.map(f32::round));
+        }
+    }
+    assert_eq!(out, vec![[644.0, 211.0, 273.0], [2251.0, 299.0, -2031.0]]);
+}

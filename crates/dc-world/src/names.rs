@@ -194,6 +194,9 @@ pub const CLASS_SLIDING_DOOR: Key = Key::rom_only("f96e23498669c7b7", 11);
 pub const CLASS_ROTATING_DOOR: Key = Key::rom_only("1782b26722e2707c", 12);
 pub const CLASS_SWITCH: Key = Key::rom_only("b060f4405afec302", 14);
 pub const CLASS_WATER: Key = Key::rom_only("7ca7dea906800f87", 5);
+/// The explosion objects a breakable's death command switches on (dserver `destructibles.rs CLASS_EXPLOSION`, same
+/// hash). ROM-only.
+pub const CLASS_EXPLOSION: Key = Key::rom_only("ca6482a42babcb32", 9);
 /// The world models that move with their object: sliding door, rotating door, rotating switch (dc-sim
 /// `from_world.rs MOVER_CLASSES`, same hashes as the dserver constants). ROM-only.
 pub const MOVER_CLASSES: [Key; 3] = [CLASS_SLIDING_DOOR, CLASS_ROTATING_DOOR, CLASS_SWITCH];
@@ -311,6 +314,11 @@ pub const PROP_SKY_FOG_FAR: Key = Key::new("3885263f3d410645", 10, "sky_fog_far"
 pub const PROP_WIND: Key = Key::new("d151346fe7eea3c6", 4, "wind");
 /// Every sky portal open (bool).
 pub const PROP_ALL_SKY_PORTALS: Key = Key::new("5f483004cf36e238", 13, "all_sky_portals");
+/// Both faces of the level and its opaque world models drawn (bool, absent = false) (dc-render `scene.rs
+/// world_two_sided`). DeCombat's own: no ROM property corresponds, the server sends no variable for it, and on a ROM
+/// object it never matches (MAP-2).
+// DC-DEFAULT: MAP-118
+pub const PROP_TWO_SIDED: Key = Key::ours_only("two_sided");
 
 // ---------------------------------------------------------------------------------------------------------------
 // Lights (dc-render `lights.rs` 25-54, dserver `worldlight.rs` 17-23).
@@ -474,6 +482,7 @@ pub const ALL: &[&Key] = &[
     &PROP_SKY_FOG_FAR,
     &PROP_WIND,
     &PROP_ALL_SKY_PORTALS,
+    &PROP_TWO_SIDED,
     &PROP_LIGHT_COLOR,
     &PROP_LIGHT_INNER_COLOR,
     &PROP_BRIGHT,

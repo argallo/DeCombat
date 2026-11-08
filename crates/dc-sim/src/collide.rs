@@ -307,6 +307,181 @@ pub fn build_bsp(faces: &[ConvexPoly]) -> (Vec<(u32, Child, Child)>, Child) {
 pub struct CollisionWorld {
     pub models: Vec<CollModel>,
     blockers: PolySet,
+    /// Where the blocker faces are, so a sweep tests only the faces near it (a world with many of them).
+    blocker_grid: BlockerGrid,
+}
+
+/// A world with more blocker faces than this indexes them in a [`BlockerGrid`].
+const BLOCKER_GRID_MIN: usize = 64;
+/// The grid's cell (units, x and z).
+const BLOCKER_CELL: f32 = 256.0;
+/// A sweep over more cells than this, or with more candidates than this, tests every face as the plain scan does.
+const BLOCKER_QUERY_CELLS: usize = 64;
+const BLOCKER_CANDIDATES: usize = 512;
+/// The grid has at most this many cells along x and along z: a world wider than 256 cells of 256 units gets
+/// larger cells instead of more of them (the faces of a hostile or broken pack can lie a million units apart).
+const BLOCKER_GRID_CELLS: usize = 256;
+/// More face-in-cell entries than this (a few huge faces listed in every cell of a wide world), and the world
+/// keeps the plain scan: the index is for speed only, never for memory.
+const BLOCKER_GRID_ITEMS: usize = 1 << 22;
+
+/// A uniform x/z grid over the blocker faces, each face listed in every cell its polygon's box covers. A sweep
+/// takes the faces of the cells its own box covers, in face order, and runs the plain scan's test on them alone:
+/// a face whose box misses the sweep's box cannot be touched by it, so the hit (and the face that wins a tie) is
+/// the one the scan of every face finds.
+// DC-DEFAULT: SIM-27 (an index for speed only: the same hits as the blocker scan of MOVEMENT_2009.md §9.6)
+#[derive(Debug, Clone, Default, PartialEq)]
+struct BlockerGrid {
+    origin: [f32; 2],
+    /// The cell's side (x and z): [`BLOCKER_CELL`], or more for a world wider than [`BLOCKER_GRID_CELLS`] cells.
+    cell: f32,
+    dims: [usize; 2],
+    /// Per cell, its first entry in `items` (one more than the cells: the end of the last).
+    starts: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl BlockerGrid {
+    fn of(set: &PolySet) -> BlockerGrid {
+        if set.faces.len() <= BLOCKER_GRID_MIN {
+            return BlockerGrid::default();
+        }
+        // a corner that is not a number (min and max would pass it over): the plain scan
+        if set
+            .verts
+            .iter()
+            .any(|v| !(v.x.is_finite() && v.z.is_finite()))
+        {
+            return BlockerGrid::default();
+        }
+        let boxes: Vec<[f32; 4]> = set
+            .faces
+            .iter()
+            .map(|f| {
+                let vs = &set.verts[f.first as usize..(f.first + f.count) as usize];
+                let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                for v in vs {
+                    b = [b[0].min(v.x), b[1].min(v.z), b[2].max(v.x), b[3].max(v.z)];
+                }
+                b
+            })
+            .collect();
+        let mut all = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for b in &boxes {
+            all = [
+                all[0].min(b[0]),
+                all[1].min(b[1]),
+                all[2].max(b[2]),
+                all[3].max(b[3]),
+            ];
+        }
+        // a face with a corner that is not a number, or a world box that is not finite: the plain scan
+        if !(all[0] <= all[2] && all[1] <= all[3]) || all.iter().any(|v| !v.is_finite()) {
+            return BlockerGrid::default();
+        }
+        let span = (all[2] - all[0]).max(all[3] - all[1]);
+        let cell = BLOCKER_CELL.max(span / BLOCKER_GRID_CELLS as f32);
+        let nx = (((all[2] - all[0]) / cell) as usize + 1).min(BLOCKER_GRID_CELLS + 1);
+        let nz = (((all[3] - all[1]) / cell) as usize + 1).min(BLOCKER_GRID_CELLS + 1);
+        let mut g = BlockerGrid {
+            origin: [all[0], all[1]],
+            cell,
+            dims: [nx, nz],
+            starts: Vec::new(),
+            items: Vec::new(),
+        };
+        // the entries the faces would make, before anything is allocated for them
+        let spans: Vec<[usize; 4]> = boxes
+            .iter()
+            .map(|b| {
+                [
+                    g.cell(0, b[0]),
+                    g.cell(0, b[2]),
+                    g.cell(1, b[1]),
+                    g.cell(1, b[3]),
+                ]
+            })
+            .collect();
+        let entries: usize = spans
+            .iter()
+            .map(|s| (s[1] - s[0] + 1) * (s[3] - s[2] + 1))
+            .sum();
+        if entries > BLOCKER_GRID_ITEMS {
+            return BlockerGrid::default();
+        }
+        let mut cells: Vec<Vec<u32>> = alloc::vec![Vec::new(); nx * nz];
+        for (i, s) in spans.iter().enumerate() {
+            let (i0, i1, j0, j1) = (s[0], s[1], s[2], s[3]);
+            for j in j0..=j1 {
+                for k in i0..=i1 {
+                    cells[j * nx + k].push(i as u32);
+                }
+            }
+        }
+        g.starts.reserve(cells.len() + 1);
+        for c in &cells {
+            g.starts.push(g.items.len() as u32);
+            g.items.extend_from_slice(c);
+        }
+        g.starts.push(g.items.len() as u32);
+        g
+    }
+
+    fn cell(&self, axis: usize, v: f32) -> usize {
+        let k = (v - self.origin[axis]) / self.cell;
+        if k <= 0.0 {
+            0
+        } else {
+            (k as usize).min(self.dims[axis] - 1)
+        }
+    }
+
+    /// The faces whose boxes may meet the box `centre ± reach` (x and z), sorted, each once, written into `buf`:
+    /// their count, or `None` when the plain scan of every face is the way (no grid, too many cells or faces).
+    fn candidates(
+        &self,
+        centre: V3,
+        reach: f32,
+        buf: &mut [u32; BLOCKER_CANDIDATES],
+    ) -> Option<usize> {
+        if self.starts.is_empty() || !reach.is_finite() {
+            return None;
+        }
+        let (i0, i1) = (
+            self.cell(0, centre.x - reach),
+            self.cell(0, centre.x + reach),
+        );
+        let (j0, j1) = (
+            self.cell(1, centre.z - reach),
+            self.cell(1, centre.z + reach),
+        );
+        if (i1 - i0 + 1) * (j1 - j0 + 1) > BLOCKER_QUERY_CELLS {
+            return None;
+        }
+        let mut n = 0usize;
+        for j in j0..=j1 {
+            for k in i0..=i1 {
+                let c = j * self.dims[0] + k;
+                for &f in &self.items[self.starts[c] as usize..self.starts[c + 1] as usize] {
+                    if n == BLOCKER_CANDIDATES {
+                        return None;
+                    }
+                    buf[n] = f;
+                    n += 1;
+                }
+            }
+        }
+        let list = &mut buf[..n];
+        list.sort_unstable();
+        let mut m = 0usize;
+        for i in 0..n {
+            if i == 0 || list[i] != list[m - 1] {
+                list[m] = list[i];
+                m += 1;
+            }
+        }
+        Some(m)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1141,14 +1316,24 @@ impl CollisionWorld {
         for b in blockers {
             set.push(b.normal, b.dist, &b.verts, b.flags | SURF_SOLID);
         }
+        let blocker_grid = BlockerGrid::of(&set);
         CollisionWorld {
             models,
             blockers: set,
+            blocker_grid,
         }
     }
 
     pub fn blocker_count(&self) -> usize {
         self.blockers.faces.len()
+    }
+
+    /// The same world testing every blocker face in turn instead of through the grid (SIM-27): for the checks
+    /// that the grid changes no hit, not for play.
+    #[doc(hidden)]
+    pub fn with_plain_blocker_scan(mut self) -> CollisionWorld {
+        self.blocker_grid = BlockerGrid::default();
+        self
     }
 
     /// A ray (zero-size shape) from `from` to `to`.
@@ -1173,15 +1358,22 @@ impl Collider for CollisionWorld {
             let reach = len * 0.5 + shape.bound;
             let mut best = 1.0f32;
             let mut bf = None;
-            for (i, f) in self.blockers.faces.iter().enumerate() {
+            let mut test = |i: usize| {
+                let f = &self.blockers.faces[i];
                 let r = reach + f.radius;
                 if (f.center - mid).len_sq() > r * r {
-                    continue;
+                    return;
                 }
                 if let Some((tb, nn)) = face_sweep(&self.blockers, i as u32, shape, p, d, best) {
                     best = tb;
                     bf = Some((i as u32, nn));
                 }
+            };
+            // the faces near the sweep, in face order (the grid), or every face (the plain scan): the same hit
+            let mut buf = [0u32; BLOCKER_CANDIDATES];
+            match self.blocker_grid.candidates(mid, reach, &mut buf) {
+                Some(n) => buf[..n].iter().for_each(|&i| test(i as usize)),
+                None => (0..self.blockers.faces.len()).for_each(&mut test),
             }
             if let Some((i, nn)) = bf {
                 // the nearest hit distance minus 0.001 becomes t |E - P|
@@ -2063,6 +2255,144 @@ mod tests {
             "{:?}",
             w.normal
         );
+    }
+
+    /// SIM-27: the blocker grid finds exactly the hits of the scan of every face (same t, normal and face, ties
+    /// included) for sweeps of every length, on a soup of a few hundred blocker quads of every size.
+    #[test]
+    fn the_blocker_grid_finds_the_hits_of_the_plain_scan() {
+        // a little deterministic generator (no dependency)
+        let mut seed = 0x2545_f491_u32;
+        let mut rnd = move |lo: f32, hi: f32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            lo + (hi - lo) * ((seed % 100_000) as f32 / 100_000.0)
+        };
+        let mut blockers = Vec::new();
+        for k in 0..300 {
+            // upright quads (walls) of lengths from 20 to 6,000 at every angle, some sharing a plane
+            let (cx, cz) = (rnd(-4_000.0, 4_000.0), rnd(-4_000.0, 4_000.0));
+            let len = if k % 25 == 0 {
+                rnd(2_000.0, 6_000.0)
+            } else {
+                rnd(20.0, 400.0)
+            };
+            let a = rnd(0.0, core::f32::consts::TAU);
+            let (ux, uz) = (a.cos() * len * 0.5, a.sin() * len * 0.5);
+            let (y0, y1) = (rnd(-200.0, 100.0), rnd(150.0, 600.0));
+            let verts = vec![
+                V3::new(cx - ux, y0, cz - uz),
+                V3::new(cx + ux, y0, cz + uz),
+                V3::new(cx + ux, y1, cz + uz),
+                V3::new(cx - ux, y1, cz - uz),
+            ];
+            blockers.push(ConvexPoly::from_corners(verts.clone(), 0));
+            let mut back = verts;
+            back.reverse();
+            blockers.push(ConvexPoly::from_corners(back, 0));
+        }
+        let grid = CollisionWorld::from_parts(Vec::new(), &blockers);
+        assert!(!grid.blocker_grid.starts.is_empty());
+        let mut plain = grid.clone();
+        plain.blocker_grid = BlockerGrid::default();
+        let shape = Cylinder::new(15.0, 50.0);
+        let mut hits = 0;
+        for k in 0..4_000 {
+            let from = V3::new(
+                rnd(-4_500.0, 4_500.0),
+                rnd(0.0, 300.0),
+                rnd(-4_500.0, 4_500.0),
+            );
+            let reach = if k % 10 == 0 { 3_000.0 } else { 120.0 };
+            let to = from + V3::new(rnd(-reach, reach), rnd(-20.0, 20.0), rnd(-reach, reach));
+            let (a, b) = (grid.sweep(&shape, from, to), plain.sweep(&shape, from, to));
+            assert_eq!(a, b, "sweep {k} from {from:?} to {to:?}");
+            hits += a.is_some() as u32;
+        }
+        assert!(hits > 200, "{hits}");
+    }
+
+    /// SIM-27: a world whose blockers lie a million units apart gets larger cells, not more of them (at most
+    /// 257 x 257), still with the plain scan's hits; a face with a corner that is not a number, or faces that
+    /// would fill the grid with entries, keep the plain scan.
+    #[test]
+    fn the_blocker_grid_stays_small_for_a_wide_or_broken_world() {
+        let quad = |cx: f32, cz: f32, half: f32| {
+            ConvexPoly::from_corners(
+                alloc::vec![
+                    V3::new(cx - half, -100.0, cz),
+                    V3::new(cx + half, -100.0, cz),
+                    V3::new(cx + half, 300.0, cz),
+                    V3::new(cx - half, 300.0, cz),
+                ],
+                0,
+            )
+        };
+        let mut wide = Vec::new();
+        for k in 0..80 {
+            let f = k as f32;
+            wide.push(quad(
+                -1_000_000.0 + f * 25_000.0,
+                -1_000_000.0 + f * 25_000.0,
+                40.0,
+            ));
+        }
+        let w = CollisionWorld::from_parts(Vec::new(), &wide);
+        assert!(!w.blocker_grid.starts.is_empty(), "the grid is on");
+        assert!(w.blocker_grid.dims[0] <= BLOCKER_GRID_CELLS + 1);
+        assert!(w.blocker_grid.dims[1] <= BLOCKER_GRID_CELLS + 1);
+        assert!(w.blocker_grid.starts.len() <= (BLOCKER_GRID_CELLS + 1).pow(2) + 1);
+        assert!(w.blocker_grid.cell > BLOCKER_CELL);
+        let mut plain = w.clone();
+        plain.blocker_grid = BlockerGrid::default();
+        let shape = Cylinder::new(15.0, 50.0);
+        for k in 0..80 {
+            let f = k as f32;
+            let c = V3::new(
+                -1_000_000.0 + f * 25_000.0,
+                0.0,
+                -1_000_000.0 + f * 25_000.0,
+            );
+            // the wall's front faces +z (a blocker stops a move against its front only): approach from +z
+            let (from, to) = (c + V3::new(0.0, 0.0, 300.0), c + V3::new(0.0, 0.0, -300.0));
+            assert_eq!(
+                w.sweep(&shape, from, to),
+                plain.sweep(&shape, from, to),
+                "{k}"
+            );
+            assert!(w.sweep(&shape, from, to).is_some(), "{k}: the wall is hit");
+        }
+        // a corner that is not a number: no grid
+        let mut broken = wide.clone();
+        broken.push(ConvexPoly::from_corners(
+            alloc::vec![
+                V3::new(f32::NAN, 0.0, 0.0),
+                V3::new(10.0, 0.0, 0.0),
+                V3::new(10.0, 10.0, 0.0),
+                V3::new(0.0, 10.0, 0.0),
+            ],
+            0,
+        ));
+        let b = CollisionWorld::from_parts(Vec::new(), &broken);
+        assert!(b.blocker_grid.starts.is_empty(), "the plain scan");
+        // 70 flat faces each as wide as the world on x and z: 70 x 257 x 257 entries, over the limit: no grid
+        let huge: Vec<ConvexPoly> = (0..70)
+            .map(|k| {
+                let (y, h) = (k as f32 * 10.0, 1_000_000.0);
+                ConvexPoly::from_corners(
+                    alloc::vec![
+                        V3::new(-h, y, -h),
+                        V3::new(h, y, -h),
+                        V3::new(h, y, h),
+                        V3::new(-h, y, h),
+                    ],
+                    0,
+                )
+            })
+            .collect();
+        let h = CollisionWorld::from_parts(Vec::new(), &huge);
+        assert!(h.blocker_grid.starts.is_empty(), "the plain scan");
     }
 
     #[test]

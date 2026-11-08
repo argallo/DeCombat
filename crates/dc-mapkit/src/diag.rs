@@ -138,6 +138,18 @@ codes! {
     ExportPack = "export.pack", Error, "dc-modkit refused the exported mod folder (validate / lint / pack)";
     RomMissing = "rom.missing", Error, "no ROM folder was found (--rom, CA_ROM, <profile>/mapkit.toml, a sibling Game/ folder)";
     RomRead = "rom.read", Error, "a ROM archive or table could not be read";
+    PieceOverlap = "piece.overlap", Error, "the regions of two ROM pieces overlap (each place in the map takes its geometry from one piece)";
+    PieceRom = "piece.rom", Warning, "a ROM piece names a world the user's ROM was not checked for, or could not be composed from it (every player composes the map from their own ROM)";
+    ExportRomPiece = "export.rom_piece", Error, "the map is composed with ROM pieces and --no-rom-paths was given";
+    WalkStart = "walk.start", Warning, "a walked route's start has no floor under it, or the standing body does not fit there (`walk`)";
+    WalkDied = "walk.died", Warning, "a walked route ended in a kill volume, in a lethal fall or below everything (`walk`)";
+    WalkStuck = "walk.stuck", Warning, "a walked route stopped making progress before its target (`walk`)";
+    WalkTimeout = "walk.timeout", Warning, "a walked route ran out of time before its target (`walk --seconds`)";
+    WalkHole = "walk.hole", Warning, "the survey found columns with no floor at all: a player falls through there (`walk --survey`)";
+    WalkKillFloor = "walk.kill_floor", Warning, "the survey found columns whose floor puts a standing body inside a kill volume (`walk --survey`)";
+    WalkTrap = "walk.trap", Warning, "the reach analysis found floors a player can get to from the main area but never get back from (`walk --reach`)";
+    WalkDeadly = "walk.deadly", Warning, "the reach analysis found moves from the main area that kill: a lethal fall, a kill volume or a fall out of the world (`walk --reach`)";
+    WalkSpawnOutside = "walk.spawn_outside", Warning, "the reach analysis found a player spawn outside the main area (`walk --reach`)";
 
     ScriptError = "script.error", Error, "a Lua generator failed: a syntax error, a runtime error or a map.* call with bad arguments (the path names the script line)";
     ScriptBudget = "script.budget", Error, "a Lua generator ran out of its instruction budget (`run --budget N`)";

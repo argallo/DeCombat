@@ -335,10 +335,10 @@ pub fn pictures(r: &PicturesRequest) -> Result<Outcome, Diagnostics> {
     let (p, _) = Project::open(r.dir)?;
     let bad = |e: String| Diagnostics::one(Diagnostic::new(Code::RenderClient, "pictures", e));
     // DC-DEFAULT: MAP-103 a render of ROM textures holds ROM pixels and may not ship (docs/MODDING_GUIDE.md section 8)
-    let uses_rom = p
-        .materials
-        .iter()
-        .any(|m| matches!(m.texture, crate::project::TextureRef::Rom(_)));
+    let uses_rom = !p.pieces.is_empty()
+        || p.materials
+            .iter()
+            .any(|m| matches!(m.texture, crate::project::TextureRef::Rom(_)));
     let mut diagnostics = Diagnostics::new();
     let (preview_png, loading_png) = if uses_rom {
         (

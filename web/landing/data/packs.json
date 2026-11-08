@@ -1,0 +1,1288 @@
+{
+  "updated": "2026-11-09T07:30:00.000Z",
+  "sources": [
+    {
+      "repo": "argallo/DeCombat-mods",
+      "tag": "v1",
+      "url": "https://github.com/argallo/DeCombat-mods/releases/tag/v1",
+      "published_at": "2026-11-08T20:51:58Z",
+      "packs": [
+        {
+          "id": "case_reel",
+          "name": "Case Reel",
+          "version": "0.1.1",
+          "sha256": "d6c491bbb26180afed35f6b6a046c92ccff2da97f4116122c48767ddd5bc8a99",
+          "size": 15774,
+          "kind": "shared",
+          "tags": [
+            "cosmetic",
+            "menu"
+          ],
+          "capabilities": [
+            "content.hud"
+          ],
+          "author": "DeCombat",
+          "description": "Case openings spin: before the award window opens, a strip of everything the case can hold runs past a centre mark and slows down until it stops on what you got. Works for supply cases, HiSec cases and the Camo Crate; a click skips to the stop. Drawn on your own screen only: what a case gives is decided by the server before the strip starts, and nothing in play changes.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "case_reel-0.1.1.zip"
+        },
+        {
+          "id": "inspect_g36e_l96a1",
+          "name": "Inspect: G36E, L96A1 and SCARs",
+          "version": "0.3.3",
+          "sha256": "bc665d77dcac7d1552b316a27bc820a0a4ea20975cdf1c135b0c86dedf1386d0",
+          "size": 109604,
+          "kind": "shared",
+          "tags": [],
+          "capabilities": [
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "A weapon inspect for the G36E, the L96A1, the SCAR-L (MK16, Black, Trispear and Trispear LE) and the SCAR-H, and so for every camo of them: press the inspect key and the gun turns in the hands. It is drawn on your own screen only and changes nothing in play: no stats change, no reference gun applies, and firing, reloading or switching weapons cancels it at once.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "inspect_g36e_l96a1-0.3.3.zip"
+        },
+        {
+          "id": "variant_abyss_aug_a1",
+          "name": "AUG A1 Abyss",
+          "version": "0.1.0",
+          "sha256": "ea46a208cc582f4d828f9ea47af2ba8bc2449125322c2e3ccd62bc5fba98e9c2",
+          "size": 2169197,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "AUG A1 Abyss: deep-sea jellyfish whose bioluminescent glow rises and pulses. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_abyss_aug_a1-0.1.0.zip"
+        },
+        {
+          "id": "variant_art_deco_m1911",
+          "name": "M1911 MEU Art Deco",
+          "version": "0.1.0",
+          "sha256": "bfdaf869535e4eb8994ad1749ada96965f1574082faed832f6b997fd7d178ee7",
+          "size": 1161762,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M1911 MEU Art Deco: Art Deco gold sunburst fans and emerald inlays on black. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_art_deco_m1911-0.1.0.zip"
+        },
+        {
+          "id": "variant_aurora_svd",
+          "name": "Dragunov SVD Aurora",
+          "version": "0.1.0",
+          "sha256": "449c179bef8630969adcf00ba0b3bc5777ac57b3b608a1f85002650f31a16bd5",
+          "size": 1118356,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Dragunov SVD Aurora: green and teal aurora curtains swaying over a starry navy sky. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_aurora_svd-0.1.0.zip"
+        },
+        {
+          "id": "variant_autumn_fall_m24",
+          "name": "M24 Autumn Fall",
+          "version": "0.1.0",
+          "sha256": "0f66b14ab284820833d55cabbf3803f271923119c10a1bf11428df3dc3cd806e",
+          "size": 1113168,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M24 Autumn Fall: fiery maple leaves tumbling over a dark forest floor. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_autumn_fall_m24-0.1.0.zip"
+        },
+        {
+          "id": "variant_big_banana_m107cq",
+          "name": "M107CQ Big Banana",
+          "version": "0.1.0",
+          "sha256": "02d596d974cfd2e056685dc1da49c4a76aab7c4f559c91361d5ae184292636d9",
+          "size": 1118651,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M107CQ Big Banana: a ripe banana peel, sugar spots and all. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_big_banana_m107cq-0.1.0.zip"
+        },
+        {
+          "id": "variant_black_opal_usp",
+          "name": "USP Black Opal",
+          "version": "0.1.0",
+          "sha256": "1d5a5ff844774f548f51822d6c61cd891d8f7b297850a679a74248cb7dfcceac",
+          "size": 1115685,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "USP Black Opal: black opal whose green, blue, orange and magenta fire shifts as it turns. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_black_opal_usp-0.1.0.zip"
+        },
+        {
+          "id": "variant_blood_moon_p226",
+          "name": "P226 Blood Moon",
+          "version": "0.1.0",
+          "sha256": "7d04f7b7b998656b3522bb00f18f7e6365d7a283c05350c91618fb54ad76fc7b",
+          "size": 2160014,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "P226 Blood Moon: a cratered crimson moon with dark cloud wisps drifting across. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_blood_moon_p226-0.1.0.zip"
+        },
+        {
+          "id": "variant_boneyard_l115a2",
+          "name": "L115A2 Boneyard",
+          "version": "0.1.0",
+          "sha256": "2f0c1aef0194a847d58ebf80ec30ba351aa6fc967a8999abba810ba46a5ca8cc",
+          "size": 1136718,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "L115A2 Boneyard: cartoon skulls and bones in aged ivory on crimson-black. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_boneyard_l115a2-0.1.0.zip"
+        },
+        {
+          "id": "variant_bubble_wrap_minimi",
+          "name": "MINIMI Bubble Wrap",
+          "version": "0.1.0",
+          "sha256": "986c050c77dd4a4b6e58620495d44f2e1a34f73edb47e22c61381eb444528627",
+          "size": 1151907,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "MINIMI Bubble Wrap: the gun wrapped in blue bubble wrap, a few bubbles popped. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_bubble_wrap_minimi-0.1.0.zip"
+        },
+        {
+          "id": "variant_bubblegum_sprinkles_famas",
+          "name": "FAMAS Bubblegum Sprinkles",
+          "version": "0.1.0",
+          "sha256": "371155d462940234177ad87b58ef52fcf1552a24910b084942df32a728ae01c2",
+          "size": 1141286,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "FAMAS Bubblegum Sprinkles: glossy bubblegum pink covered in rainbow candy sprinkles and teal drips. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_bubblegum_sprinkles_famas-0.1.0.zip"
+        },
+        {
+          "id": "variant_candy_corn_g18",
+          "name": "G18 Candy Corn",
+          "version": "0.1.0",
+          "sha256": "27f9a657424a9455deece175853b6e51524fd9d92a2558ca7bbeb336022a029a",
+          "size": 1105575,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "G18 Candy Corn: candy corn and little bats on purple-black. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_candy_corn_g18-0.1.0.zip"
+        },
+        {
+          "id": "variant_candy_g36e",
+          "name": "G36E Candy",
+          "version": "0.1.1",
+          "sha256": "b643f95807365094e98bbc485ed3819be2a6422ca6ceb130b4b4d1b679d314d2",
+          "size": 1073938,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Candy: a bright camo for the G36E, as an example of a weapon variant. It looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_candy_g36e-0.1.1.zip"
+        },
+        {
+          "id": "variant_carbon_venom_m417",
+          "name": "M417 Carbon Venom",
+          "version": "0.1.0",
+          "sha256": "77b09ec099f22626d5780e29d3308bb050be2fbe88735c33b4cd767c7305dda6",
+          "size": 2193043,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M417 Carbon Venom: carbon-fibre weave cracked by acid-green veins that pulse. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_carbon_venom_m417-0.1.0.zip"
+        },
+        {
+          "id": "variant_clockwork_r870",
+          "name": "R870 Clockwork",
+          "version": "0.1.0",
+          "sha256": "a91a38ff4d4fc985adb766718730402865988957d464899b557b37ab14232796",
+          "size": 1124427,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "R870 Clockwork: brass and copper clockwork gears over riveted bronze. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_clockwork_r870-0.1.0.zip"
+        },
+        {
+          "id": "variant_comic_pop_mp5",
+          "name": "MP5A4 Comic Pop",
+          "version": "0.1.0",
+          "sha256": "b5c72fc57cb503cfc57320f984f864138c38758ad073e02fe9fc9c3249529147",
+          "size": 1142076,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "MP5A4 Comic Pop: pop-art comic print: halftone dots, ink outlines and spiky bursts. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_comic_pop_mp5-0.1.0.zip"
+        },
+        {
+          "id": "variant_cotton_candy_k7",
+          "name": "K7 Cotton Candy",
+          "version": "0.1.0",
+          "sha256": "9dcdd96d593a70ba55d7dbcacbbec1f6ec227f23b6a9839f24ee4c29d03a9500",
+          "size": 1223016,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "K7 Cotton Candy: pink and blue cotton candy puffs that drift and swirl. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_cotton_candy_k7-0.1.0.zip"
+        },
+        {
+          "id": "variant_crown_jewels_l85a1",
+          "name": "L85A1 Crown Jewels",
+          "version": "0.1.0",
+          "sha256": "d54c9665e9a0145d0f31ae6ea9c0efad4e6884422377235b9edaa7feee4a1f7e",
+          "size": 2226657,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "L85A1 Crown Jewels: royal purple velvet, gold filigree and set gems that twinkle. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_crown_jewels_l85a1-0.1.0.zip"
+        },
+        {
+          "id": "variant_disco_fever_uzi",
+          "name": "UZI Disco Fever",
+          "version": "0.1.0",
+          "sha256": "cb825cf8a7260c85a4f15062d427b4c93eda3c1042618ad121180838110bde4a",
+          "size": 2200234,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "UZI Disco Fever: mirror-tile disco ball with magenta, cyan and gold sparkles drifting across. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_disco_fever_uzi-0.1.0.zip"
+        },
+        {
+          "id": "variant_dragon_scale_spas12",
+          "name": "SPAS-12 Dragon Scale",
+          "version": "0.1.0",
+          "sha256": "cb5fca499c0152e36911c9474151cf12b6100587c1d4cddd1a9c553606496b0b",
+          "size": 2227444,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "SPAS-12 Dragon Scale: emerald dragon scales with gold rims and a slow golden shimmer. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_dragon_scale_spas12-0.1.0.zip"
+        },
+        {
+          "id": "variant_egg_hunt_m32",
+          "name": "M32 Egg Hunt",
+          "version": "0.1.0",
+          "sha256": "710cb0b5cb560050691d11aac719c9ad5453ee499c4c7a8c802d675443172099",
+          "size": 1168227,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M32 Egg Hunt: decorated Easter eggs in green paper grass. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_egg_hunt_m32-0.1.0.zip"
+        },
+        {
+          "id": "variant_extra_pepperoni_p90",
+          "name": "P90 Extra Pepperoni",
+          "version": "0.1.0",
+          "sha256": "60374fba90b747747541228601e3c8c0f9f2460744abe15659ba50adb0d30e5d",
+          "size": 1141786,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "P90 Extra Pepperoni: melted cheese, pepperoni, green pepper and basil: the gun is a pizza slice. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_extra_pepperoni_p90-0.1.0.zip"
+        },
+        {
+          "id": "variant_folk_bloom_pp19",
+          "name": "PP-19 Folk Bloom",
+          "version": "0.1.0",
+          "sha256": "4128a88a9bba2b0b3d7edc456da4a90d4a95906f414a58caefe84282814ecaa4",
+          "size": 1113013,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "PP-19 Folk Bloom: folk-painted red and gold flowers and vines on black lacquer. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_folk_bloom_pp19-0.1.0.zip"
+        },
+        {
+          "id": "variant_frostbite_deagle",
+          "name": "Desert Eagle Frostbite",
+          "version": "0.1.0",
+          "sha256": "38362ebec823b61a259f2cb4db7b76acab9f77b85b6c2b11a6c21e0f0c67d9ce",
+          "size": 2225334,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Desert Eagle Frostbite: frozen blue crystal with frost ferns, cracks and drifting cold glints. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_frostbite_deagle-0.1.0.zip"
+        },
+        {
+          "id": "variant_galaxy_g36e",
+          "name": "G36E Galaxy",
+          "version": "0.1.2",
+          "sha256": "61192887593c95e3589b9eb9a5482a0674a645cc9c3f52c0dc49b53d99e96cc6",
+          "size": 1308851,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Galaxy: a drifting starfield for the G36E, as an example of an animated weapon variant. It looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_galaxy_g36e-0.1.2.zip"
+        },
+        {
+          "id": "variant_glitch_mp7",
+          "name": "MP7 Glitch",
+          "version": "0.1.0",
+          "sha256": "8d11394f3c4b2a0f2b358017cec1e3d3e0b1f1bf6abd6e5ea89cb58f726d6c71",
+          "size": 2255643,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "MP7 Glitch: corrupted video: datamosh bands and RGB-split blocks with drifting glitch bars. Animated: a light effect moves over it (VAR-4). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_glitch_mp7-0.1.0.zip"
+        },
+        {
+          "id": "variant_gold_rush_anaconda",
+          "name": "Anaconda Black Gold Rush",
+          "version": "0.1.0",
+          "sha256": "7201598441ee9622bb0b57e45472ce4e28ef0da93953bf65b62b3acf98175d44",
+          "size": 2193152,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Anaconda Black Gold Rush: dark slate with thick gold veins, nuggets and drifting glints. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_gold_rush_anaconda-0.1.0.zip"
+        },
+        {
+          "id": "variant_grand_finale_law",
+          "name": "LAW Grand Finale",
+          "version": "0.1.0",
+          "sha256": "4f45d62cd8b2da6cbfd463d737adb34c61cc6e12f3d7678d6d80ff902b036aa7",
+          "size": 2211103,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "LAW Grand Finale: a night sky of firework bursts with twinkling sparkles. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_grand_finale_law-0.1.0.zip"
+        },
+        {
+          "id": "variant_grandma_s_quilt_rpk",
+          "name": "RPK Grandma's Quilt",
+          "version": "0.1.0",
+          "sha256": "c18a296992c2faf25a5493c92fc1ca34f18bc093e2f4fef60c98a4b84f68c632",
+          "size": 1094474,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "RPK Grandma's Quilt: grandma's patchwork quilt with dashed stitching. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_grandma_s_quilt_rpk-0.1.0.zip"
+        },
+        {
+          "id": "variant_gummy_bears_ak74u",
+          "name": "AK-74U Gummy Bears",
+          "version": "0.1.0",
+          "sha256": "f2fb66bfd65b7d69169748a3028247e0666f4bc4c514a7f853d21e15d3629e22",
+          "size": 1163363,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "AK-74U Gummy Bears: a tumbled pile of glossy gummy bears. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_gummy_bears_ak74u-0.1.0.zip"
+        },
+        {
+          "id": "variant_hazard_rave_m60",
+          "name": "M60 Hazard Rave",
+          "version": "0.1.0",
+          "sha256": "e8bea4883e26000e7de6560cb3d3390b10eb91109c69a0ef91bf189fb5523935",
+          "size": 2233174,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M60 Hazard Rave: worn hazard stripes with lime warning lights that drift and pulse. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_hazard_rave_m60-0.1.0.zip"
+        },
+        {
+          "id": "variant_honey_heist_ump",
+          "name": "UMP Honey Heist",
+          "version": "0.1.0",
+          "sha256": "c7b5366962cce2010d9f7fcd3594eca6eabbc06a061b33278068887106c6c227",
+          "size": 1133878,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "UMP Honey Heist: honeycomb, honey drips and googly-eyed cartoon bees. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_honey_heist_ump-0.1.0.zip"
+        },
+        {
+          "id": "variant_hot_sauce_mac10",
+          "name": "MAC-10 Hot Sauce",
+          "version": "0.1.0",
+          "sha256": "73b4668b095f49ed24eaab30121237fd6b43cb113678f8d2c762ffb444673e57",
+          "size": 1129152,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "MAC-10 Hot Sauce: fat red and green chili peppers over a fiery ground. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_hot_sauce_mac10-0.1.0.zip"
+        },
+        {
+          "id": "variant_inferno_minigun",
+          "name": "M134 Minigun Inferno",
+          "version": "0.1.0",
+          "sha256": "8c2fa5a7a99e5bcf4d3201e4f77fd03d822fb8354cc6432d0e96ab0155e9c8a7",
+          "size": 1147554,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M134 Minigun Inferno: flames climbing along the barrels from a charred base. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_inferno_minigun-0.1.0.zip"
+        },
+        {
+          "id": "variant_kintsugi_ak74m",
+          "name": "AK-74M Kintsugi",
+          "version": "0.1.0",
+          "sha256": "4a68c59f2fd8c97e0d4d4e060fb079fc89aa51235e05ef217c2ff02aa637a8f2",
+          "size": 1145858,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "AK-74M Kintsugi: red and black lacquer shattered and mended with thick gold seams. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_kintsugi_ak74m-0.1.0.zip"
+        },
+        {
+          "id": "variant_kitty_chaos_saiga",
+          "name": "Saiga 20K Kitty Chaos",
+          "version": "0.1.0",
+          "sha256": "f6b75ca8c56fb5a2325b5f27f41466c531edc404ccc1b1a2e6b5f098ca505f1f",
+          "size": 1142792,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Saiga 20K Kitty Chaos: paw prints, yarn balls and cat silhouettes on lavender. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_kitty_chaos_saiga-0.1.0.zip"
+        },
+        {
+          "id": "variant_koi_pond_aug_a3",
+          "name": "AUG A3 Koi Pond",
+          "version": "0.1.0",
+          "sha256": "c641e79c570ebea69b6110795152c23acaf651a0c77ff60c57d2979d96efbe06",
+          "size": 1150821,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "AUG A3 Koi Pond: koi and lily pads drifting in deep teal pond water. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_koi_pond_aug_a3-0.1.0.zip"
+        },
+        {
+          "id": "variant_liquid_mercury_psg1",
+          "name": "PSG-1 Liquid Mercury",
+          "version": "0.1.0",
+          "sha256": "e53c8776ffba71bed09a08a0468b57fc89f3d4db330be903ddc163d5836b932a",
+          "size": 1141970,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "PSG-1 Liquid Mercury: rippling liquid chrome in blue steel and gunmetal. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_liquid_mercury_psg1-0.1.0.zip"
+        },
+        {
+          "id": "variant_macaw_k3",
+          "name": "K3 Macaw",
+          "version": "0.1.0",
+          "sha256": "1f300240a88bc80a25f41da432bc8bd9a34955b23bb5f47479814b18c82719aa",
+          "size": 1204319,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "K3 Macaw: scarlet, cobalt and yellow macaw feathers. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_macaw_k3-0.1.0.zip"
+        },
+        {
+          "id": "variant_marshmallow_roast_flamethrower",
+          "name": "Flamethrower Marshmallow Roast",
+          "version": "0.1.0",
+          "sha256": "6376cf453aec19e4f8c8456fd404debb82b1706fa15093d76f945be40ff6b3ad",
+          "size": 1141331,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Flamethrower Marshmallow Roast: toasted marshmallows drifting over campfire embers. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_marshmallow_roast_flamethrower-0.1.0.zip"
+        },
+        {
+          "id": "variant_melting_chocolate_sg556",
+          "name": "SG556 Melting Chocolate",
+          "version": "0.1.0",
+          "sha256": "e98a1d57ff357cca78510f380b4717669aa05204c59ea6d42fdede9477a7f964",
+          "size": 1068611,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "SG556 Melting Chocolate: a melting milk-chocolate bar with hazelnut chunks. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_melting_chocolate_sg556-0.1.0.zip"
+        },
+        {
+          "id": "variant_mirage_tar21",
+          "name": "TAR-21 Mirage",
+          "version": "0.1.0",
+          "sha256": "7e313da73e0bced365dead6120bd79c98029968789bc06f08df3fe021449b043",
+          "size": 1143636,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "TAR-21 Mirage: sunset dunes in orange, rose and violet shimmering like heat haze. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_mirage_tar21-0.1.0.zip"
+        },
+        {
+          "id": "variant_molten_core_ak47",
+          "name": "AK-47 Molten Core",
+          "version": "0.1.0",
+          "sha256": "3bfbd45439ae5f5502aba54d8f3f45c727ca439367465f6192fc84011f81df80",
+          "size": 1163956,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "AK-47 Molten Core: dark basalt plates split by orange lava cracks that slowly churn. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_molten_core_ak47-0.1.0.zip"
+        },
+        {
+          "id": "variant_neon_leopard_k2",
+          "name": "K2 Neon Leopard",
+          "version": "0.1.0",
+          "sha256": "dd112fe9d97af3ce98f0c8046570343c901676ee953b6c970f85a62f7f596710",
+          "size": 1081158,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "K2 Neon Leopard: black leopard rosettes on hot pink, some with electric teal centres. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_neon_leopard_k2-0.1.0.zip"
+        },
+        {
+          "id": "variant_neon_tiger_mk48",
+          "name": "MK.48 Neon Tiger",
+          "version": "0.1.0",
+          "sha256": "a70b2ed2664d7d50bbb897f73b46b54c9b2b73b805338bee05f4b380197ed9b4",
+          "size": 2146043,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "MK.48 Neon Tiger: black tiger stripes on magenta and teal with pulsing neon edges. Animated: a light effect moves over it (VAR-4). A legendary weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_neon_tiger_mk48-0.1.0.zip"
+        },
+        {
+          "id": "variant_neon_venom_skorpion",
+          "name": "Skorpion Neon Venom",
+          "version": "0.1.0",
+          "sha256": "62d1a1432b131618689e2c00f51816eec362a4e053e9949e7bc3d2504558b344",
+          "size": 2173161,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Skorpion Neon Venom: black-violet carapace plates whose violet seams pulse. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_neon_venom_skorpion-0.1.0.zip"
+        },
+        {
+          "id": "variant_overclocked_m416",
+          "name": "M416 Overclocked",
+          "version": "0.1.0",
+          "sha256": "c929f97514b6e44ca717d6e6787e61c2521544d031d24625c4a38771e0bb77e6",
+          "size": 2108279,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M416 Overclocked: a green circuit board with cyan pulses running along its copper buses. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_overclocked_m416-0.1.0.zip"
+        },
+        {
+          "id": "variant_party_popper_rpg7",
+          "name": "RPG-7 Party Popper",
+          "version": "0.1.0",
+          "sha256": "5160ab0a886f1eb6fa725987d2c52c166bbc98b0c5335d07a7a30c375998885c",
+          "size": 2160788,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "RPG-7 Party Popper: party candy stripes, confetti and streamers, with confetti drifting down. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_party_popper_rpg7-0.1.0.zip"
+        },
+        {
+          "id": "variant_peppermint_k5",
+          "name": "K5 Peppermint",
+          "version": "0.1.0",
+          "sha256": "fc79d81880b52e78c45e3e585e574813aed36dd56aa10e6e7057711a6b599cc8",
+          "size": 1157909,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "K5 Peppermint: red and pink peppermint swirls on mint green. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_peppermint_k5-0.1.0.zip"
+        },
+        {
+          "id": "variant_pixel_arcade_m6a2",
+          "name": "M6A2 Pixel Arcade",
+          "version": "0.1.0",
+          "sha256": "57f1a5806903307fb7bc48fee6d79e1b57cca6c0949588c1ddc7b899f0716c41",
+          "size": 1054744,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M6A2 Pixel Arcade: chunky 8-bit hearts, coins, stars and invented critters on navy. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_pixel_arcade_m6a2-0.1.0.zip"
+        },
+        {
+          "id": "variant_prism_scar",
+          "name": "SCAR-L Prism",
+          "version": "0.2.1",
+          "sha256": "1b7091f27ce0af593d631a1b682b669b702a18f2f3f06bf306467c3888d5e410",
+          "size": 1291346,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "SCAR-L Prism: rainbow liquid chrome for the MK16 SCAR-L, smears of cyan, green, gold, orange, pink and blue over violet. The whole paint rolls over the gun like a lava lamp (VAR-12; an older client shows the plain SCAR-L). An animated weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_prism_scar-0.2.1.zip"
+        },
+        {
+          "id": "variant_python_sr25",
+          "name": "SR25 Python",
+          "version": "0.1.0",
+          "sha256": "f577e6de01e7b1838c6063bfeb4661fa7a35d82d253ee1e710ca897f740cdf88",
+          "size": 1160146,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "SR25 Python: bold python skin: olive blotches ringed in acid yellow on lime scales. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_python_sr25-0.1.0.zip"
+        },
+        {
+          "id": "variant_royal_marble_g23",
+          "name": "G23 Royal Marble",
+          "version": "0.1.0",
+          "sha256": "35449011c1a72597858090e875f358f13a432a3270f259764e66c4be27ce8efd",
+          "size": 1160733,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "G23 Royal Marble: amethyst marble with gold veins that slowly flows. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_royal_marble_g23-0.1.0.zip"
+        },
+        {
+          "id": "variant_rubber_ducky_m92f",
+          "name": "M92F SE Rubber Ducky",
+          "version": "0.1.0",
+          "sha256": "66c477251bd0e2d7c4423caa56439070209a4d9af2920249ab1ab8af32fba5dc",
+          "size": 1090819,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M92F SE Rubber Ducky: rubber ducks floating on bathwater blue among soap bubbles. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_rubber_ducky_m92f-0.1.0.zip"
+        },
+        {
+          "id": "variant_shark_week_m590",
+          "name": "M590 Mariners Shark Week",
+          "version": "0.1.0",
+          "sha256": "b8ee0a4e4b2ffca4582c3721aa02007d0f0d0f0c24794f4817a75e3f91a8d363",
+          "size": 1112490,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M590 Mariners Shark Week: ocean waves with cartoon shark fins, toothy grins and bubbles. A rare weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_shark_week_m590-0.1.0.zip"
+        },
+        {
+          "id": "variant_stained_glass_msg90",
+          "name": "MSG-90 Stained Glass",
+          "version": "0.1.0",
+          "sha256": "6b09837d588d230178d590adb5346a71b644732e372c8c6a3c721a3f69dd1bf0",
+          "size": 2198451,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "MSG-90 Stained Glass: jewel-toned stained glass with a beam of light sweeping across. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_stained_glass_msg90-0.1.0.zip"
+        },
+        {
+          "id": "variant_swiss_cheese_sg550",
+          "name": "SG550 Swiss Cheese",
+          "version": "0.1.0",
+          "sha256": "9156783655f5fa833e3148d1eb52fc1a4ad6250afc22f8777fb569a9a32cbd58",
+          "size": 1113577,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "SG550 Swiss Cheese: a block of golden Swiss cheese, holes and all. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_swiss_cheese_sg550-0.1.0.zip"
+        },
+        {
+          "id": "variant_synthwave_m4a1",
+          "name": "M4A1 Synthwave",
+          "version": "0.1.0",
+          "sha256": "008a0073c6bffef2fa0c36a5ad482df2877b7978b0c106a0d9b6cf48a45f7386",
+          "size": 2124430,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M4A1 Synthwave: 80s sunsets, striped suns and a neon grid, with scanlines drifting down the gun. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_synthwave_m4a1-0.1.0.zip"
+        },
+        {
+          "id": "variant_thunderstorm_m14",
+          "name": "M14 Thunderstorm",
+          "version": "0.1.0",
+          "sha256": "ba087bec7e9496d1357a7ac84b02452809533df854d9add8e8f84dbd2c7bb3db",
+          "size": 2155888,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "M14 Thunderstorm: purple storm clouds crossed by thin lightning that flashes softly. Animated: a light effect moves over it (VAR-4). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_thunderstorm_m14-0.1.0.zip"
+        },
+        {
+          "id": "variant_tie_dye_k1a",
+          "name": "K1A Tie-Dye",
+          "version": "0.1.0",
+          "sha256": "f5abed3a6418b7c4f8202a6e94e4790a72e6f13945654e23885ea45cc7af8f93",
+          "size": 1172905,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "K1A Tie-Dye: groovy rainbow tie-dye spirals that churn. Animated: the paint itself flows (VAR-12; an older client shows the plain gun). A epic weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_tie_dye_k1a-0.1.0.zip"
+        },
+        {
+          "id": "variant_tiger_l96a1",
+          "name": "L96A1 Purple Tiger",
+          "version": "0.1.1",
+          "sha256": "772190d229b2b258d15dfcdaab2bb15cc0e30b9bbea1948c535d818eed955111",
+          "size": 1079955,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Purple Tiger: violet tiger stripes for the L96A1, as an example of a weapon variant. It looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_tiger_l96a1-0.1.1.zip"
+        },
+        {
+          "id": "variant_toxic_l96a1",
+          "name": "L96A1 Toxic",
+          "version": "0.1.2",
+          "sha256": "93712d3ecec6478eb8bedc74c563a5ec50a9ea2e31d7b210f6191d0ac0d966f6",
+          "size": 1475765,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Toxic: slowly moving green veins for the L96A1, as an example of an animated weapon variant. It looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_toxic_l96a1-0.1.2.zip"
+        },
+        {
+          "id": "variant_watermelon_smash_double_barrel",
+          "name": "Double Barrel Watermelon Smash",
+          "version": "0.1.0",
+          "sha256": "874d9d57685bd97f2d607868cd1b6847a240c117ba93588b465f4372013e4eec",
+          "size": 1125363,
+          "kind": "shared",
+          "tags": [
+            "variant",
+            "camo"
+          ],
+          "capabilities": [
+            "assets",
+            "content.weapons"
+          ],
+          "author": "DeCombat",
+          "description": "Double Barrel Watermelon Smash: watermelon rind stripes and juicy red flesh full of seeds. A common weapon variant: it looks different and plays exactly the same.",
+          "source_repo": "https://github.com/argallo/DeCombat-mods",
+          "zip": "variant_watermelon_smash_double_barrel-0.1.0.zip"
+        }
+      ]
+    }
+  ]
+}

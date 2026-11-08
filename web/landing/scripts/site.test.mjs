@@ -13,6 +13,9 @@ import {
   filterMods,
   publicReleases,
   youtubeVideoId,
+  publicPacks,
+  releasePacks,
+  releaseTag,
 } from "../site-core.js";
 const mod = {
   id: "demo",
@@ -190,6 +193,97 @@ test("release feed excludes drafts and unsafe links but labels prereleases downs
     ]).length,
     1,
   );
+});
+
+test("release packs keep only plain names, their own release page and hashes, and never earn verification", () => {
+  const release = {
+    tag_name: "v1",
+    html_url: "https://github.com/argallo/DeCombat-mods/releases/tag/v1",
+    published_at: "2026-11-08T20:51:58Z",
+  };
+  const row = {
+    id: "case_reel",
+    name: "Case Reel",
+    version: "0.1.1",
+    sha256: "d6c491bbb26180afed35f6b6a046c92ccff2da97f4116122c48767ddd5bc8a99",
+    size: 15774,
+    kind: "shared",
+    tags: ["cosmetic", "menu"],
+    capabilities: ["content.hud"],
+    author: "DeCombat",
+    description: "Case openings spin.",
+    source_repo: "https://github.com/argallo/DeCombat-mods",
+    zip: "case_reel-0.1.1.zip",
+  };
+  const good = publicPacks("argallo/DeCombat-mods", release, { packs: [row] });
+  assert.equal(good.tag, "v1");
+  assert.equal(good.packs.length, 1);
+  assert.equal(good.packs[0].zip, "case_reel-0.1.1.zip");
+  // the release page must be this repository's own tagged page, and the tag a release tag
+  assert.equal(publicPacks("argallo/DeCombat-mods", { ...release, html_url: "https://github.com/evil/x/releases/tag/v1" }, { packs: [row] }), null);
+  assert.equal(publicPacks("argallo/DeCombat-mods", { ...release, tag_name: "main", html_url: "https://github.com/argallo/DeCombat-mods/releases/tag/main" }, { packs: [row] }), null);
+  assert.equal(publicPacks("argallo/DeCombat-mods", { ...release, draft: true }, { packs: [row] }), null);
+  assert.equal(publicPacks("../etc", release, { packs: [row] }), null);
+  assert.equal(releaseTag("v0.5.0-beta6"), true);
+  assert.equal(releaseTag("latest"), false);
+  assert.equal(releaseTag("-v1"), false);
+  // rows with a path in the zip name, a bad hash, an id with spaces, or a duplicate are dropped; defaults fill in
+  const rows = publicPacks("argallo/DeCombat-mods", release, {
+    packs: [
+      { ...row, zip: "../../evil.zip" },
+      { ...row, id: "bad hash", sha256: "nothex" },
+      { ...row, id: "reel b" },
+      { ...row, id: "plain", zip: undefined, name: "", tags: ["ok", "../x"], source_repo: "javascript:alert(1)", description: "x".repeat(700) },
+      { ...row, id: "plain" },
+    ],
+  }).packs;
+  assert.deepEqual(rows.map((p) => [p.id, p.zip, p.name, p.tags, p.source_repo, p.description.length]), [
+    ["plain", "plain-0.1.1.zip", "plain", ["ok"], null, 600],
+  ]);
+  // as catalog entries: status pack, a category the filters know, the release and the zip link
+  const data = { sources: [{ ...good, packs: [good.packs[0], { ...good.packs[0], id: "variant_prism_scar", name: "Prism SCAR", tags: ["variant", "camo"] }, { ...good.packs[0], id: "freight_hall", tags: ["map"] }] }] };
+  const packs = releasePacks(data);
+  assert.deepEqual(packs.map((p) => [p.id, p.status, p.category]), [
+    ["case_reel", "pack", "visual"],
+    ["variant_prism_scar", "pack", "visual"],
+    ["freight_hall", "pack", "maps"],
+  ]);
+  assert.equal(packs[0].release.zip, "https://github.com/argallo/DeCombat-mods/releases/download/v1/case_reel-0.1.1.zip");
+  assert.equal(packs[0].release.url, release.html_url);
+  // in the catalog: a reviewed version keeps Verified and gains the release; an unknown pack is a pack of its own
+  const reviewed = { ...mod, id: "case_reel", version: "0.1.1", sha256: row.sha256 };
+  const entries = catalogMods([], [reviewed], packs);
+  assert.deepEqual(entries.map((m) => [m.id, m.status]), [
+    ["case_reel", "verified"],
+    ["variant_prism_scar", "pack"],
+    ["freight_hall", "pack"],
+  ]);
+  assert.equal(entries[0].release.tag, "v1");
+  assert.equal(filterMods(entries, "verified").length, 1);
+  // the directory row keeps its own category (community); the release packs carry theirs
+  assert.equal(filterMods(entries, "visual").length, 1);
+  assert.equal(filterMods(entries, "all", "prism").length, 1);
+  // a pack of a reference version lends it the release, no duplicate row
+  const withRef = catalogMods([{ ...mod, id: "freight_hall", version: "0.1.1", category: "maps" }], [], packs);
+  assert.deepEqual(withRef.map((m) => [m.id, m.status, m.release?.tag]), [
+    ["freight_hall", "reference", "v1"],
+    ["case_reel", "pack", "v1"],
+    ["variant_prism_scar", "pack", "v1"],
+  ]);
+  // no packs: the catalog is what it was
+  assert.deepEqual(catalogMods([mod], [], []).map((m) => m.status), ["reference"]);
+});
+
+test("the saved pack snapshot is what publicPacks would keep", async () => {
+  const root = new URL("../", import.meta.url);
+  const data = JSON.parse(await readFile(new URL("data/packs.json", root), "utf8"));
+  assert.ok(Array.isArray(data.sources));
+  for (const s of data.sources) {
+    const again = publicPacks(s.repo, { tag_name: s.tag, html_url: s.url, published_at: s.published_at }, s);
+    assert.ok(again, s.repo);
+    assert.equal(again.packs.length, s.packs.length, s.repo);
+    assert.deepEqual(again.packs, s.packs, s.repo);
+  }
 });
 
 test("published server listings retain TLS identity and visual-mod policy", () => {

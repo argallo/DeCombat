@@ -97,6 +97,16 @@
 //! **Viewer** (`viewer`, `window` with the `window` feature): [`RomViewer`] prepares and renders a ROM map
 //! offscreen for the `worldview` bin and the ROM tests; [`default_out_dir`] is where their PNGs go.
 //!
+//! **Two-sided worlds** (MAP-118): a world whose world-settings object sets DeCombat's own `two_sided`
+//! ([`world_two_sided`]; a map built from ROM pieces, which faces its surfaces only towards each original play area)
+//! builds a scene with [`SceneMesh::two_sided`] ([`GpuScene::two_sided`]): after the opaque world draws the frame
+//! replays them in the same order with back-face pipelines (front faces culled, depth biased away from the eye so a
+//! front face on the same plane wins), before the models; [`FrameReport::world_back_draws`] counts them. Vertex-lit
+//! draws painted with one flat colour ([`TextureImage::is_flat`]: the ROM's filler) or cut out by an alpha test keep
+//! their back faces culled, and filler front faces are biased further so a textured back face on their plane wins.
+//! The sky, the models and the translucent world models stay one-sided, and a one-sided scene (every ROM world)
+//! records exactly the commands it recorded before and never builds the two-sided pipelines.
+//!
 //! Invariants a caller and any extension keep: world draws stay in bucket order 0..22, a section's lightmap draw
 //! (bucket [`LIGHTMAP_BUCKET`]) precedes its multiply draw on the same triangles; the world and normal models
 //! use [`WORLD_DEPTH_RANGE`], eye-attached models [`PLAYER_VIEW_DEPTH_RANGE`] in the same pass without a depth
@@ -210,8 +220,8 @@ pub use model_gpu::{
 };
 pub use msaa::{multisample_state, supported_msaa, MsaaTargets, MSAA_COUNTS};
 pub use scene::{
-    apply_light_groups, model_visibility, Batch, BlendedModel, LightmapImage, ModelVisibility,
-    SceneMesh, SceneModel, SceneOptions, SceneStats,
+    apply_light_groups, model_visibility, world_two_sided, Batch, BlendedModel, LightmapImage,
+    ModelVisibility, SceneMesh, SceneModel, SceneOptions, SceneStats,
 };
 pub use sky::{
     portal_screen_rect, sky_camera, sky_eye, SkyBlock, SkySettings, SkyView, SKY_FAR_Z,

@@ -6,8 +6,9 @@
 //! JSON shape: `{"ok": bool, "verb": name, "result": <verb output>, "diagnostics": [Diagnostic]}`.
 //!
 //! Implemented: `new`, `info`, `validate`, `schema`, `get`, `apply`, `terrain`, `snapshot`, `history`, `revert`,
-//! `build`, `export`, `render`, `rom`, `run`, `mcp`, `gui` (spawns the editor binary, [`crate::gui`]) and `play`
-//! (vanilla++ on this machine). No verb is a stub.
+//! `build`, `export`, `render`, `rom`, `run`, `mcp`, `gui` (spawns the editor binary, [`crate::gui`]), `play`
+//! (vanilla++ on this machine) and `walk` (offline routes, surveys and the reach analysis, [`crate::walk`],
+//! [`crate::reach`]). No verb is a stub.
 
 use crate::diag::{Code, Diagnostic, Diagnostics, Severity, EXIT_USAGE};
 use crate::ops::{self, Falloff, Op, Preset};
@@ -244,7 +245,7 @@ pub fn command() -> Command {
                         .action(ArgAction::SetTrue)
                         .help("draw it with the game's renderer and the real textures (needs dc-client and a GPU; writes build/render/<view>_textured.png)"),
                 )
-                .arg(opt("rom", "--textured: ROM folder"))
+                .arg(opt("rom", "ROM folder (--textured, and the ROM pieces of the flat view)"))
                 .arg(opt("binaries", "--textured: the folder holding dc-client (default: next to dc-mapkit)"))
                 .arg(opt(
                     "view",
@@ -348,6 +349,10 @@ pub fn command() -> Command {
                     "inventory",
                     "items a new character owns in the inventory, not equipped: item,... (27 the L96A1)",
                 ))
+                .arg(opt(
+                    "steps",
+                    "a dc-client step file (JSON lines: look, sprint, jump, shot, ...) the player runs in the match; shots go to build/play/shots",
+                ))
                 .arg(
                     Arg::new("with-mod")
                         .long("with-mod")
@@ -359,6 +364,56 @@ pub fn command() -> Command {
                         .long("modded")
                         .action(ArgAction::SetTrue)
                         .help("a modded lobby with the zip as its lobby-wide set, instead of the Vanilla++ entry"),
+                ),
+        )
+        .subcommand(
+            Command::new("walk")
+                .about("walk the map offline with the game's own movement and collision: routes (reached, died, stuck), a --survey for holes and kill floors, or --reach for traps and deadly moves")
+                .arg(dir_arg())
+                .arg(opt("rom", "ROM folder (the ROM pieces are composed from it)"))
+                .arg(opt("from", "x,y,z: where a walk starts (on the floor under it)").allow_hyphen_values(true))
+                .arg(opt("to", "x,y,z: where it goes (reached within 64 units in x / z)").allow_hyphen_values(true))
+                .arg(opt(
+                    "routes",
+                    "a JSON file of routes: [{\"name\": ..., \"from\": [x, y, z], \"to\": [x, y, z], \"via\": [[x, y, z], ...]}]",
+                ))
+                .arg(f32_opt("seconds", "the time limit of each route (default 60)"))
+                .arg(
+                    Arg::new("sprint")
+                        .long("sprint")
+                        .action(ArgAction::SetTrue)
+                        .help("sprint instead of running"),
+                )
+                .arg(
+                    Arg::new("open-doors")
+                        .long("open-doors")
+                        .action(ArgAction::SetTrue)
+                        .help("leave the doors out of the collision (in a match they open for a player who comes near)"),
+                )
+                .arg(
+                    Arg::new("survey")
+                        .long("survey")
+                        .action(ArgAction::SetTrue)
+                        .help("cast down every grid column: holes (no floor) and kill floors, in areas and a picture"),
+                )
+                .arg(
+                    Arg::new("reach")
+                        .long("reach")
+                        .action(ArgAction::SetTrue)
+                        .help("every floor of a grid and every move between neighbours: the main component, traps (no way back), deadly moves, islands"),
+                )
+                .arg(opt("seed", "reach: x,y,z on a floor of the main component (default: the component holding the most player spawns)").allow_hyphen_values(true))
+                .arg(opt("seed-piece", "reach: a piece id; the main component is the largest holding one of its player spawns"))
+                .arg(opt("nodes", "reach: write the main component's nodes to this JSON file ({\"step\": S, \"nodes\": [[x, y, z], ...]})"))
+                .arg(opt("box", "survey / reach: x0,z0,x1,z1 or a piece id (default: the box of every floor)").allow_hyphen_values(true))
+                .arg(f32_opt("step", "survey: the grid spacing (default 128); reach: 48"))
+                .arg(opt("size", "the picture's WxH (default: 1536 on the long side)"))
+                .arg(
+                    Arg::new("out")
+                        .short('o')
+                        .long("out")
+                        .value_name("OUT")
+                        .help("the picture (survey default build/walk/survey.png, reach build/walk/reach.png; routes draw their paths only with it)"),
                 ),
         )
         .subcommand(
@@ -628,9 +683,13 @@ fn dispatch(verb: &str, m: &ArgMatches, err: &mut dyn Write) -> Result<Outcome, 
                 sun_dir: crate::geom::V3::from_array(p.settings.sun_dir),
                 ..Default::default()
             };
-            let level = build::level_of(&p, &h, &build::Assets::new(&dir))?;
-            let mut scene = render_sw::Scene::from_level(&level, &opts);
-            scene.add_project_objects(&p);
+            let scene = render_sw::project_scene(
+                &dir,
+                &p,
+                &h,
+                &opts,
+                m.get_one::<String>("rom").map(Path::new),
+            )?;
             let r = render_sw::render_report(&scene, view.clone(), size, &opts)?;
             write_atomic(&out, &r.image.png()).map_err(|e| {
                 Diagnostics::one(Diagnostic::new(
@@ -783,6 +842,7 @@ fn dispatch(verb: &str, m: &ArgMatches, err: &mut dyn Write) -> Result<Outcome, 
                 modded: m.get_flag("modded"),
                 loadout: m.get_one::<String>("loadout").cloned(),
                 inventory: m.get_one::<String>("inventory").cloned(),
+                steps: m.get_one::<String>("steps").map(PathBuf::from),
                 with_mods: m
                     .get_many::<String>("with-mod")
                     .map(|v| v.map(PathBuf::from).collect())
@@ -825,6 +885,7 @@ fn dispatch(verb: &str, m: &ArgMatches, err: &mut dyn Write) -> Result<Outcome, 
             }
             Ok(Outcome::new(serde_json::to_value(&r).expect("json"), text))
         }
+        "walk" => verb_walk(m),
         // `mcp` is served by `run_cli` before dispatch (no envelope after the session).
         "gui" => verb_gui(m, err),
         other => Err(Diagnostics::one(Diagnostic::new(
@@ -984,7 +1045,7 @@ fn verb_info(m: &ArgMatches) -> Result<Outcome, Diagnostics> {
     let text = format!(
         "{} (key {}, format {}, seed {})\n\
 terrain: {}\n\
-objects: {} ({} solids, {} brushes, {} prefabs, {} imports, {} materials, ~{} polygons)\n\
+objects: {} ({} solids, {} brushes, {} prefabs, {} imports, {} materials, ~{} polygons, {} ROM pieces)\n\
 spawns: team 1 {}, team 2 {}, any {}\n\
 modes: {}\n\
 extent: {}\n\
@@ -1006,6 +1067,7 @@ rom: {}",
         i.counts.imports,
         i.counts.materials,
         i.counts.polys,
+        i.counts.pieces,
         i.spawns.team1,
         i.spawns.team2,
         i.spawns.any,
@@ -1066,6 +1128,109 @@ fn verb_build(m: &ArgMatches) -> Result<Outcome, Diagnostics> {
     );
     o.diagnostics = b.diagnostics;
     Ok(o)
+}
+
+/// `walk <dir> (--from x,y,z --to x,y,z | --routes FILE | --survey [--box ..] [--step N] | --reach [--box ..]
+/// [--step N] [--seed x,y,z | --seed-piece ID] [--nodes FILE])` (DC-DEFAULT: MAP-119, MAP-122).
+fn verb_walk(m: &ArgMatches) -> Result<Outcome, Diagnostics> {
+    use crate::reach::{ReachJob, Seed, REACH_STEP};
+    use crate::walk::{self, Job, WalkOptions, WalkRequest};
+    let bad =
+        |path: &str, msg: String| Diagnostics::one(Diagnostic::new(Code::OpInvalid, path, msg));
+    let text = |k: &str| m.get_one::<String>(k).cloned();
+    let survey = m.get_flag("survey");
+    let reach = m.get_flag("reach");
+    let (from, to, routes) = (text("from"), text("to"), text("routes"));
+    let picked = [
+        survey,
+        reach,
+        from.is_some() || to.is_some(),
+        routes.is_some(),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    if picked != 1 {
+        return Err(Diagnostics::one(
+            Diagnostic::new(
+                Code::OpInvalid,
+                "walk",
+                "give one of --from and --to, --routes FILE, --survey or --reach",
+            )
+            .with_fix("dc-mapkit walk <dir> --from x,y,z --to x,y,z --json"),
+        ));
+    }
+    let (seed, seed_piece, nodes) = (text("seed"), text("seed-piece"), text("nodes"));
+    if !reach && (seed.is_some() || seed_piece.is_some() || nodes.is_some()) {
+        return Err(bad(
+            "walk",
+            "--seed, --seed-piece and --nodes go with --reach".into(),
+        ));
+    }
+    let job = if reach {
+        let seed = match (seed, seed_piece) {
+            (Some(_), Some(_)) => {
+                return Err(bad(
+                    "--seed",
+                    "give --seed or --seed-piece, not both".into(),
+                ))
+            }
+            (Some(s), None) => Seed::Point(walk::parse_point(&s).map_err(|e| bad("--seed", e))?),
+            (None, Some(id)) => Seed::Piece(id.trim().to_string()),
+            (None, None) => Seed::Spawns,
+        };
+        Job::Reach(ReachJob {
+            area: text("box")
+                .map(|b| walk::parse_area(&b).map_err(|e| bad("--box", e)))
+                .transpose()?,
+            step: m.get_one::<f32>("step").copied().unwrap_or(REACH_STEP),
+            seed,
+            nodes_out: nodes.map(PathBuf::from),
+        })
+    } else if survey {
+        Job::Survey {
+            area: text("box")
+                .map(|b| walk::parse_area(&b).map_err(|e| bad("--box", e)))
+                .transpose()?,
+            step: m
+                .get_one::<f32>("step")
+                .copied()
+                .unwrap_or(walk::SURVEY_STEP),
+        }
+    } else if let Some(file) = routes {
+        let body = std::fs::read_to_string(&file).map_err(|e| {
+            Diagnostics::one(Diagnostic::new(Code::ProjectIo, &file, e.to_string()))
+        })?;
+        Job::Routes(walk::parse_routes(&body).map_err(|e| bad("--routes", format!("{file}: {e}")))?)
+    } else {
+        let (Some(from), Some(to)) = (from, to) else {
+            return Err(bad("walk", "--from and --to go together".into()));
+        };
+        Job::Routes(vec![walk::Route {
+            name: String::new(),
+            from: walk::parse_point(&from).map_err(|e| bad("--from", e))?,
+            to: walk::parse_point(&to).map_err(|e| bad("--to", e))?,
+            via: Vec::new(),
+        }])
+    };
+    let size = text("size")
+        .map(|s| render_sw::parse_size(&s).map_err(|e| bad("--size", e)))
+        .transpose()?;
+    walk::walk_project(&WalkRequest {
+        dir: dir_of(m),
+        rom: text("rom").map(PathBuf::from),
+        job,
+        options: WalkOptions {
+            seconds: m
+                .get_one::<f32>("seconds")
+                .copied()
+                .unwrap_or(walk::DEFAULT_SECONDS),
+            sprint: m.get_flag("sprint"),
+        },
+        open_doors: m.get_flag("open-doors"),
+        out: text("out").map(PathBuf::from),
+        size,
+    })
 }
 
 fn verb_validate(m: &ArgMatches) -> Result<Outcome, Diagnostics> {

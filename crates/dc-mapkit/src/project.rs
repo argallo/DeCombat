@@ -70,6 +70,118 @@ pub struct Project {
     /// Models the `asset` verb converted, by name (MAP-104).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assets: BTreeMap<String, AssetRecord>,
+    /// Parts of the user's ROM worlds the map is composed with at load time (MAP-116).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pieces: Vec<RomPiece>,
+}
+
+/// A box by its two corners (`min` <= `max` on every axis once an op stored it).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoxF {
+    pub min: Vec3f,
+    pub max: Vec3f,
+}
+
+impl BoxF {
+    /// The box spanned by two corners in any order.
+    pub fn new(a: Vec3f, b: Vec3f) -> BoxF {
+        BoxF {
+            min: [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])],
+            max: [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])],
+        }
+    }
+
+    /// Every corner finite and `min < max` on every axis.
+    pub fn is_valid(&self) -> bool {
+        (0..3).all(|i| {
+            self.min[i].is_finite() && self.max[i].is_finite() && self.min[i] < self.max[i]
+        })
+    }
+
+    pub fn moved(&self, t: Vec3f) -> BoxF {
+        BoxF {
+            min: [self.min[0] + t[0], self.min[1] + t[1], self.min[2] + t[2]],
+            max: [self.max[0] + t[0], self.max[1] + t[1], self.max[2] + t[2]],
+        }
+    }
+
+    /// The two boxes share interior.
+    pub fn overlaps(&self, o: &BoxF) -> bool {
+        (0..3).all(|i| self.min[i] < o.max[i] && o.min[i] < self.max[i])
+    }
+}
+
+/// A part of one of the user's ROM worlds the map is composed with (MAP-116). The project names the world by its
+/// ROM path; every program that loads the map reads the part from its own ROM at load time, so nothing of the ROM
+/// is in the project or the pack. `region` and `cuts` are in the world's OWN coordinates, so they move with `pos`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RomPiece {
+    pub id: String,
+    /// The ROM world as `dc-mapkit rom worlds` lists it (`WORLDS\NAME.DAT`).
+    pub world: String,
+    /// Added to every coordinate of the world.
+    pub pos: Vec3f,
+    /// The part of the world kept (its own coordinates).
+    pub region: BoxF,
+    /// Boxes taken out of the region, doorways (its own coordinates).
+    pub cuts: Vec<BoxF>,
+    /// `ffa`: the world's player spawns as team-less spawns; `none`.
+    pub spawns: String,
+    /// The world's item spawns as `dc.item_spawn`.
+    pub items: bool,
+    /// The world's sky is the map's sky (at most one piece).
+    pub sky: bool,
+    /// The map's terrain is left out of the region.
+    pub clear_terrain: bool,
+    /// Keep the world's invisible walls; `false` opens it: players walk out wherever its geometry lets them, and its
+    /// kill volumes are kept to its play area (MAP-120).
+    pub blockers: bool,
+    /// Lay the map's ground in the region's columns outside the play area where the world has no floor (MAP-120).
+    pub fill: bool,
+    /// Height of that floor, in the map's coordinates.
+    pub fill_y: f32,
+    /// The least light of the world's lightmaps and vertex colours (0..255; 0 = as it is): its outer faces, never
+    /// seen from its play area, got its ambient alone (MAP-120).
+    pub min_light: u8,
+    /// Points in the map's coordinates whose nearby player spawns of the world are left out (MAP-125): a spawn the
+    /// original map left inside a kill volume or where a player cannot get out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drop_spawns: Vec<Vec3f>,
+}
+
+impl Default for RomPiece {
+    fn default() -> Self {
+        RomPiece {
+            id: "piece_0".into(),
+            world: String::new(),
+            pos: [0.0; 3],
+            region: BoxF::default(),
+            cuts: Vec::new(),
+            spawns: "ffa".into(),
+            items: true,
+            sky: false,
+            clear_terrain: true,
+            blockers: true,
+            fill: false,
+            fill_y: 0.0,
+            min_light: 0,
+            drop_spawns: Vec::new(),
+        }
+    }
+}
+
+impl RomPiece {
+    /// The region in the map's coordinates.
+    pub fn world_region(&self) -> BoxF {
+        self.region.moved(self.pos)
+    }
+
+    /// The cuts in the map's coordinates.
+    pub fn world_cuts(&self) -> Vec<BoxF> {
+        self.cuts.iter().map(|c| c.moved(self.pos)).collect()
+    }
 }
 
 /// A converted model: one mesh and material per part, placed together by `asset.place`.
@@ -123,6 +235,7 @@ impl Default for Project {
             mod_meta: ModMeta::default(),
             build: BuildSettings::default(),
             assets: BTreeMap::new(),
+            pieces: Vec::new(),
         }
     }
 }
@@ -304,14 +417,18 @@ pub enum BrushRole {
     Ladder,
     Breakable,
     Sky,
+    /// An invisible wall for players only (MAP-124): the solid's faces go into the world's blocker section, never
+    /// drawn, never a model, shots pass; a thin box stops a body from both sides.
+    Blocker,
 }
 
 impl BrushRole {
-    /// The `dc.*` class of the object that names the brush model.
+    /// The `dc.*` class of the object that names the brush model (a blocker makes no model and no object; it
+    /// answers the world model's class so the match stays whole).
     pub fn class(self) -> &'static str {
         use crate::vocab_names as v;
         match self {
-            BrushRole::WorldModel => v::CLASS_WORLD_MODEL,
+            BrushRole::WorldModel | BrushRole::Blocker => v::CLASS_WORLD_MODEL,
             BrushRole::KillVolume => v::CLASS_KILL_VOLUME,
             BrushRole::Ladder => v::CLASS_LADDER,
             BrushRole::Breakable => v::CLASS_BREAKABLE,
@@ -488,6 +605,11 @@ pub struct WorldSettings {
     pub ambient: Rgb8,
     pub sky_size: Vec3f,
     pub sky_material: String,
+    /// The client draws both faces of the level and its opaque world models: a map with ROM pieces turns it on, since
+    /// a ROM world faces its surfaces only towards its own play area (DC-DEFAULT: MAP-118). Off is left out of the
+    /// file.
+    #[serde(skip_serializing_if = "is_false")]
+    pub two_sided: bool,
 }
 
 impl Default for WorldSettings {
@@ -504,6 +626,7 @@ impl Default for WorldSettings {
             ambient: [90, 95, 110],
             sky_size: [1024.0, 1024.0, 1024.0],
             sky_material: "sky".into(),
+            two_sided: false,
         }
     }
 }
@@ -722,6 +845,7 @@ impl Project {
         v.extend(self.solids.iter().map(|s| s.id.as_str()));
         v.extend(self.prefabs.iter().map(|p| p.id.as_str()));
         v.extend(self.imports.iter().map(|i| i.id.as_str()));
+        v.extend(self.pieces.iter().map(|i| i.id.as_str()));
         v
     }
 

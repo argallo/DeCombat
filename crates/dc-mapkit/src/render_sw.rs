@@ -79,7 +79,13 @@ pub struct Scene {
     pub spawns: Vec<SpawnCam>,
     pub extent_min: V3,
     pub extent_max: V3,
+    /// Boxes outlined in the orthographic views with the markers (the regions of ROM pieces, MAP-116).
+    pub boxes: Vec<(V3, V3, [u8; 3])>,
 }
+
+/// The legend key and colour of a ROM piece's marker and region outline (MAP-116).
+pub const PIECE_KEY: &str = "rom piece";
+pub const PIECE_COLOR: [u8; 3] = [255, 150, 40];
 
 /// Camera choice (`--view`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +168,9 @@ pub struct RenderOptions {
     pub grid_step: f32,
     pub background: [u8; 3],
     pub sun_dir: V3,
+    /// Shade a world file's render triangles by their face too ([`Scene::from_world`]; the composed view of a
+    /// map with ROM pieces, MAP-116).
+    pub shade_render: bool,
 }
 
 impl Default for RenderOptions {
@@ -172,6 +181,7 @@ impl Default for RenderOptions {
             grid_step: GRID_STEP,
             background: [24, 26, 32],
             sun_dir: V3::new(-0.4, -0.8, 0.3),
+            shade_render: false,
         }
     }
 }
@@ -327,7 +337,7 @@ fn brush_tint(role: BrushRole) -> Option<[u8; 3]> {
         BrushRole::Ladder => [220, 200, 80],
         BrushRole::Breakable => [220, 140, 60],
         BrushRole::WorldModel => [150, 150, 170],
-        BrushRole::Sky => return None,
+        BrushRole::Sky | BrushRole::Blocker => return None,
     })
 }
 
@@ -381,6 +391,7 @@ pub fn marker_style(class: &str, team: &str) -> (String, [u8; 3]) {
         v::CLASS_POINT_LIGHT => (class.into(), [255, 255, 150]),
         v::CLASS_SOUND => (class.into(), [80, 220, 220]),
         v::CLASS_SPRITE => (class.into(), [220, 160, 90]),
+        PIECE_KEY => (class.into(), PIECE_COLOR),
         _ => (class.into(), [180, 180, 180]),
     }
 }
@@ -431,6 +442,29 @@ impl Scene {
         s
     }
 
+    /// Add the project's ROM pieces (MAP-116): an outline of each region and a marker at its centre (id = the
+    /// piece's id), so the layout reads from the picture and from the JSON answer.
+    pub fn add_pieces(&mut self, p: &Project) {
+        for piece in &p.pieces {
+            let r = piece.world_region();
+            let (lo, hi) = (V3::from_array(r.min), V3::from_array(r.max));
+            self.boxes.push((lo, hi, PIECE_COLOR));
+            let at = V3::new((lo.x + hi.x) * 0.5, hi.y, (lo.z + hi.z) * 0.5);
+            self.markers.push(Marker {
+                at,
+                id: piece.id.clone(),
+                class: PIECE_KEY.into(),
+                key: PIECE_KEY.into(),
+            });
+            self.labels.push(Label {
+                at,
+                text: piece.id.clone(),
+            });
+            self.extent_min = self.extent_min.min(lo);
+            self.extent_max = self.extent_max.max(hi);
+        }
+    }
+
     /// Add the project's point objects as markers (and labels) and its spawns as cameras.
     pub fn add_project_objects(&mut self, p: &Project) {
         for o in &p.objects {
@@ -478,7 +512,11 @@ impl Scene {
             let Some(pos) = o.position() else {
                 continue;
             };
-            if !class.starts_with("dc.") {
+            // the objects a ROM piece brought (`piece_3~...`, MAP-116) are not the project's: no marker
+            if !class.starts_with("dc.")
+                || o.name()
+                    .is_some_and(|n| n.contains(&(dc_world::compose::RENAME_SEP as u8)))
+            {
                 continue;
             }
             let at = V3::from_array(pos);
@@ -557,10 +595,11 @@ impl Scene {
                 push_fan(&mut s.tris, &corners, c, sky);
             }
         }
+        let shade_by = opts.shade_render.then_some(opts.sun_dir);
         if let Some(r) = &w.render {
             if has_render {
                 for b in &r.world.blocks {
-                    push_block(&mut s.tris, b);
+                    push_block(&mut s.tris, b, shade_by);
                 }
                 for sub in &r.world.models {
                     if class_of_name
@@ -570,7 +609,7 @@ impl Scene {
                         continue;
                     }
                     for b in &sub.world.blocks {
-                        push_block(&mut s.tris, b);
+                        push_block(&mut s.tris, b, shade_by);
                     }
                 }
             }
@@ -598,7 +637,11 @@ impl Scene {
 
 /// Triangles of a render block from its 68-byte vertices (position at 0, ARGB at 28).
 // SPEC: FMT_DAT85.md §10.2 item 6 (OBSERVED field split: position at 0, colour u32 ARGB at 28)
-fn push_block(tris: &mut Vec<Tri>, b: &dc_world::RenderBlock<'_>) {
+///
+/// With `shade` (the sun's direction) each triangle is also shaded by its face (a ROM world lit by lightmaps has
+/// flat vertex colours, which read as one grey from above), and the lightmap passes (kind 2, the same triangles
+/// again) are left out.
+fn push_block(tris: &mut Vec<Tri>, b: &dc_world::RenderBlock<'_>, shade: Option<V3>) {
     let vert = |i: u32| -> Option<(V3, [u8; 3])> {
         let off = (i as usize).checked_mul(dc_world::RENDER_VERTEX_BYTES)?;
         let r = b.vertices.get(off..off + 32)?;
@@ -613,16 +656,33 @@ fn push_block(tris: &mut Vec<Tri>, b: &dc_world::RenderBlock<'_>) {
         };
         Some((V3::new(f(0), f(4), f(8)), c))
     };
+    // the sections' consecutive triangle ranges, to leave out the lightmap passes when shading
+    let mut kind_of = Vec::with_capacity(b.triangle_count as usize);
+    for sec in &b.sections {
+        kind_of.extend(std::iter::repeat_n(sec.shader_kind, sec.triangles as usize));
+    }
     for i in 0..b.triangle_count {
+        if shade.is_some() && kind_of.get(i as usize) == Some(&2) {
+            continue;
+        }
         let Some(t) = b.triangle(i) else {
             continue;
         };
         let (Some(a), Some(bb), Some(c)) = (vert(t[0]), vert(t[1]), vert(t[2])) else {
             continue;
         };
+        let mut cols = [a.1, bb.1, c.1];
+        if let Some(sun) = shade {
+            if let Some(n) = (bb.0 - a.0).cross(c.0 - a.0).normalized() {
+                let l = (-n.dot(sun)).max(0.0) * 0.6 + 0.4;
+                for col in &mut cols {
+                    *col = col.map(|x| (x as f32 * l).min(255.0) as u8);
+                }
+            }
+        }
         tris.push(Tri {
             v: [a.0, bb.0, c.0],
-            c: [a.1, bb.1, c.1],
+            c: cols,
             sky: false,
         });
     }
@@ -902,7 +962,7 @@ fn clip_near(tri: [VCorner; 3]) -> Vec<[VCorner; 3]> {
     }
 }
 
-fn draw_line(img: &mut RgbaImage, a: (f32, f32), b: (f32, f32), c: [u8; 3], alpha: f32) {
+pub(crate) fn draw_line(img: &mut RgbaImage, a: (f32, f32), b: (f32, f32), c: [u8; 3], alpha: f32) {
     let dx = b.0 - a.0;
     let dy = b.1 - a.1;
     let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as i32;
@@ -921,7 +981,14 @@ fn draw_line(img: &mut RgbaImage, a: (f32, f32), b: (f32, f32), c: [u8; 3], alph
     }
 }
 
-fn draw_disc(img: &mut RgbaImage, cx: i32, cy: i32, r: i32, fill: [u8; 3], ring: [u8; 3]) {
+pub(crate) fn draw_disc(
+    img: &mut RgbaImage,
+    cx: i32,
+    cy: i32,
+    r: i32,
+    fill: [u8; 3],
+    ring: [u8; 3],
+) {
     let w = img.width as i32;
     let h = img.height as i32;
     for y in (cy - r - 1)..=(cy + r + 1) {
@@ -1053,6 +1120,40 @@ pub fn render_report(
             n += 1;
         }
     }
+    if opts.labels && ortho {
+        for (lo, hi, color) in &scene.boxes {
+            let c = |x: f32, y: f32, z: f32| cam.project(cam.view(V3::new(x, y, z)));
+            let corners = [
+                c(lo.x, lo.y, lo.z),
+                c(hi.x, lo.y, lo.z),
+                c(hi.x, lo.y, hi.z),
+                c(lo.x, lo.y, hi.z),
+                c(lo.x, hi.y, lo.z),
+                c(hi.x, hi.y, lo.z),
+                c(hi.x, hi.y, hi.z),
+                c(lo.x, hi.y, hi.z),
+            ];
+            let edges = [
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (3, 0),
+                (4, 5),
+                (5, 6),
+                (6, 7),
+                (7, 4),
+                (0, 4),
+                (1, 5),
+                (2, 6),
+                (3, 7),
+            ];
+            for (a, b) in edges {
+                if let (Some(a), Some(b)) = (corners[a], corners[b]) {
+                    draw_line(&mut t.img, (a.0, a.1), (b.0, b.1), *color, 0.9);
+                }
+            }
+        }
+    }
     let mut markers = Vec::new();
     if opts.labels {
         let r = ((size.0.min(size.1) as f32 / 512.0 * 5.0).round() as i32).clamp(3, 12);
@@ -1109,6 +1210,48 @@ pub fn render_report(
         triangles,
         top_bounds,
     })
+}
+
+/// The scene of a project for the `render` verb and the MCP tool: its own geometry and objects; with ROM pieces
+/// (MAP-116) and a ROM at hand, the world composed with them (shaded by face, the pieces' own objects without
+/// markers), plus each piece's region outline and marker either way.
+pub fn project_scene(
+    dir: &std::path::Path,
+    p: &Project,
+    h: &crate::project::Heights,
+    opts: &RenderOptions,
+    rom: Option<&std::path::Path>,
+) -> Result<Scene, Diagnostics> {
+    let assets = crate::build::Assets::new(dir);
+    let rom = match rom {
+        Some(r) => Some(r.to_path_buf()),
+        None if !p.pieces.is_empty() => crate::romlist::discover_rom(None).map(|(r, _)| r),
+        None => None,
+    };
+    let mut scene = None;
+    if let (false, Some(rom)) = (p.pieces.is_empty(), rom.as_deref()) {
+        let built = crate::build::build_with(p, h, &assets, &p.build, Some(rom))?;
+        if let Some(bytes) = &built.composed {
+            if let Ok(w) = dc_world::World::parse(bytes) {
+                let o = RenderOptions {
+                    shade_render: true,
+                    ..opts.clone()
+                };
+                scene = Some(Scene::from_world(&w, &o));
+            }
+        }
+    }
+    let mut scene = match scene {
+        Some(s) => s,
+        None => {
+            let level = crate::build::level_of(p, h, &assets)?;
+            let mut s = Scene::from_level(&level, opts);
+            s.add_project_objects(p);
+            s
+        }
+    };
+    scene.add_pieces(p);
+    Ok(scene)
 }
 
 /// Render the scene to a picture (the stage-1 entry; [`render_report`] also returns the markers and legend).

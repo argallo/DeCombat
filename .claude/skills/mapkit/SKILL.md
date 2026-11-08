@@ -59,6 +59,14 @@ lines go to stderr; exit 0 ok, 1 error diagnostics, 2 usage. Always pass `--json
 - Place a `dc.end_camera` above the cover for the round's end overview (`rot` x looks down); without one, `build` adds a default.
 - Do not edit `map.json` by hand when an op does it; the ops keep ids and history consistent.
 - When the user has an MCP client, `dc-mapkit mcp` serves the same verbs as tools (playbook section 7).
+- ROM pieces (`piece.add` / `piece.cut`, `map.piece{...}`, playbook section 19) build a map from parts of the user's
+  own ROM worlds; every client and server composes them from its own ROM at load time. Such a project names ROM
+  paths: it stays the user's own (never committed; `export --no-rom-paths` refuses it). Place them from
+  `dc-mapkit rom worlds --json` (`world.region`, `world.floor`), cut doorways where `map.probe` finds a level floor, and
+  walk them: `walk <dir> --from x,y,z --to x,y,z --json` through each doorway both ways (reached / died / stuck in
+  seconds, no match), `walk <dir> --survey --box <piece id> --json` for holes and kill floors, `walk <dir> --reach
+  --json` for traps (places a player gets into and never out of, with the moves that lead in), deadly moves and
+  spawns outside the main component (look at each picture), then `play --steps` to see it in the client.
 
 ## Commands at a glance
 
@@ -71,6 +79,7 @@ dc-mapkit terrain <dir> gen|raise|lower|smooth|flatten [flags]
 dc-mapkit build <dir> | render <dir> --view V [--textured] -o out.png | export <dir> [--zip] [--no-rom-paths]
 dc-mapkit pictures <dir> [--preview-view V] [--loading-view V]
 dc-mapkit snapshot <dir> [--label L] | history <dir> | revert <dir> --to <n>
-dc-mapkit schema [--ops] | rom <kind> [--filter F] | play <dir> [--headless --seconds N] | mcp
+dc-mapkit schema [--ops] | rom <kind> [--filter F] | play <dir> [--headless --seconds N] [--steps F] | mcp
+dc-mapkit walk <dir> (--from x,y,z --to x,y,z | --routes F | --survey [--box x0,z0,x1,z1|piece_N] [--step N] | --reach [--box ..] [--step N] [--seed x,y,z | --seed-piece piece_N] [--nodes F]) [--rom DIR] [--seconds N] [--open-doors] [-o out.png]
 dc-mapkit asset <dir> <model.glb> --name N [--max-tris T] [--tex S] [--orient x90] --license L --author A --source URL
 ```

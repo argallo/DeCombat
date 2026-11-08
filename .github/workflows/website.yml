@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm test && node scripts/sync-releases.mjs && npm run build
+      - run: npm test && node scripts/sync-releases.mjs && node scripts/sync-packs.mjs && npm run build
         working-directory: web/landing
       - uses: actions/upload-artifact@v4
         with:

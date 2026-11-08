@@ -85,7 +85,7 @@ Built-in image generation, no API key or CLI fallback:
 
 ## Verification
 
-`npm test` checks verification/version boundaries, placeholder filtering, safe link handling, Discord invites, release eligibility, trailer URL boundaries, showcase assets/manifest versions, and coherent asset versioning. Browser checks cover 1440px desktop and 390px mobile layouts, search, category filters, mod dialogs and mobile navigation. The build validates configured public URLs. All rendered external data is created using text nodes; no release or mod data is inserted as HTML.
+`npm test` checks verification/version boundaries, placeholder filtering, safe link handling, Discord invites, release eligibility, trailer URL boundaries, showcase assets/manifest versions, release-pack sanitising (`data/packs.json`, written by `node scripts/sync-packs.mjs` from the latest release of each `packRepositories` entry of `site.config.json`; a listed pack is never Verified by itself), and coherent asset versioning. Browser checks cover 1440px desktop and 390px mobile layouts, search, category filters, mod dialogs and mobile navigation. The build validates configured public URLs. All rendered external data is created using text nodes; no release or mod data is inserted as HTML.
 
 Firebase's custom-domain guide: https://firebase.google.com/docs/hosting/custom-domain
 

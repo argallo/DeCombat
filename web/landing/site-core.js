@@ -98,10 +98,91 @@ export function sanitizeDirectory(doc) {
     ),
   };
 }
-export function catalogMods(reference, known) {
+// Release packs (docs/PACKS_FROM_REPOSITORIES.md section 5): the packs.json a pack repository's tagged release
+// publishes, as the site lists them. Every field is a stranger's text and is kept only when it is a plain word, a
+// hash, or a GitHub URL of that very repository; a pack listed here is NOT verified (that badge is the directory's).
+const PLAIN = /^[A-Za-z0-9._-]{1,100}$/;
+const BRANCHES = ["main", "master", "latest", "HEAD", "develop", "dev", "trunk"];
+export function releaseTag(tag) {
+  return (
+    typeof tag === "string" &&
+    tag.length <= 64 &&
+    !BRANCHES.includes(tag) &&
+    /^(?:v\d|\d)[A-Za-z0-9._-]*$/.test(tag)
+  );
+}
+const word = (v, max, fallback = "") =>
+  typeof v === "string" && v.trim() ? v.trim().slice(0, max) : fallback;
+const words = (v, max) =>
+  (Array.isArray(v) ? v : [])
+    .filter((t) => typeof t === "string" && PLAIN.test(t))
+    .slice(0, max);
+export function publicPacks(repo, release, doc) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || "")) return null;
+  const tag = release?.tag_name;
+  const page = `https://github.com/${repo}/releases/tag/${tag}`;
+  if (!releaseTag(tag) || release.draft || safeHttps(release.html_url) !== page)
+    return null;
+  const rows = Array.isArray(doc?.packs) ? doc.packs : Array.isArray(doc) ? doc : [];
+  const seen = new Set();
+  const packs = [];
+  for (const p of rows.slice(0, 500)) {
+    if (!p || !PLAIN.test(p.id || "") || !PLAIN.test(p.version || "") || !SHA256.test(p.sha256 || ""))
+      continue;
+    const zip = typeof p.zip === "string" ? p.zip : `${p.id}-${p.version}.zip`;
+    if (!/^[A-Za-z0-9._-]{1,200}\.zip$/.test(zip) || zip.startsWith("-")) continue;
+    const key = `${p.id}@${p.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    packs.push({
+      id: p.id,
+      name: word(p.name, 120, p.id),
+      version: p.version,
+      sha256: p.sha256.toLowerCase(),
+      size: Number.isInteger(p.size) && p.size >= 0 ? p.size : null,
+      kind: PLAIN.test(p.kind || "") ? p.kind : "shared",
+      tags: words(p.tags, 16),
+      capabilities: words(p.capabilities, 32),
+      author: word(p.author, 80),
+      description: word(p.description, 600),
+      source_repo: safeHttps(p.source_repo),
+      zip,
+    });
+  }
+  return { repo, tag, url: page, published_at: word(release.published_at, 40, null), packs };
+}
+// The rows of data/packs.json as catalog entries: status "pack", a category the filters know, the release and zip.
+export function releasePacks(data) {
+  const out = [];
+  for (const s of Array.isArray(data?.sources) ? data.sources : []) {
+    const src = publicPacks(s.repo, { tag_name: s.tag, html_url: s.url, published_at: s.published_at }, s);
+    if (!src) continue;
+    for (const p of src.packs) {
+      const t = new Set(p.tags);
+      const category =
+        t.has("map") || /_map$|^map_|hall|container/.test(p.id) ? "maps"
+        : t.has("camo") || t.has("variant") || t.has("cosmetic") || t.has("menu") || t.has("hud") ? "visual"
+        : "gameplay";
+      out.push({
+        ...p,
+        category,
+        status: "pack",
+        order: 50,
+        release: {
+          repo: src.repo,
+          tag: src.tag,
+          url: src.url,
+          zip: `https://github.com/${src.repo}/releases/download/${src.tag}/${p.zip}`,
+        },
+      });
+    }
+  }
+  return out;
+}
+export function catalogMods(reference, known, packs = []) {
   const refs = Array.isArray(reference) ? reference : [];
   const reviewed = sanitizeDirectory({ known_mods: known }).known_mods;
-  return [
+  const entries = [
     ...reviewed.map((m) => ({
       ...refs.find((r) => r.id === m.id),
       ...m,
@@ -114,6 +195,15 @@ export function catalogMods(reference, known) {
       )
       .map((r) => ({ ...r, status: "reference" })),
   ];
+  // a release pack of a listed version lends that row its release; any other appears as a pack of its own
+  for (const p of Array.isArray(packs) ? packs : []) {
+    const same = entries.find((e) => e.id === p.id && e.version === p.version);
+    if (same) {
+      if (!same.release) same.release = p.release;
+      if (!same.sha256) same.sha256 = p.sha256;
+    } else entries.push(p);
+  }
+  return entries;
 }
 export function filterMods(mods, category = "all", text = "") {
   const query = text.trim().toLowerCase();

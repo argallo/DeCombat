@@ -19,7 +19,9 @@
 //! The verbs `build` ([`build`], [`bake`], [`worldgen`], [`bsp`]), `export` ([`export`]), `render`
 //! ([`render_sw`]), `rom` ([`romlist`], [`thumbs`]), `run` ([`script`]), `mcp` ([`mcp`]), `gui` ([`gui`]: the
 //! eframe editor behind the `gui` feature, the second binary `dc-mapkit-gui`) and `play` ([`play`]: export, then a
-//! modded lobby + game server + client on this machine, MAP-67 .. MAP-69) are all implemented.
+//! modded lobby + game server + client on this machine, MAP-67 .. MAP-69) and `walk` ([`walk`]: routes and a
+//! survey on the built, composed world with the game's own movement and collision, MAP-119; [`reach`]: every floor
+//! and every move between neighbours, the main component, traps and deadly moves, MAP-122) are all implemented.
 //!
 //! Determinism (MAPKIT_PLAN.md D8, section 7): every map is a `BTreeMap`, every random value comes from the
 //! project's `seed` through [`ops::noise`], and the geometry path calls no libm transcendental (rotations use
@@ -43,6 +45,7 @@ pub mod mcp;
 pub mod ops;
 pub mod play;
 pub mod project;
+pub mod reach;
 pub mod render_gpu;
 pub mod render_sw;
 pub mod romlist;
@@ -52,6 +55,7 @@ pub mod template;
 pub mod thumbs;
 pub mod validate;
 pub mod vocab_names;
+pub mod walk;
 pub mod worldgen;
 
 /// Tool version written by `info` and into scaffolded files; same version + same project = same build bytes.

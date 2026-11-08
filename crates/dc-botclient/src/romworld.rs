@@ -255,9 +255,14 @@ pub fn encloses_space(m: &dc_world::BspModel<'_>) -> bool {
     m.polygons.len() >= 4 && (0..3).all(|i| m.box_max[i] - m.box_min[i] > 0.5)
 }
 
-/// Loads a world file from disk (tests and local runs against a server started with a world file).
-pub fn load_world_file(path: &Path) -> Result<LoadedWorld, String> {
+/// Loads a world file from disk (tests, local runs against a server started with a world file, community maps
+/// out of the pack cache). A map built from pieces of the ROM's worlds is composed from `rom` first, the step the
+/// game server runs on the same bytes (MAP-116).
+// DC-DEFAULT: MAP-116
+pub fn load_world_file(path: &Path, rom: Option<&Path>) -> Result<LoadedWorld, String> {
     let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let data = dc_world::compose::compose_with_rom(data, rom)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     world_from_bytes(&path.display().to_string(), &data)
 }
 

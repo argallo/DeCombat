@@ -719,6 +719,21 @@ impl RezArchive {
         }
     }
 
+    /// The first `n` stored bytes of an entry (full-path lookup; a header), `Ok(None)` when absent. A packed archive
+    /// reads only those bytes; a server ROM's folder reads the entry and keeps its start.
+    pub fn entry_head(&self, name: &str, n: usize) -> Result<Option<Vec<u8>>, RezError> {
+        match self.locate(name) {
+            Some((pos, size)) if self.folder.is_none() => {
+                self.read_raw(pos, size.min(n as u32)).map(Some)
+            }
+            Some(_) => Ok(self.entry_raw(name)?.map(|mut b| {
+                b.truncate(n);
+                b
+            })),
+            None => Ok(None),
+        }
+    }
+
     /// Like [`RezArchive::entry_raw`] but through the unique-basename fallback.
     pub fn entry_raw_basename(&self, name: &str) -> Result<Option<Vec<u8>>, RezError> {
         match self.locate_basename(name) {
@@ -913,6 +928,26 @@ impl RezVfs {
     /// Stored bytes of entry `name` with no decryption at all (override files are returned as stored).
     pub fn entry_raw(&self, rez_name: &str, name: &str) -> Result<Option<Vec<u8>>, RezError> {
         self.fetch(rez_name, name, false, false)
+    }
+
+    /// The first `n` stored bytes of an entry (a header such as a texture's size), without reading the rest;
+    /// `Ok(None)` when absent. Override folders answer first, as for [`RezVfs::entry_raw`].
+    pub fn entry_head(
+        &self,
+        rez_name: &str,
+        name: &str,
+        n: usize,
+    ) -> Result<Option<Vec<u8>>, RezError> {
+        validate_name(name)?;
+        validate_name(rez_name)?;
+        if let Some(mut raw) = self.find_override_raw(rez_name, name)? {
+            raw.truncate(n);
+            return Ok(Some(raw));
+        }
+        match self.archive(rez_name)? {
+            Some(arch) => arch.entry_head(name, n),
+            None => Ok(None),
+        }
     }
 
     /// Explicit basename fallback: like [`RezVfs::entry`] but resolves `name` by basename, succeeding only

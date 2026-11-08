@@ -73,8 +73,9 @@ stderr. Exit codes: 0 ok (warnings keep 0), 1 error diagnostics (`ok: false`, `r
 | `build <dir>` | `dc-mapkit build my_map --json` | `{file, bytes, stats: {polys, brushes, sky_faces, nodes, depth, textures, vertices, triangles, sections, bytes}}`; the world-level findings are in `diagnostics` |
 | `export <dir> [--zip] [--no-rom-paths]` | `dc-mapkit export my_map --zip --json` | `{dir, zip, sha256, files, bytes, stats}` (the mod folder under `build/`; `zip` and `sha256` are null without `--zip`; `stats` as `build`) |
 | `render <dir> --view top\|iso\|spawn:<n>\|free:x,y,z,yaw,pitch [--size WxH] [--labels] [--grid] [--grid-step N] [-o out.png]` | `dc-mapkit render my_map --view iso --labels --json` | `{view, image, width, height, triangles, legend: [{key, color}], markers: [{id, class, key, x, y, visible}], grid_step, top_bounds}` (`image` is the PNG written, `<dir>/build/render/<view>.png` unless `-o`; section 12) |
-| `rom textures\|sounds\|sprites\|surfaces\|worlds\|modes [--filter F] [--thumbs DIR] [--rom DIR]` | `dc-mapkit rom textures --filter rock --json` | `{kind, rom: {path, source} \| null, count, thumbs, rows: [{path, size, width?, height?, thumb?, id?}]}`; every kind but `modes` needs a ROM (`--rom` > `CA_ROM` > `<profile>/mapkit.toml` > a sibling `Game/` folder; `rom.missing` otherwise); `modes` rows are `{id, path}` (section 14) |
-| `play <dir> [--rom DIR] [--binaries DIR] [--headless] [--seconds N] [--keep-profile] [--modded]` | `dc-mapkit play my_map --headless --seconds 20 --json` | `{shape, entry, entry_name, community_map_base, pilot_entry_flag, lobby_port, admin_port, game_port, map_index, map_key, mod_id, zip, sha256, profile, config, binaries, rom, headless, client_exit, stopped_by, launch_line, match_lines, client_world, textures_missing, frames, spawn, match_ended, logs}`: Vanilla++ on this machine (a vanilla lobby with the map on its featured entry + game server + client; section 16) |
+| `rom textures\|sounds\|sprites\|surfaces\|worlds\|modes [--filter F] [--thumbs DIR] [--rom DIR]` | `dc-mapkit rom textures --filter rock --json` | `{kind, rom: {path, source} \| null, count, thumbs, rows: [{path, size, width?, height?, thumb?, id?, world?}]}` (`world` on `worlds` rows: extent, play box, floor, spawn counts and a region to start a ROM piece from, section 19); every kind but `modes` needs a ROM (`--rom` > `CA_ROM` > `<profile>/mapkit.toml` > a sibling `Game/` folder; `rom.missing` otherwise); `modes` rows are `{id, path}` (section 14) |
+| `play <dir> [--rom DIR] [--binaries DIR] [--headless] [--seconds N] [--keep-profile] [--modded] [--steps FILE]` | `dc-mapkit play my_map --headless --seconds 20 --json` | `{shape, entry, entry_name, community_map_base, pilot_entry_flag, lobby_port, admin_port, game_port, map_index, map_key, mod_id, zip, sha256, profile, config, binaries, rom, headless, client_exit, stopped_by, launch_line, match_lines, client_world, textures_missing, frames, spawn, match_ended, logs}`: Vanilla++ on this machine (a vanilla lobby with the map on its featured entry + game server + client; section 16) |
+| `walk <dir> [--rom DIR] (--from x,y,z --to x,y,z \| --routes FILE \| --survey [--box x0,z0,x1,z1\|<piece id>] [--step N] \| --reach [--box ..] [--step N] [--seed x,y,z \| --seed-piece <piece id>] [--nodes FILE]) [--seconds N] [--sprint] [--open-doors] [--size WxH] [-o out.png]` | `dc-mapkit walk my_map --from -900,60,0 --to 900,60,0 --json` | routes: `{world, body, tick_hz, seconds_limit, sprint, summary: {routes, reached, died, stuck, timeout}, routes: [{name, from, to, start, start_floor, start_blocked, outcome, reached, end, left, seconds, distance, jumps, largest_fall, fall_damage, died, stuck, path, end_piece}], image}`; survey: `{world, box, step, grid, columns, floors, holes, kill_floors, hole_areas, kill_areas, hole_list, kill_list, truncated, image, width, height}`; reach: `{world, box, step, grid, columns, nodes, deadly_nodes, moves, simulation, seconds, components, main: {seed, nodes, spawns}, spawns, traps: {nodes, areas, list}, deadly: {moves, areas, list}, kill_nodes, islands, spawns_outside_count, spawns_outside, pieces, nodes_file, nodes_written, truncated, image, width, height}` (section 20) |
 | `gui [<dir>]` | `dc-mapkit gui my_map` | `{binary, pid}`: starts the editor window (`dc-mapkit-gui`, section 17) as its own process and returns |
 | `mcp` | `dc-mapkit mcp` | no JSON envelope, with or without `--json`: stdout carries the MCP session's response lines only (section 7) and the verb exits 0 when stdin closes |
 
@@ -101,7 +102,7 @@ is `{applied: [{op, ids}], changed: [...], dry_run}`: `ids` echoes the new ids, 
 | `material.set` | `id` + any of `texture` (`{"own": "assets/x.png"}` or `{"rom": "<path>"}`), `tile`, `surface_id`, `flags` (`{solid, no_step, sky, hidden}`), `fit?` (`[u0, v0, u1, v1]`) |
 | `import.add` | `file` (OBJ), `pos`, `material`, `rot_y_deg?`, `scale?`, `collision?`, `ground?` |
 | `prefab.add` | `prefab`, `pos`, `rot_y_deg?`, `scale?`, `ground?` (the prefab library comes with the build slice) |
-| `settings.set` | any of `fog_enable`, `fog_near`, `fog_far`, `fog_color` (rgb), `far_z` (> 0), `sun_dir` (vec3, not zero), `sun_color`, `sun_bright`, `ambient`, `sky_size`, `sky_material` (must exist): the world settings the build turns into `dc.world_settings`, `dc.global_light` and the sky model; only the given fields change |
+| `settings.set` | any of `fog_enable`, `fog_near`, `fog_far`, `fog_color` (rgb), `far_z` (> 0), `sun_dir` (vec3, not zero), `sun_color`, `sun_bright`, `ambient`, `sky_size`, `sky_material` (must exist), `two_sided` (bool: the client draws both faces of the level and its opaque world models; turn it on for a map with ROM pieces, section 19): the world settings the build turns into `dc.world_settings`, `dc.global_light` and the sky model; only the given fields change |
 | `meta.set` | any of `name` (the map's label), `version`, `author`, `description`, `tags`, `homepage` (`""` clears), `modes` (DeCombat mode names, upper-cased), `goals` (`{mode: int}`), `round_seconds` (0 clears), `players` (`{min, max}`): the mod metadata `export` writes |
 
 Property values: text, number, bool, `[x, y, z]` or `{"rgb": [r, g, b]}`. `ground: true` snaps y to the floor
@@ -190,7 +191,7 @@ error as in Lua; there is no `math.randomseed`). The same project and script que
 | `map.add{class, pos, name?, rot?, props?, ground?}` | the new id |
 | `map.remove(id)` | the id |
 | `map.clear{group?, class?}` (the `clear` op) | how many things it removed |
-| `map.settings{fog_enable?, fog_near?, fog_far?, fog_color?, far_z?, sun_dir?, sun_color?, sun_bright?, ambient?, sky_size?, sky_material?}` (the `settings.set` op) | nothing |
+| `map.settings{fog_enable?, fog_near?, fog_far?, fog_color?, far_z?, sun_dir?, sun_color?, sun_bright?, ambient?, sky_size?, sky_material?, two_sided?}` (the `settings.set` op) | nothing |
 | `map.move(id, {x, y, z})` / `map.move(id, {delta = {x, y, z}})` / `map.move(id, {ground = true})` | the id |
 | `map.set(id, prop, value)` (value: text, number, bool, `{x, y, z}`, `{rgb = {r, g, b}}`) | the id |
 | `map.rename(id, name)` | the id |
@@ -200,6 +201,12 @@ error as in Lua; there is no `math.randomseed`). The same project and script que
 | `map.prefab(name, {pos, rot?, scale?, ground?})` | the new id |
 | `map.asset{asset, pos, rot?, scale?, ground?, solid?, surface?}` (section 18) | the first new id |
 | `map.meta{name?, description?, author?, ...}` (the `meta.set` op) | nothing |
+| `map.piece{world, pos, region = {min, max}, cuts?, spawns?, items?, sky?, clear_terrain?, blockers?, fill?, fill_y?, min_light?, drop_spawns?}` (`piece.add`, section 19) | the new id |
+| `map.piece_set(id, {...})` / `map.piece_cut(id, {min, max, world?})` | the id |
+| `map.pieces()` | the project's pieces |
+| `map.rom_worlds()` | the user's ROM worlds with extent, play box, floor and a starting region (needs a ROM) |
+| `map.probe(x, z [, from_y])` | the first floor straight down: a ROM piece's own collision inside its region, else `map.ground`; nil when none |
+| `map.piece_spawns(id)` | the player and item spawns of a piece's world, read from the ROM and moved by its `pos`: `{{x, y, z, kind = "player" \| "item"}, ...}`; places the original map keeps in its play, to anchor doorways and links at (MAP-123) |
 | `map.import{file, pos, material, rot?, scale?, collision?, ground?}` | the new id |
 | `map.material.set{id, texture?, tile?, surface_id?, flags?, fit?}` (`texture` text = an own PNG path; `{rom = ...}` for a ROM path) | the id |
 | `map.terrain.gen{preset?, seed?, amplitude?, base?, scale?, octaves?, cells_x?, cells_z?, cell_size?}` (`map.terrain.noise` is the same call) | nothing |
@@ -255,7 +262,9 @@ which this one-object-per-line server refuses with `-32600`). A line that is not
 `-32700` and the session goes on; stdout never carries anything but response lines, not even after stdin
 closes.
 
-Tools: `new`, `info`, `validate`, `build`, `export`, `render`, `apply` (`ops` array), `get`, `terrain` (flat flags),
+Tools: `new`, `info`, `validate`, `build`, `export`, `render`, `walk` (`from` / `to` as `[x, y, z]`, or `routes` as an
+inline array, or `survey: true` with `box` and `step`; the survey's picture comes back as image content), `apply`
+(`ops` array), `get`, `terrain` (flat flags),
 `snapshot`, `history`, `revert`, `run` (`script` = inline Lua text, `budget`, `dry_run`), `rom_list`, `schema`, and
 the flat typed twins `add_object`, `move_object`, `set_property`, `remove_object`, `terrain_noise` (each one op
 with the op's fields as arguments plus `dry_run`). Resources: `mapkit://playbook` (this file),
@@ -569,3 +578,178 @@ K, "ground": true}` (`map.asset{...}` in Lua) places it. The model's units are k
   Allowed licenses are `CC-BY-4.0` and `CC0-1.0` (docs/MODDING_GUIDE.md section 8). Keep the models out of the DeCombat
   repository: a project is the mapper's own.
 
+## 19. One map from many: ROM pieces (DC_DEFAULTS.md MAP-116 .. MAP-118, MAP-120, MAP-121)
+
+A map can be built from parts of the user's own ROM worlds without carrying anything of them. A piece names a world
+(`dc-mapkit rom worlds --json` lists them), an offset `pos`, a `region` box and `cuts` (doorways), both in the world's
+OWN coordinates so they move with the piece:
+
+```json
+{"op": "piece.add", "world": "WORLDS\\NAME.DAT", "pos": [12000, -150, 0],
+ "region": {"min": [-3000, -1500, -3000], "max": [3000, 4000, 3000]}, "spawns": "ffa", "items": true}
+{"op": "piece.cut", "id": "piece_7", "min": [9100, 10, -190], "max": [10600, 450, 190]}
+```
+
+- **What ships:** the map's own world plus a `dc.rom_piece` record per piece (path, digest, offset, boxes). Every
+  game server, client and bot composes the full world from its own ROM when the map loads (`dc_world::compose`), so
+  the pack stays small and holds no ROM data. Such a project is still the mapper's own: it names ROM paths, so it is
+  never committed, and `export --no-rom-paths` refuses it.
+- **What a piece brings:** its world's geometry, lightmaps, collision, invisible walls, kill volumes, doors, lights,
+  sounds and effects, kept to the region and outside the cuts; its player spawns as team-less spawns (`spawns:
+  "none"` leaves them out) and its item spawns. Its own mode objects (flags, bomb sites, triggers, scripts) stay out.
+  `sky: true` on one piece makes its sky the map's.
+- **Placing:** a row of `rom worlds` carries `world.play` (where the map is played) and `world.region` (a box to start
+  from: the play box grown by 1,200, from 1,500 under the floor to 2,500 over the top). Move the floor to your
+  ground with `pos[1] = -world.floor`. Regions may not overlap (`piece.overlap`). The map's terrain is left out of
+  each region's footprint (`clear_terrain`); outside the regions it is the ground between the pieces.
+- **Doorways:** a world keeps players in with walls, cliffs and invisible walls. `piece.cut` takes a box out of a
+  piece (walls, floors, invisible walls, kill volumes): run it from the region's edge into the play area, a few
+  units above the floor so the floor stays, and lay a slab of your own across what the cut leaves open.
+  `map.probe(x, z, from_y)` finds the floor to put the cut and the slab on; move the piece up or down (`pos`) so that
+  floor meets the ground rather than raising or lowering the terrain (a mound or a pit ends in a drop at the next
+  region's edge, where the walk check finds players falling out of the world). A whole layout in one generator:
+  `examples/mapkit/rom_atlas.lua` packs every world `map.rom_worlds()` lists (variants left out) on a level ground,
+  keeps each closed, links neighbours with walled corridors, seals every region and rails off what the walk check
+  finds (run it on a `flat` project; it needs a ROM). Its corridors are planned by `examples/mapkit/plan_links.py`
+  from each world's playable floor as `walk --reach --box <id> --seed-piece <id> --nodes` finds it, never from the
+  floor near a region's edge: that floor is often the world's out-of-bounds ground (inside its kill volumes, behind
+  its one-sided invisible walls), and a doorway there either kills or lets players in with no way back. Then check
+  rounds: `check_round.py` walks every region at three grids (one grid misses what is narrower than its cell or
+  falls between its samples), `rails_from.py` rails what each round finds; a cut that opens a mouth can take a
+  world's invisible wall beside a kill volume away, so a walk sliding along the corridor's wall past its end dies
+  there, and that side of the mouth gets a cheek. Repeat until a round is clean, then walk every corridor both ways,
+  and walk into every mouth from the map's floor in front of it: a corridor walk starts on the mouth's own slab and
+  never tries the step up onto it. The example cuts each corridor and mouth from just under the corridor's floor (a
+  ridge of the map's ground left over the floor catches a walk), lays the mouth's slab just under that floor, and
+  ramps down to the floor in front where it lies lower than a player steps up (30), with parapets along the ramp. A
+  ramp gets no cut over it: a cut in front of a mouth also takes the world's invisible walls and kill volumes there,
+  and opened a slope into out-of-bounds ground in a test; where the world stands in front of part of a mouth,
+  `RAMP_SPAN` narrows the ramp. Cut boxes overlap by a few units: a wall lying exactly on the plane where two cut
+  boxes met stayed. A corridor piece whose deck lies far over what the world has under it (a sea, a canyon, a
+  river) is built as a bridge: stone parapets a player cannot jump with an invisible wall over them, and piers down
+  to the ground under it, instead of a tunnel's walls. The planner (`plan_links.py`) also keeps every mouth where
+  the floor in front leads onto it (not a platform over it), clear of the rails the walk check placed
+  (`--avoid rails.json`), and leaves out corridors longer than `--max-len` while both maps keep two other doors.
+  To bring the worlds closer, the example records the packing it made (`LAYOUT`) and draws regions in on sides whose
+  play area reaches far past the walkable floor (`SHRINK`, from the walk nodes); every world then slides against the
+  neighbours it had, GAP apart, and its piece id stays the same. Sides over water keep their play area: a bridge
+  crosses them. Everything in absolute coordinates (walk nodes, rails, dropped spawns) moves with its piece.
+- **Opening and filling (MAP-120):** a world keeps players in its play area with invisible walls and out-of-bounds
+  kill volumes, and has nothing to stand on round it. `blockers: false` opens a piece (its invisible walls go, its
+  kill volumes are kept to its play area) and `fill: true` lays the map's ground (the terrain's first layer, at
+  `fill_y`) wherever the world has no floor at or under that height in the region outside its play area (in an
+  open piece everywhere), worked out at load time from the player's ROM. A floor the region cuts off over the fill
+  height gets an earth bank down to the fill (a cut's own faces get none), and an open, filled piece keeps its kill volumes only from 100
+  under the fill down (its out-of-bounds killers would sit on the new ground). Where a region cuts the terrain, the
+  terrain gets its cut face down to the region's floor (MAP-121), so nobody walks under the terrain out of a world. Open, filled pieces with small regions placed close together make one walkable world: walk out of a
+  map onto the ground and into the next where its edge is open; cut doorways where it is walled. `min_light`
+  (0..255) lifts a piece's darkest light: its outer faces, never lit for its own play area, show at that level.
+  The outer side of a wall that the original map never showed often carries a tiny flat placeholder texture; the
+  composer gives such a face the texture of the wall it is back to back with (cut along that wall's textures), else
+  of the real face it adjoins, else the widest real texture near it, so walls and hills read from outside.
+- **Looking at it:** `render --view top --labels` draws the composed world (shaded by face, each region outlined in
+  orange, a marker per piece); `render --textured` and `play` compose it from the ROM in the client and the server.
+- **Walking it:** `walk` (section 20) checks a doorway or a whole region in seconds without a match: `walk <dir>
+  --from x,y,z --to x,y,z --json` from the ground through a doorway, `walk <dir> --survey --box <piece id> --json` for
+  the holes in a region, `walk <dir> --reach --json` for every place a player can enter and never leave (a world's
+  own invisible walls stop players leaving but not entering, so a doorway must be cut through them) and every move
+  that kills. To see it in the client, `play --headless --seconds 60 --steps walk.jsonl --json` runs a dc-client step file in the match
+  (`look`, `sprint`, `jump`, `shot`); move a team's spawns next to the doorway first (the headless player is team 1
+  in TDM), then read `match_lines` (start, end, `fell out`) and the shots in `build/play/shots`.
+- **Size:** each piece adds its world's polygons and lightmaps (18 ROM worlds compose to about 370 MB, 3.2 M render
+  vertices, under the renderer's 256 MiB vertex buffer); keep the composed world within 65,536 units per axis
+  (`extent.limit`), and smaller is better: positions on the wire get coarser as the world grows (extent / 65,536).
+- **Leaving out spawns:** `drop_spawns` (MAP-125) lists points in the map's coordinates; the world's player spawns
+  near one are not kept. Take them from `walk --reach`'s `spawns_outside` (a spawn in a kill volume, on no floor, in
+  a trap or on an island that cannot reach the main component).
+- **Invisible walls:** a solid with `brush: "blocker"` (MAP-124) is an invisible wall for players only: never drawn,
+  shots pass, a thin box stops a body from both sides. Seal a piece's region with them (a world's own invisible
+  walls stop players only from inside, and its play area does not always reach them), and rail off what
+  `walk --reach` finds: a rail across each move into a trap or into a kill volume (its `--nodes` file lists every
+  such move, with the main component's nodes).
+- **Both faces:** a ROM world shows its surfaces only towards its own play area, so from the ground between the
+  pieces or from another piece its buildings, cliffs and facades show as holes and blank grey panels. Turn on
+  `{"op": "settings.set", "two_sided": true}` (`map.settings{two_sided = true}`) on every map with pieces: the client
+  then draws the back of the level and its opaque world models too, with the same textures and lightmaps; a front
+  face on the same plane still wins, but a textured face's back wins over the flat grey filler the world put behind
+  it. Flat-coloured filler and cut-out cards (fences, foliage, decals) keep their backs hidden, so inside each piece
+  the world looks as it always did. The sky, characters, weapons, effects and translucent world models stay
+  one-sided; it costs a second pass over the visible world's draws (DC_DEFAULTS.md MAP-118).
+
+## 20. Walking a map offline: `walk` (DC_DEFAULTS.md MAP-119, MAP-122)
+
+`walk` answers "can a player get from here to there, and can they fall through the map?" in seconds, with the
+game's own movement and collision and no match. The project is built in memory and, with ROM pieces, composed from
+your ROM as every client and game server composes it (`--rom` > `CA_ROM` > ...; `rom.missing` without one). On that
+world the collision is the client's (doors closed at their file pose; `--open-doors` leaves them out, as the game
+server opens a door for a player who comes near), the ladders are the client's, and the kill volumes are tested as
+the game server tests them: the body centre inside the volume's closed model, the first entry is the death.
+
+- **One route:** `walk <dir> --from x,y,z --to x,y,z --json`. A standing body (half extents 15 x 50 x 15, the box the
+  server gives a player) is put on the first floor under a point 80 units above `from` (so a `from` a little under
+  the ground still finds it; then the client's spawn placement: lifted one step, at most 1,000 down) and stepped at
+  the client's 60 Hz by the client's own mover (`dc_sim::PlayerState::step`): every tick
+  the yaw turns toward the target and forward and run are held (`--sprint` sprints). When the body gains less than
+  16 units toward the target for 0.5 s on the ground it jumps (again after each further 0.5 s); after 3 s without
+  progress it gives up, and `--seconds` (default 60) ends every route.
+- **Many routes:** `--routes routes.json` with `[{"name": "into Sandhog", "from": [x, y, z], "to": [x, y, z], "via":
+  [[x, y, z], ...]}]` (`via`: waypoints walked first, each reached within 64 units; the bot only steers straight at
+  the next one, so route it through a doorway with a point in front of it).
+- **Reading a route:** `outcome` is `reached` (standing within 64 units of `to` in x / z), `died`, `stuck` or `timeout`.
+  `died.cause` is `kill_volume` (with `volume`, the object's name, and its `pending_s`), `fall` (a landing the game
+  server's fall rule makes lethal: no damage up to 300 units, 200 at 700; `height`, `damage`) or `fell_out` (below
+  the world's extents, every floor and every kill volume); `died.height` is the fall so far. `stuck.blocked_by`
+  names what stands in the way toward the target (`level`, `invisible wall`, `door <name>`, a model's object
+  name; `null` at a ledge, a slope or a gap). `piece` / `end_piece` name the ROM piece whose region holds the point
+  (`null`: the map's own ground). `path` is the body centre every 0.5 s; `distance` is the horizontal distance
+  walked; `largest_fall` the highest drop from the top of a flight to the landing (a jump is about 51).
+  `start_floor: false` means nothing was under `from`. A route that dies, gets stuck or runs out of time is a
+  warning (`walk.died`, `walk.stuck`, `walk.timeout`, `walk.start` for a bad start), never an error: exit 0.
+  `-o routes.png` draws the paths on the top view (green reached, red died, yellow stuck, white out of time).
+- **Survey:** `walk <dir> --survey [--box x0,z0,x1,z1 | --box <piece id>] [--step 128] --json` casts straight down
+  at the centre of every cell from the top of the world's extents (sky faces and surfaces too steep to stand on are
+  passed through) and sorts each column: a floor, a hole (no floor at all: a player falls through there; the
+  hole's `kill_below` / the area's `volume` names the kill volume the fall ends in, `null` when it leaves the
+  world) or a kill floor (a body standing on the first floor is inside a kill volume). The default box holds every
+  solid floor that is not a sky face. `hole_areas` / `kill_areas` join the columns into connected areas (largest
+  first, at most 50, each with its box, column count, volume and piece; a warning `walk.hole` / `walk.kill_floor`
+  for each of the first 20), `hole_list` / `kill_list` list at most 200 columns. The picture (`image`,
+  `<dir>/build/walk/survey.png` unless `-o`) is the flat top view of the same world framed on the box, holes red,
+  kill floors orange, the regions outlined in blue: look at it.
+- **Reach (MAP-122):** `walk <dir> --reach [--box x0,z0,x1,z1 | --box <piece id>] [--step 48] [--seed x,y,z |
+  --seed-piece <piece id>] [--open-doors] [--nodes nodes.json] --json` finds where a player can go and come back
+  from. **Nodes:** on the grid (default box: every floor; step 48) every floor of each column a standing body fits on
+  (cast down again and again, sky faces and steep surfaces passed, the body put on the floor as the client puts
+  it); a node whose standing body is inside a kill volume is deadly. **Moves:** from every node toward each of its 8
+  neighbour columns, simulated with the client's mover: the body starts on the node running toward the neighbour at
+  the run speed, jumps when it stalls, gives up when it stalls again after the jump (1.5 s on the ground, 4 s while
+  it falls, 8 s after a ladder); a move that drops or dies is tried again as a running jump, one that touched a ladder
+  again climbing down. Where the body stands at the end is the node of its column by the height of its feet (a drop
+  lands on the node actually under it; by a wall, the nearest node of that height it can sweep to). Two nodes on one
+  flat floor with the floor under the whole line between them, the body sweeping clear one step up, no kill volume
+  and no ladder near are joined without a simulation, each way swept apart: a collision face stops only a body
+  moving against its front, so a wall (an invisible wall above all) can be one way. Moves out of the box are dropped.
+  **Answer:** the main component (strongly connected) holds `--seed`, or is the largest holding a player spawn of
+  `--seed-piece` (the composed spawns named `<id>~...`), or else holds the most player spawns of the box. `traps`
+  lists the areas it reaches with no way back (box, nodes, floor range, piece, `entry_moves` and `entries`: from / to,
+  `kind` `walk` / `run` / `jump` / `climb`, `fall`), `deadly` the moves from it that kill (`kill_volumes` with
+  counts, `falls`, `fall_max`, `fell_out`, `samples`), `kill_nodes` the floors inside kill volumes, `islands` the
+  areas it does not reach (`reaches_main`: there is a way out of it into the main component; its `spawns`),
+  `spawns_outside` every spawn of the box not in it (`class`, `reaches_main`; at most 200, all counted in
+  `spawns_outside_count`), `pieces` per piece the nodes, main, traps, islands, deadly nodes, deadly moves, spawns
+  and spawns in the main component; `simulation` and `seconds` say what ran. Warnings `walk.trap`,
+  `walk.deadly`, `walk.spawn_outside` (20 each), never an error. `--nodes` writes the main component's nodes as
+  `{"step": S, "nodes": [[x, floor, z], ...], "deadly": [{from, dir, kind, cause, detail, at}], "entries": [{from,
+  to, kind, fall}]}` (to 0.1 units): every deadly move from them (`dir` the neighbour step, `cause` `kill_volume`,
+  `fall` or `fell_out`) and every move into a trap, for planners: with closed pieces, `--box piece_N --seed-piece
+  piece_N --nodes piece_N.json` gives each world's playable floor under its own rules (where a corridor may end),
+  and the whole map's file the moves to rail off (MAP-124). The
+  picture (`<dir>/build/walk/reach.png` unless `-o`): main green, traps red, the start of a deadly move orange,
+  islands grey, floors inside kill volumes faint orange, entry moves yellow, regions blue. Measured on the 18-piece
+  atlas (34,250 x 31,000 units; 525,000 nodes and 3.1 M moves at step 48, three in four of them flat walks) on 14
+  cores: 56 s at step 48, 41 s at step 64.
+- **What it is not:** the body is a bot that steers straight; it does not find a way round a wall (give `via`
+  points). The reach analysis tries no strafing, crouch jump or second player, and a floor narrower than its step
+  can fall between columns (take `--step 24` over a doorway). The loadout's speed penalties, other players, doors opening and the server's corrections are left
+  out, so a player in a match runs a little slower than the walk (the code speed, 285 a second). A column the grid
+  misses can still hold a hole narrower than the step: survey a doorway with `--step 32`.

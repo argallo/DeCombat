@@ -1689,6 +1689,17 @@ impl WorldSource for ModWorld {
 
     fn load(&mut self, gpu: Option<GpuTarget<'_>>) -> Result<LoadedWorld, ClientError> {
         let t = Instant::now();
+        // a map built from pieces of the ROM's worlds: composed from this player's own ROM before anything reads
+        // it, the step the game server runs on the same bytes; the composed bytes replace the map's, so a reload
+        // (a lost GPU) does not compose again (MAP-116)
+        // DC-DEFAULT: MAP-116
+        if dc_world::compose::has_pieces(&self.bytes) {
+            // composed from a copy: on an error the map's own bytes stay, and a later attempt reports the same
+            // error instead of an empty file
+            self.bytes =
+                dc_world::compose::compose_with_rom(self.bytes.clone(), self.rom.as_deref())
+                    .map_err(|e| ClientError::World(format!("{}: {e}", self.name)))?;
+        }
         let (stand, crouch) = self.stance_dims()?;
         let index = match (gpu.as_ref(), &self.rom) {
             (Some(_), Some(rom)) => {

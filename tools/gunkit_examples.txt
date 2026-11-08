@@ -1,6 +1,9 @@
 # The example camos the GunKit package ships next to the program (docs/PACKS_FROM_REPOSITORIES.md section 4, VAR-13):
 # one line per pack, "id version sha256 of <id>-<version>.zip", as the mods repository's release publishes them.
 # tools/gunkit_examples.py fetches and checks them; the packaging scripts take the folder it fills with --examples.
+# The `release` line names the tagged release the zips are assets of (release.yml fetches from it; a tag, never a
+# branch); the pack lines must be assets of that release with these hashes, else nothing is unpacked.
+release argallo/DeCombat-mods v1
 variant_candy_g36e 0.1.1 b643f95807365094e98bbc485ed3819be2a6422ca6ceb130b4b4d1b679d314d2
 variant_galaxy_g36e 0.1.2 61192887593c95e3589b9eb9a5482a0674a645cc9c3f52c0dc49b53d99e96cc6
 variant_tiger_l96a1 0.1.1 772190d229b2b258d15dfcdaab2bb15cc0e30b9bbea1948c535d818eed955111

@@ -17,8 +17,8 @@
 use crate::diag::{Code, Diagnostic, Diagnostics};
 use crate::geom::{self, unit_circle, V3};
 use crate::project::{
-    BrushRole, Heights, Import, MapObject, Material, MaterialFlags, PrefabInstance, Project,
-    PropValue, Solid, SolidKind, Terrain, TextureRef, Vec3f, STAND_OFFSET,
+    BoxF, BrushRole, Heights, Import, MapObject, Material, MaterialFlags, PrefabInstance, Project,
+    PropValue, RomPiece, Solid, SolidKind, Terrain, TextureRef, Vec3f, STAND_OFFSET,
 };
 use crate::vocab_names as v;
 use serde::{Deserialize, Serialize};
@@ -371,6 +371,9 @@ pub enum Op {
         sky_size: Option<Vec3f>,
         #[serde(default)]
         sky_material: Option<String>,
+        /// Both faces of the level and its opaque world models drawn; a map with ROM pieces turns it on (MAP-118).
+        #[serde(default)]
+        two_sided: Option<bool>,
     },
     /// The map's label and the mod metadata `export` writes (every field optional). `name` is the project's
     /// label; the mod id stays what `new` derived.
@@ -399,6 +402,81 @@ pub enum Op {
         #[serde(default)]
         players: Option<crate::project::Players>,
     },
+    /// Places a part of one of the user's ROM worlds (MAP-116): every program that loads the map reads it from its
+    /// own ROM, the project keeps the path only. `region` and `cuts` are in the world's own coordinates (`dc-mapkit
+    /// rom worlds --json` lists each world's play box and floor height).
+    #[serde(rename = "piece.add")]
+    PieceAdd {
+        world: String,
+        #[serde(default)]
+        pos: Vec3f,
+        region: BoxF,
+        #[serde(default)]
+        cuts: Vec<BoxF>,
+        #[serde(default = "ffa")]
+        spawns: String,
+        #[serde(default = "yes")]
+        items: bool,
+        #[serde(default)]
+        sky: bool,
+        #[serde(default = "yes")]
+        clear_terrain: bool,
+        #[serde(default = "yes")]
+        blockers: bool,
+        #[serde(default)]
+        fill: bool,
+        #[serde(default)]
+        fill_y: f32,
+        #[serde(default)]
+        min_light: u8,
+        #[serde(default)]
+        drop_spawns: Vec<Vec3f>,
+    },
+    /// Changes a piece (only the given fields).
+    #[serde(rename = "piece.set")]
+    PieceSet {
+        id: String,
+        #[serde(default)]
+        world: Option<String>,
+        #[serde(default)]
+        pos: Option<Vec3f>,
+        #[serde(default)]
+        region: Option<BoxF>,
+        #[serde(default)]
+        cuts: Option<Vec<BoxF>>,
+        #[serde(default)]
+        spawns: Option<String>,
+        #[serde(default)]
+        items: Option<bool>,
+        #[serde(default)]
+        sky: Option<bool>,
+        #[serde(default)]
+        clear_terrain: Option<bool>,
+        #[serde(default)]
+        blockers: Option<bool>,
+        #[serde(default)]
+        fill: Option<bool>,
+        #[serde(default)]
+        fill_y: Option<f32>,
+        #[serde(default)]
+        min_light: Option<u8>,
+        #[serde(default)]
+        drop_spawns: Option<Vec<Vec3f>>,
+    },
+    /// Takes a box out of a piece: a doorway through its walls (and its blockers and kill volumes). `world` true
+    /// (the default): the box is in the map's coordinates; false: in the piece world's own.
+    #[serde(rename = "piece.cut")]
+    PieceCut {
+        id: String,
+        min: Vec3f,
+        max: Vec3f,
+        #[serde(default = "yes")]
+        world: bool,
+    },
+}
+
+fn ffa() -> String {
+    "ffa".into()
 }
 
 impl Op {
@@ -424,6 +502,9 @@ impl Op {
             Op::PrefabAdd { .. } => "prefab.add",
             Op::SettingsSet { .. } => "settings.set",
             Op::MetaSet { .. } => "meta.set",
+            Op::PieceAdd { .. } => "piece.add",
+            Op::PieceSet { .. } => "piece.set",
+            Op::PieceCut { .. } => "piece.cut",
         }
     }
 
@@ -446,6 +527,9 @@ impl Op {
         "import.add",
         "asset.place",
         "prefab.add",
+        "piece.add",
+        "piece.set",
+        "piece.cut",
         "settings.set",
         "meta.set",
     ];
@@ -580,6 +664,46 @@ pub fn example_ops() -> Vec<Op> {
             scale: 1.0,
             ground: true,
         },
+        Op::PieceAdd {
+            world: "WORLDS\\NAME.DAT".into(),
+            pos: [8000.0, 0.0, 0.0],
+            region: BoxF::new([-2000.0, -500.0, -2000.0], [2000.0, 1500.0, 2000.0]),
+            cuts: vec![BoxF::new([1800.0, 0.0, -100.0], [2000.0, 250.0, 100.0])],
+            spawns: "ffa".into(),
+            items: true,
+            sky: false,
+            clear_terrain: true,
+            blockers: false,
+            fill: true,
+            fill_y: 0.0,
+            min_light: 72,
+            drop_spawns: Vec::new(),
+        },
+        Op::PieceSet {
+            id: "piece_1".into(),
+            world: Some("WORLDS\\NAME.DAT".into()),
+            pos: Some([9000.0, 0.0, 0.0]),
+            region: Some(BoxF::new(
+                [-2000.0, -500.0, -2000.0],
+                [2000.0, 1500.0, 2000.0],
+            )),
+            cuts: Some(Vec::new()),
+            spawns: Some("none".into()),
+            items: Some(false),
+            sky: Some(true),
+            clear_terrain: Some(false),
+            blockers: Some(true),
+            fill: Some(false),
+            fill_y: Some(-40.0),
+            min_light: Some(0),
+            drop_spawns: Some(Vec::new()),
+        },
+        Op::PieceCut {
+            id: "piece_1".into(),
+            min: [9800.0, 0.0, -100.0],
+            max: [10200.0, 250.0, 100.0],
+            world: true,
+        },
         Op::SettingsSet {
             bake_shadow: None,
             bake_lightmap: None,
@@ -594,6 +718,7 @@ pub fn example_ops() -> Vec<Op> {
             ambient: Some([90, 95, 110]),
             sky_size: Some([1024.0; 3]),
             sky_material: Some("ground".into()),
+            two_sided: Some(true),
         },
         Op::MetaSet {
             name: Some("My Map".into()),
@@ -608,6 +733,59 @@ pub fn example_ops() -> Vec<Op> {
             players: Some(crate::project::Players { min: 2, max: 16 }),
         },
     ]
+}
+
+/// The checks a piece passes before it is stored (MAP-116).
+fn check_piece(p: &Project, piece: &RomPiece, path: &str) -> Result<(), Diagnostic> {
+    if piece.world.trim().is_empty() || !piece.world.contains(['\\', '/']) {
+        return Err(invalid(
+            &format!("{path}world"),
+            format!("`{}` is not a ROM world path", piece.world),
+        )
+        .with_fix("use a path from `dc-mapkit rom worlds --json`, e.g. WORLDS\\NAME.DAT"));
+    }
+    finite3(&format!("{path}pos"), piece.pos)?;
+    if !piece.fill_y.is_finite() {
+        return Err(invalid(&format!("{path}fill_y"), "not finite"));
+    }
+    if !piece.region.is_valid() {
+        return Err(invalid(
+            &format!("{path}region"),
+            "the region must be finite with min < max on every axis",
+        ));
+    }
+    for (i, c) in piece.cuts.iter().enumerate() {
+        if !c.is_valid() {
+            return Err(invalid(
+                &format!("{path}cuts[{i}]"),
+                "a cut must be finite with min < max on every axis",
+            ));
+        }
+    }
+    if dc_world::compose::Spawns::parse(&piece.spawns).is_none() {
+        return Err(invalid(
+            &format!("{path}spawns"),
+            format!("`{}` is not ffa or none", piece.spawns),
+        ));
+    }
+    let mine = piece.world_region();
+    for o in p.pieces.iter().filter(|o| o.id != piece.id) {
+        if o.world_region().overlaps(&mine) {
+            return Err(Diagnostic::new(
+                Code::PieceOverlap,
+                format!("{path}region"),
+                format!("overlaps the region of {}", o.id),
+            )
+            .with_fix("move the piece (`pos`) or shrink one of the regions"));
+        }
+        if piece.sky && o.sky {
+            return Err(invalid(
+                &format!("{path}sky"),
+                format!("{} already gives the sky", o.id),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What one op did.
@@ -744,6 +922,7 @@ fn apply_one(
                 p.solids.clear();
                 p.prefabs.clear();
                 p.imports.clear();
+                p.pieces.clear();
                 p.next_id = 1;
             }
             if let Some(g) = group {
@@ -772,6 +951,7 @@ fn apply_one(
             p.solids.retain(|s| s.id != *id);
             p.prefabs.retain(|s| s.id != *id);
             p.imports.retain(|s| s.id != *id);
+            p.pieces.retain(|s| s.id != *id);
             if p.all_ids().len() == before {
                 return Err(unknown_id(id));
             }
@@ -835,6 +1015,18 @@ fn apply_one(
                         p.imports[i].pos[1] = f;
                     }
                 }
+            } else if let Some(i) = p.pieces.iter().position(|s| s.id == *id) {
+                // a piece moves with its region and cuts (they are in its world's own coordinates)
+                if *ground {
+                    return Err(invalid(
+                        "ground",
+                        "a ROM piece has no floor of its own to drop onto",
+                    ));
+                }
+                let mut piece = p.pieces[i].clone();
+                apply_to(&mut piece.pos);
+                check_piece(p, &piece, "")?;
+                p.pieces[i] = piece;
             } else {
                 return Err(unknown_id(id));
             }
@@ -1389,6 +1581,7 @@ fn apply_one(
             ambient,
             sky_size,
             sky_material,
+            two_sided,
         } => {
             let finite = |path: &str, x: Option<f32>| -> Result<(), Diagnostic> {
                 match x {
@@ -1482,7 +1675,131 @@ fn apply_one(
             if let Some(x) = sky_material {
                 s.sky_material = x.clone();
             }
+            // DC-DEFAULT: MAP-118
+            if let Some(x) = two_sided {
+                s.two_sided = *x;
+            }
             done(Vec::new())
+        }
+        Op::PieceAdd {
+            world,
+            pos,
+            region,
+            cuts,
+            spawns,
+            items,
+            sky,
+            clear_terrain,
+            blockers,
+            fill,
+            fill_y,
+            min_light,
+            drop_spawns,
+        } => {
+            let mut piece = RomPiece {
+                id: String::new(),
+                world: world.clone(),
+                pos: *pos,
+                region: BoxF::new(region.min, region.max),
+                cuts: cuts.iter().map(|c| BoxF::new(c.min, c.max)).collect(),
+                spawns: spawns.to_ascii_lowercase(),
+                items: *items,
+                sky: *sky,
+                clear_terrain: *clear_terrain,
+                blockers: *blockers,
+                fill: *fill,
+                fill_y: *fill_y,
+                min_light: *min_light,
+                drop_spawns: drop_spawns.clone(),
+            };
+            check_piece(p, &piece, "")?;
+            let id = p.alloc_id("piece");
+            piece.id = id.clone();
+            p.pieces.push(piece);
+            done(vec![id])
+        }
+        Op::PieceSet {
+            id,
+            world,
+            pos,
+            region,
+            cuts,
+            spawns,
+            items,
+            sky,
+            clear_terrain,
+            blockers,
+            fill,
+            fill_y,
+            min_light,
+            drop_spawns,
+        } => {
+            let Some(i) = p.pieces.iter().position(|x| x.id == *id) else {
+                return Err(unknown_id(id));
+            };
+            let mut piece = p.pieces[i].clone();
+            if let Some(x) = world {
+                piece.world = x.clone();
+            }
+            if let Some(x) = pos {
+                piece.pos = *x;
+            }
+            if let Some(x) = region {
+                piece.region = BoxF::new(x.min, x.max);
+            }
+            if let Some(x) = cuts {
+                piece.cuts = x.iter().map(|c| BoxF::new(c.min, c.max)).collect();
+            }
+            if let Some(x) = spawns {
+                piece.spawns = x.to_ascii_lowercase();
+            }
+            if let Some(x) = items {
+                piece.items = *x;
+            }
+            if let Some(x) = sky {
+                piece.sky = *x;
+            }
+            if let Some(x) = clear_terrain {
+                piece.clear_terrain = *x;
+            }
+            if let Some(x) = blockers {
+                piece.blockers = *x;
+            }
+            if let Some(x) = fill {
+                piece.fill = *x;
+            }
+            if let Some(x) = fill_y {
+                piece.fill_y = *x;
+            }
+            if let Some(x) = min_light {
+                piece.min_light = *x;
+            }
+            if let Some(x) = drop_spawns {
+                piece.drop_spawns = x.clone();
+            }
+            check_piece(p, &piece, "")?;
+            p.pieces[i] = piece;
+            done(vec![id.clone()])
+        }
+        Op::PieceCut {
+            id,
+            min,
+            max,
+            world,
+        } => {
+            let Some(i) = p.pieces.iter().position(|x| x.id == *id) else {
+                return Err(unknown_id(id));
+            };
+            let mut piece = p.pieces[i].clone();
+            let mut c = BoxF::new(*min, *max);
+            if *world {
+                let t = piece.pos;
+                c = c.moved([-t[0], -t[1], -t[2]]);
+            }
+            piece.cuts.push(c);
+            check_piece(p, &piece, "")?;
+            p.pieces[i] = piece;
+            done(vec![id.clone()])
         }
         Op::MetaSet {
             name,
@@ -1640,7 +1957,10 @@ fn check_brush(x: f32, z: f32, radius: f32) -> Result<(), Diagnostic> {
 pub fn solid_top_at(s: &Solid, x: f32, z: f32) -> Option<f32> {
     if matches!(
         s.brush,
-        Some(BrushRole::KillVolume) | Some(BrushRole::Sky) | Some(BrushRole::Ladder)
+        Some(BrushRole::KillVolume)
+            | Some(BrushRole::Sky)
+            | Some(BrushRole::Ladder)
+            | Some(BrushRole::Blocker)
     ) {
         return None;
     }
@@ -1948,6 +2268,105 @@ mod tests {
         (p, h)
     }
 
+    fn piece_op(world: &str, x: f32) -> Op {
+        serde_json::from_value(serde_json::json!({
+            "op": "piece.add", "world": world, "pos": [x, 0.0, 0.0],
+            "region": {"min": [-500.0, -100.0, -500.0], "max": [500.0, 400.0, 500.0]}
+        }))
+        .unwrap()
+    }
+
+    /// Pieces (MAP-116): stored with defaults, refused when they overlap, when two give the sky, when the path is
+    /// not a ROM path; a cut in the map's coordinates is kept in the world's own; move, set and remove work by id.
+    #[test]
+    fn pieces_are_checked_moved_cut_and_removed() {
+        let (mut p, mut h) = base_project();
+        let a = apply(&mut p, &mut h, &[piece_op("WORLDS\\A.DAT", 0.0)]).unwrap();
+        assert_eq!(a.applied[0].ids, vec!["piece_1".to_string()]);
+        let piece = &p.pieces[0];
+        assert_eq!(
+            (
+                piece.spawns.as_str(),
+                piece.items,
+                piece.sky,
+                piece.clear_terrain
+            ),
+            ("ffa", true, false, true)
+        );
+        // a second one over the first is refused, beside it is fine
+        let e = apply(&mut p, &mut h, &[piece_op("WORLDS\\B.DAT", 600.0)]).unwrap_err();
+        assert_eq!(e.items[0].code, Code::PieceOverlap);
+        apply(&mut p, &mut h, &[piece_op("WORLDS\\B.DAT", 2000.0)]).unwrap();
+        // not a ROM path
+        let e = apply(&mut p, &mut h, &[piece_op("nothing", 9000.0)]).unwrap_err();
+        assert_eq!(e.items[0].code, Code::OpInvalid);
+        // one sky only
+        let sky = |id: &str| Op::PieceSet {
+            id: id.into(),
+            world: None,
+            pos: None,
+            region: None,
+            cuts: None,
+            spawns: None,
+            items: None,
+            sky: Some(true),
+            clear_terrain: None,
+            blockers: None,
+            fill: None,
+            fill_y: None,
+            min_light: None,
+            drop_spawns: None,
+        };
+        apply(&mut p, &mut h, &[sky("piece_1")]).unwrap();
+        assert!(apply(&mut p, &mut h, &[sky("piece_2")]).is_err());
+        // a cut in the map's coordinates is stored in the world's own (the piece of B sits at x 2000)
+        apply(
+            &mut p,
+            &mut h,
+            &[Op::PieceCut {
+                id: "piece_2".into(),
+                min: [2400.0, 0.0, -50.0],
+                max: [2600.0, 200.0, 50.0],
+                world: true,
+            }],
+        )
+        .unwrap();
+        assert_eq!(p.pieces[1].cuts[0].min, [400.0, 0.0, -50.0]);
+        // moving carries region and cuts along; onto the first is refused
+        apply(
+            &mut p,
+            &mut h,
+            &[Op::Move {
+                id: "piece_2".into(),
+                pos: None,
+                delta: Some([500.0, 0.0, 0.0]),
+                ground: false,
+            }],
+        )
+        .unwrap();
+        assert_eq!(p.pieces[1].pos, [2500.0, 0.0, 0.0]);
+        assert_eq!(p.pieces[1].world_cuts()[0].min, [2900.0, 0.0, -50.0]);
+        let back = Op::Move {
+            id: "piece_2".into(),
+            pos: Some([100.0, 0.0, 0.0]),
+            delta: None,
+            ground: false,
+        };
+        assert_eq!(
+            apply(&mut p, &mut h, &[back]).unwrap_err().items[0].code,
+            Code::PieceOverlap
+        );
+        apply(
+            &mut p,
+            &mut h,
+            &[Op::Remove {
+                id: "piece_1".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(p.pieces.len(), 1);
+    }
+
     #[test]
     fn every_op_round_trips_through_json() {
         for op in example_ops() {
@@ -2069,6 +2488,7 @@ mod tests {
 
     #[test]
     fn every_variant_applies_and_echoes_ids() {
+        const PIECE_ID: &str = "piece_7";
         let (mut p, mut h) = base_project();
         let ops = example_ops();
         // the example batch refers to player_spawn_1 and solid_1: add puts the spawn at id 1, the solid at 2;
@@ -2099,6 +2519,49 @@ mod tests {
                 },
                 Op::Remove { .. } => Op::Remove {
                     id: "player_spawn_1".into(),
+                },
+                // piece.set / piece.cut name the id piece.add gets in this batch
+                Op::PieceSet {
+                    id: _,
+                    world,
+                    pos,
+                    region,
+                    cuts,
+                    spawns,
+                    items,
+                    sky,
+                    clear_terrain,
+                    blockers,
+                    fill,
+                    fill_y,
+                    min_light,
+                    drop_spawns,
+                } => Op::PieceSet {
+                    id: PIECE_ID.into(),
+                    world,
+                    pos,
+                    region,
+                    cuts,
+                    spawns,
+                    items,
+                    sky,
+                    clear_terrain,
+                    blockers,
+                    fill,
+                    fill_y,
+                    min_light,
+                    drop_spawns,
+                },
+                Op::PieceCut {
+                    id: _,
+                    min,
+                    max,
+                    world,
+                } => Op::PieceCut {
+                    id: PIECE_ID.into(),
+                    min,
+                    max,
+                    world,
                 },
                 o => o,
             })

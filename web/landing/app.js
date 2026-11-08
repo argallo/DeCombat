@@ -4,6 +4,7 @@ import {
   sanitizeDirectory,
   catalogMods,
   filterMods,
+  releasePacks,
 } from "./site-core.js";
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -81,7 +82,11 @@ function showMod(m) {
     node(
       "span",
       m.status === "verified" ? "tag" : "tag amber",
-      m.status === "verified" ? "VERIFIED DIRECTORY ENTRY" : "BUILT MOD PACK",
+      m.status === "verified"
+        ? "VERIFIED DIRECTORY ENTRY"
+        : m.status === "pack"
+          ? "RELEASE PACK"
+          : "BUILT MOD PACK",
     ),
   );
   const title = node("h2", "dialog-title", m.name);
@@ -107,14 +112,21 @@ function showMod(m) {
       "fine",
       m.status === "verified"
         ? "This specific version and hash are listed in the community directory. Review its capabilities before joining a server that uses it."
-        : "This pack is built and included in the project. Availability depends on your server; it is not listed in the general verified-mod directory.",
+        : m.status === "pack"
+          ? `This pack is an asset of the ${m.release?.repo || "pack repository"} release ${m.release?.tag || ""}; a server that offers it declares this exact hash. A listing here says nothing about trust: Verified comes only from the community directory.`
+          : "This pack is built and included in the project. Availability depends on your server; it is not listed in the general verified-mod directory.",
     ),
   );
+  if (m.release && safeHttps(m.release.url)) {
+    detail.append(external(m.release.url, `Release ${m.release.tag} on GitHub ↗`));
+    if (safeHttps(m.release.zip))
+      detail.append(external(m.release.zip, `Download ${m.zip || "the zip"} ↗`, "text-link related-source"));
+  }
   const sourceLink = (p) => (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/tree\/[\w.-]+\/[\w./-]+$/.test(p) ? p : `${repo}/tree/${config.branch}/${p}`);
   const src = m.sourcePath
     ? sourceLink(m.sourcePath)
-    : safeHttps(m.source_repo) || `${repo}/tree/${config.branch}/examples/mods`;
-  detail.append(external(src, "View source on GitHub ↗"));
+    : safeHttps(m.source_repo) || (m.status === "pack" ? null : `${repo}/tree/${config.branch}/examples/mods`);
+  if (src) detail.append(external(src, "View source on GitHub ↗"));
   if (/^(examples\/mods\/[a-z\d_]+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/tree\/[\w.-]+\/mods\/[a-z\d_]+)$/.test(m.relatedSourcePath || "")) {
     detail.append(
       external(
@@ -186,7 +198,7 @@ function renderMods() {
       node(
         "span",
         m.status === "verified" ? "tag" : "tag amber",
-        m.status === "verified" ? "✓ VERIFIED" : "BUILT PACK",
+        m.status === "verified" ? "✓ VERIFIED" : m.status === "pack" ? "RELEASE PACK" : "BUILT PACK",
       ),
       top,
       node("p", "", m.shortDescription || m.description),
@@ -284,9 +296,10 @@ async function init() {
     $("#discord-link").firstChild.textContent = "Join the Discord ";
     $("#discord-status").textContent = "The community is open. You’re invited.";
   }
-  const [catalog, raw] = await Promise.allSettled([
+  const [catalog, raw, packs] = await Promise.allSettled([
     getJSON("data/catalog.json"),
     getJSON("data/community.json"),
+    getJSON("data/packs.json"),
   ]);
   const directory = sanitizeDirectory(
     raw.status === "fulfilled" ? raw.value : {},
@@ -294,6 +307,7 @@ async function init() {
   mods = catalogMods(
     catalog.status === "fulfilled" ? catalog.value.mods : [],
     directory.known_mods,
+    releasePacks(packs.status === "fulfilled" ? packs.value : {}),
   );
   renderMods();
   if (catalog.status === "rejected" && raw.status === "rejected")

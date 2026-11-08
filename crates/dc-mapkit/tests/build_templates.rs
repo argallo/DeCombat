@@ -120,7 +120,13 @@ fn every_template_builds_parses_and_passes_the_world_checks() {
                 }
             }
         }
-        for solid in made.project.solids.iter().filter(|s| s.brush.is_some()) {
+        // every brush but a blocker (MAP-124: an invisible wall, no model and no object) names its model
+        for solid in made
+            .project
+            .solids
+            .iter()
+            .filter(|s| s.brush.is_some() && s.brush != Some(BrushRole::Blocker))
+        {
             let o = w.object_named(solid.id.as_bytes()).expect("brush object");
             let m = w.brush_of(o).expect("brush model");
             assert_eq!(m.flags & BSP_FLAG_BRUSH, BSP_FLAG_BRUSH);
@@ -132,6 +138,7 @@ fn every_template_builds_parses_and_passes_the_world_checks() {
                 BrushRole::Ladder => ObjectRole::Ladder,
                 BrushRole::WorldModel => ObjectRole::PlainWorldModel,
                 BrushRole::Breakable => ObjectRole::Breakable,
+                BrushRole::Blocker => unreachable!("filtered above"),
             };
             assert_eq!(o.role, Some(role), "{}", solid.id);
         }
@@ -277,6 +284,9 @@ fn the_render_data_batches_by_texture_and_carries_the_sky() {
         prop(ws, b"far_z"),
         Some(FieldValue::Real(made.project.settings.far_z))
     );
+    // one-sided unless the project asks (MAP-118): no property, and the scene keeps culling back faces
+    assert_eq!(prop(ws, b"two_sided"), None);
+    assert!(!mesh.two_sided);
     let sun = w.objects_of_class(b"dc.global_light").next().expect("sun");
     let sun_dir = dc_mapkit::worldgen::rotated_z(sun.rotation().unwrap());
     let want = glam_dir(made.project.settings.sun_dir);
@@ -304,6 +314,57 @@ fn the_render_data_batches_by_texture_and_carries_the_sky() {
     assert!(
         (v0.normal[0].powi(2) + v0.normal[1].powi(2) + v0.normal[2].powi(2) - 1.0).abs() < 1e-4
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MAP-118: `settings.set {two_sided: true}` is kept in `map.json` (and left out while off), written into the
+/// generated `dc.world_settings`, and read back by the renderer's scene build as a two-sided world.
+#[test]
+fn a_two_sided_project_builds_a_two_sided_world() {
+    use dc_mapkit::ops::{apply, Op};
+    let (dir, made) = scaffold(Template::Flat, "two-sided");
+    let off = build_made(&dir, &made);
+    let text = std::fs::read_to_string(dir.join("map.json")).unwrap();
+    assert!(!text.contains("two_sided"), "off is left out of map.json");
+    let (mut p, mut h) = (made.project.clone(), made.heights.clone());
+    let op: Op = serde_json::from_str(r#"{"op": "settings.set", "two_sided": true}"#).unwrap();
+    apply(&mut p, &mut h, &[op]).unwrap();
+    assert!(p.settings.two_sided);
+    p.save_all(&dir, &h).unwrap();
+    let text = std::fs::read_to_string(dir.join("map.json")).unwrap();
+    assert!(text.contains("\"two_sided\": true"));
+    let (back, _) = Project::open(&dir).unwrap();
+    assert!(back.settings.two_sided);
+    let on = build(&p, &h, &Assets::new(&dir), &p.build).unwrap();
+    let w = World::parse(&on.dat).unwrap();
+    let ws = w
+        .objects_with_role(ObjectRole::WorldSettings)
+        .next()
+        .expect("world settings");
+    assert_eq!(prop(ws, b"two_sided"), Some(FieldValue::Bool(true)));
+    assert!(dc_render::world_two_sided(&w));
+    let traits = &mut |_: &[u8]| TextureTraits::default();
+    assert!(SceneMesh::build(&w, SceneOptions::default(), traits).two_sided);
+    let w_off = World::parse(&off.dat).unwrap();
+    assert!(!dc_render::world_two_sided(&w_off));
+    assert!(!SceneMesh::build(&w_off, SceneOptions::default(), traits).two_sided);
+    // the setting adds that one property and changes nothing else of the objects
+    assert_eq!(w.objects.len(), w_off.objects.len());
+    for (a, b) in w.objects.iter().zip(&w_off.objects) {
+        let props = |o: &dc_world::Object<'_>| -> Vec<(Vec<u8>, String)> {
+            o.props
+                .iter()
+                .filter(|p| p.name != b"two_sided")
+                .map(|p| (p.name.to_vec(), format!("{:?}", p.value)))
+                .collect()
+        };
+        assert_eq!((a.class_name, props(a)), (b.class_name, props(b)));
+    }
+    let ws_off = w_off
+        .objects_with_role(ObjectRole::WorldSettings)
+        .next()
+        .unwrap();
+    assert_eq!(ws.props.len(), ws_off.props.len() + 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

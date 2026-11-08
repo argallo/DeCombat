@@ -66,7 +66,8 @@ release.
 Today the studio bakes five example packs into its binary with `include_bytes!` (about 11 MB of DTX in every GunKit
 download, and five folders this repository cannot drop). Done (VAR-13): the GunKit package ships an `examples/` folder
 next to the executable, filled at package time by `tools/gunkit_examples.py` from the pack repository's release
-(each zip checked against `tools/gunkit_examples.txt`); the studio reads `DC_GUNKIT_EXAMPLES`, else `examples/` next
+(release.yml's GunKit jobs run it; the release is the `release` line of `tools/gunkit_examples.txt`, each zip checked
+against that list; a mismatch fails the package job); the studio reads `DC_GUNKIT_EXAMPLES`, else `examples/` next
 to the program, else (under cargo) the checkout's `examples/mods`, and shows what it finds in the same menu; without a
 folder the menu says so. The five folders can now leave `examples/mods` with the others once the release exists;
 `assetcheck` and the export allow-lists then lose their `.dtx` exception for them.
@@ -98,6 +99,7 @@ appearing on the site says nothing about trust; the text says so.
    the check, the 64 rows of DeCombat-mods v1 filled in (the two hand-exported maps name none), `modrepo.py rows
    --release-tag` printing it. The shipped `community.json` keeps its known-mods rows without the field: clients
    before 2026-11-09 refuse a directory row with an unknown field, so it goes in once they are gone.
-6. **website-packs**: `sync-packs.mjs` and the workshop listing.
+6. **website-packs** (done, LG-435): `sync-packs.mjs`, `data/packs.json`, the workshop's "Release pack" rows with
+   the release and zip links; Verified stays the directory's.
 
 Steps 2 and 3 need a release to exist (the first tag of `DeCombat-mods`); step 1 needs the repositories pushed.

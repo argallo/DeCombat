@@ -82,6 +82,9 @@ pub struct Counts {
     pub imports: usize,
     pub materials: usize,
     pub polys: usize,
+    /// ROM pieces (MAP-116).
+    #[serde(default)]
+    pub pieces: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -741,6 +744,69 @@ pub fn validate(dir: &Path, p: &Project, h: &Heights) -> Diagnostics {
         );
     }
 
+    // ROM pieces (MAP-116): well-formed, apart, inside the extents limit together with the map
+    for (i, piece) in p.pieces.iter().enumerate() {
+        let path = format!("pieces[{i}]");
+        if !piece.region.is_valid() {
+            d.error(
+                Code::OpInvalid,
+                format!("{path}.region"),
+                "the region must be finite with min < max",
+            );
+        }
+        if piece.cuts.iter().any(|c| !c.is_valid()) {
+            d.error(
+                Code::OpInvalid,
+                format!("{path}.cuts"),
+                "every cut must be finite with min < max",
+            );
+        }
+        if dc_world::compose::Spawns::parse(&piece.spawns).is_none() {
+            d.error(
+                Code::OpInvalid,
+                format!("{path}.spawns"),
+                format!("`{}` is not ffa or none", piece.spawns),
+            );
+        }
+        for other in &p.pieces[i + 1..] {
+            if piece.world_region().overlaps(&other.world_region()) {
+                d.error(
+                    Code::PieceOverlap,
+                    format!("{path}.region"),
+                    format!("{} overlaps {}", piece.id, other.id),
+                );
+            }
+        }
+    }
+    if p.pieces.iter().filter(|x| x.sky).count() > 1 {
+        d.error(
+            Code::OpInvalid,
+            "pieces",
+            "more than one piece gives the sky",
+        );
+    }
+    if !p.pieces.is_empty() {
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for piece in &p.pieces {
+            let r = piece.world_region();
+            for a in 0..3 {
+                lo[a] = lo[a].min(r.min[a]);
+                hi[a] = hi[a].max(r.max[a]);
+            }
+        }
+        for (a, axis) in ["x", "y", "z"].iter().enumerate() {
+            let span = hi[a] - lo[a];
+            if span > EXTENT_LIMIT {
+                d.error(
+                    Code::ExtentLimit,
+                    "pieces",
+                    format!("the pieces span {span} units on {axis} (limit {EXTENT_LIMIT})"),
+                );
+            }
+        }
+    }
+
     // metadata
     let m = &p.mod_meta;
     let dl = m.description.chars().count();
@@ -835,6 +901,7 @@ pub fn info(
             imports: p.imports.len(),
             materials: p.materials.len(),
             polys,
+            pieces: p.pieces.len(),
         },
         objects_by_class: by_class,
         spawns,
@@ -1152,6 +1219,51 @@ fn check_world_objects(w: &dc_world::World<'_>, d: &mut Diagnostics) {
 /// the body at rest, lifted by [`CLEAR_LIFT`], must not overlap anything the player collides with (level,
 /// solid brushes, blockers: `spawn.clear`).
 fn check_spawns(w: &dc_world::World<'_>, d: &mut Diagnostics) {
+    check_spawns_where(w, d, &|_| true);
+}
+
+/// The world-level checks of a map composed with ROM pieces (MAP-116): the map's own world parses and tiles on its
+/// own (the lobby validates the stored file), the composed world parses, tiles, has one level model, fits the
+/// extents limit, and the map's OWN spawns stand where the server would place them in it. The pieces' spawns are
+/// the ROM's, which the server drops to the floor as it drops any.
+// DC-DEFAULT: MAP-116
+pub fn check_composed(own: &[u8], composed: &[u8]) -> Diagnostics {
+    let mut d = Diagnostics::new();
+    match dc_world::World::parse(own) {
+        Ok(w) => {
+            if let Err(e) = w.check_layout() {
+                d.error(Code::WorldLayout, "world", e.to_string());
+            }
+        }
+        Err(e) => d.error(Code::WorldParse, "world", e.to_string()),
+    }
+    let w = match dc_world::World::parse(composed) {
+        Ok(w) => w,
+        Err(e) => {
+            d.error(Code::WorldParse, "composed", e.to_string());
+            return d;
+        }
+    };
+    if let Err(e) = w.check_layout() {
+        d.error(Code::WorldLayout, "composed", e.to_string());
+    }
+    let levels = level_models(&w);
+    if levels.len() != 1 {
+        d.error(
+            Code::WorldLevel,
+            "composed.models",
+            format!("{} models no object names (want exactly 1)", levels.len()),
+        );
+    }
+    let sep = dc_world::compose::RENAME_SEP as u8;
+    check_spawns_where(&w, &mut d, &|name: &[u8]| !name.contains(&sep));
+    check_extents(&w, &mut d);
+    check_sky(&w, &mut d);
+    d
+}
+
+/// [`check_spawns`] for the spawns whose name `keep` accepts.
+fn check_spawns_where(w: &dc_world::World<'_>, d: &mut Diagnostics, keep: &dyn Fn(&[u8]) -> bool) {
     use dc_sim::{Collider, Cylinder, V3 as S3};
     let level = dc_sim::from_world::collision_world(w, &server_drop_filter());
     let brushes = dc_sim::from_world::collision_world(w, &brush_floor_filter());
@@ -1169,6 +1281,9 @@ fn check_spawns(w: &dc_world::World<'_>, d: &mut Diagnostics) {
             .map(|h| start + (end - start) * h.t)
     };
     for o in w.objects_with_role(dc_world::ObjectRole::PlayerSpawn) {
+        if !keep(o.name().unwrap_or_default()) {
+            continue;
+        }
         let Some(p) = o.position() else {
             continue;
         };

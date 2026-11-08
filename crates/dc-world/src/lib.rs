@@ -9,6 +9,7 @@
 //! machine-readable class list (docs/MAPKIT_VOCAB.md), and [`synth`] writes a world in either naming.
 
 mod bsp;
+pub mod compose;
 mod cursor;
 mod error;
 pub mod names;

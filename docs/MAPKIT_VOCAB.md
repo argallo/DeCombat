@@ -155,7 +155,7 @@ Geometry: brush. Role: `SkyWorldModel`. Consumer: dserver sky brush, dc-render s
 
 #### `dc.world_settings`
 
-Geometry: point. Role: `WorldSettings`. Consumer: dserver evars, dc-render fog (`ObjectRole::WorldSettings`).
+Geometry: point. Role: `WorldSettings`. Consumer: dserver evars, dc-render fog and `two_sided` (`ObjectRole::WorldSettings`).
 
 | property | type | required | default | meaning |
 |---|---|---|---|---|
@@ -169,6 +169,7 @@ Geometry: point. Role: `WorldSettings`. Consumer: dserver evars, dc-render fog (
 | `sky_fog_far` | real | no | 0 | sky-pass fog end |
 | `wind` | vec3 | no | 0 0 0 | wind vector |
 | `all_sky_portals` | bool | no | false | every sky portal open |
+| `two_sided` | bool | no | false | the client draws both faces of the level and its opaque world models (a map built from ROM pieces, MAP-118) |
 
 #### `dc.global_light`
 

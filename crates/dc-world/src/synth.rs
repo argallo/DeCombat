@@ -46,6 +46,8 @@ pub enum SynthValue {
     Bool(bool),
     Int(f32),
     Euler([f32; 4]),
+    /// Any type code with its payload exactly as stored (a property copied from another world).
+    Raw(u8, Vec<u8>),
 }
 
 // SPEC: FMT_DAT85.md §6 (property record)
@@ -408,6 +410,7 @@ impl SynthWorld {
                     SynthValue::Bool(b) => (5, vec![*b as u8]),
                     SynthValue::Int(f) => (6, f.to_le_bytes().to_vec()),
                     SynthValue::Euler(e) => (7, e.iter().flat_map(|f| f.to_le_bytes()).collect()),
+                    SynthValue::Raw(code, bytes) => (*code, bytes.clone()),
                 };
                 body.u8(code);
                 body.u32(p.flags);

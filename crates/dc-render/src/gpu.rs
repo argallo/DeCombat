@@ -360,9 +360,65 @@ pub struct WorldRenderer {
     world_culling: bool,
     /// CLI-1624: the x-ray pass's pipelines, built by [`WorldRenderer::prewarm`] or on first use.
     xray: std::sync::OnceLock<crate::xray::XrayPipes>,
+    /// MAP-118: the world shader and pipeline layout, kept for the two-sided pipelines.
+    world_module: wgpu::ShaderModule,
+    world_layout: wgpu::PipelineLayout,
+    /// MAP-118: the recipes again for the back faces ([`Side::Back`]) and for the front faces of filler
+    /// ([`Side::Filler`]), built when the first two-sided scene is uploaded (a one-sided world never builds them).
+    two_sided_pipelines: std::sync::OnceLock<TwoSidedPipelines>,
+    /// MAP-118: the opaque world draws a two-sided frame recorded, replayed for the back faces (kept between frames,
+    /// so the replay allocates nothing once it has grown).
+    back_runs: std::sync::Mutex<Vec<WorldRun>>,
     /// dx12-perf: the frame's batch of changed model uniforms (kept for its capacity; empty between frames).
     uploads: std::sync::Mutex<crate::model_gpu::UniformUploads>,
 }
+
+/// The pipelines of a two-sided world's opaque draws beyond the 2009 ones (MAP-118).
+struct TwoSidedPipelines {
+    back: HashMap<PassKind, wgpu::RenderPipeline>,
+    filler: HashMap<PassKind, wgpu::RenderPipeline>,
+}
+
+/// One merged opaque world draw: (recipe, material bind group, first index, end index).
+type WorldRun = (PassKind, usize, u32, u32);
+
+/// Which faces of the world sections a pipeline draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// The faces that wind clockwise on screen; the back faces are culled. Every pipeline but the two-sided ones: the
+    /// 2009 state.
+    Front,
+    /// Only the faces the 2009 state culls, pushed back by [`BACK_FACE_BIAS`] (the back-face pass of a two-sided
+    /// world, MAP-118).
+    Back,
+    /// The front faces, pushed back by [`FILLER_BIAS`]: a two-sided world's filler (MAP-118).
+    Filler,
+}
+
+/// Depth bias of the back-face pipelines (DC-DEFAULT: MAP-118). A back face is moved away from the eye by `constant`
+/// steps of the depth format at the triangle (Depth32Float: 2^(e - 23), e the exponent of the triangle's largest
+/// depth) plus `slope_scale` times the triangle's depth change per pixel. Where a front face lies at the same depth
+/// (OBSERVED: about a tenth of the ROM worlds' opaque triangles have an exact opposite twin, a panel built as two
+/// faces on one plane) the front face passes LESS_EQUAL and the back face fails, whichever is drawn first; the
+/// lightmap draw and the multiply draw of one back face share the bias and still meet at equal depth. Our values: the
+/// coplanar pairs of `tests/two_sided.rs` need a constant of at least 1 with a slope scale of at least 1 (a constant
+/// alone fails at grazing angles, a slope alone where the depth is flat); 8 and 2 leave room for pairs whose corners
+/// were rounded apart.
+const BACK_FACE_BIAS: wgpu::DepthBiasState = wgpu::DepthBiasState {
+    constant: 8,
+    slope_scale: 2.0,
+    clamp: 0.0,
+};
+
+/// Depth bias of a two-sided world's filler, the front faces of the vertex-lit draws painted with one flat colour, in
+/// the front pass (DC-DEFAULT: MAP-118): twice [`BACK_FACE_BIAS`], so a textured back face on the same plane wins over
+/// it. OBSERVED: an outer wall of a ROM world is a textured face towards the play area with a flat grey twin facing
+/// out, which the composed map shows from outside as a blank panel; the textured face's back shows there instead.
+const FILLER_BIAS: wgpu::DepthBiasState = wgpu::DepthBiasState {
+    constant: 16,
+    slope_scale: 4.0,
+    clamp: 0.0,
+};
 
 /// How far (world units) a world batch's bounds must lie outside a frustum plane before it is left out: well above
 /// float rounding of the plane test at world coordinates, so a batch with any pixel on screen is always drawn.
@@ -469,6 +525,7 @@ fn world_pipeline(
     blend: Option<wgpu::BlendState>,
     depth: DepthMode,
     msaa: u32,
+    side: Side,
 ) -> wgpu::RenderPipeline {
     crate::determinism::render_pipeline(
         device,
@@ -492,24 +549,33 @@ fn world_pipeline(
                 })],
             }),
             // SPEC: RENDER_2009.md §5.1 step 4 (CULLMODE = CCW: front faces wind clockwise on screen) and
-            // the DeCombat note there (FrontFace::Cw, Face::Back)
+            // the DeCombat note there (FrontFace::Cw, Face::Back); DC-DEFAULT: MAP-118 the back-face pipelines cull
+            // the front faces instead
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: Some(match side {
+                    Side::Front | Side::Filler => wgpu::Face::Back,
+                    Side::Back => wgpu::Face::Front,
+                }),
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
             // SPEC: RENDER_2009.md §2.4 (ZENABLE / ZWRITEENABLE / ZFUNC = TRUE / TRUE / LESSEQUAL; the world
-            // recipes keep it, §5.2); the sky and translucent variants change it (§5.3, §7.1)
+            // recipes keep it, §5.2); the sky and translucent variants change it (§5.3, §7.1); DC-DEFAULT: MAP-118
+            // the two-sided pipelines add [`BACK_FACE_BIAS`] or [`FILLER_BIAS`]
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: ZBUF_FORMAT,
                 depth_write_enabled: depth.1,
                 depth_compare: depth.0,
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+                bias: match side {
+                    Side::Front => wgpu::DepthBiasState::default(),
+                    Side::Back => BACK_FACE_BIAS,
+                    Side::Filler => FILLER_BIAS,
+                },
             }),
             // CLI-1593: the sample count of the frame's 3D target (1: the default state, MSAA off)
             multisample: crate::msaa::multisample_state(msaa),
@@ -607,6 +673,7 @@ impl WorldRenderer {
                     blend_for(pass, &settings),
                     DepthMode(wgpu::CompareFunction::LessEqual, true),
                     msaa,
+                    Side::Front,
                 ),
             );
             // SPEC: RENDER_2009.md §5.3 (sky objects drawn with Z test and Z write off)
@@ -622,6 +689,7 @@ impl WorldRenderer {
                     blend_for(pass, &settings),
                     DepthMode(wgpu::CompareFunction::Always, false),
                     msaa,
+                    Side::Front,
                 ),
             );
             if let Some(be) = blend_entry_point(pass) {
@@ -639,6 +707,7 @@ impl WorldRenderer {
                             Some(translucent_blend(additive)),
                             DepthMode(wgpu::CompareFunction::LessEqual, false),
                             msaa,
+                            Side::Front,
                         ),
                     );
                 }
@@ -743,8 +812,45 @@ impl WorldRenderer {
             models: std::sync::Arc::new(models),
             world_culling: true,
             xray: std::sync::OnceLock::new(),
+            world_module: module,
+            world_layout: layout,
+            two_sided_pipelines: std::sync::OnceLock::new(),
+            back_runs: std::sync::Mutex::new(Vec::new()),
             uploads: std::sync::Mutex::new(Default::default()),
         }
+    }
+
+    /// The pipelines of a two-sided world (MAP-118), built on the first call (the upload of a two-sided scene): every
+    /// opaque world recipe with the front faces culled and [`BACK_FACE_BIAS`], and the vertex-lit recipes for filler
+    /// with [`FILLER_BIAS`].
+    fn two_sided_pipelines(&self, device: &wgpu::Device) -> &TwoSidedPipelines {
+        self.two_sided_pipelines.get_or_init(|| {
+            let make = |pass: PassKind, label: &str, side: Side| {
+                let pipeline = world_pipeline(
+                    device,
+                    &self.world_module,
+                    &self.world_layout,
+                    label,
+                    entry_point(pass),
+                    self.colour_format,
+                    blend_for(pass, &self.settings),
+                    DepthMode(wgpu::CompareFunction::LessEqual, true),
+                    self.msaa,
+                    side,
+                );
+                (pass, pipeline)
+            };
+            TwoSidedPipelines {
+                back: ALL_PASSES
+                    .iter()
+                    .map(|&pass| make(pass, "world back faces", Side::Back))
+                    .collect(),
+                filler: [PassKind::VertexLit, PassKind::BlendVertexLit]
+                    .into_iter()
+                    .map(|pass| make(pass, "world filler", Side::Filler))
+                    .collect(),
+            }
+        })
     }
 
     pub fn colour_format(&self) -> wgpu::TextureFormat {
@@ -863,6 +969,8 @@ impl WorldRenderer {
             let info = MaterialInfo {
                 alpha_cutoff: img.alpha_cutoff,
                 bias: self.settings.mip_bias + img.mip_bias,
+                // MAP-118 (the scan stops at the first texel that differs: a few reads for a real texture)
+                flat: img.is_flat(),
             };
             textures.push((upload_image(ctx, &img, "world texture"), info));
             flush(ctx, bytes, &mut pending);
@@ -910,6 +1018,8 @@ impl WorldRenderer {
             .map(|t| t.create_view(&Default::default()))
             .collect();
         let mut groups: Vec<wgpu::BindGroup> = Vec::new();
+        // MAP-118: what the two-sided passes need to know of each group's first texture
+        let mut group_sides: Vec<GroupSides> = Vec::new();
         let mut group_of: HashMap<MaterialKey, usize> = HashMap::new();
         let mut resolve = |b: &Batch| -> Option<usize> {
             if b.index_count == 0 {
@@ -991,6 +1101,10 @@ impl WorldRenderer {
                 ],
             });
             groups.push(g);
+            group_sides.push(GroupSides {
+                flat: info.flat,
+                alpha_tested: info.alpha_cutoff.is_some(),
+            });
             group_of.insert(key, groups.len() - 1);
             Some(groups.len() - 1)
         };
@@ -1080,6 +1194,11 @@ impl WorldRenderer {
             })
             .collect();
         let model_base = model_vertex_ranges(mesh);
+        // MAP-118: a two-sided world's back-face pipelines are made with the scene (a load-time event), not on its
+        // first frame
+        if mesh.two_sided {
+            self.two_sided_pipelines(device);
+        }
         ctx.queue.submit(std::iter::empty());
         ctx.wait();
         stats.upload_ms = t0.elapsed().as_secs_f64() * 1000.0 - decode_ms;
@@ -1115,6 +1234,8 @@ impl WorldRenderer {
             world_extents: mesh.world_extents,
             fog: mesh.fog,
             sky_fog: mesh.sky_fog,
+            two_sided: mesh.two_sided,
+            group_sides,
             stats,
             sky_draw_model,
             sky_model_names: mesh.sky_models.iter().map(|m| m.name.clone()).collect(),
@@ -1351,16 +1472,29 @@ impl WorldRenderer {
         // The order of the batches that are drawn is untouched (RENDER_2009.md §5.1, buckets 0..22).
         // DC-DEFAULT: REN-23 (proposed), see the staged rows (pixel-neutral: the frame is byte-identical, tests/culling.rs)
         let planes = frustum_planes(vp);
-        let mut current: Option<PassKind> = None;
+        // (recipe, filler pipeline)
+        let mut current: Option<(PassKind, bool)> = None;
         let mut bound: Option<usize> = None;
-        let mut run: Option<(PassKind, usize, u32, u32)> = None;
-        let mut flush = |pass: &mut wgpu::RenderPass<'_>,
-                         r: (PassKind, usize, u32, u32),
-                         report: &mut FrameReport| {
+        let mut run: Option<WorldRun> = None;
+        // MAP-118: a two-sided world draws its filler with the filler pipelines and keeps the draws it records for the
+        // back-face pass (one-sided: neither is touched, the commands are the 2009 path's)
+        let two_sided = scene
+            .two_sided
+            .then(|| self.two_sided_pipelines(&ctx.device));
+        let mut back_runs = two_sided.map(|_| {
+            let mut runs = self.back_runs.lock().unwrap_or_else(|p| p.into_inner());
+            runs.clear();
+            runs
+        });
+        let mut flush = |pass: &mut wgpu::RenderPass<'_>, r: WorldRun, report: &mut FrameReport| {
             let (kind, g, start, end) = r;
-            if current != Some(kind) {
-                pass.set_pipeline(&self.pipelines[&kind]);
-                current = Some(kind);
+            let filler = two_sided.is_some() && scene.group_sides[g].filler(kind);
+            if current != Some((kind, filler)) {
+                match (two_sided, filler) {
+                    (Some(two), true) => pass.set_pipeline(&two.filler[&kind]),
+                    _ => pass.set_pipeline(&self.pipelines[&kind]),
+                }
+                current = Some((kind, filler));
                 report.pipeline_sets += 1;
             }
             if bound != Some(g) {
@@ -1372,6 +1506,9 @@ impl WorldRenderer {
             report.draw_calls += 1;
             report.world_draws += 1;
             report.world_tris += u64::from(end - start) / 3;
+            if let Some(runs) = back_runs.as_mut() {
+                runs.push(r);
+            }
         };
         let n_draws = scene.draws.len();
         for k in 0..n_draws {
@@ -1403,6 +1540,41 @@ impl WorldRenderer {
         if let Some(r) = run.take() {
             flush(&mut pass, r, &mut report);
         }
+        // ---- back faces of a two-sided world (MAP-118) ----
+        // The same draws in the same bucket order with the front faces culled and the depth biased away from the eye,
+        // after every front face: a back face shows where nothing nearer was drawn, and loses to a front face on its
+        // own plane (but wins over filler, which is biased further). Each back face's lightmap and multiply draws meet
+        // at equal depth as the front faces' do. The vertex-lit draws painted with one flat colour (filler) or cut
+        // out by an alpha test (fences, foliage, decals) keep their back faces culled. OBSERVED in the ROM worlds: what
+        // the back faces add inside the original play areas is nearly all the flat grey or black filler of panels and
+        // inside-out boxes a map hides behind their backs (over windows, insets, craters and facades) and cut-out
+        // cards meant to be seen from one side; without those, 0.008 % of the pixels of the maps' spawn views change
+        // (`tests/two_sided.rs`).
+        // DC-DEFAULT: MAP-118
+        if let (Some(two), Some(runs)) = (two_sided, back_runs.as_deref()) {
+            let mut current: Option<PassKind> = None;
+            let mut bound: Option<usize> = None;
+            for &(kind, g, start, end) in runs {
+                if scene.group_sides[g].one_sided(kind) {
+                    continue;
+                }
+                if current != Some(kind) {
+                    pass.set_pipeline(&two.back[&kind]);
+                    current = Some(kind);
+                    report.pipeline_sets += 1;
+                }
+                if bound != Some(g) {
+                    pass.set_bind_group(1, &scene.groups[g], &[]);
+                    bound = Some(g);
+                    report.bind_sets += 1;
+                }
+                pass.draw_indexed(start..end, 0, 0..1);
+                report.draw_calls += 1;
+                report.world_back_draws += 1;
+                report.world_tris += u64::from(end - start) / 3;
+            }
+        }
+        drop(back_runs);
         // SPEC: RENDER_2009.md §7.1 step 6 (solid models after the solid world models), §4.3 ([0.1, 1.0])
         for k in 0..models.len() {
             let m = models[if mutate.order {
@@ -2021,8 +2193,12 @@ pub struct FrameReport {
     pub world_culled: u64,
     /// Bytes of model uniforms (instance block + bone palette) written to the queue for this frame.
     pub uniform_bytes: u64,
-    /// World triangles drawn (opaque world, sky and translucent world models; perf-g1's visibility measure).
+    /// World triangles drawn (opaque world, sky and translucent world models; perf-g1's visibility measure). The
+    /// back-face pass of a two-sided world submits its triangles again and counts them again.
     pub world_tris: u64,
+    /// Back-face draw calls of a two-sided world (MAP-118): the opaque world draws replayed with the back-face
+    /// pipelines (0 for a one-sided world). Also counted in `draw_calls`, not in `world_draws`.
+    pub world_back_draws: u64,
 }
 
 /// One translucent or additive world model on the GPU.
@@ -2129,10 +2305,38 @@ impl<'a> FrameTarget<'a> {
     }
 }
 
+/// A material group's first texture as the two-sided passes see it (MAP-118).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct GroupSides {
+    /// One flat colour ([`TextureImage::is_flat`]).
+    flat: bool,
+    /// The texture carries an alpha-test reference (cut-out cards: fences, foliage, decals).
+    alpha_tested: bool,
+}
+
+impl GroupSides {
+    /// A vertex-lit draw over this group keeps its back faces culled in a two-sided world.
+    fn one_sided(self, kind: PassKind) -> bool {
+        vertex_lit(kind) && (self.flat || self.alpha_tested)
+    }
+
+    /// A vertex-lit draw over this group is filler: its front faces lose to a back face on their plane.
+    fn filler(self, kind: PassKind) -> bool {
+        vertex_lit(kind) && self.flat && !self.alpha_tested
+    }
+}
+
+/// The recipes that sample their texture in the same draw as the vertex colour (no lightmap pair).
+fn vertex_lit(kind: PassKind) -> bool {
+    matches!(kind, PassKind::VertexLit | PassKind::BlendVertexLit)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct MaterialInfo {
     alpha_cutoff: Option<u8>,
     bias: f32,
+    /// The texture is one flat colour ([`TextureImage::is_flat`]; MAP-118).
+    flat: bool,
 }
 
 pub(crate) fn upload_image(ctx: &GpuContext, img: &TextureImage, label: &str) -> wgpu::Texture {
@@ -2235,6 +2439,15 @@ pub struct GpuScene {
     /// the scene mesh (the world settings); a caller may replace it (for example with a server's values).
     pub fog: Option<Fog>,
     pub sky_fog: Option<Fog>,
+    /// Draw the back faces of the opaque world draws too ([`SceneMesh::two_sided`], the world's `two_sided` setting;
+    /// false for every ROM world). The frame then replays its opaque world draws with the back-face pipelines after
+    /// the front faces ([`FrameReport::world_back_draws`]), but for the vertex-lit draws painted with one flat colour
+    /// (filler, whose front faces lose to a back face on their plane) or cut out by an alpha test; the sky, the models
+    /// and the translucent world models stay one-sided. A caller may switch it (the A/B tests).
+    // DC-DEFAULT: MAP-118
+    pub two_sided: bool,
+    /// Per material bind group: what the two-sided passes need to know of its first texture (MAP-118).
+    group_sides: Vec<GroupSides>,
     /// The sky model of each entry of `sky_draws`, the sky models' names and which are switched off.
     sky_draw_model: Vec<Option<usize>>,
     sky_model_names: Vec<Vec<u8>>,

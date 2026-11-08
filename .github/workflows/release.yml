@@ -36,6 +36,8 @@ on:
       - "tools/mapkit_pack_win.py"
       - "tools/gunkit_pack_mac.sh"
       - "tools/gunkit_pack_win.py"
+      - "tools/gunkit_examples.py"
+      - "tools/gunkit_examples.txt"
       - "assets/icon/**"
       - ".github/workflows/release.yml"
   workflow_dispatch:
@@ -279,8 +281,10 @@ jobs:
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --locked --release --bins -p dc-gunkit --target "$t"
           done
+      - name: the example camos (the pack repository release named in tools/gunkit_examples.txt, each zip hash-checked; VAR-13)
+        run: python3 tools/gunkit_examples.py out_examples
       - name: package DeCombat GunKit.app
-        run: bash tools/gunkit_pack_mac.sh --bin-dir target/aarch64-apple-darwin/release --x86-dir target/x86_64-apple-darwin/release --name "DeCombat-GunKit-mac-$LABEL"
+        run: bash tools/gunkit_pack_mac.sh --bin-dir target/aarch64-apple-darwin/release --x86-dir target/x86_64-apple-darwin/release --name "DeCombat-GunKit-mac-$LABEL" --examples out_examples
       - name: sign and notarise (needs the DC_MAC_* secrets; skipped with a warning without them)
         if: github.ref_type == 'tag'
         env:
@@ -315,9 +319,12 @@ jobs:
       - name: build the two binaries
         shell: bash
         run: cargo build --locked --release --bins -p dc-gunkit --target x86_64-pc-windows-msvc
+      - name: the example camos (the pack repository release named in tools/gunkit_examples.txt, each zip hash-checked; VAR-13)
+        shell: bash
+        run: python tools/gunkit_examples.py out_examples
       - name: package the GunKit zip
         shell: bash
-        run: python tools/gunkit_pack_win.py --bin-dir target/x86_64-pc-windows-msvc/release --name "DeCombat-GunKit-win-$LABEL" --commit "$SHORT_SHA"
+        run: python tools/gunkit_pack_win.py --bin-dir target/x86_64-pc-windows-msvc/release --name "DeCombat-GunKit-win-$LABEL" --commit "$SHORT_SHA" --examples out_examples
       - name: upload GunKit package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
