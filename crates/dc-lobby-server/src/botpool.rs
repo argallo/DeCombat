@@ -95,15 +95,77 @@ pub fn ensure(st: &mut Core) -> HResult {
     }
     all.sort_unstable();
     st.pool.offered = all.iter().copied().take(size).collect();
+    let kitted = give_kit(st, &all)?;
     st.pool.all = all.into_iter().collect();
     if size > 0 {
         st.note(&format!(
-            "bot pool: {} seat(s), {} made now",
+            "bot pool: {} seat(s), {} made now{kitted}",
             st.pool.offered.len(),
             made
         ));
     }
     Ok(())
+}
+
+/// LG-438: the spec of the pool kit on this lobby (`bots.pool_kit`): `auto` = the ROM's light vest in the vest slot
+/// (none when the ROM has no such vest), "" / `none` = no kit, else the spec as written.
+pub fn kit_spec(st: &Core) -> Option<String> {
+    let k = st.rules.bot_pool_kit.trim();
+    match k.to_ascii_lowercase().as_str() {
+        "" | "none" => None,
+        "auto" => st
+            .rom
+            .light_vest()
+            .map(|v| format!("{}:{v}", crate::rom::SLOT_VEST)),
+        _ => Some(k.to_string()),
+    }
+}
+
+/// LG-438: gives every seat of `accounts` the pool kit the way `account loadout` does (the items owned for good and
+/// equipped; what the slots held stays in the inventory), once per spec: the spec given is recorded per login like a
+/// managed bot's loadout, so a restart gives it again only when `bots.pool_kit` changed. The seats still cannot buy,
+/// trade or change team (LG-318). Returns the note's tail.
+// DC-DEFAULT: LG-438 (proposed, OWNER REQUEST 2026-11-09 "allow bots to buy things like light vests so that they move
+// faster in the game")
+fn give_kit(st: &Core, accounts: &[u32]) -> Result<String, rusqlite::Error> {
+    let Some(spec) = kit_spec(st) else {
+        return Ok(String::new());
+    };
+    let (mut given, mut refused) = (0usize, None);
+    for &a in accounts {
+        let Some(acc) = db::account_by_no(&st.db, a)? else {
+            continue;
+        };
+        if crate::botgroups::applied_loadout(&st.db, &acc.login)? == spec {
+            continue;
+        }
+        st.db.execute_batch("SAVEPOINT pool_kit")?;
+        match crate::accounts::equip_loadout(&st.db, &st.rom, &acc.login, &spec, None) {
+            Ok(_) => {
+                st.db.execute_batch("RELEASE pool_kit")?;
+                crate::botgroups::set_applied_loadout(
+                    &st.db,
+                    &acc.login,
+                    &spec,
+                    crate::clock::unix_now(),
+                )?;
+                given += 1;
+            }
+            Err(e) => {
+                st.db
+                    .execute_batch("ROLLBACK TO pool_kit; RELEASE pool_kit")?;
+                refused.get_or_insert(e);
+            }
+        }
+    }
+    let mut tail = format!(", kit {spec}{}", st.rom.vest_note(&spec));
+    if given > 0 {
+        tail.push_str(&format!(" given to {given} now"));
+    }
+    if let Some(e) = refused {
+        tail.push_str(&format!(" (refused: {e})"));
+    }
+    Ok(tail)
 }
 
 fn sweep(st: &mut Core) {
@@ -353,4 +415,102 @@ pub fn after_person_joined(st: &mut Core, key: RoomKey) -> HResult {
         yield_one(st, key)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // Provenance: ORIGINAL (DeCombat tests)
+    use super::*;
+
+    /// Item numbers equipped in `slot` of the pool seat `login`, and how many items of `item_no` it owns.
+    fn worn(st: &Core, login: &str, slot: i64, item_no: i64) -> (Vec<i64>, i64) {
+        let a = db::account_by_login(&st.db, login)
+            .unwrap()
+            .unwrap()
+            .user_no as i64;
+        let mut q = st
+            .db
+            .prepare("SELECT item_no FROM items WHERE user_no = ?1 AND equip_slot = ?2")
+            .unwrap();
+        let eq: Vec<i64> = q
+            .query_map([a, slot], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let n = st
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE user_no = ?1 AND item_no = ?2",
+                [a, item_no],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (eq, n)
+    }
+
+    /// LG-438: the pool kit is given to every seat when the seats are made, once per spec (a restart gives nothing
+    /// again), again when `bots.pool_kit` changes; `none` gives nothing. Synthetic item numbers (no ROM).
+    #[test]
+    fn the_botpool_kit_is_given_at_seat_creation_once_per_spec() {
+        let mut st = crate::state::testing::state();
+        st.rules.bot_pool_size = 2;
+        st.rules.bot_pool_kit = "8:3999".into();
+        st.scope(ensure).unwrap();
+        for login in ["poolbot1", "poolbot2"] {
+            assert_eq!(worn(&st, login, 8, 3999), (vec![3999], 1), "{login}");
+            assert_eq!(
+                crate::botgroups::applied_loadout(&st.db, login).unwrap(),
+                "8:3999"
+            );
+        }
+        st.scope(ensure).unwrap();
+        assert_eq!(
+            worn(&st, "poolbot1", 8, 3999),
+            (vec![3999], 1),
+            "not given twice"
+        );
+        st.rules.bot_pool_kit = "8:3998".into();
+        st.scope(ensure).unwrap();
+        assert_eq!(worn(&st, "poolbot2", 8, 3998), (vec![3998], 1), "a new kit");
+        assert_eq!(
+            worn(&st, "poolbot2", 8, 3999).1,
+            1,
+            "the old vest stays owned"
+        );
+        st.rules.bot_pool_kit = "none".into();
+        st.rules.bot_pool_size = 3;
+        st.scope(ensure).unwrap();
+        assert_eq!(worn(&st, "poolbot3", 8, 3998), (vec![], 0), "none: no kit");
+        assert_eq!(kit_spec(&st), None);
+    }
+
+    /// LG-438: `auto` is the ROM's light vest; a lobby without the item table gives no kit.
+    #[test]
+    fn the_botpool_auto_kit_needs_a_vest_of_the_rom() {
+        let mut st = crate::state::testing::state();
+        st.rules.bot_pool_kit = "auto".into();
+        assert_eq!(kit_spec(&st), None, "no ROM item table");
+        st.rules.bot_pool_size = 1;
+        st.scope(ensure).unwrap();
+        assert!(worn(&st, "poolbot1", 8, 0).0.is_empty());
+        st.rules.bot_pool_kit = "0:27, 8:random".into();
+        assert_eq!(kit_spec(&st).as_deref(), Some("0:27, 8:random"));
+    }
+
+    /// LG-438: `bots.pool_kit` reads auto, none or a loadout spec; anything else is refused.
+    #[test]
+    fn the_botpool_kit_key_is_read() {
+        let mut r = crate::config::Rules::default();
+        assert_eq!(r.bot_pool_kit, "auto");
+        let s = |t: &str| dc_mod_lua::JsonValue::String(t.into());
+        assert!(r.apply("bots.pool_kit", &s("NONE")));
+        assert_eq!(r.bot_pool_kit, "none");
+        assert!(r.apply("bots.pool_kit", &s("0:27, 8:Random")));
+        assert_eq!(r.bot_pool_kit, "0:27,8:random");
+        assert!(!r.apply("bots.pool_kit", &s("light vest")));
+        assert_eq!(
+            r.bot_pool_kit, "0:27,8:random",
+            "a refused value changes nothing"
+        );
+    }
 }

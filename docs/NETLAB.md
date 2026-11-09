@@ -35,7 +35,8 @@ at once (one lobby, a game server per room), `--only <name,...>`, `--seed <n>` (
 failure fails the run too), `--bin-dir <dir>` (default: next to `dc-netlab`), `--skills <a,b,...>` (ROM rooms: the
 skill level of each bot in join order, the list repeated; the lobby deals the joiners to the two teams in turn, so
 `--skills 85,30` puts a skill-85 team against a skill-30 team; default: levels drawn from 30..65 so both teams get the
-same strength).
+same strength), `--bot-kit <slot:item,...>` (ROM runs: every bot wears these items on top of the starter kit, the
+lobby's `--start-loadout`; `8:<vest>` dresses them in a vest, BOT-175).
 
 ## Profiles
 

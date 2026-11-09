@@ -722,7 +722,121 @@ impl RomData {
             .get(&item_no)
             .and_then(|&k| slot_for_weapon_type(k))
     }
+
+    /// LG-438: the vests of the ROM item table, `(item number, name, MoveHandicap, sold for GP)`, by item number:
+    /// every `ClassVest` row (item number = 3000 + `ItemID`); "sold for GP" = a product the shop shows with sale
+    /// type 0 whose first item is the vest. Empty without the item table. A name a person cannot read is `Vest <n>`.
+    // SPEC: PROTOCOL_2009.md §4.5 (3000s = vest, type 0xf)
+    // DC-DEFAULT: LG-438 (proposed)
+    pub fn vest_list(&self) -> Vec<(i64, String, i64, bool)> {
+        let Some(t) = self.items.as_ref() else {
+            return Vec::new();
+        };
+        let gp: std::collections::BTreeSet<i64> = self
+            .shop
+            .catalog
+            .as_ref()
+            .map(|cat| {
+                cat.view_list()
+                    .into_iter()
+                    .filter_map(|pid| cat.product(pid))
+                    .filter(|p| p.sale_type == 0)
+                    .filter_map(|p| p.items.first().and_then(|(ix, _, _)| cat.info(*ix)))
+                    .map(|r| i64::from(r.itemid))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut out: Vec<(i64, String, i64, bool)> = Vec::new();
+        for (tag, sec) in t.doc().iter() {
+            if !tag.starts_with("ClassVest") {
+                continue;
+            }
+            let Some(no) = sec
+                .get("ItemID")
+                .and_then(|v| table_name(v).parse::<i64>().ok())
+                .filter(|id| (0..1000).contains(id))
+                .map(|id| VEST_BASE + id)
+            else {
+                continue;
+            };
+            if out.iter().any(|o| o.0 == no) {
+                continue;
+            }
+            let name = sec
+                .get("ItemName")
+                .map(|v| table_name(v))
+                .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_graphic() || c == ' '))
+                .unwrap_or_else(|| format!("Vest {no}"));
+            let handicap = sec.get("MoveHandicap").map_or(0, |v| atoi(&table_name(v)));
+            out.push((no, name, handicap, gp.contains(&no)));
+        }
+        out.sort_by_key(|v| v.0);
+        out
+    }
+
+    /// LG-438: the light vest of the pool kit's `auto`: of the vests sold for GP, the one with the highest positive
+    /// `MoveHandicap` (the faster one; a tie takes the lower item number); `None` when the ROM has none.
+    // DC-DEFAULT: LG-438 (proposed)
+    pub fn light_vest(&self) -> Option<i64> {
+        self.vest_list()
+            .into_iter()
+            .filter(|v| v.3 && v.2 > 0)
+            .max_by(|a, b| a.2.cmp(&b.2).then(b.0.cmp(&a.0)))
+            .map(|v| v.0)
+    }
+
+    /// LG-438: a random vest for `8:random`, among the vests a shop product shows (GP or credit), else any vest row,
+    /// picked by `seed`.
+    // DC-DEFAULT: LG-438 (proposed)
+    pub fn random_vest(&self, seed: u64) -> Option<i64> {
+        let all = self.vest_list();
+        let sold: Vec<i64> = {
+            let cat = self.shop.catalog.as_ref();
+            all.iter()
+                .map(|v| v.0)
+                .filter(|no| {
+                    cat.is_some_and(|c| {
+                        c.first_product_of_item(*no as i32)
+                            .is_some_and(|p| p.view != 0)
+                    })
+                })
+                .collect()
+        };
+        let pool: Vec<i64> = if sold.is_empty() {
+            all.iter().map(|v| v.0).collect()
+        } else {
+            sold
+        };
+        (!pool.is_empty()).then(|| pool[(mix(seed ^ 0x7e57) % pool.len() as u64) as usize])
+    }
+
+    /// LG-438: what a loadout spec puts in the vest slot, for the status lines: ` (vest <name>)`, ` (random vest)`,
+    /// or "" when it names no vest.
+    pub fn vest_note(&self, spec: &str) -> String {
+        let Some(v) = spec
+            .split(',')
+            .filter_map(|p| p.trim().split_once(':'))
+            .filter(|(s, _)| s.trim().parse::<i64>().ok() == Some(SLOT_VEST))
+            .map(|(_, v)| v.split('+').next().unwrap_or("").trim().to_string())
+            .next_back()
+        else {
+            return String::new();
+        };
+        if v.eq_ignore_ascii_case("random") {
+            return " (random vest)".into();
+        }
+        let no = v.parse::<i64>().ok();
+        match self.vest_list().into_iter().find(|r| Some(r.0) == no) {
+            Some(r) => format!(" (vest {})", r.1),
+            None => format!(" (vest {v})"),
+        }
+    }
 }
+
+/// LG-438: the equipment slot of a vest and the item number base of the vest rows.
+// EVIDENCE: cshell+0x259f00 (type 0xf -> slot 8, dc_bute::equip_slot_by_class_code); SPEC: PROTOCOL_2009.md §4.5
+pub const SLOT_VEST: i64 = 8;
+pub const VEST_BASE: i64 = 3000;
 
 #[cfg(test)]
 mod tests {
@@ -1065,5 +1179,61 @@ GMS_COOP=c.gms
             ]
         );
         assert!(RomData::empty().weapon_list().is_empty());
+    }
+
+    /// LG-438: the vest rows, the light vest of the pool kit (the GP vest with the highest positive `MoveHandicap`),
+    /// the random vest and the status note. Synthetic fixture (no ROM data).
+    #[test]
+    fn the_vests_and_the_light_vest_come_from_the_item_table() {
+        let items = "[ClassVest0]\nItemID=0\nItemName=\"Plain\"\nMoveHandicap=0\n[ClassVest1]\nItemID=4\nItemName=Quick\nMoveHandicap=\"6\"\n[ClassVest2]\nItemID=5\nItemName=Quicker\nMoveHandicap=9\n[ClassVest3]\nItemID=7\nItemName=Slow\nMoveHandicap=-5\n";
+        // vests 3004 and 3007 sold for GP, 3005 (the fastest) for credit only
+        let shop = "[ItemInfo1]\nItemindex=1\nItemid=3004\n[ItemInfo2]\nItemindex=2\nItemid=3005\n[ItemInfo3]\nItemindex=3\nItemid=3007\n[Product1]\nProductID=1\nSaleType=0\nShopview=1\nItemindex0=1\n[Product2]\nProductID=2\nSaleType=1\nShopview=1\nItemindex0=2\n[Product3]\nProductID=3\nSaleType=0\nShopview=1\nItemindex0=3\n";
+        let mut rom = RomData::empty();
+        assert!(rom.vest_list().is_empty());
+        assert_eq!(rom.light_vest(), None);
+        rom.items = Some(ItemsTable::from_doc(doc(items)));
+        rom.shop.catalog = Some(dc_bute::ShopCatalog::from_doc(&doc(shop)));
+        assert_eq!(
+            rom.vest_list(),
+            vec![
+                (3000, "Plain".to_string(), 0, false),
+                (3004, "Quick".to_string(), 6, true),
+                (3005, "Quicker".to_string(), 9, false),
+                (3007, "Slow".to_string(), -5, true),
+            ]
+        );
+        assert_eq!(rom.light_vest(), Some(3004), "the fastest vest sold for GP");
+        let picks: std::collections::BTreeSet<i64> =
+            (0..40).filter_map(|s| rom.random_vest(s)).collect();
+        assert_eq!(
+            picks,
+            [3004, 3005, 3007].into(),
+            "the vests a product shows"
+        );
+        assert_eq!(rom.vest_note("0:27,8:3004"), " (vest Quick)");
+        assert_eq!(rom.vest_note("8:random"), " (random vest)");
+        assert_eq!(rom.vest_note("8:3999"), " (vest 3999)");
+        assert_eq!(rom.vest_note("0:27,1:3"), "");
+    }
+
+    /// ROM-gated (skipped without CA_ROM), LG-438: the ROM has a light vest for the pool kit's `auto`, sold for GP,
+    /// with a positive `MoveHandicap`, in the vest range.
+    #[test]
+    fn rom_the_pool_kit_finds_a_light_vest() {
+        let Some(dir) = std::env::var_os("CA_ROM")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+        else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let r = RomData::load(&dir);
+        let v = r.light_vest().expect("a light vest");
+        let row = r.vest_list().into_iter().find(|x| x.0 == v).unwrap();
+        println!("light vest {row:?}");
+        assert!(
+            (VEST_BASE..VEST_BASE + 1000).contains(&v) && row.2 > 0 && row.3,
+            "{row:?}"
+        );
     }
 }

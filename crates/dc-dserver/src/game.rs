@@ -11134,7 +11134,7 @@ P0 = \"F\"
                 ms: teamping::PLACE_MS
             }]
         );
-        assert!(teamping::PLACE_MS > teamping::ENEMY_MS);
+        const _: () = assert!(teamping::PLACE_MS > teamping::ENEMY_MS);
         // the spot ends with the tag's time
         g.tick(3900);
         assert_eq!(g.spotted_mask(1), t0);

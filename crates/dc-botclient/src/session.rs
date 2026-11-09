@@ -182,6 +182,9 @@ pub const ROAM_GROW: usize = 64;
 pub const POSTS_KEEP_MS: u32 = 15_000;
 pub const POSTS_THIN_MS: u32 = 3000;
 pub const POSTS_GROW: usize = 48;
+/// BOT-173: a guard's cover spots are ranked again this often (the grid grows).
+// DC-DEFAULT: BOT-173 (proposed) 30 s
+pub const GUARD_RERANK_MS: u32 = 30_000;
 pub const WATCH_TURN: f32 = 3.0;
 /// BOT-136: a defuse hold counts as ending in time when it ends this long before the blast (the 0x51 reaches the
 /// bot a little after the server's plant).
@@ -460,11 +463,11 @@ pub enum GameEvent {
 /// shot counter, WEAPON_FIRE_2009_addendum_cone.md AC-1.5), and the mode messages the client HUD reads: 0x4f / 0x50 /
 /// 0x51 / 0x56 / 0xad Search and Destroy, 0xc6 flag state, 0xc9 Fire Team mission (goal list, banner), 0xcb Spy Hunt,
 /// 0xd3 Quarantine; 0xcd the radar switch (the answer to the heartbeat sensor's switch, CLI-1912); and our own 0xf1, other players' health in a match with wallhacks (DSV-480,
-/// `dc_wire::remotehealth`).
+/// `dc_wire::remotehealth`); 0xf2 the Possession move (DSV-483); 0xf5 the team pings (DSV-651, `dc_wire::teamping`).
 // DC-DEFAULT: BOT-95 (proposed, playtest report "no flag sounds, no visual when you grab the flag") the mode shells
 // were parsed by the HUD (hud::msgs::read_shell) but never handed over, so no notice, sound or counter followed them
 // SPEC: GAME_MESSAGES_2009_S2C.md Â§2.1, Â§2.4 (0x68), Â§3.2 (0x6c), Â§3.3, Â§3.5, Â§4.2 (0xd9), Â§8.3, 0x77 row, 0xda row
-pub const RAW_SHELL_EVENTS: [u8; 28] = [
+pub const RAW_SHELL_EVENTS: [u8; 29] = [
     0x3f,
     0x45,
     0x46,
@@ -493,6 +496,9 @@ pub const RAW_SHELL_EVENTS: [u8; 28] = [
     0xda,
     dc_wire::remotehealth::SHELL_ID,
     dc_wire::possession::SHELL_ID,
+    // DC-DEFAULT: CLI-1952 (proposed) the team pings' offer and notices reach the client HUD (without it the offer
+    // never arrived and the ping key stayed inert, owner play test 2026-11-09)
+    dc_wire::teamping::SHELL_ID,
 ];
 
 /// Client states (UDP_SESSION_2009_A.md §8.1 names).
@@ -760,6 +766,9 @@ pub struct BotSession {
     flag_unreach: Option<(u32, [f32; 3], Millis)>,
     /// BOT-138: a defender's guard place and the turn of the ring it was picked for.
     flag_guard_at: Option<(u32, [f32; 3])>,
+    /// BOT-173: a flag guard's cover spots and where it is among them; whether this tick's guard place is one.
+    guard_hold: crate::cover::Hold,
+    guard_on_cover: bool,
     /// BOT-144: since when the last guard has stood its post with no enemy near the flag, and whether it attacks.
     flag_quiet_since: Option<Millis>,
     flag_roving: bool,
@@ -807,6 +816,9 @@ pub struct BotSession {
     /// hand (its `MovePenalty` counts until another is held, CLI-341).
     speed_gear: (Option<u32>, Option<u32>, Option<u32>),
     speed_weapon: Option<u16>,
+    /// BOT-174: the body row of the own look (the vest's body; row 0 until the look names one) and the model file id
+    /// it was read from.
+    speed_body: (Option<u32>, Option<u16>),
     qrt_override: Option<u32>,
     shot_slow_until: Option<Millis>,
     sprint_pair: Option<(bool, bool)>,
@@ -932,6 +944,8 @@ impl BotSession {
             flag_walk_team: None,
             flag_unreach: None,
             flag_guard_at: None,
+            guard_hold: crate::cover::Hold::default(),
+            guard_on_cover: false,
             flag_quiet_since: None,
             flag_roving: false,
             spy: crate::spyrun::SpyRun::default(),
@@ -958,6 +972,7 @@ impl BotSession {
             speed_rows,
             speed_gear,
             speed_weapon: None,
+            speed_body: (Some(0), None),
             qrt_override: None,
             shot_slow_until: None,
             sprint_pair: None,
@@ -1054,6 +1069,42 @@ impl BotSession {
         self.obs
             .view_object
             .filter(|o| self.table.objects.contains_key(o))
+    }
+
+    /// BOT-174: reads the body row of the own look again when the own character's first named model file changed
+    /// (a new object at a spawn, another look); a file the body table does not know keeps the row it had.
+    fn refresh_speed_body(&mut self, now: Millis) {
+        let Some(rows) = self.speed_rows.as_ref() else {
+            return;
+        };
+        let own = self.obs.client_id.map(|c| c.0 as u8);
+        let files = &self.obs.files;
+        let first = self
+            .obs
+            .roster
+            .values()
+            .find(|r| Some(r.pid) == own && r.character != 0xFFFF)
+            .and_then(|r| self.table.objects.get(&r.character))
+            .and_then(|o| {
+                o.models
+                    .iter()
+                    .map(|e| e.model)
+                    .find(|id| *id != 0xFFFF && files.contains_key(id))
+            });
+        if first.is_none() || first == self.speed_body.1 {
+            return;
+        }
+        let row = crate::motion::own_body_row(rows, first, |id| {
+            files.get(&id).map(|f| f.1.as_str())
+        });
+        let before = self.speed_body.0;
+        self.speed_body = (row.or(before), first);
+        if self.speed_body.0 != before {
+            self.rec.event(
+                "speed_body",
+                json!({"ms": self.ms(now), "row": self.speed_body.0}),
+            );
+        }
     }
 
     /// True once the session ended (failed, dropped or closed).
@@ -4463,9 +4514,12 @@ impl BotSession {
                 self.speed_weapon = Some(h.weapon);
             }
             let override_row = self.qrt_override.filter(|_| qrt_room);
+            // BOT-174: the body row is the own look's (the vest the server dressed the bot with)
+            self.refresh_speed_body(now);
             let mods = match &self.speed_rows {
-                Some(rows) => crate::motion::loadout_mods(
+                Some(rows) => crate::motion::loadout_mods_body(
                     rows,
+                    self.speed_body.0,
                     self.speed_weapon,
                     self.speed_gear,
                     override_row,
@@ -4512,7 +4566,8 @@ impl BotSession {
                     .flatten()
             })
             .or_else(|| (!paused).then(|| self.timeline_look()).flatten())
-            .or_else(|| (!paused).then(|| self.post_watch_look(now)).flatten());
+            .or_else(|| (!paused).then(|| self.post_watch_look(now)).flatten())
+            .or_else(|| (!paused).then(|| self.guard_watch_look(now)).flatten());
         // skill mode: the walking heading also turns the body at the skill's rate (the shooter's own aim is
         // already rate-limited); the steering itself is unchanged
         // DC-DEFAULT: BOT-21 (proposed)
@@ -5236,6 +5291,18 @@ impl BotSession {
         } else {
             (crate::squad::Ring::BLAST, eye, eye)
         };
+        // BOT-173: the attackers' guard places by cover first (the blast ring as before)
+        let mut score: Box<dyn FnMut([f32; 3]) -> f32> = if guard {
+            let sites: Vec<[f32; 3]> = crate::bombrun::plant_points(&self.table)
+                .into_iter()
+                .map(|p| p.1)
+                .collect();
+            let anchors = self.bomb_anchors(bomb, &sites);
+            let approaches = self.approaches(bomb, &anchors);
+            Box::new(self.cover_scorer(bomb, shape.band(), approaches))
+        } else {
+            Box::new(|_| 0.0)
+        };
         let Some(nav) = self.nav.as_mut() else {
             return Vec::new();
         };
@@ -5245,15 +5312,21 @@ impl BotSession {
             .filter(|(_, l)| !l.is_empty())
             .map(|(p, _)| p)
             .collect();
-        let ring = crate::squad::post_ring(bomb, &nodes, shape, |n, s| {
-            world.as_deref().is_none_or(|w| {
-                crate::hunt::line_clear(
-                    w,
-                    [n[0], n[1] + from_eye, n[2]],
-                    [s[0], s[1] + to_head, s[2]],
-                )
-            })
-        });
+        let ring = crate::squad::post_ring_scored(
+            bomb,
+            &nodes,
+            shape,
+            |n, s| {
+                world.as_deref().is_none_or(|w| {
+                    crate::hunt::line_clear(
+                        w,
+                        [n[0], n[1] + from_eye, n[2]],
+                        [s[0], s[1] + to_head, s[2]],
+                    )
+                })
+            },
+            &mut score,
+        );
         if ring.len() < 3 {
             nav.expand(POSTS_GROW, Some(bomb));
         }
@@ -5282,6 +5355,10 @@ impl BotSession {
         let eye = 0.5 * BOT_STAND_DIMS[1];
         let mut out = Vec::with_capacity(sites.len());
         for site in sites {
+            // BOT-173: the posts by cover first
+            let anchors = self.bomb_anchors(*site, sites);
+            let approaches = self.approaches(*site, &anchors);
+            let score = self.cover_scorer(*site, crate::squad::Ring::SITE.band(), approaches);
             let Some(nav) = self.nav.as_mut() else {
                 out.push(Vec::new());
                 continue;
@@ -5292,11 +5369,17 @@ impl BotSession {
                 .filter(|(_, l)| !l.is_empty())
                 .map(|(p, _)| p)
                 .collect();
-            let posts = crate::squad::post_set(*site, &nodes, |n, s| {
-                world.as_deref().is_none_or(|w| {
-                    crate::hunt::line_clear(w, [n[0], n[1] + eye, n[2]], [s[0], s[1] + eye, s[2]])
-                })
-            });
+            let posts = crate::squad::post_ring_scored(
+                *site,
+                &nodes,
+                crate::squad::Ring::SITE,
+                |n, s| {
+                    world.as_deref().is_none_or(|w| {
+                        crate::hunt::line_clear(w, [n[0], n[1] + eye, n[2]], [s[0], s[1] + eye, s[2]])
+                    })
+                },
+                score,
+            );
             if posts.len() < 3 {
                 nav.expand(POSTS_GROW, Some(*site));
             }
@@ -5428,6 +5511,7 @@ impl BotSession {
             own_flag_away,
             flag_job,
             flag_guard,
+            flag_guard_stand: self.guard_on_cover.then_some(crate::cover::STAND),
             mates_alive,
             enemies_alive,
             squad: None,
@@ -5884,7 +5968,20 @@ impl BotSession {
                 .filter(|(_, l)| !l.is_empty())
                 .map(|(p, _)| p)
                 .collect();
-            let p = crate::spyrun::guard_place(&nodes, u, base, k);
+            // BOT-173: the node of the approach with the best cover
+            let band = crate::cover::Band {
+                min: crate::spyrun::GUARD_MIN,
+                max: crate::spyrun::GUARD_MAX,
+                ideal: crate::spyrun::GUARD_RING,
+                rise: crate::spyrun::GUARD_RISE,
+            };
+            let p = crate::spyrun::guard_place_scored(
+                &nodes,
+                u,
+                base,
+                k,
+                self.cover_scorer(u, band, Vec::new()),
+            );
             self.rec.event(
                 "spy_guard",
                 json!({"ms": self.ms(now), "pos": at, "k": k, "goal": p, "uplink": u, "nodes": nodes.len()}),
@@ -6206,6 +6303,7 @@ impl BotSession {
         &mut self,
         now: Millis,
     ) -> (Option<crate::roles::FlagJob>, bool, Option<[f32; 3]>) {
+        self.guard_on_cover = false;
         if !matches!(
             self.obs.mode_class.or(self.cfg.mode_class_hint),
             Some(7 | 8)
@@ -6265,6 +6363,11 @@ impl BotSession {
             .filter(|j| j.role == crate::roles::Role::Defend && !away)
             .and_then(|j| {
                 let flag = crate::flagrun::flag_pos(&self.table, team)?;
+                // BOT-173: the guard holds cover spots of its flag; the ring below only while the grid has none
+                if let Some(at) = self.flag_cover(now, flag, team, j, &mate_guards, body) {
+                    self.guard_on_cover = true;
+                    return Some(at);
+                }
                 let turn = self.ms(now) / crate::roles::FLAG_GUARD_TURN_MS;
                 // BOT-138: one place per turn of the ring, a node of the ring's band, another than the last one;
                 // BOT-144: the later guard of two picks again when its place lies by an earlier guard
@@ -6293,6 +6396,212 @@ impl BotSession {
                 Some(at)
             });
         (job, away, guard)
+    }
+
+    /// BOT-173: the cover spots of the band round `center` on the bot's grid ([`crate::cover::rank_guard_spots`]):
+    /// rays and sight lines through the world's collision at eye height; the approaches are where the grid's way
+    /// from each of `anchors` (the enemy's side) comes near.
+    // DC-DEFAULT: BOT-173 (proposed)
+    fn cover_spots(
+        &mut self,
+        center: [f32; 3],
+        band: crate::cover::Band,
+        anchors: &[[f32; 3]],
+    ) -> Vec<crate::cover::Spot> {
+        use crate::cover;
+        use dc_sim::{Collider, Cylinder, V3};
+        let Some(world) = self.world.as_ref().map(|w| w.collision.clone()) else {
+            return Vec::new();
+        };
+        let approaches = self.approaches(center, anchors);
+        let Some(nav) = self.nav.as_mut() else {
+            return Vec::new();
+        };
+        let nodes: Vec<[f32; 3]> = nav
+            .links_near(center, band.max + cover::PEEK_FAR)
+            .into_iter()
+            .filter(|(_, l)| !l.is_empty())
+            .map(|(p, _)| p)
+            .collect();
+        let eye = 0.5 * BOT_STAND_DIMS[1];
+        let shape = Cylinder::from_dims(V3::from_array(crate::hunt::RAY_DIMS));
+        let up = |p: [f32; 3]| V3::new(p[0], p[1] + eye, p[2]);
+        cover::rank_guard_spots(
+            center,
+            &nodes,
+            band,
+            &approaches,
+            |a, b| world.sweep(&shape, up(a), up(b)).map_or(1.0, |h| h.t),
+            |a, b| {
+                let (a, b) = (up(a), up(b));
+                crate::hunt::line_clear(&*world, [a.x, a.y, a.z], [b.x, b.y, b.z])
+            },
+        )
+    }
+
+    /// BOT-173: the approaches to `center`: where the grid's way from each of `anchors` comes within
+    /// [`crate::cover::APPROACH_R`] ([`crate::cover::approach_on`]), else the point that far toward the anchor.
+    fn approaches(&mut self, center: [f32; 3], anchors: &[[f32; 3]]) -> Vec<[f32; 3]> {
+        use crate::cover;
+        anchors
+            .iter()
+            .map(|a| {
+                self.nav
+                    .as_mut()
+                    .and_then(|nav| nav.path(center, *a))
+                    .and_then(|mut p| {
+                        // the way from the enemy's side toward the place
+                        p.reverse();
+                        p.push(center);
+                        cover::approach_on(&p, center)
+                    })
+                    .unwrap_or_else(|| cover::approach_toward(*a, center))
+            })
+            .collect()
+    }
+
+    /// BOT-173: the cover score of a node round `center` ([`crate::cover::score`], the node sees the centre) from rays
+    /// and sight lines to `approaches` through the world's collision at eye height; 0 without a world.
+    fn cover_scorer(
+        &self,
+        center: [f32; 3],
+        band: crate::cover::Band,
+        approaches: Vec<[f32; 3]>,
+    ) -> impl FnMut([f32; 3]) -> f32 {
+        use crate::cover;
+        use dc_sim::{Collider, Cylinder, V3};
+        let world = self.world.as_ref().map(|w| w.collision.clone());
+        let eye = 0.5 * BOT_STAND_DIMS[1];
+        let shape = Cylinder::from_dims(V3::from_array(crate::hunt::RAY_DIMS));
+        move |p: [f32; 3]| {
+            let Some(w) = world.as_deref() else {
+                return 0.0;
+            };
+            let up = |q: [f32; 3]| V3::new(q[0], q[1] + eye, q[2]);
+            let shares = cover::ray_shares(p, cover::COVER_RAY_LEN, |a, b| {
+                w.sweep(&shape, up(a), up(b)).map_or(1.0, |h| h.t)
+            });
+            let seen: Vec<bool> = approaches
+                .iter()
+                .map(|a| {
+                    let (x, y) = (up(p), up(*a));
+                    crate::hunt::line_clear(w, [x.x, x.y, x.z], [y.x, y.y, y.z])
+                })
+                .collect();
+            cover::score(p, center, &shares, true, &approaches, &seen, band)
+        }
+    }
+
+    /// BOT-173: the enemy's side of a bomb site or bomb at `center`: the other plant points and the grid's farthest
+    /// node from it (the attackers come from their spawn at the far end, a defender rotates from the other site).
+    fn bomb_anchors(&self, center: [f32; 3], sites: &[[f32; 3]]) -> Vec<[f32; 3]> {
+        let mut a: Vec<[f32; 3]> = sites
+            .iter()
+            .copied()
+            .filter(|s| crate::roles::flat_dist(*s, center) > crate::cover::APPROACH_R)
+            .collect();
+        a.extend(self.nav.as_ref().and_then(|n| n.farthest_node(center)));
+        a
+    }
+
+    /// BOT-173: the bot's random base for its guard timings (its player id).
+    fn guard_seed(&self) -> u64 {
+        crate::cover::mix(0x173 << 16 | self.obs.client_id.map_or(0, |c| u64::from(c.0)))
+    }
+
+    /// BOT-173: a flag guard's place: its share of the cover spots of its flag at base (ranked again when the flag
+    /// moves, every [`GUARD_RERANK_MS`], every [`POSTS_THIN_MS`] while it has fewer than two, when the grid also
+    /// grows toward the flag), held and rotated by [`crate::cover::Hold`]; `mates` the team's other guards (guard
+    /// number, body). `None` while the grid has no spot in the band (the ring's place then).
+    // DC-DEFAULT: BOT-173 (proposed)
+    fn flag_cover(
+        &mut self,
+        now: Millis,
+        flag: [f32; 3],
+        team: u32,
+        j: crate::roles::FlagJob,
+        mates: &[(usize, [f32; 3])],
+        body: Option<[f32; 3]>,
+    ) -> Option<[f32; 3]> {
+        use crate::cover;
+        let ms = self.ms(now);
+        let h = &self.guard_hold;
+        let every = if h.spots.len() < 2 {
+            POSTS_THIN_MS
+        } else {
+            GUARD_RERANK_MS
+        };
+        let stale = !h.ranked
+            || crate::roles::flat_dist(h.center, flag) > 64.0
+            || ms.wrapping_sub(h.ranked_at) >= every;
+        if stale {
+            let other = if team == 1 { 2 } else { 1 };
+            let anchors: Vec<[f32; 3]> = self
+                .flag_home
+                .get(&other)
+                .copied()
+                .or_else(|| crate::flagrun::flag_pos(&self.table, other))
+                .into_iter()
+                .collect();
+            let ranked = self.cover_spots(flag, crate::roles::FLAG_COVER_BAND, &anchors);
+            if ranked.len() < 2 {
+                if let Some(nav) = self.nav.as_mut() {
+                    nav.expand(POSTS_GROW, Some(flag));
+                }
+            }
+            let mine = cover::share(&ranked, j.guard, j.guards);
+            if mine.iter().map(|s| s.at).ne(self.guard_hold.spots.iter().map(|s| s.at)) {
+                self.rec.event(
+                    "guard_spots",
+                    json!({"ms": ms, "mode": "flag", "center": flag, "ranked": ranked.len(),
+                           "guard": j.guard, "guards": j.guards,
+                           "mine": mine.iter().map(|s| json!({"at": s.at, "score": s.score, "open": s.open,
+                                                              "peek": s.peek})).collect::<Vec<_>>()}),
+                );
+            }
+            self.guard_hold.set_spots(flag, mine, ms);
+        }
+        let crowd: Vec<[f32; 3]> = mates.iter().filter(|m| m.0 < j.guard).map(|m| m.1).collect();
+        let avoid: Vec<[f32; 3]> = mates.iter().map(|m| m.1).collect();
+        let contact = self
+            .enemy_seen
+            .is_some_and(|t| since(now, t) < cover::CONTACT_MS);
+        let level = self
+            .shooter
+            .as_ref()
+            .and_then(|s| s.config().skill.map(|k| k.level));
+        let seed = self.guard_seed();
+        if let Some((s, why, dwell)) =
+            self.guard_hold
+                .tick(ms, body, &crowd, &avoid, contact, (seed, level))
+        {
+            self.rec.event(
+                "guard_spot",
+                json!({"ms": ms, "mode": "flag", "spot": s.at, "score": s.score, "open": s.open,
+                       "dwell": dwell, "why": why.name(), "spots": self.guard_hold.spots.len()}),
+            );
+        }
+        self.guard_hold.goal(ms)
+    }
+
+    /// BOT-173: a guard standing at its cover spot with no target turns its view between the guarded place and the
+    /// approaches the spot sees ([`crate::cover::Hold::look`]) at [`WATCH_TURN`] radians a second, with a slow sway.
+    fn guard_watch_look(&mut self, now: Millis) -> Option<(f32, f32)> {
+        if !self.guard_on_cover || self.stood_at.is_none() {
+            return None;
+        }
+        let p = self.body.as_ref()?.pos();
+        let ms = self.ms(now);
+        let seed = self.guard_seed();
+        let (w, sway) = self.guard_hold.look(ms, seed)?;
+        let want = ((w[0] - p[0]).atan2(w[2] - p[2]) + sway, 0.0);
+        let cur = self.facing.unwrap_or(want);
+        let dt = since(now, self.facing_at).min(250);
+        Some(crate::skill::turn_toward(
+            cur,
+            want,
+            WATCH_TURN * dt as f32 / 1000.0,
+        ))
     }
 
     /// BOT-144: the last guard of two attacks after [`crate::roles::ROVE_QUIET_MS`] at its post with the flag at base

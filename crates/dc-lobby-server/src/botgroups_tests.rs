@@ -867,3 +867,73 @@ fn the_status_says_why_bots_over_the_cap_wait_and_when_the_bot_exe_is_missing() 
     assert_eq!(v["exe_missing"], false, "an unmanaged lobby needs none");
     assert!(v["groups"][1]["problem"].is_null());
 }
+
+/// LG-438: a group's loadout takes the vest slot (`8:<vest>`, `8:random`) beside the guns and beside `random`.
+#[test]
+fn a_group_loadout_takes_a_vest_slot() {
+    assert_eq!(clean_loadout(" 0:27, 8:3999 ").unwrap(), "0:27,8:3999");
+    assert_eq!(clean_loadout("random,8:RANDOM").unwrap(), "random,8:random");
+    assert_eq!(clean_loadout("Random").unwrap(), "random");
+    assert_eq!(clean_loadout("").unwrap(), "");
+    for bad in ["0:random", "8:light", "random;8:1"] {
+        assert!(clean_loadout(bad).is_err(), "{bad}");
+    }
+    let st = three_entries();
+    let entries = crate::servers::entries(&st);
+    let mut body = obj(group_body("Vest", 2, 1, &[1]));
+    body.insert("loadout".into(), json!("0:27, 8:random"));
+    let g = parse(&body, &entries).unwrap();
+    assert_eq!(g.loadout, "0:27,8:random");
+}
+
+/// LG-438: the managed bot's status names the vest its loadout gives, and the account gets the vest equipped in
+/// slot 8 (synthetic item numbers, no ROM).
+#[test]
+fn a_group_vest_is_given_and_shown_in_the_status() {
+    let st = three_entries();
+    let mut body = obj(group_body("Vest", 1, 1, &[1]));
+    body.insert("loadout".into(), json!("8:3999"));
+    let entries = crate::servers::entries(&st);
+    let mut g = parse(&body, &entries).unwrap();
+    g.id = 1;
+    let w = crate::botsup::Want {
+        name: "Vest1".into(),
+        group: 1,
+        channel: 1,
+        args: Vec::new(),
+    };
+    let mut lo = crate::botsup::Loadouts::default();
+    let (_, notes) = lo.apply(&st, std::slice::from_ref(&g), std::slice::from_ref(&w));
+    assert_eq!(
+        notes[0].1,
+        "loadout 8:3999 (vest 3999) after the first login"
+    );
+    let no = crate::db::create_account_from(&st.db, "vest1", 0, st.rules.first_account_no).unwrap();
+    crate::db::create_character(
+        &st.db,
+        &crate::db::NewCharacter {
+            user_no: no,
+            nick: "Vest1",
+            face: 0,
+            exp: 0,
+            gp: 0,
+            nx: 0,
+            now: 0,
+        },
+        true,
+    )
+    .unwrap();
+    let mut lo = crate::botsup::Loadouts::default();
+    let (restart, notes) = lo.apply(&st, &[g], &[w]);
+    assert_eq!(restart, vec!["Vest1".to_string()]);
+    assert_eq!(notes[0].1, "loadout 8:3999 (vest 3999)");
+    let vest: i64 = st
+        .db
+        .query_row(
+            "SELECT item_no FROM items WHERE user_no = ?1 AND equip_slot = 8",
+            [no as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(vest, 3999);
+}

@@ -204,8 +204,11 @@ fn the_fallback_switch_requests_after_its_delay() {
     let req = times(&o, 0x89);
     let ready = times(&o, 0x87)[0];
     assert_eq!(req.len(), 1, "{req:?}");
+    // BOT-168: the first fallback request waits for both the switch's delay (2500 ms) and the class wait
+    // (7000 ms; the test room is not class 10), so it comes 7000 ms after the death, not 2500 ms.
+    let died_at = ready + 1000;
     assert!(
-        req[0] >= ready + 1000 + 2500 && req[0] <= ready + 1000 + 2900,
+        req[0] >= died_at + 7000 && req[0] <= died_at + 7400,
         "{req:?} {ready}"
     );
     assert_eq!(o.bot.obs.life_states, vec![1, 3, 2, 1]);

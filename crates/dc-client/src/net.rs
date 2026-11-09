@@ -1651,6 +1651,12 @@ impl Shared {
                         // DC-DEFAULT: CLI-1952 (proposed) the team pings: the offer and the team's tags and markers
                         dc_wire::teamping::SHELL_ID => {
                             if let Some(n) = dc_wire::teamping::read_notice(&mut r) {
+                                // CLI-1952: one line per world, so a play test shows whether pings were on
+                                if let dc_wire::teamping::Notice::Offer { enemy_ms, place_ms } = n {
+                                    eprintln!(
+                                        "dc-client: pings: offered by the server (enemy tag {enemy_ms} ms, place marker {place_ms} ms)"
+                                    );
+                                }
                                 self.pings.on_notice(n, now);
                             }
                         }
@@ -3946,6 +3952,7 @@ impl WorldSource for NetWorld {
                 Some(frame.world as &dyn dc_sim::Collider),
             );
             if let Some(q) = gm.pings.press(gm.hud.life_state == 1, now, hit) {
+                eprintln!("dc-client: ping sent: {q:?}");
                 let mut body = dc_wire::udp::BitWriter::new();
                 dc_wire::teamping::write_request(&mut body, q);
                 gm.outgoing.push((dc_wire::teamping::UP_ID, body));

@@ -70,6 +70,9 @@ pub struct Rules {
     pub bot_pool_per_ip: u32,
     /// LG-319: people online from which rooms keep a seat free of bots (`bots.keep_seat_online_players`; 0 = never).
     pub bot_keep_seat_online: u32,
+    /// LG-438: the kit the pool's seats wear (`bots.pool_kit`): `auto` = the ROM's light vest, "" / `none` = no
+    /// kit, else a loadout spec as `account loadout` takes it.
+    pub bot_pool_kit: String,
     // DC-DEFAULT: CD-89 (proposed) the promotion gifts: (rank, shop product ids) a match result's rank-up delivers to
     // the inbox (LG-303); empty = none
     pub rank_gifts: Vec<(u32, Vec<i32>)>,
@@ -166,6 +169,7 @@ impl Default for Rules {
             bot_pool_size: 100,
             bot_pool_per_ip: 7,
             bot_keep_seat_online: 8,
+            bot_pool_kit: "auto".into(),
             rank_gifts: Vec::new(),
             rank_unlock_days: 7,
             rank_case_products: Vec::new(),
@@ -296,6 +300,18 @@ impl Rules {
                 .filter(|x| (0.0..=100_000.0).contains(x))
                 .map(|x| self.bot_keep_seat_online = x as u32)
                 .is_some(),
+            "bots.pool_kit" => match v {
+                JsonValue::String(s) => {
+                    let t = s.trim().to_ascii_lowercase();
+                    let kit = if t == "auto" || t == "none" {
+                        Ok(t)
+                    } else {
+                        crate::botgroups::clean_loadout(s)
+                    };
+                    kit.map(|k| self.bot_pool_kit = k).is_ok()
+                }
+                _ => false,
+            },
             "rewards.nx_enabled" => b.map(|x| self.nx_enabled = x).is_some(),
             "rewards.nx_daily" => n
                 .filter(|x| (0.0..=1_000_000.0).contains(x))

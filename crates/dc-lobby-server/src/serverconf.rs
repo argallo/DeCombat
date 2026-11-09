@@ -421,6 +421,11 @@ impl ServerConf {
             JsonValue::Number(c.bots.keep_seat_online_players.into()),
         );
         put(
+            "bots.pool_kit",
+            "bots.pool_kit",
+            JsonValue::String(c.bots.pool_kit.clone()),
+        );
+        put(
             "rewards.nx_enabled",
             "rewards.nx_enabled",
             JsonValue::Bool(c.rewards.nx_enabled),

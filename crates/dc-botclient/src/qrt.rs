@@ -129,38 +129,20 @@ pub fn rank_spots(
     free: impl Fn([f32; 3], [f32; 3]) -> f32,
     safe: impl Fn([f32; 3]) -> bool,
 ) -> Vec<[f32; 3]> {
-    let mut scored: Vec<(f32, usize, [f32; 3])> = points
+    // BOT-173: the rays are the shared cover scorer's (crate::cover), the same 16 at the same angles
+    const { assert!(SPOT_RAYS == crate::cover::RAYS) };
+    let scored: Vec<(f32, usize, [f32; 3])> = points
         .iter()
         .enumerate()
         .filter(|(_, p)| safe(**p))
         .filter_map(|(i, p)| {
-            let (mut walls, mut views) = (0.0f32, 0.0f32);
-            for k in 0..SPOT_RAYS {
-                let a = k as f32 * std::f32::consts::TAU / SPOT_RAYS as f32;
-                let to = [
-                    p[0] + a.sin() * SPOT_RAY_LEN,
-                    p[1],
-                    p[2] + a.cos() * SPOT_RAY_LEN,
-                ];
-                let f = free(*p, to).clamp(0.0, 1.0);
-                if f * SPOT_RAY_LEN < SPOT_WALL {
-                    walls += 1.0;
-                }
-                if f >= SPOT_VIEW {
-                    views += 1.0;
-                }
-            }
+            let shares = crate::cover::ray_shares(*p, SPOT_RAY_LEN, &free);
+            let walls = shares.iter().filter(|f| **f * SPOT_RAY_LEN < SPOT_WALL).count() as f32;
+            let views = shares.iter().filter(|f| **f >= SPOT_VIEW).count() as f32;
             (views > 0.0).then_some((walls + 0.5 * views.min(3.0), i, *p))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    let mut out: Vec<[f32; 3]> = Vec::new();
-    for (_, _, p) in scored {
-        if out.iter().all(|q| flat(*q, p) >= SPOT_APART) {
-            out.push(p);
-        }
-    }
-    out
+    crate::cover::best_apart(scored, SPOT_APART, usize::MAX, |p| *p)
 }
 
 /// BOT-160: [`rank_spots`] over a world: rays through its collision from eye height, no place in danger (`kill`:

@@ -688,16 +688,18 @@ function eventTable(evs, empty) {
 // and for `random`. The names come from GET /ops/guns (the ROM's weapons and the camo variants of the loaded mod sets).
 let gunsPromise = null;
 const loadGuns = () => (gunsPromise = gunsPromise || get("/ops/guns").catch(() => { gunsPromise = null; return []; }));
-const SLOT_NAMES = ["Primary", "Secondary", "Melee", "Throwing"];
+// LG-438: slot 8 is the vest (the light vest moves faster); "Random vest" writes 8:random
+const SLOT_NAMES = [[0, "Primary"], [1, "Secondary"], [2, "Melee"], [3, "Throwing"], [8, "Vest"]];
 function loadoutPicker(guns, placeholder) {
   const typed = $("input", { type: "text", maxlength: "200", placeholder: placeholder || "slot:item, like 0:27,1:3", "aria-label": "Loadout as typed" });
   const parts = () => typed.value.split(",").map(x => x.trim()).filter(Boolean);
-  const picks = SLOT_NAMES.map((label, slot) => {
+  const picks = SLOT_NAMES.map(([slot, label]) => {
     const list = guns.filter(g => g.slot === slot);
-    const sel = $("select", { "aria-label": label + " gun" }, $("option", { value: "" }, "Keep as it is"),
+    const sel = $("select", { "aria-label": label + (slot === 8 ? "" : " gun") }, $("option", { value: "" }, "Keep as it is"),
+      slot === 8 && list.length ? $("option", { value: "random" }, "Random vest") : null,
       list.map(g => $("option", { value: g.id }, `${g.name} (${g.id})`)));
     sel.addEventListener("change", () => {
-      const rest = parts().filter(p => p.toLowerCase() !== "random" && !p.startsWith(slot + ":"));
+      const rest = parts().filter(p => (slot === 8 || p.toLowerCase() !== "random") && !p.startsWith(slot + ":"));
       if (sel.value) rest.push(slot + ":" + sel.value);
       rest.sort();
       typed.value = rest.join(",");
@@ -707,7 +709,7 @@ function loadoutPicker(guns, placeholder) {
   const sync = () => {
     for (const p of picks) {
       const m = parts().find(x => x.startsWith(p.slot + ":"));
-      const id = m ? m.slice(2).split("+")[0] : "";
+      const id = m ? m.slice((p.slot + ":").length).split("+")[0].toLowerCase() : "";
       p.sel.value = [...p.sel.options].some(o => o.value === id) ? id : "";
     }
   };

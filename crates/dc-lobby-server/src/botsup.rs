@@ -730,9 +730,15 @@ impl Loadouts {
                 notes.push((w.name.clone(), String::new()));
                 continue;
             }
+            // LG-438: the status names the vest the spec gives
+            let shown = if spec.contains(':') {
+                format!("{spec}{}", st.rom.vest_note(spec))
+            } else {
+                spec.to_string()
+            };
             let login = w.name.to_ascii_lowercase();
             if self.done.get(&login).is_some_and(|s| s == spec) {
-                notes.push((w.name.clone(), format!("loadout {spec}")));
+                notes.push((w.name.clone(), format!("loadout {shown}")));
                 continue;
             }
             // a refusal stands until the group is edited or the retry time has passed
@@ -755,14 +761,14 @@ impl Loadouts {
             if !fresh && self.next_check.get(&login).is_some_and(|t| now < *t) {
                 notes.push((
                     w.name.clone(),
-                    format!("loadout {spec} after the first login"),
+                    format!("loadout {shown} after the first login"),
                 ));
                 continue;
             }
             self.next_check.insert(login.clone(), now + LOADOUT_POLL);
             if botgroups::applied_loadout(&st.db, &login).is_ok_and(|s| s == spec) {
                 self.done.insert(login, spec.to_string());
-                notes.push((w.name.clone(), format!("loadout {spec}")));
+                notes.push((w.name.clone(), format!("loadout {shown}")));
                 continue;
             }
             let has_char = crate::db::account_by_login(&st.db, &login)
@@ -773,7 +779,7 @@ impl Loadouts {
             if !has_char {
                 notes.push((
                     w.name.clone(),
-                    format!("loadout {spec} after the first login"),
+                    format!("loadout {shown} after the first login"),
                 ));
                 continue;
             }
@@ -787,12 +793,12 @@ impl Loadouts {
                     );
                     self.done.insert(login, spec.to_string());
                     st.note(&format!("bots: {line}"));
-                    notes.push((w.name.clone(), format!("loadout {spec}")));
+                    notes.push((w.name.clone(), format!("loadout {shown}")));
                     restart.push(w.name.clone());
                 }
                 Err(e) => {
                     st.note(&format!("bots: loadout {spec} for {}: {e}", w.name));
-                    notes.push((w.name.clone(), format!("loadout {spec} refused: {e}")));
+                    notes.push((w.name.clone(), format!("loadout {shown} refused: {e}")));
                     self.failed.insert(login, (spec.to_string(), shape, e, now));
                 }
             }

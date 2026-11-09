@@ -70,6 +70,12 @@ stock bot logs in with the bot mark and no name, and the lobby gives it a free o
   the clan server. In-match chat goes through the game server, not the lobby: a changed binary is out of this reach.
 - Each lobby instance has its own pool. A modded instance works the same; the bots pass its `--mod-set-hash` as before.
   A featured entry works too, under "A server entry with a pack".
+- The pool kit (`bots.pool_kit`, LG-438): at its start the lobby equips every seat with this kit, as `account loadout`
+  does, once per kit (a restart gives it again only when the setting changed; what a slot held stays in the seat's
+  inventory). `"auto"` (the default) is the ROM's light vest: of the vests the shop sells for GP, the one with the
+  highest move bonus; a ROM without one gives nothing. `"none"` gives nothing; any other value is a loadout as the Bots
+  tab takes it (`"8:random"`, `"0:27,8:<vest>"`). The vest's body makes the bot faster, as for a player. The seats still
+  cannot buy, trade or change team; the lobby log's `bot pool:` line names the kit.
 
 Named accounts still work for an operator: `dc-botclient --name VpsBot1 --login-password ...` on any account, as
 `tools/vps/bots.sh` does.
@@ -163,6 +169,10 @@ it says `(MISSING: no bot can start)` when `dc-botclient` is not beside `dc-lobb
   them (`0:27` is the L96A1 in slot 0). Each bot gets it once, after its first login made the account (or at once when it has one), and
   restarts so the kit counts. The status shows `loadout 0:27`, `after the first login` or why it was refused. A refused kit is tried again
   after 10 minutes, or at once when the group is edited; a bot still waiting for its first login is checked when it logs in, else every 10 s.
+  The **Vest** list (slot 8, the ROM's vests, or **Random vest**) adds `8:<vest>` or `8:random` to the loadout, also next to `random`
+  guns (`random,8:random`). The vest sets the bot's body as it does a player's: a light vest's body is faster, a heavy one's slower, and
+  the bot moves at that speed (BOT-174). The status names it: `loadout 0:27,8:<n> (vest <name>)` (LG-438). The operator gives the gear;
+  bots earn nothing and do not buy it.
 
 The tab lists each group and its bots: the process (running, restarting with the seconds left, stopped), how long it has
 run, its restarts and last exit, its channel, and from the lobby whether it is logged in and in which room or match.
@@ -260,5 +270,10 @@ thresholds are constants at the top of the file:
   humans stay together, how often they hunt instead of grouping, how fast the first claw lands, how much they
   shoot when they see an infected); Elimination Pro round ends. Win shares (round wins in Search and Destroy and
   Elimination Pro, human wins in Quarantine, agent wins in Spy Hunt) are judged pooled per mode in the "Per mode"
-  section of `summary.md`, since a single room has too few rounds;
+  section of `summary.md`, since a single room has too few rounds. Quarantine human wins with bots are about 5 %
+  under the 2009 numbers, and the pooled human-win band is informational by the owner's decision of 2026-11-08
+  (the "timer win with 0 infections" line stays a verdict line);
+- head share: about 18-22 % of the bots' hits land on the head (real hit zones, aim at the centre of the body,
+  and the aim error scaled by the bot's skill; the vertical wander and recoil part of the error does not scale
+  yet, which is why the share sits there); the scorer does not judge it, this is the value measured in the lab;
 - flow: dropped bots, failed joins, panics, refusals by the server.

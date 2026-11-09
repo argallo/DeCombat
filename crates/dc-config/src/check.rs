@@ -1014,6 +1014,13 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
     if !(1..=175).contains(&cfg.bots.managed_max_total) {
         out.push(Issue::error("bots.managed_max_total", "must be 1..=175"));
     }
+    // DC-DEFAULT: LG-438 (proposed) the pool kit: auto, none / "", or a loadout spec
+    if !pool_kit_ok(&cfg.bots.pool_kit) {
+        out.push(Issue::error(
+            "bots.pool_kit",
+            "auto, none, or a loadout spec <slot>:<item>[+<option>],... (random, 8:random allowed)",
+        ));
+    }
     // DC-DEFAULT: LG-382 / LG-383 (proposed) the admin web listener is loopback only, its origin is https and the
     // relying-party id is that origin's host or a parent domain of it
     let a = &cfg.admin_web;
@@ -1231,6 +1238,22 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
 
 /// LG-429: a published field-of-view range: inside the bounds, minimum not above the maximum.
 // DC-DEFAULT: LG-429 (proposed)
+/// LG-438: `bots.pool_kit` is `auto`, `none`, empty, or a loadout spec as the lobby's `account loadout` takes it.
+fn pool_kit_ok(s: &str) -> bool {
+    let t = s.trim();
+    if t.eq_ignore_ascii_case("auto") || t.eq_ignore_ascii_case("none") {
+        return true;
+    }
+    t.len() <= 200
+        && t.split(',').map(|p| p.replace(' ', "")).all(|p| {
+            p.is_empty()
+                || p.eq_ignore_ascii_case("random")
+                || p.eq_ignore_ascii_case("8:random")
+                || p.bytes()
+                    .all(|b| b.is_ascii_digit() || matches!(b, b':' | b'+'))
+        })
+}
+
 fn check_fov_range(path: &str, r: [u32; 2], out: &mut Vec<Issue>) {
     let [lo, hi] = crate::schema::CLIENT_FOV_BOUNDS;
     if r[0] < lo || r[1] > hi {
@@ -1588,6 +1611,33 @@ mod feature_tests {
             (1, 0, 0, 0, 1)
         );
         assert!(!Config::default().bots.managed, "off by default");
+    }
+
+    /// LG-438: the pool kit is auto (the default), none, or a loadout spec.
+    #[test]
+    fn the_pool_kit_is_checked() {
+        let errors = |k: &str| {
+            let mut cfg = Config::default();
+            cfg.bots.pool_kit = k.into();
+            check(&cfg, CheckOptions::default())
+                .into_iter()
+                .filter(|i| i.path == "bots.pool_kit")
+                .count()
+        };
+        assert_eq!(Config::default().bots.pool_kit, "auto");
+        for ok in [
+            "auto",
+            "none",
+            "",
+            "8:3999",
+            "0:27,8:random",
+            "random, 8:3999+1001",
+        ] {
+            assert_eq!(errors(ok), 0, "{ok}");
+        }
+        for bad in ["light", "8:vest", "0:random;"] {
+            assert_eq!(errors(bad), 1, "{bad}");
+        }
     }
 
     #[test]

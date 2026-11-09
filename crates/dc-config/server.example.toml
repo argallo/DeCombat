@@ -276,6 +276,7 @@ pool_per_ip = 7                 # seats per address; this machine has no limit
 keep_seat_online_players = 8    # people online (bots not counted) from which rooms keep a seat open; 0 = never
 managed = false                 # LG-388: run the dashboard's bot groups as child processes of this lobby
 managed_max_total = 21          # LG-388: most managed bots of all groups together (a group holds 1..7)
+pool_kit = "auto"               # LG-438: kit the pool seats wear, given at the start: "auto" = the ROM's light vest, "none", or a loadout spec like "8:random"
 
 [hisec]                         # HS-6..HS-9 (proposed): the lobby side of the HiSec case
 case_product = 0                # HS-6: product a picked-up case becomes; 0 = from the ROM tables

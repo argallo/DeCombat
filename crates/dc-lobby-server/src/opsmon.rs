@@ -337,7 +337,8 @@ pub fn purge(c: &Connection, now: i64, days: u32) -> rusqlite::Result<usize> {
 
 /// OPS-14: `GET /ops/guns`: the weapons a loadout can name, `{id, name, slot}` (slot 0 primary, 1 secondary, 2 melee,
 /// 3 throwing): the ROM item table's weapons, then the camo variants of the loaded mod sets (lobby-wide and each curated
-/// entry's) in their base gun's slot, with the variant's own name. Empty without a ROM item table.
+/// entry's) in their base gun's slot, with the variant's own name, then (LG-438) the vests in slot 8. Empty without a
+/// ROM item table.
 // DC-DEFAULT: OPS-14 (proposed)
 pub fn guns_json(st: &Core) -> J {
     let mut guns: Vec<(i64, String, i64)> = st.rom.weapon_list();
@@ -369,6 +370,13 @@ pub fn guns_json(st: &Core) -> J {
     }
     variants.sort_by(|a, b| (a.2, &a.1, a.0).cmp(&(b.2, &b.1, b.0)));
     guns.extend(variants);
+    // DC-DEFAULT: LG-438 (proposed) the vests of the ROM item table, slot 8, for the pickers' vest list
+    guns.extend(
+        st.rom
+            .vest_list()
+            .into_iter()
+            .map(|(no, name, _, _)| (no, name, crate::rom::SLOT_VEST)),
+    );
     J::Array(
         guns.into_iter()
             .map(|(id, name, slot)| {

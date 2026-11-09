@@ -32,6 +32,7 @@ pub mod bombrun;
 pub mod capdecode;
 pub mod clock;
 pub mod control;
+pub mod cover;
 pub mod doors;
 pub mod evade;
 pub mod flagrun;

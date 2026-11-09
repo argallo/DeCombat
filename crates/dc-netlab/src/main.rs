@@ -3,7 +3,7 @@
 //! ```text
 //! dc-netlab quick|soak|ci|campus [--rom <dir> | --direct] [--minutes <m>] [--players <n>] [--parallel <n>]
 //!           [--only <name,...>] [--out <dir>] [--bin-dir <dir>] [--seed <n>] [--dserver-args <text>]
-//!           [--xfail <profile,...>] [--strict]
+//!           [--xfail <profile,...>] [--strict] [--bot-kit <slot:item,...>]
 //! dc-netlab run --mix good:6,wifi:2,... [--mode <key>] [--map <n>] [--skills <a,b,...>] [same options]
 //! dc-netlab list [--rom <dir>]
 //! dc-netlab judge --out <run folder>       (judges an earlier run again from its files)
@@ -19,7 +19,7 @@ use dc_netlab::RunConfig;
 
 const USAGE: &str = "usage: dc-netlab quick|soak|ci|campus [--rom <dir> | --direct] [--minutes <m>] [--players <n>]
                  [--parallel <n>] [--only <name,...>] [--out <dir>] [--bin-dir <dir>] [--seed <n>]
-                 [--dserver-args <text>] [--xfail <profile,...>] [--strict]
+                 [--dserver-args <text>] [--xfail <profile,...>] [--strict] [--bot-kit <slot:item,...>]
        dc-netlab run --mix good:6,wifi:2,... [--mode <key>] [--map <n>] [--skills <a,b,...>] [same options]
        dc-netlab list [--rom <dir>]
        dc-netlab judge --out <run folder> [--xfail <profile,...>]   (judge an earlier run again from its files)
@@ -64,6 +64,7 @@ fn real_main(args: &[String]) -> Result<i32, String> {
     let mut skills: Vec<u8> = Vec::new();
     let mut mode_key: Option<String> = None;
     let mut map: Option<usize> = None;
+    let mut bot_kit = String::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let mut val = |f: &str| {
@@ -98,6 +99,7 @@ fn real_main(args: &[String]) -> Result<i32, String> {
             "--bin-dir" => bin_dir = Some(PathBuf::from(val("--bin-dir")?)),
             "--seed" => seed = val("--seed")?.parse().map_err(|_| "--seed: bad number")?,
             "--dserver-args" => dserver_args = val("--dserver-args")?,
+            "--bot-kit" => bot_kit = val("--bot-kit")?,
             "--xfail" => {
                 let v = val("--xfail")?;
                 xfail = if v == "none" {
@@ -221,6 +223,7 @@ fn real_main(args: &[String]) -> Result<i32, String> {
         parallel,
         seed,
         dserver_args,
+        bot_kit,
         xfail,
         skills,
         command: std::iter::once("dc-netlab".to_string())

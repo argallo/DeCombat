@@ -84,11 +84,12 @@ pub const POST_SIGHT_TESTS: usize = 48;
 /// The bot stands within this of its post (BOT-103's stand rule) and counts as there within [`POST_ARRIVE`].
 pub const POST_STAND: f32 = 48.0;
 pub const POST_ARRIVE: f32 = 112.0;
-/// A defender stays at a post for 10..25 s (per bot, round and move), then moves to the next one; a post it does
+/// A defender stays at a post for 6..20 s (per bot, round and move), then moves to the next one; a post it does
 /// not reach in [`POST_REACH_MS`] is passed over.
-// DC-DEFAULT: BOT-136 (proposed) 10..25 s dwell, 15 s to reach a post
-pub const POST_DWELL_MIN_MS: u32 = 10_000;
-pub const POST_DWELL_SPAN_MS: u32 = 15_000;
+// DC-DEFAULT: BOT-136 (proposed) 15 s to reach a post; BOT-173 (proposed, amends BOT-136's 10..25 s) 6..20 s dwell
+// (the guards' random dwell, crate::cover)
+pub const POST_DWELL_MIN_MS: u32 = crate::cover::DWELL_MIN_MS;
+pub const POST_DWELL_SPAN_MS: u32 = crate::cover::DWELL_SPAN_MS;
 pub const POST_REACH_MS: u32 = 15_000;
 /// At a post the bot peeks: every 5..9 s a step to a node 64..200 units from the post (for at most 2.5 s), then
 /// back; and at two of three posts it crouches from 1.5 s after it got there, for 3..5 s.
@@ -217,6 +218,16 @@ pub struct Ring {
 }
 
 impl Ring {
+    /// BOT-173: the ring's band for the cover score.
+    pub fn band(&self) -> crate::cover::Band {
+        crate::cover::Band {
+            min: self.min,
+            max: self.max,
+            ideal: self.ideal,
+            rise: self.rise,
+        }
+    }
+
     /// The posts round a site (see [`POST_MIN`]).
     pub const SITE: Ring = Ring {
         min: POST_MIN,
@@ -255,7 +266,22 @@ pub fn post_ring(
     center: [f32; 3],
     nodes: &[[f32; 3]],
     ring: Ring,
+    sees: impl FnMut([f32; 3], [f32; 3]) -> bool,
+) -> Vec<[f32; 3]> {
+    post_ring_scored(center, nodes, ring, sees, |_| 0.0)
+}
+
+/// BOT-173 (amends BOT-136 and BOT-142): [`post_ring`] with the tested nodes that see the centre taken in the order
+/// of their cover score (`cover`, [`crate::cover::score`], higher first; equal scores keep the nearest-the-ideal
+/// order), so a post by a wall with sight of the approaches comes before one in the open. Before, the nearest the
+/// ideal distance first.
+// DC-DEFAULT: BOT-173 (proposed)
+pub fn post_ring_scored(
+    center: [f32; 3],
+    nodes: &[[f32; 3]],
+    ring: Ring,
     mut sees: impl FnMut([f32; 3], [f32; 3]) -> bool,
+    mut cover: impl FnMut([f32; 3]) -> f32,
 ) -> Vec<[f32; 3]> {
     let site = center;
     let mut cand: Vec<([f32; 3], f32)> = nodes
@@ -282,6 +308,13 @@ pub fn post_ring(
         }
         tested.push((n, sees(n, site)));
     }
+    let scores: Vec<f32> = tested
+        .iter()
+        .map(|(n, s)| if *s { cover(*n) } else { 0.0 })
+        .collect();
+    let mut order: Vec<usize> = (0..tested.len()).collect();
+    order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]));
+    let tested: Vec<([f32; 3], bool)> = order.into_iter().map(|i| tested[i]).collect();
     let mut picked: Vec<[f32; 3]> = Vec::new();
     for want_sight in [true, false] {
         for (n, s) in &tested {

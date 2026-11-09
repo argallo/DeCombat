@@ -519,12 +519,36 @@ pub(crate) fn equip_loadout(
     }
     // LG-251 amendment: `random` re-rolls the LG-260 kit with a fresh seed (the clock), unlike the first login's
     // draw by the name, so every run gives another kit
-    let spec = if spec.trim().eq_ignore_ascii_case("random") {
-        rom.random_kit(crate::grant::bot_seed(login) ^ crate::clock::now_ticks() as u64)
-            .ok_or("loadout random: the ROM folder has no shop catalog to draw from")?
-    } else {
-        spec.to_string()
-    };
+    // LG-438: `random` beside other entries (drawn first, so the named entries win their slots) and `8:random`, a
+    // random vest
+    let seed = crate::grant::bot_seed(login) ^ crate::clock::now_ticks() as u64;
+    let mut parts = Vec::new();
+    for p in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        if p.eq_ignore_ascii_case("random") {
+            parts.insert(
+                0,
+                rom.random_kit(seed)
+                    .ok_or("loadout random: the ROM folder has no shop catalog to draw from")?,
+            );
+        } else if let Some((slot, _)) = p
+            .split_once(':')
+            .filter(|(_, v)| v.trim().eq_ignore_ascii_case("random"))
+        {
+            if slot.trim().parse::<i64>().ok() != Some(crate::rom::SLOT_VEST) {
+                return Err(format!(
+                    "loadout {p}: only the vest slot takes random ({}:random)",
+                    crate::rom::SLOT_VEST
+                ));
+            }
+            let no = rom
+                .random_vest(seed)
+                .ok_or("loadout 8:random: the ROM folder has no vest rows to draw from")?;
+            parts.push(format!("{}:{no}", crate::rom::SLOT_VEST));
+        } else {
+            parts.push(p.to_string());
+        }
+    }
+    let spec = parts.join(",");
     let spec = spec.as_str();
     let acc = db::account_by_login(c, login)
         .map_err(e)?

@@ -192,7 +192,7 @@ SPY_STAGE2_NEAR_U = 1500.0
 SPY_STAGE2_SHARE_MIN = 0.70     # ... for this share of the stage (BNT review)
 SPY_STAGE2_KINDS = ("spy_chase", "spy_guard")
 SPY_AGENT_WIN_SHARE = (0.20, 0.60)  # pooled per mode, over the rounds that reached stage 2 (BNT review)
-QRT_HUMAN_WIN_SHARE = (0.15, 0.40)  # POOLED per mode (QRT review); the 2009 numbers (infected 600 HP, host 1200, 19 per
+QRT_HUMAN_WIN_SHARE = (0.15, 0.40)  # INFO ONLY (owner decision 2026-11-08: 2009 numbers kept, ~5 % accepted); the 2009 numbers (infected 600 HP, host 1200, 19 per
                                     # rifle hit, one claw infects) give 8 players' humans about 1 round in 7 (BOT-150)
 QRT_POST_OUTBREAK_S = (40.0, 120.0)  # median length of the round after the first infection (QRT review)
 QRT_MUTUAL_DIST_U = 400.0       # humans' median mutual distance after the outbreak ...
@@ -2003,9 +2003,10 @@ def pooled_lines(mode, rs):
     elif mode == "QRT":
         n = sum(r["pool"].get("rounds", 0) for r in rs)
         w = sum(r["pool"].get("human_wins", 0) for r in rs)
-        ok = (QRT_HUMAN_WIN_SHARE[0] <= w / n <= QRT_HUMAN_WIN_SHARE[1]) if n >= POOL_MIN_ROUNDS else None
-        out.append(f"pooled human wins {QRT_HUMAN_WIN_SHARE[0]:.0%}..{QRT_HUMAN_WIN_SHARE[1]:.0%}: {verdict(ok)} "
-                   f"({w} of {n} rounds = {w / n:.0%})" if n else "pooled human wins: n/a (no rounds)")
+        # owner decision 2026-11-08: Quarantine keeps the 2009 numbers, about 5 % human wins is accepted: info, never FAIL
+        out.append(f"pooled human wins (band {QRT_HUMAN_WIN_SHARE[0]:.0%}..{QRT_HUMAN_WIN_SHARE[1]:.0%}): "
+                   f"info (owner decision 2026-11-08) ({w} of {n} rounds = {w / n:.0%})" if n
+                   else "pooled human wins: n/a (no rounds)")
     elif mode == "BNT":
         n = sum(r["pool"].get("agent_rounds", 0) for r in rs)
         w = sum(r["pool"].get("agent_wins", 0) for r in rs)

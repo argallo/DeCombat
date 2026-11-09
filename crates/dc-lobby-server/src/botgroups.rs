@@ -281,19 +281,40 @@ fn clean_skill(s: &str) -> Result<String, String> {
 
 /// A loadout spec as `account loadout` takes it (`<slot>:<item>[+<option>],...`, bare item numbers, or `random`);
 /// whether the items exist is known only when it is given to an account (the bot's status shows the answer).
+/// LG-438: `random` may stand beside other entries (the random guns, then the entries), and the vest slot takes
+/// `8:random` (a random vest of the ROM).
+// DC-DEFAULT: LG-438 (proposed)
 pub(crate) fn clean_loadout(s: &str) -> Result<String, String> {
+    let bad = || {
+        "loadout: random, or <slot>:<item>[+<option>],... (for example 0:27; 8:random for a random vest)".to_string()
+    };
     let s = s.trim();
-    if s.eq_ignore_ascii_case("random") {
-        return Ok("random".into());
+    if s.len() > MAX_LOADOUT {
+        return Err(bad());
     }
-    if s.len() > MAX_LOADOUT
-        || !s
-            .bytes()
-            .all(|b| b.is_ascii_digit() || matches!(b, b':' | b'+' | b',' | b' '))
+    let mut parts = Vec::new();
+    for p in s
+        .split(',')
+        .map(|p| p.replace(' ', ""))
+        .filter(|p| !p.is_empty())
     {
-        return Err("loadout: random, or <slot>:<item>[+<option>],... (for example 0:27)".into());
+        let random_vest = p
+            .split_once(':')
+            .is_some_and(|(sl, v)| sl == "8" && v.eq_ignore_ascii_case("random"));
+        if p.eq_ignore_ascii_case("random") {
+            parts.push("random".to_string());
+        } else if random_vest {
+            parts.push(format!("{}:random", crate::rom::SLOT_VEST));
+        } else if p
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b':' | b'+'))
+        {
+            parts.push(p);
+        } else {
+            return Err(bad());
+        }
     }
-    Ok(s.replace(' ', ""))
+    Ok(parts.join(","))
 }
 
 fn clean_prefix(s: &str) -> Result<String, String> {

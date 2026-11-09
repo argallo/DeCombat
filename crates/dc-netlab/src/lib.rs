@@ -36,6 +36,9 @@ pub struct RunConfig {
     pub parallel: usize,
     pub seed: u64,
     pub dserver_args: String,
+    /// `--bot-kit <spec>` (BOT-175): items every bot of a ROM run wears on top of the starter kit, in the lobby's
+    /// `--start-loadout` syntax (`8:<vest>`); empty: the starter kit only.
+    pub bot_kit: String,
     pub xfail: Vec<String>,
     /// `--skills <a,b,...>`: the skill level of each bot of a ROM room in join order (the list repeats when the
     /// room has more bots), in place of the balanced 30..65 draw; the lobby deals the joiners to the two teams in
@@ -495,6 +498,7 @@ pub fn run(cfg: &RunConfig, scenarios: &[Scenario]) -> Result<Value, String> {
                 &cfg.out,
                 base,
                 &cfg.dserver_args,
+                &cfg.bot_kit,
             )?)
         }
         None => None,

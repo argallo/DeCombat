@@ -401,4 +401,11 @@ mod tests {
         let (left, _) = marker_place(&cam, [-5000.0, 0.0, 100.0], size);
         assert!((right[0] - left[0]).abs() > 900.0, "{right:?} {left:?}");
     }
+
+    /// CLI-1952 (owner play test 2026-11-09, "the ping did not work"): the session hands the team pings' shell to the
+    /// client whole; without it the offer never reached [`TeamPings`] and the key stayed inert.
+    #[test]
+    fn the_session_hands_the_ping_shell_to_the_client() {
+        assert!(dc_botclient::session::RAW_SHELL_EVENTS.contains(&dc_wire::teamping::SHELL_ID));
+    }
 }

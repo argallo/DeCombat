@@ -118,6 +118,20 @@ pub fn snap_guard(
         .copied()
 }
 
+/// BOT-173 (amends BOT-125 and BOT-138): a flag guard holds cover spots of its flag at base ([`crate::cover`]) in
+/// the ring's band ([`GUARD_NEAR`]..[`GUARD_FAR`], ideal [`FLAG_GUARD_RING`], up to [`FLAG_COVER_RISE`] higher or
+/// lower: a raised spot scores), the approach the one from the enemy flag's base; it stands within
+/// [`crate::cover::STAND`] of a spot. The ring and its turn ([`flag_guard_point`], [`snap_guard`]) are left for a
+/// grid that has no spot in the band yet.
+// DC-DEFAULT: BOT-173 (proposed) 160 units up or down
+pub const FLAG_COVER_RISE: f32 = 160.0;
+pub const FLAG_COVER_BAND: crate::cover::Band = crate::cover::Band {
+    min: GUARD_NEAR,
+    max: GUARD_FAR,
+    ideal: FLAG_GUARD_RING,
+    rise: FLAG_COVER_RISE,
+};
+
 /// BOT-144: the last guard of a team with two or more (`job.guard == job.guards - 1`) goes and attacks after
 /// [`ROVE_QUIET_MS`] at its post with its flag at base and no enemy known within [`ROVE_THREAT`] of the flag; it is
 /// a guard again once its flag leaves the base or it dies (the quiet clock starts again at the post). Before, half
@@ -157,6 +171,9 @@ pub struct Situation {
     pub own_flag_away: bool,
     pub flag_job: Option<FlagJob>,
     pub flag_guard: Option<[f32; 3]>,
+    /// BOT-173: how close the guard stands to its guard place when that is a cover spot (`None`: the ring's
+    /// [`FLAG_GUARD_STAND`]).
+    pub flag_guard_stand: Option<f32>,
     /// Teammates still standing (streamed and not parked), the bot itself not counted.
     pub mates_alive: usize,
     /// BOT-130: enemies still standing (streamed and not parked; 0 also when none is streamed).
@@ -276,7 +293,7 @@ pub fn objective_goal(role: Role, s: &Situation) -> Option<Objective> {
                 Some(_) => s
                     .flag_guard
                     .or(s.own_flag)
-                    .map(|p| Objective::at(p, FLAG_GUARD_STAND)),
+                    .map(|p| Objective::at(p, s.flag_guard_stand.unwrap_or(FLAG_GUARD_STAND))),
                 None => s.own_flag.map(|p| Objective::at(p, FLAG_GUARD)),
             }
         }

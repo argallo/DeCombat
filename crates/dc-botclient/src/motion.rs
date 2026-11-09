@@ -78,9 +78,22 @@ pub fn loadout_mods(
     override_row: Option<u32>,
     slowed: bool,
 ) -> SpeedMods {
+    loadout_mods_body(rows, Some(0), weapon, gear, override_row, slowed)
+}
+
+/// BOT-174: [`loadout_mods`] with the body row of the bot's own look (`body`; see [`own_body_row`]): the vest the
+/// server dresses it with (a light vest's body row has a lower `MovePenalty`) counts as it does for a player.
+pub fn loadout_mods_body(
+    rows: &dc_sim::SpeedTable,
+    body: Option<u32>,
+    weapon: Option<u16>,
+    gear: (Option<u32>, Option<u32>, Option<u32>),
+    override_row: Option<u32>,
+    slowed: bool,
+) -> SpeedMods {
     let mut m = rows.mods(&dc_sim::Loadout {
         weapon,
-        body: Some(0),
+        body,
         body_override: override_row,
         head: gear.0,
         backpack: gear.1,
@@ -91,6 +104,24 @@ pub fn loadout_mods(
         m.penalty = 1.0 - (1.0 - m.penalty.clamp(-1.0, 1.0)) * crate::qrt::SHOT_SLOW_FACTOR;
     }
     m
+}
+
+/// BOT-174: the body row of the bot's own look: the `[Model<n>]` row whose model file is the first named model entry
+/// of its character object (`models`: the object's model file ids in block order, `name`: a file id's name), as the
+/// client takes its own (CLI-340); `None` while the look names none the table knows. The server picks that body from
+/// the equipment (the character item, else the vest, DSV-271 / DSV-474), so the bot moves with the vest it was given
+/// and never faster than its look allows.
+// DC-DEFAULT: BOT-174 (proposed)
+pub fn own_body_row<'a>(
+    rows: &dc_sim::SpeedTable,
+    models: impl IntoIterator<Item = u16>,
+    name: impl Fn(u16) -> Option<&'a str>,
+) -> Option<u32> {
+    let file = models
+        .into_iter()
+        .filter(|id| *id != 0xFFFF)
+        .find_map(&name)?;
+    rows.body_row_of_file(file)
 }
 
 /// What the body does.
@@ -701,6 +732,61 @@ mod tests {
         let eq = [20, 1, 0, 7, 4003, -1, 5002, 2000, -1, -1];
         assert_eq!(gear_rows(&eq), (Some(3), None, Some(2)));
         assert_eq!(gear_rows(&[]), (Some(0), None, None));
+    }
+
+    /// BOT-174: the body row comes from the own look's first named model file, and a body row with a lower
+    /// `MovePenalty` (a light vest's) moves the bot faster with the same weapon and gear.
+    #[test]
+    fn the_body_row_of_the_own_look_sets_the_speed() {
+        // synthetic rows (no ROM data): body 0 penalty 0.1, body 1 penalty 0.0, one weapon 0.1
+        let mut t = dc_sim::SpeedTable::default();
+        let body = |p: f32| dc_sim::BodySpeed {
+            penalty: p,
+            ..Default::default()
+        };
+        t.bodies = vec![body(0.1), body(0.0)];
+        t.override_base = 2;
+        t.body_files = vec!["Bodies\\A.ltb".into(), "Bodies\\B.ltb".into()];
+        t.weapons.insert(5, 0.1);
+        let names = |id: u16| match id {
+            7 => Some("bodies/b.LTB"),
+            8 => Some("Faces\\F.ltb"),
+            _ => None,
+        };
+        assert_eq!(own_body_row(&t, [0xFFFF, 7, 8], names), Some(1));
+        assert_eq!(own_body_row(&t, [8], names), None, "a face file is no body row");
+        assert_eq!(own_body_row(&t, [], names), None);
+        let gear = (Some(0), None, None);
+        let normal = loadout_mods_body(&t, Some(0), Some(5), gear, None, false);
+        let light = loadout_mods_body(&t, Some(1), Some(5), gear, None, false);
+        assert!((normal.penalty - 0.2).abs() < 1e-6, "{normal:?}");
+        assert!((light.penalty - 0.1).abs() < 1e-6, "{light:?}");
+        assert!(walk_speed(light) > walk_speed(normal) + 20.0);
+        assert_eq!(
+            loadout_mods(&t, Some(5), gear, None, false),
+            normal,
+            "loadout_mods keeps body row 0"
+        );
+    }
+
+    /// ROM-gated (skipped without CA_ROM), BOT-174: a bot whose look is the light vest's body row runs faster than
+    /// with the default body row, rifle in hand, by the difference of the two rows' `MovePenalty`.
+    #[test]
+    fn rom_the_light_vest_body_runs_faster() {
+        let rom = dc_rez::dc_rom::rom_or_skip!();
+        let rows = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
+        let eq = [20, 1, 0, 7, -1, -1, -1, 2000, -1, 7001, -1, -1, -1, -1, -1];
+        let gear = gear_rows(&eq);
+        // the fastest of the default body's neighbours stands for a light vest's body (the row is not named here)
+        let light = (1..rows.override_base as u32)
+            .filter(|r| rows.figure(&dc_sim::Loadout { body: Some(*r), ..Default::default() })
+                .is_some_and(|f| f.speed_bonus == 0.0))
+            .min_by(|a, b| rows.bodies[*a as usize].penalty.total_cmp(&rows.bodies[*b as usize].penalty))
+            .expect("a body row");
+        let normal = walk_speed(loadout_mods_body(&rows, Some(0), Some(20), gear, None, false));
+        let fast = walk_speed(loadout_mods_body(&rows, Some(light), Some(20), gear, None, false));
+        eprintln!("body 0 {normal:.1} u/s, body {light} {fast:.1} u/s");
+        assert!(fast > normal, "{fast} vs {normal}");
     }
 
     /// ROM-gated (skipped without CA_ROM), BOT-149: with the bots' lobby loadout (rifle 20, pistol 1, knife 0,

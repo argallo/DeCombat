@@ -92,6 +92,7 @@ impl Lobby {
         dir: &Path,
         base: u16,
         dserver_args: &str,
+        bot_kit: &str,
     ) -> Result<Lobby, String> {
         if !bins.lobby.is_file() {
             return Err(format!("{} not found", bins.lobby.display()));
@@ -125,6 +126,11 @@ impl Lobby {
         ];
         if !dserver_args.is_empty() {
             args.push(format!("--dserver-args={dserver_args}"));
+        }
+        // DC-DEFAULT: BOT-175 (proposed) `--bot-kit`: every new character of the run's lobby (the bots) is equipped
+        // with these items on top of the starter kit, as `--start-loadout` does
+        if !bot_kit.trim().is_empty() {
+            args.extend(["--start-loadout".to_string(), bot_kit.trim().to_string()]);
         }
         let child = Command::new(&bins.lobby)
             .args(&args)

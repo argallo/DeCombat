@@ -915,6 +915,10 @@ pub struct BotsSection {
     pub managed: bool,
     /// DC-DEFAULT: LG-388 (proposed). Most bots of all enabled groups together (a group holds at most 7).
     pub managed_max_total: u32,
+    /// DC-DEFAULT: LG-438 (proposed, OWNER REQUEST 2026-11-09). The kit the pool's seats wear, given at the lobby
+    /// start like `account loadout`: `auto` = the ROM's light vest (the GP vest with the highest `MoveHandicap`),
+    /// "" or `none` = no kit, else a loadout spec (`8:<vest>`, `0:<gun>`, `8:random`, ...). Seats still cannot buy.
+    pub pool_kit: String,
 }
 
 impl Default for BotsSection {
@@ -925,6 +929,7 @@ impl Default for BotsSection {
             keep_seat_online_players: 8,
             managed: false,
             managed_max_total: 21,
+            pool_kit: "auto".into(),
         }
     }
 }

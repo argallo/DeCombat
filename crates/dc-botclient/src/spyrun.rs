@@ -462,6 +462,56 @@ pub fn chase_engages(goal: Option<&SpyGoal>, fighting: Option<u32>) -> Option<u3
     }
 }
 
+/// BOT-173 (amends BOT-151): a guard of the uplink takes, of the band nodes whose angle lies within [`COVER_ARC`]
+/// of the best one [`guard_place`] finds (at most [`COVER_TESTS`] of them, [`crate::cover::TEST_SPREAD`] apart,
+/// nearest that angle first), the one with the best cover score (`cover`, [`crate::cover::score`]) less its angle
+/// off (radians); before, the node nearest the angle whatever stood round it.
+// DC-DEFAULT: BOT-173 (proposed) 0.35 rad (20 degrees), 16 nodes
+pub const COVER_ARC: f32 = 0.35;
+pub const COVER_TESTS: usize = 16;
+
+pub fn guard_place_scored(
+    nodes: &[[f32; 3]],
+    u: [f32; 3],
+    base: f32,
+    k: usize,
+    mut cover: impl FnMut([f32; 3]) -> f32,
+) -> Option<[f32; 3]> {
+    let best = guard_place(nodes, u, base, k)?;
+    let want = base + k as f32 * std::f32::consts::TAU / GUARDS as f32;
+    let off = |n: [f32; 3]| {
+        let d = (angle_of(u, n) - want).rem_euclid(std::f32::consts::TAU);
+        d.min(std::f32::consts::TAU - d)
+    };
+    let limit = off(best) + COVER_ARC;
+    let mut near: Vec<[f32; 3]> = nodes
+        .iter()
+        .copied()
+        .filter(|n| {
+            let d = flat(*n, u);
+            (GUARD_MIN..=GUARD_MAX).contains(&d) && (n[1] - u[1]).abs() <= GUARD_RISE && off(*n) <= limit
+        })
+        .collect();
+    near.sort_by(|a, b| off(*a).total_cmp(&off(*b)));
+    let mut tested: Vec<[f32; 3]> = vec![best];
+    for n in near {
+        if tested.len() >= COVER_TESTS {
+            break;
+        }
+        if tested.iter().all(|t| flat(*t, n) >= crate::cover::TEST_SPREAD) {
+            tested.push(n);
+        }
+    }
+    let mut out = (best, f32::MIN);
+    for n in tested {
+        let s = cover(n) - off(n);
+        if s > out.1 {
+            out = (n, s);
+        }
+    }
+    Some(out.0)
+}
+
 /// BOT-151: the angle (round the vertical) from `u` to `p`.
 pub fn angle_of(u: [f32; 3], p: [f32; 3]) -> f32 {
     (p[2] - u[2]).atan2(p[0] - u[0])

@@ -1071,7 +1071,8 @@ fn rom_spy_hunt_bots_get_to_the_placed_cases_on_the_crate_the_deck_and_the_ledge
         eprintln!("no CA_ROM: skipped");
         return;
     };
-    let walks: [(u32, [f32; 3], &[[f32; 3]]); 3] = [
+    type Walk<'a> = (u32, [f32; 3], &'a [[f32; 3]]);
+    let walks: [Walk; 3] = [
         (
             8,
             [-2508.0, 2819.0, -2160.0],
@@ -1270,4 +1271,139 @@ fn rom_grayhammer_two_spy_hunt_intel_points_are_out_of_the_grids_reach() {
         }
     }
     assert_eq!(out, vec![[644.0, 211.0, 273.0], [2251.0, 299.0, -2031.0]]);
+}
+
+/// BOT-173: on every CTF world each flag base has at least two cover spots that see it (on the grid grown in full
+/// from the other flag's base, the approach from there); the open share of the best spot and of the band's nodes on
+/// average are printed (the score also weighs the sight of the approach and height, so the best spot may face more
+/// open ground than the average node).
+#[test]
+fn rom_ctf_every_flag_base_gets_cover_spots() {
+    use dc_botclient::cover;
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let only = std::env::var("CTF_WORLD").ok();
+    let mut short = Vec::new();
+    for world in [
+        "SNOWVALLEY",
+        "GRAYHAMMER",
+        "JUNK_FLEA",
+        "TWOTOWERS",
+        "PUMPJACK",
+        "BRUSHWOOD",
+        "COLDSEED",
+        "SANDHOG",
+        "WARHEAD",
+        "WAVERIDER",
+        "DEATHROOM",
+        "RAPIDSTREAM",
+        "GRAVEDIGGER",
+        "ROADKILL",
+    ] {
+        if only.as_deref().is_some_and(|o| o != world) {
+            continue;
+        }
+        let room = room_world(&r, format!("WORLDS/{world}.DAT").as_bytes());
+        let coll = room.w.collision.clone();
+        let mut nav = room.grid();
+        let from = room.flags[0];
+        let seeded = [0.0f32, 28.0]
+            .iter()
+            .map(|y| [from[0], from[1] + y, from[2]])
+            .any(|p| nav.seed(p))
+            || room.spawns.iter().any(|s| nav.seed(*s));
+        assert!(seeded, "{world}: a node to grow from");
+        while nav.growing() && nav.probes < 4_000_000 {
+            nav.expand(2_000, None);
+        }
+        for (i, f) in room.flags.iter().enumerate() {
+            let other = room.flags[1 - i];
+            let app = nav
+                .path(*f, other)
+                .and_then(|mut p| {
+                    p.reverse();
+                    p.push(*f);
+                    cover::approach_on(&p, *f)
+                })
+                .unwrap_or_else(|| cover::approach_toward(other, *f));
+            let nodes: Vec<[f32; 3]> = nav
+                .links_near(*f, dc_botclient::roles::GUARD_FAR + cover::PEEK_FAR)
+                .into_iter()
+                .filter(|(_, l)| !l.is_empty())
+                .map(|(p, _)| p)
+                .collect();
+            let eye = 0.5 * dc_botclient::motion::BOT_STAND_DIMS[1];
+            let up = |p: [f32; 3]| [p[0], p[1] + eye, p[2]];
+            let spots = cover::rank_guard_spots(
+                *f,
+                &nodes,
+                dc_botclient::roles::FLAG_COVER_BAND,
+                &[app],
+                |a, b| {
+                    use dc_sim::{Collider, Cylinder, V3};
+                    let shape = Cylinder::from_dims(V3::from_array(dc_botclient::hunt::RAY_DIMS));
+                    coll.sweep(&shape, V3::from_array(up(a)), V3::from_array(up(b)))
+                        .map_or(1.0, |h| h.t)
+                },
+                |a, b| dc_botclient::hunt::line_clear(&*coll, up(a), up(b)),
+            );
+            let seeing = spots.iter().filter(|s| s.score > -0.5 * cover::BLIND_COST).count();
+            let band: Vec<f32> = cover::candidates(*f, &nodes, dc_botclient::roles::FLAG_COVER_BAND)
+                .iter()
+                .map(|p| cover::open_share(&cover::world_shares(&coll, *p)))
+                .collect();
+            let mean = band.iter().sum::<f32>() / band.len().max(1) as f32;
+            eprintln!(
+                "{world} flag {i}: {} spots ({seeing} see it), best {:?} score {:.2} open {:.2}, band mean open {:.2} ({} nodes)",
+                spots.len(),
+                spots.first().map(|s| s.at.map(f32::round)),
+                spots.first().map_or(0.0, |s| s.score),
+                spots.first().map_or(1.0, |s| s.open),
+                mean,
+                band.len()
+            );
+            if seeing < 2 {
+                short.push((world, i, seeing));
+            }
+        }
+    }
+    assert!(short.is_empty(), "flag bases short of cover spots: {short:?}");
+}
+
+/// BOT-173 evidence tool (run by hand): the open share ([`dc_botclient::cover::open_share`]) at body places read from
+/// the file `COVER_PROBE` (lines `<announced world> x y z`), written to `COVER_PROBE_OUT` (lines `x y z open walls`,
+/// walls: the rays stopped within [`dc_botclient::cover::COVER_WALL`]).
+#[test]
+#[ignore]
+fn rom_cover_probe() {
+    let (Some(r), Ok(inp), Ok(out)) = (
+        RomWorlds::from_env(),
+        std::env::var("COVER_PROBE"),
+        std::env::var("COVER_PROBE_OUT"),
+    ) else {
+        eprintln!("no CA_ROM / COVER_PROBE / COVER_PROBE_OUT: skipped");
+        return;
+    };
+    let mut rooms: std::collections::BTreeMap<String, RoomWorld> = Default::default();
+    let mut lines = Vec::new();
+    for l in std::fs::read_to_string(inp).unwrap().lines() {
+        let v: Vec<&str> = l.split_whitespace().collect();
+        if v.len() != 4 {
+            continue;
+        }
+        let room = rooms
+            .entry(v[0].to_string())
+            .or_insert_with(|| room_world(&r, v[0].as_bytes()));
+        let p = [v[1], v[2], v[3]].map(|x| x.parse::<f32>().unwrap());
+        let shares = dc_botclient::cover::world_shares(&room.w.collision, p);
+        let open = dc_botclient::cover::open_share(&shares);
+        let walls = shares
+            .iter()
+            .filter(|s| **s * dc_botclient::cover::COVER_RAY_LEN < dc_botclient::cover::COVER_WALL)
+            .count();
+        lines.push(format!("{} {} {} {open:.4} {walls}", v[1], v[2], v[3]));
+    }
+    std::fs::write(out, lines.join("\n")).unwrap();
 }

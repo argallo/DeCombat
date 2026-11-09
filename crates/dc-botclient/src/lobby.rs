@@ -1991,10 +1991,7 @@ mod tests {
             s.write_all(&f).unwrap();
             let mut buf = [0u8; 256];
             // nothing may come before the room waits
-            let early = match s.read(&mut buf) {
-                Ok(n) => n,
-                Err(_) => 0,
-            };
+            let early = s.read(&mut buf).unwrap_or_default();
             if early != 0 {
                 return Err("the bot sent something while the room still played");
             }
