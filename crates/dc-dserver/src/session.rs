@@ -883,11 +883,8 @@ impl<A: Ord + Clone + Display> Server<A> {
                     .hazards
                     .iter()
                     .enumerate()
-                    .filter(|(_, h)| {
-                        ov.get(&h.shape.name.to_ascii_lowercase())
-                            .and_then(|o| o.on)
-                            != Some(false)
-                    })
+                    // the bot evaluates the same rule (BOT-177)
+                    .filter(|(_, h)| dc_world::scripts::left_on(&ov, &h.shape.name))
                     .map(|(i, _)| i)
                     .collect()
             }

@@ -478,6 +478,11 @@ mod tests {
             solid: Some(vec![true]),
             kill_volumes: Vec::new(),
             hazard_volumes: Vec::new(),
+            hazard_named: Vec::new(),
+            hazard_gas: Vec::new(),
+            hazard_off: Vec::new(),
+            infected: false,
+            scripts: Default::default(),
         }
     }
 
@@ -691,5 +696,29 @@ mod tests {
             hi: DOOR_HI
         }
         .crossed_by([0.0, 40.0, -50.0], [0.0, 40.0, 50.0]));
+    }
+
+    /// BOT-177: an infected bot takes the gas volumes the server spares the infected as no danger (water, a deadly
+    /// poison volume, stays); human again, every volume the room leaves on acts for it.
+    #[test]
+    fn infected_bot_takes_the_spared_gas_as_harmless() {
+        let v = dc_sim::V3::from_array;
+        let gas = dc_sim::ConvexVolume::from_box(v([0.0; 3]), v([10.0; 3]));
+        let water = dc_sim::ConvexVolume::from_box(v([20.0; 3]), v([30.0; 3]));
+        let mut w = two_rooms();
+        w.hazard_named = vec![(b"gas".to_vec(), gas.clone()), (b"water".to_vec(), water.clone())];
+        w.hazard_gas = vec![b"gas".to_vec()];
+        w.hazards_for_room(&[]);
+        assert_eq!(w.hazard_volumes, vec![gas.clone(), water.clone()]);
+        assert!(w.set_infected(true), "the acting set changed");
+        assert_eq!(w.hazard_volumes, vec![water.clone()]);
+        assert!(!w.set_infected(true), "no change when already infected");
+        // the room's own rule still applies on top (a new rule arrives while infected)
+        w.hazards_for_room(&[b"water".to_vec()]);
+        assert!(w.hazard_volumes.is_empty());
+        w.hazards_for_room(&[]);
+        assert_eq!(w.hazard_volumes, vec![water.clone()]);
+        assert!(w.set_infected(false), "human again");
+        assert_eq!(w.hazard_volumes, vec![gas, water]);
     }
 }

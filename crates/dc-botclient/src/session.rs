@@ -139,6 +139,10 @@ pub const LOST_EDGE_MS: u32 = 8_000;
 /// BOT-159: how long a bot walks (and jumps) along the way off an island of the grid (`evade::ESCAPE_SECS`).
 // DC-DEFAULT: BOT-159 (proposed) 2000 ms
 pub const ESCAPE_MS: u32 = (crate::evade::ESCAPE_SECS * 1000.0) as u32;
+/// BOT-177: how far beyond a hazard volume's box poison damage still counts as that volume's (the body's box
+/// reaches past its centre).
+// DC-DEFAULT: BOT-177 (proposed) 48 units
+pub const HAZARD_RULE_SLACK: f32 = 48.0;
 /// BOT-159: a bot on a small island of the grid whose goal lies off it (no node of the island within
 /// [`CONFINED_GOAL`], flat) for [`CONFINED_MS`] takes a way off it; the island is looked at every
 /// [`CONFINED_CHECK_MS`].
@@ -826,6 +830,10 @@ pub struct BotSession {
     /// BOT-143: when the bot last took hazard damage (the server's poison type), and the safe place it walks to.
     hazard_hit: Option<Millis>,
     hazard_leave: Option<[f32; 3]>,
+    /// BOT-177: the mode class the world's hazard volumes were last judged for (the room's start scripts), and
+    /// whether poison damage inside a volume judged off made the bot take every one as acting for this world.
+    hazard_rule_for: Option<u8>,
+    hazards_restored: bool,
     /// BOT-150: when the walk ahead was last tested for danger, and whether it is held.
     walk_guard: (Millis, bool),
     /// Search and Destroy: the carrier mark, the plant and the bot's hold (BOT-70).
@@ -979,6 +987,8 @@ impl BotSession {
             sprint_rest: false,
             hazard_hit: None,
             hazard_leave: None,
+            hazard_rule_for: None,
+            hazards_restored: false,
             walk_guard: (0, false),
             bomb: crate::bombrun::BombRun::default(),
             squad: crate::squad::Squad::default(),
@@ -1588,6 +1598,8 @@ impl BotSession {
                 );
                 self.doors = crate::doors::DoorMind::new(boxes, self.roam_seed);
                 self.world = Some(w);
+                self.hazard_rule_for = None;
+                self.hazards_restored = false;
                 // BOT-93: the navigation grid grows from where the bot stands, on this world
                 let coll = self.nav_collision();
                 self.nav = coll.map(|c| crate::nav::NavGrid::new(c, BOT_STAND_DIMS));
@@ -1908,6 +1920,8 @@ impl BotSession {
     /// keep the grid's nodes out. The grid starts again when either changed.
     // DC-DEFAULT: BOT-110 (proposed), BOT-111 (proposed)
     fn follow_world(&mut self, now: Millis) {
+        self.hazard_rule(now);
+        self.hazard_infected(now);
         let Some(w) = self.world.as_mut() else {
             return;
         };
@@ -1966,6 +1980,77 @@ impl BotSession {
             json!({"ms": self.ms(now), "linked": linked, "solid": solid, "gone": gone.len(),
                    "kill_volumes": self.kill_now.len(), "off": off}),
         );
+    }
+
+    /// BOT-177: once the world and the room's mode class are known, the hazard volumes the game server's start
+    /// scripts switch off (DSV-607, evaluated with the same code on the same ROM tables) are no danger to the bot;
+    /// the grid starts again with the rest (`follow_world` sees the changed volume count). Not after poison damage
+    /// inside a volume judged off (`hazards_restored`): the server acts otherwise (`-worldobjects all`), so every
+    /// volume acts for this world.
+    // DC-DEFAULT: BOT-177 (proposed)
+    fn hazard_rule(&mut self, now: Millis) {
+        let (Some(class), Some(rom), Some(w)) =
+            (self.obs.mode_class, self.rom.as_ref(), self.world.as_mut())
+        else {
+            return;
+        };
+        if self.hazard_rule_for == Some(class) || self.hazards_restored || w.hazard_named.is_empty() {
+            return;
+        }
+        self.hazard_rule_for = Some(class);
+        let off = crate::romworld::hazards_switched_off_cached(rom.rom(), w, class);
+        w.hazards_for_room(off.as_deref().unwrap_or(&[]));
+        let ms = self.ms(now);
+        self.rec.event(
+            "hazard_rule",
+            json!({"ms": ms, "mode_class": class, "hazards": self.world.as_ref().map_or(0, |w| w.hazard_named.len()),
+                   "acting": self.world.as_ref().map_or(0, |w| w.hazard_volumes.len()),
+                   "known_room": off.is_some()}),
+        );
+    }
+
+    /// BOT-177: an infected bot of a Quarantine room (its override row, the 0xd3 sub 3 the server sends, or the
+    /// infection list of sub 0) takes the gas volumes the server spares the infected as no danger; human again
+    /// (the next round), they act for it again. The grid starts again when the acting set changes (`follow_world`).
+    // DC-DEFAULT: BOT-177 (proposed)
+    fn hazard_infected(&mut self, now: Millis) {
+        let own = self.obs.client_id.map(|c| c.0 as u8);
+        let infected = self.obs.mode_class == Some(crate::qrt::QRT_CLASS)
+            && (self.qrt_override.is_some() || own.is_some_and(|p| self.qrt_round.infected.contains(&p)));
+        let Some(w) = self.world.as_mut() else {
+            return;
+        };
+        if w.set_infected(infected) {
+            let acting = w.hazard_volumes.len();
+            let ms = self.ms(now);
+            self.rec
+                .event("hazard_infected", json!({"ms": ms, "infected": infected, "acting": acting}));
+        }
+    }
+
+    /// BOT-177: a poison hit while some hazard volume is judged switched off and no acting volume explains it (the
+    /// body is not near one): every hazard volume acts again for this world (the grid starts again on the next
+    /// `follow_world`). A hit near a volume judged off always does.
+    // DC-DEFAULT: BOT-177 (proposed) 48 units around the volume's box
+    fn hazard_rule_wrong(&mut self, now: Millis) {
+        let Some(at) = self.body.as_ref().map(|b| b.pos()) else {
+            return;
+        };
+        let Some(w) = self.world.as_mut() else {
+            return;
+        };
+        // an infected bot takes no poison from a gas volume (the server spares it), so a hit says nothing of the rule
+        if w.infected {
+            return;
+        }
+        if !crate::romworld::hazard_hit_contradicts_rule(at, &w.hazard_named, &w.hazard_volumes) {
+            return;
+        }
+        w.hazards_for_room(&[]);
+        self.hazards_restored = true;
+        let ms = self.ms(now);
+        self.rec
+            .event("hazard_rule_wrong", json!({"ms": ms, "pos": at}));
     }
 
     /// BOT-132: the world's ladder volumes, ways of the grid.
@@ -2802,6 +2887,8 @@ impl BotSession {
                 }
                 if d.zone == crate::qrt::HAZARD_DAMAGE_TYPE {
                     self.hazard_hit = Some(now);
+                    // BOT-177: the volume judged off hurts after all
+                    self.hazard_rule_wrong(now);
                 }
                 self.event(GameEvent::Damage(d));
             }

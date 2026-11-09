@@ -229,8 +229,8 @@ impl DtxFile {
         let mut file_off = vec![[0usize; 6]; n];
         let mut pos = 0usize;
         for face in 0..faces {
-            for (i, s) in sizes.iter().enumerate() {
-                file_off[i][face] = pos;
+            for (off, s) in file_off.iter_mut().zip(&sizes) {
+                off[face] = pos;
                 pos += s.2 as usize;
             }
             if face == 0 && faces == 6 {

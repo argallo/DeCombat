@@ -1225,6 +1225,28 @@ fn rom_bots_get_off_the_islands_they_were_confined_to() {
     assert!(walk.is_ok(), "Rattlesnake deck: {walk:?}");
 }
 
+/// BOT-176: Snow Valley's Spy Hunt intel point on the roof at (-580, 1364, 662) is in the grid's reach: its way runs
+/// from the valley west of it up a hatch ladder (-1500..-1457, 623..1119, 456..481) into the room under the roof and
+/// up the roof ladder. Before, the hatch opened 20 units wider than the ladder, the place a body's width beyond it hung
+/// over the shaft, so the ladder had no top: no node stood within 128 units of the point and the walks ended 520
+/// below it.
+#[test]
+fn rom_snowvalley_roof_intel_point_is_in_the_grids_reach() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = spy_room(&r, 0);
+    let (mut nav, _) = room.grown();
+    assert!(!nav.growing());
+    let c = [-580.0f32, 1364.0, 662.0];
+    let why = dc_botclient::spyrun::case_reach(&mut nav, &room.w.collision, &room.kill, c);
+    assert_eq!(why, None);
+    // (from a team-1 spawn point; the grid's way goes up both ladders)
+    let missed = room.missed(&mut nav, [780.97, 520.0, -1607.3], &[c]);
+    assert!(missed.is_empty(), "{missed:?}");
+}
+
 /// BOT-163: Gray Hammer's Spy Hunt intel points (the world's 17 item spawn points of the mode, case places 5 above
 /// them) with the grid grown in full from a spawn point: two lie where no way leads (no node within 128 units flat and
 /// 60 in height): the deck point (2251, 299, -2030), which drew 16 holders of 4 to their deaths under it in a
@@ -1233,6 +1255,8 @@ fn rom_bots_get_off_the_islands_they_were_confined_to() {
 /// session's follower from three spawn points, 90 s each): every other point was taken from at least two of them;
 /// the two points from none (the walks ended under them, at y 68 / -14 / 74). Since the server places 5 cases and the
 /// agent needs all 5, a room that places either one cannot reach stage 2 with bots alone: a grid growth question.
+/// BOT-176: both lie on girders (a roof girder over the electrified pit by site A; a box top reached along beams and
+/// pipes 8..16 units wide), which the grid's lattice of places with floor under the body's centre never stands on.
 #[test]
 fn rom_grayhammer_two_spy_hunt_intel_points_are_out_of_the_grids_reach() {
     let Some(r) = RomWorlds::from_env() else {

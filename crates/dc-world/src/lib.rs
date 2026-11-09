@@ -16,6 +16,7 @@ pub mod names;
 mod objects;
 mod render;
 mod roles;
+pub mod scripts;
 mod side;
 pub mod synth;
 pub mod vocab;

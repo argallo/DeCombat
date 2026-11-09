@@ -75,6 +75,9 @@ pub struct LoadedWorld {
     pub surface_types: Vec<Vec<u16>>,
     /// The linked world models and the state the server's objects gave them (CLI-230, world-objects).
     pub world_models: crate::objects::WorldModels,
+    /// CLI-1953: the world seen from above, drawn when the map was composed from ROM pieces (its pack's radar
+    /// picture shows only the map's own geometry); taken by the HUD's world map.
+    pub top_map: Option<crate::hud::worldmap::TopMap>,
     /// The last sky table applied to the scene (client-hudgaps).
     pub sky_applied: Option<crate::objects::SkyTable>,
     /// The world's far plane from its world settings, when it gives one (`dc_render::world_far_z`): the camera's far
@@ -1170,6 +1173,8 @@ struct BuildSpec<'a> {
     extra_spawns: &'a [SpawnPoint],
     filter: &'a WorldFilter,
     scene_opts: SceneOptions,
+    /// CLI-1953: draw the world from above for the world map (a map composed from ROM pieces).
+    top_map: bool,
 }
 
 /// Collision set, spawns and (optionally) the uploaded scene of one parsed world.
@@ -1187,6 +1192,7 @@ fn build(
         extra_spawns,
         filter,
         scene_opts,
+        top_map,
     } = spec;
     let t = Instant::now();
     let opts = ParseOptions {
@@ -1228,8 +1234,16 @@ fn build(
         };
     let world_models =
         crate::objects::WorldModels::of(&world, filter, scene.as_ref().map(|s| s.model_names()));
+    let top_map = if top_map {
+        world.render.as_ref().and_then(|r| {
+            crate::hud::worldmap::top_map(&r.world.blocks, crate::hud::worldmap::TOP_MAP_SIZE)
+        })
+    } else {
+        None
+    };
     Ok(LoadedWorld {
         world_models,
+        top_map,
         name,
         floor_limit: floor_limit(&collision),
         extents: (world.extent_min, world.extent_max),
@@ -1395,6 +1409,7 @@ impl WorldSource for RomWorld {
             extra_spawns: &[],
             filter: &self.filter,
             scene_opts: self.scene,
+            top_map: false,
         };
         let mut w = build(spec, gpu, &mut traits, &mut images)?;
         w.textures_missing = tex.borrow().missing;
@@ -1440,6 +1455,7 @@ impl WorldSource for SynthSource {
             extra_spawns: &self.spawns,
             filter: &filter,
             scene_opts: SceneOptions::default(),
+            top_map: false,
         };
         build(spec, gpu, &mut traits, &mut images)
     }
@@ -1695,7 +1711,8 @@ impl WorldSource for ModWorld {
         // it, the step the game server runs on the same bytes; the composed bytes replace the map's, so a reload
         // (a lost GPU) does not compose again (MAP-116)
         // DC-DEFAULT: MAP-116
-        if dc_world::compose::has_pieces(&self.bytes) {
+        let composed = dc_world::compose::has_pieces(&self.bytes);
+        if composed {
             // composed from a copy: on an error the map's own bytes stay, and a later attempt reports the same
             // error instead of an empty file
             self.bytes =
@@ -1726,6 +1743,8 @@ impl WorldSource for ModWorld {
             extra_spawns: &[],
             filter: &self.filter,
             scene_opts: self.scene,
+            // CLI-1953: a composed map's pack radar shows only its own geometry: the client draws the world
+            top_map: composed,
         };
         let mut w = build(spec, gpu, &mut traits, &mut images)?;
         w.textures_missing = layered.borrow().missing_total();

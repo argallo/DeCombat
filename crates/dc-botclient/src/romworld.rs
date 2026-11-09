@@ -53,8 +53,18 @@ pub struct LoadedWorld {
     pub kill_volumes: Vec<(Vec<u8>, ConvexVolume)>,
     /// BOT-143: the world's hazard volumes that hurt (a damage property above 0: Warhead's and Two Towers' water),
     /// as regions. They have no object on the clients and act on the server unless its start scripts switch them
-    /// off (DSV-607), so the bot takes every one as acting.
+    /// off (DSV-607); BOT-177: the ones the bot takes as acting (all until [`LoadedWorld::hazards_for_room`]).
     pub hazard_volumes: Vec<ConvexVolume>,
+    /// BOT-177: every hazard volume that hurts, with its lower-case name.
+    pub hazard_named: Vec<(Vec<u8>, ConvexVolume)>,
+    /// BOT-177: the names of the hazard volumes the server spares an infected player (DSV-607 amend: poison type, below
+    /// the lethal rate per second: gas, not deadly water).
+    pub hazard_gas: Vec<Vec<u8>>,
+    /// BOT-177: the volumes the room's start scripts switched off (names), and whether the bot is infected now.
+    pub hazard_off: Vec<Vec<u8>>,
+    pub infected: bool,
+    /// BOT-177: the world's start scripts (the code the game server evaluates them with, `dc_world::scripts`).
+    pub scripts: dc_world::scripts::StartScripts,
 }
 
 /// A world model an object of the world file links to by name, in the bot's collision set.
@@ -148,6 +158,36 @@ impl LoadedWorld {
         Some((self.collision.clone(), gone))
     }
 
+    /// BOT-177: takes the hazard volumes named in `off` as switched off by the room's start scripts (the others as
+    /// acting). Returns whether the acting set changed.
+    // DC-DEFAULT: BOT-177 (proposed)
+    pub fn hazards_for_room(&mut self, off: &[Vec<u8>]) -> bool {
+        self.hazard_off = off.to_vec();
+        self.refresh_hazards()
+    }
+
+    /// BOT-177: the bot is infected (or human again): the gas volumes the server spares the infected act for it no
+    /// more (they come back when it is human). Returns whether the acting set changed.
+    // DC-DEFAULT: BOT-177 (proposed)
+    pub fn set_infected(&mut self, infected: bool) -> bool {
+        if self.infected == infected {
+            return false;
+        }
+        self.infected = infected;
+        self.refresh_hazards()
+    }
+
+    fn refresh_hazards(&mut self) -> bool {
+        let mut off = self.hazard_off.clone();
+        if self.infected {
+            off.extend(self.hazard_gas.iter().cloned());
+        }
+        let acting = acting_hazards(&self.hazard_named, &off);
+        let changed = acting != self.hazard_volumes;
+        self.hazard_volumes = acting;
+        changed
+    }
+
     /// The kill volumes the server created (kind 9 with the kill volume code, matched by name), as regions.
     // DC-DEFAULT: BOT-111 (proposed)
     pub fn active_kill_volumes(&self, table: &ObjectTable) -> Vec<ConvexVolume> {
@@ -214,7 +254,7 @@ pub fn world_from_bytes(name: &str, data: &[u8]) -> Result<LoadedWorld, String> 
     // BOT-143: the hazard volumes that hurt (dc-dserver `killvol::hazard_shapes` reads the same role and property)
     // SPEC: FMT_DAT85.md §6.2 (the hazard role, brush, name-linked)
     // DC-DEFAULT: BOT-143 (proposed)
-    let hazard_volumes = w
+    let hazard_named: Vec<(Vec<u8>, ConvexVolume)> = w
         .objects_with_role(ObjectRole::HazardVolume)
         .filter(|o| {
             matches!(o.prop_named(&dc_world::names::PROP_DAMAGE).map(|p| p.value),
@@ -222,8 +262,25 @@ pub fn world_from_bytes(name: &str, data: &[u8]) -> Result<LoadedWorld, String> 
         })
         .filter_map(|o| {
             let m = w.brush_of(o)?;
-            encloses_space(m).then(|| brush_volume(m)).flatten()
+            let v = encloses_space(m).then(|| brush_volume(m)).flatten()?;
+            Some((o.name().unwrap_or_default().to_ascii_lowercase(), v))
         })
+        .collect();
+    let hazard_volumes = hazard_named.iter().map(|h| h.1.clone()).collect();
+    // BOT-177: the ones the server spares an infected player (dc-dserver `infect::infected_spared_by_hazard`: the
+    // poison damage kind, below the lethal rate per second)
+    let hazard_gas: Vec<Vec<u8>> = w
+        .objects_with_role(ObjectRole::HazardVolume)
+        .filter(|o| {
+            let rate = match o.prop_named(&dc_world::names::PROP_DAMAGE).map(|p| p.value) {
+                Some(dc_world::FieldValue::Real(r)) => r,
+                _ => return false,
+            };
+            let poison = matches!(o.prop_named(&dc_world::names::PROP_DAMAGE_KIND).map(|p| p.value),
+                Some(dc_world::FieldValue::Text(t)) if dc_world::names::DAMAGE_KIND_POISON.matches(t));
+            poison && rate > 0.0 && rate < crate::qrt::INFECTED_LETHAL_HAZARD_RATE
+        })
+        .map(|o| o.name().unwrap_or_default().to_ascii_lowercase())
         .collect();
     Ok(LoadedWorld {
         listed: name.to_string(),
@@ -245,7 +302,116 @@ pub fn world_from_bytes(name: &str, data: &[u8]) -> Result<LoadedWorld, String> 
         solid: None,
         kill_volumes,
         hazard_volumes,
+        hazard_named,
+        hazard_gas,
+        hazard_off: Vec::new(),
+        infected: false,
+        scripts: dc_world::scripts::start_scripts(&w),
     })
+}
+
+/// BOT-177: the hazard volumes of `named` not named in `off`.
+pub fn acting_hazards(named: &[(Vec<u8>, ConvexVolume)], off: &[Vec<u8>]) -> Vec<ConvexVolume> {
+    named
+        .iter()
+        .filter(|(n, _)| !off.contains(n))
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
+/// BOT-177: [`hazards_switched_off`] for a loaded world, remembered per ROM, world bytes and mode class for the
+/// process (a swarm's bots of one room ask alike; the tables are read once).
+pub fn hazards_switched_off_cached(rom: &Path, w: &LoadedWorld, game_type: u8) -> Option<Vec<Vec<u8>>> {
+    type Key = (PathBuf, String, u8);
+    type Cache = std::sync::Mutex<std::collections::HashMap<Key, Option<Vec<Vec<u8>>>>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let key = (rom.to_path_buf(), w.sha16.clone(), game_type);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(v) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return v;
+    }
+    let v = hazards_switched_off(rom, &w.listed, &w.scripts, &w.hazard_named, game_type);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, v.clone());
+    }
+    v
+}
+
+/// BOT-177: the names of the hazard volumes the game server switches off in a room of mode class `game_type` on the
+/// world `listed` (an archive entry or a file path; its file name names the world): the start scripts evaluated as
+/// the server does (DSV-607, shared code `dc_world::scripts`) with each `trig` value the ROM's room tables give for
+/// that world and mode (`dc_bute::room_triggers_for_world`). A volume counts as off only when every such room
+/// switches it off; clan rows count too, and a (map, mode) pair with no mode file counts as a room that switches
+/// nothing off (the lobby may still start it). `None` when no room of the tables plays that world in that mode (a
+/// community map, a world file of a local run that is no ROM world): the bot then takes every hazard volume as
+/// acting. Rooms of an override world or `-worldobjects all` run no scripts: the bot cannot know them, the safety
+/// net (`BotSession::hazard_rule_wrong`) restores the volumes at the first hit.
+// DC-DEFAULT: BOT-177 (proposed)
+pub fn hazards_switched_off(
+    rom: &Path,
+    listed: &str,
+    scripts: &dc_world::scripts::StartScripts,
+    hazards: &[(Vec<u8>, ConvexVolume)],
+    game_type: u8,
+) -> Option<Vec<Vec<u8>>> {
+    let file = listed.rsplit(['\\', '/']).next().unwrap_or(listed);
+    let world = file
+        .len()
+        .checked_sub(4)
+        .filter(|&cut| file.is_char_boundary(cut) && file[cut..].eq_ignore_ascii_case(".dat"))
+        .map_or(file, |cut| &file[..cut]);
+    let g = dc_bute::GameRoomData::from_rom(rom).ok()?;
+    let trigs = dc_bute::room_triggers_for_world(rom, &g, world, game_type);
+    if trigs.is_empty() {
+        return None;
+    }
+    Some(hazards_off_for_rooms(scripts, hazards, &trigs))
+}
+
+/// BOT-177: the names of `hazards` every room of `rooms` switches off; none when a room has no mode file.
+pub fn hazards_off_for_rooms(
+    scripts: &dc_world::scripts::StartScripts,
+    hazards: &[(Vec<u8>, ConvexVolume)],
+    rooms: &[dc_bute::RoomTrig],
+) -> Vec<Vec<u8>> {
+    if rooms.iter().any(|t| !t.mode_file) {
+        return Vec::new();
+    }
+    let runs: Vec<_> = rooms
+        .iter()
+        .map(|t| dc_world::scripts::start_scripts_run(scripts.as_ref(), t.trig.as_deref()).0)
+        .collect();
+    hazards
+        .iter()
+        .filter(|(n, _)| runs.iter().all(|ov| !dc_world::scripts::left_on(ov, n)))
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
+/// BOT-177: whether a poison hit with the body at `at` contradicts the judged rule (some volume of `named` is off,
+/// i.e. not in `acting`): not when the body stands within [`HAZARD_RULE_SLACK`] of the box of an acting volume and of
+/// none judged off (that volume explains the hit); any other hit does.
+// DC-DEFAULT: BOT-177 (proposed) 48 units around the volume's box
+pub fn hazard_hit_contradicts_rule(
+    at: [f32; 3],
+    named: &[(Vec<u8>, ConvexVolume)],
+    acting: &[ConvexVolume],
+) -> bool {
+    const SLACK: f32 = crate::session::HAZARD_RULE_SLACK;
+    let near = |v: &ConvexVolume| {
+        let (lo, hi) = (v.lo.to_array(), v.hi.to_array());
+        (0..3).all(|k| at[k] >= lo[k] - SLACK && at[k] <= hi[k] + SLACK)
+    };
+    let (mut off_any, mut near_off, mut near_on) = (false, false, false);
+    for (_, v) in named {
+        if acting.contains(v) {
+            near_on |= near(v);
+        } else {
+            off_any = true;
+            near_off |= near(v);
+        }
+    }
+    off_any && (near_off || !near_on)
 }
 
 /// BOT-131: whether a volume's model encloses space as the server's point-inside test needs it: at least four
@@ -434,6 +600,111 @@ mod tests {
         );
         assert_eq!(normalise(b"Worlds\\Snow"), None);
         assert_eq!(normalise(b""), None);
+    }
+
+    /// BOT-177: the hazard volumes judged off leave the acting set; none off restores every one.
+    #[test]
+    fn hazards_for_room_keeps_the_ones_left_on() {
+        let v = dc_sim::V3::from_array;
+        let a = ConvexVolume::from_box(v([0.0; 3]), v([10.0; 3]));
+        let b = ConvexVolume::from_box(v([20.0; 3]), v([30.0; 3]));
+        let named = vec![(b"gas".to_vec(), a.clone()), (b"water".to_vec(), b.clone())];
+        assert_eq!(acting_hazards(&named, &[b"gas".to_vec()]), vec![b.clone()]);
+        assert_eq!(acting_hazards(&named, &[]), vec![a, b]);
+        assert!(acting_hazards(&named, &[b"gas".to_vec(), b"water".to_vec()]).is_empty());
+    }
+
+    /// BOT-177: a poison hit contradicts the rule when some volume is judged off and no acting volume explains it.
+    #[test]
+    fn a_hazard_hit_restores_unless_an_acting_volume_explains_it() {
+        let v = dc_sim::V3::from_array;
+        let off = ConvexVolume::from_box(v([0.0; 3]), v([10.0; 3]));
+        let on = ConvexVolume::from_box(v([500.0; 3]), v([510.0; 3]));
+        let named = vec![(b"gas".to_vec(), off.clone()), (b"water".to_vec(), on.clone())];
+        let acting = [on.clone()];
+        // near the volume judged off
+        assert!(hazard_hit_contradicts_rule([5.0; 3], &named, &acting));
+        // far from every volume (a server that runs no scripts hurts anywhere)
+        assert!(hazard_hit_contradicts_rule([250.0; 3], &named, &acting));
+        // inside the acting volume: it explains the hit
+        assert!(!hazard_hit_contradicts_rule([505.0; 3], &named, &acting));
+        // nothing judged off: nothing to restore
+        assert!(!hazard_hit_contradicts_rule([250.0; 3], &named, &[off, on]));
+    }
+
+    /// BOT-177: a volume is off only when every room (plain and clan rows alike) switches it off, and a room with
+    /// no mode file switches nothing off.
+    #[test]
+    fn hazards_off_needs_every_room_and_a_mode_file() {
+        let v = dc_sim::V3::from_array;
+        let a = ConvexVolume::from_box(v([0.0; 3]), v([10.0; 3]));
+        let hz = vec![(b"gas".to_vec(), a)];
+        let scripts = dc_world::scripts::StartScripts {
+            startup: Vec::new(),
+            triggers: vec![(b"Quiet".to_vec(), vec![b"msg gas off".to_vec()])],
+            controls: Vec::new(),
+        };
+        let room = |t: Option<&str>, mode_file| dc_bute::RoomTrig {
+            trig: t.map(str::to_string),
+            mode_file,
+        };
+        let off = vec![b"gas".to_vec()];
+        assert_eq!(hazards_off_for_rooms(&scripts, &hz, &[room(Some("|Quiet||"), true)]), off);
+        // a clan row whose trigger leaves it on keeps it acting
+        let rooms = [room(Some("|Quiet||"), true), room(Some("|Loud||"), true)];
+        assert!(hazards_off_for_rooms(&scripts, &hz, &rooms).is_empty());
+        let rooms = [room(Some("|Quiet||"), true), room(None, true)];
+        assert!(hazards_off_for_rooms(&scripts, &hz, &rooms).is_empty());
+        // a mode-file-less row acts
+        let rooms = [room(Some("|Quiet||"), true), room(None, false)];
+        assert!(hazards_off_for_rooms(&scripts, &hz, &rooms).is_empty());
+    }
+
+    /// BOT-177 (ROM-gated, skipped without CA_ROM): on Warhead the start triggers of the TDM rooms switch every
+    /// hazard volume off (the server logs "0 hazard volumes act"), the Quarantine room's leave them on; a world no
+    /// room of the tables plays is unknown (every volume acts).
+    #[test]
+    fn rom_warhead_hazards_are_off_in_tdm_and_act_in_quarantine() {
+        let Some(rom) = dc_rez::dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let r = RomWorlds::open(&rom).expect("world archive");
+        let listed = r.resolve(b"WORLDS/WARHEAD.DAT").expect("the world");
+        let w = r.load(&listed).expect("loads");
+        assert!(!w.hazard_named.is_empty(), "Warhead has hazard volumes");
+        let g = dc_bute::GameRoomData::from_rom(&rom).expect("tables");
+        let class = |key: &str| -> u8 {
+            g.modes(false)
+                .iter()
+                .find(|m| m.get("Key").is_some_and(|k| k == key))
+                .and_then(|m| m.get("GameType")?.trim().parse().ok())
+                .expect("mode row")
+        };
+        let t0 = std::time::Instant::now();
+        let tdm = hazards_switched_off(&rom, &listed, &w.scripts, &w.hazard_named, class("TDM"))
+            .expect("Warhead is a TDM map");
+        eprintln!("TDM off {} of {} in {:?}", tdm.len(), w.hazard_named.len(), t0.elapsed());
+        assert_eq!(tdm.len(), w.hazard_named.len(), "TDM: all off");
+        let qrt = hazards_switched_off(&rom, &listed, &w.scripts, &w.hazard_named, crate::qrt::QRT_CLASS)
+            .expect("Warhead is a Quarantine map");
+        assert!(qrt.is_empty(), "Quarantine: all act");
+        let mut w = w;
+        assert!(w.hazards_for_room(&tdm));
+        assert!(w.hazard_volumes.is_empty());
+        assert!(w.hazards_for_room(&qrt));
+        assert_eq!(w.hazard_volumes.len(), w.hazard_named.len());
+        assert_eq!(
+            hazards_switched_off(&rom, "NOT_A_ROM_WORLD.DAT", &w.scripts, &w.hazard_named, class("TDM")),
+            None
+        );
+        // Overdose's TDM rooms leave its hazard volumes acting (the server logs "2 hazard volumes act")
+        let listed = r.resolve(b"WORLDS/OVERDOSE.DAT").expect("the world");
+        let w = r.load(&listed).expect("loads");
+        assert!(!w.hazard_named.is_empty(), "Overdose has hazard volumes");
+        let tdm = hazards_switched_off(&rom, &listed, &w.scripts, &w.hazard_named, class("TDM"))
+            .expect("Overdose is a TDM map");
+        assert!(tdm.is_empty(), "Overdose TDM: all act, {tdm:?}");
     }
 
     #[test]

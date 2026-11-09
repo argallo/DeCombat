@@ -62,7 +62,7 @@ The unit starts `dc-lobby-server --config /opt/decombat/config/server.toml --pub
 --no-auto-create --register-open "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/logs/dserver
 --admin 127.0.0.1:10090 --stop-grace 10`: listens on every interface, tells remote players the address from
 `DC_SERVER__ADVERTISE_IP` (refuses to start while that is loopback, LG-31), checks passwords, refuses unknown names,
-serves the invite-only registration page on TCP 18080, starts the `dc-dserver` next to itself per match (LG-126)
+serves the open registration page (LG-433) on TCP 18080, starts the `dc-dserver` next to itself per match (LG-126)
 bound to every interface (`-bindip 0.0.0.0`: on a provider that maps the public address onto a private one, binding
 the public address itself would fail), and keeps the operator endpoint on loopback.
 

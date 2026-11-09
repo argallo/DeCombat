@@ -295,6 +295,8 @@ pub enum Bound {
     Inspect,
     /// CLI-1950: the team ping.
     Ping,
+    /// CLI-1953: the world map (opens and closes it).
+    Map,
 }
 
 /// The two movement commands the 2009 bindable command table has no row for (their keys are kept in our own
@@ -307,6 +309,8 @@ pub const CMD_STRAFE: i32 = 9;
 pub const CMD_INSPECT: i32 = 900;
 /// Our own command with no row in the 2009 table: the team ping (DC-DEFAULT: CLI-1950).
 pub const CMD_PING: i32 = 901;
+/// Our own command with no row in the 2009 table: the world map (DC-DEFAULT: CLI-1953).
+pub const CMD_MAP: i32 = 902;
 /// CLI-1950: the key code our own section stores for the middle mouse button (keyboard scan codes stop at 0xED, so
 /// no key has it); only our own key rows can take it.
 // DC-DEFAULT: CLI-1950 (proposed)
@@ -333,6 +337,7 @@ pub fn bound_of_command(cmd: i32) -> Option<Bound> {
         CMD_STRAFE => Bound::Action(Action::StrafeMod),
         CMD_INSPECT => Bound::Inspect,
         CMD_PING => Bound::Ping,
+        CMD_MAP => Bound::Map,
         78 => Bound::Slot(0),
         79 => Bound::Slot(1),
         80 => Bound::Slot(2),
@@ -618,6 +623,8 @@ impl Default for KeyBinds {
             (CMD_INSPECT, 23),
             // DC-DEFAULT: CLI-1950 the middle mouse button
             (CMD_PING, KEY_MOUSE_MIDDLE),
+            // DC-DEFAULT: CLI-1953 M (no 2009 command has it)
+            (CMD_MAP, 50),
             (61, 44),
             (78, 2),
             (79, 3),
@@ -1153,6 +1160,7 @@ impl Settings {
             (CMD_STRAFE, "bind_strafe"),
             (CMD_INSPECT, "bind_inspect"),
             (CMD_PING, "bind_ping"),
+            (CMD_MAP, "bind_map"),
         ] {
             if let Some(v) = doc.own_get(key).and_then(int_of) {
                 s.binds
@@ -1337,6 +1345,7 @@ impl Settings {
             (CMD_STRAFE, "bind_strafe"),
             (CMD_INSPECT, "bind_inspect"),
             (CMD_PING, "bind_ping"),
+            (CMD_MAP, "bind_map"),
         ] {
             let v = self.binds.key_of(cmd).map_or(0, i32::from);
             doc.own_set(key, &v.to_string());

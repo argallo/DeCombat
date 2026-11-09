@@ -41,33 +41,103 @@ pub fn wstr_at(d: &[u8], off: usize, chars: usize) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// A free TCP port on 127.0.0.1 (bind 0, read, close).
+/// The band the free-port helpers hand out from: below every OS ephemeral range (Linux 32768+, Windows and macOS
+/// 49152+) and clear of the lobby's own fallback range (29901-29999) and the usual game ports (27xxx). A port that
+/// came from `bind 0` and was closed is back in the ephemeral pool, so any socket bound to port 0 meanwhile (another
+/// test's client, a probe) could take it before the lobby's game server binds it: the 2026-11-09 i686 CI failure of
+/// `gain_lines` was a stand-in server's `cannot bind ... (os error 10048)` on such a port, and the room reset.
+const PORT_BAND_LO: u16 = 21_000;
+const PORT_BAND_LEN: u32 = 6_000;
+/// A reservation older than this is free again (a test lobby never keeps a port that long).
+const PORT_RESERVATION_TTL: Duration = Duration::from_secs(600);
+
+/// Claims `port` for this process across every test process of the machine (all worktrees and target folders): a
+/// marker file made with `create_new` in a shared temp folder. A stale marker is taken over by an atomic rename, so
+/// two processes never both win it.
+fn reserve_port(port: u16) -> bool {
+    let dir = std::env::temp_dir().join("dc-test-ports");
+    let _ = std::fs::create_dir_all(&dir);
+    let f = dir.join(port.to_string());
+    let claim = |f: &Path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(f)
+            .is_ok()
+    };
+    if claim(&f) {
+        return true;
+    }
+    let stale = f
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > PORT_RESERVATION_TTL);
+    if !stale {
+        return false;
+    }
+    let moved = dir.join(format!("{port}.stale-{}", std::process::id()));
+    if std::fs::rename(&f, &moved).is_err() {
+        return false; // another process took it over first
+    }
+    let _ = std::fs::remove_file(&moved);
+    claim(&f)
+}
+
+/// Gives back a port of [`band_port`] and its neighbour (a port from outside the band is ignored).
+pub fn release_port(port: u16) {
+    if !(PORT_BAND_LO..PORT_BAND_LO + PORT_BAND_LEN as u16).contains(&port) {
+        return;
+    }
+    let dir = std::env::temp_dir().join("dc-test-ports");
+    let even = port & !1;
+    for p in [even, even + 1] {
+        let _ = std::fs::remove_file(dir.join(p.to_string()));
+    }
+}
+
+/// The next port of the band that this process reserved (see [`reserve_port`]) and for which `free` holds, together
+/// with the port above it: the lobby listens on its lobby port + 1 as well, and the listener loop of
+/// [`Lobby::start`] refuses a set in which that one is another listener's (so the band steps by 2 and every port
+/// handed out owns its odd neighbour). Each process starts at a random even offset and counts up, so it never hands
+/// the same port out twice.
+fn band_port(free: impl Fn(u16) -> bool) -> u16 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(u32::MAX);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let seed = (std::process::id() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ nanos;
+    let start = (seed % PORT_BAND_LEN as u64) as u32 & !1;
+    let _ = NEXT.compare_exchange(u32::MAX, start, Ordering::SeqCst, Ordering::SeqCst);
+    for _ in 0..PORT_BAND_LEN / 2 {
+        let n = NEXT.fetch_add(2, Ordering::SeqCst);
+        let p = PORT_BAND_LO + (n % PORT_BAND_LEN) as u16;
+        if reserve_port(p) && reserve_port(p + 1) && free(p) && free(p + 1) {
+            return p;
+        }
+    }
+    panic!(
+        "no free port in {PORT_BAND_LO}..{}",
+        PORT_BAND_LO as u32 + PORT_BAND_LEN
+    );
+}
+
+/// A free TCP port on 127.0.0.1 from the test band (see [`PORT_BAND_LO`]).
 pub fn free_tcp_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    band_port(|p| TcpListener::bind(("127.0.0.1", p)).is_ok())
 }
 
-/// A free UDP port on 127.0.0.1 (bind 0, read, close).
+/// A free UDP port on 127.0.0.1 from the test band (see [`PORT_BAND_LO`]).
 pub fn free_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    band_port(udp_free)
 }
 
-/// Distinct free UDP ports.
+/// Distinct free UDP ports (the band never repeats a port within a process).
 pub fn free_udp_ports(n: usize) -> Vec<u16> {
-    let socks: Vec<UdpSocket> = (0..n)
-        .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
-        .collect();
-    socks
-        .iter()
-        .map(|s| s.local_addr().unwrap().port())
-        .collect()
+    (0..n).map(|_| free_udp_port()).collect()
 }
 
 /// True when a UDP bind on 127.0.0.1 succeeds.
@@ -351,6 +421,10 @@ impl Drop for Lobby {
             if pid_alive(*pid) {
                 kill_pid(*pid);
             }
+        }
+        // the processes are gone: the band ports go back (the clan port stays reserved until its marker goes stale)
+        for p in [self.port, self.lport, self.web, self.gameport] {
+            release_port(p);
         }
         // keep the logs and the DB of a failed test for inspection; remove them otherwise
         if !std::thread::panicking() && std::env::var_os("DC_KEEP_TEST_DIRS").is_none() {

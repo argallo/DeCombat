@@ -43,11 +43,30 @@ fn run_match(l: &Lobby) -> (Totals, Totals, Client) {
     join_room(&mut b, no);
     ready(&mut b, 1);
     ready(&mut a, 2);
-    let _ = game_address(&mut a, T);
-    let _ = game_address(&mut b, T);
+    game_or_log(l, &mut a);
+    game_or_log(l, &mut b);
     // the progress push follows the stored result
     a.recv_until(0x3004, T);
     ((na, ba), (nb, bb), a)
+}
+
+/// Waits for the game-start packet; when it does not come, the panic carries the lobby log (what the lobby saw of
+/// the game server: its launch, `@ready`, a bind failure), so a CI failure explains itself.
+fn game_or_log(l: &Lobby, c: &mut Client) {
+    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| game_address(c, T)));
+    if let Err(e) = got {
+        let why = e
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        panic!(
+            "{why}
+lobby log:
+{}",
+            l.log_text()
+        );
+    }
 }
 
 fn gain_lines(l: &Lobby) -> Vec<String> {
@@ -186,8 +205,8 @@ fn loadout_tokens_switch_comes_from_the_server_toml_layer_when_set() {
     join_room(&mut b, no);
     ready(&mut b, 1);
     ready(&mut a, 2);
-    let _ = game_address(&mut a, T);
-    let _ = game_address(&mut b, T);
+    game_or_log(&l, &mut a);
+    game_or_log(&l, &mut b);
     assert!(wait_until(T, || l
         .fake()
         .first()

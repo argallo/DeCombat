@@ -19,7 +19,7 @@ pub fn write_bgra8(width: u16, height: u16, rgba: &[u8]) -> Option<Vec<u8>> {
     };
     let mut out = header.to_bytes().to_vec();
     out.reserve(rgba.len());
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
     }
     Some(out)
@@ -284,9 +284,10 @@ pub fn write_dxt1_cutout(width: u16, height: u16, rgba: &[u8]) -> Option<Vec<u8>
                         }
                     }
                     let at = ((y * nw + x) * 4) as usize;
-                    if seen > 0 {
-                        for c in 0..3 {
-                            next[at + c] = (sum[c] / seen) as u8;
+                    // no pixel seen: the texel keeps what it had
+                    for c in 0..3 {
+                        if let Some(v) = sum[c].checked_div(seen) {
+                            next[at + c] = v as u8;
                         }
                     }
                     // half covered stays: thin strokes last further away
@@ -352,15 +353,15 @@ mod tests {
         assert_eq!(at(1, 3), 255);
         assert!(at(1, 0) > 180 && at(1, 1) < 60, "the paint's colour");
         assert_eq!(at(6, 3), 0, "the hole");
-        assert!(write_dxt1_cutout(6, 8, &vec![0; 6 * 8 * 4]).is_none());
+        assert!(write_dxt1_cutout(6, 8, &[0; 6 * 8 * 4]).is_none());
     }
 
     #[test]
     fn dxt1_needs_a_power_of_two_of_at_least_four() {
-        assert!(write_dxt1_mipped(6, 8, &vec![0; 6 * 8 * 4]).is_none());
-        assert!(write_dxt1_mipped(2, 2, &vec![0; 2 * 2 * 4]).is_none());
-        assert!(write_dxt1_mipped(4, 4, &vec![0; 4]).is_none());
-        assert!(write_dxt1_mipped(4, 4, &vec![0; 4 * 4 * 4]).is_some());
+        assert!(write_dxt1_mipped(6, 8, &[0; 6 * 8 * 4]).is_none());
+        assert!(write_dxt1_mipped(2, 2, &[0; 2 * 2 * 4]).is_none());
+        assert!(write_dxt1_mipped(4, 4, &[0; 4]).is_none());
+        assert!(write_dxt1_mipped(4, 4, &[0; 4 * 4 * 4]).is_some());
     }
 
     #[test]

@@ -419,6 +419,13 @@ pub struct HudState {
     pub kicked: std::collections::BTreeSet<u8>,
     /// Scoreboard key held.
     pub show_board: bool,
+    /// CLI-1953: the world map is open (its key toggles it).
+    pub map_open: bool,
+    /// CLI-1953: the team mates' world points while the map is open.
+    pub map_mates: Vec<[f32; 3]>,
+    /// CLI-1953: the world rectangle `[x0, z0, x1, z1]` of the client's own world picture
+    /// ([`super::worldmap::WORLD_MAP_TEX`]), when it drew one for this match.
+    pub world_map: Option<[f32; 4]>,
     /// Board openings (the key went down outside the result board) not yet turned into the open sound.
     pub board_opens: u32,
     /// The leave-the-match box as drawn (`None`: closed; w2-loading, CLI-920, [`crate::loading::LeaveBox`]).

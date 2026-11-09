@@ -909,7 +909,14 @@ pub fn scene_objects_with_sounds(
     let mut volumes = Vec::new();
     let mut sprites = Vec::new();
     let mut effects = Vec::new();
-    let mut scripts = WorldScripts::default();
+    // the start scripts are read by the shared code the bot runs too (BOT-177)
+    let s = dc_world::scripts::start_scripts(w);
+    let scripts = WorldScripts {
+        startup: s.startup,
+        triggers: s.triggers,
+        controls: s.controls,
+        ..WorldScripts::default()
+    };
     for o in &w.objects {
         let name = || o.name().map(<[u8]>::to_vec).unwrap_or_default();
         let pos = o.position().unwrap_or([0.0; 3]);
@@ -942,28 +949,7 @@ pub fn scene_objects_with_sounds(
                 });
                 continue;
             }
-            Some(ObjectRole::StartupCommand) => {
-                if let Some(t) = named_text(o, &names::PROP_COMMAND) {
-                    scripts.startup.push(t.to_vec());
-                }
-                continue;
-            }
-            Some(ObjectRole::TriggerVolume) => {
-                let cmds: Vec<Vec<u8>> = names::PROP_TRIGGER_COMMANDS
-                    .iter()
-                    .filter_map(|k| named_text(o, k))
-                    .filter(|t| !t.is_empty())
-                    .map(<[u8]>::to_vec)
-                    .collect();
-                scripts.triggers.push((name(), cmds));
-                continue;
-            }
-            Some(ObjectRole::ModeController) => {
-                if let Some(t) = named_text(o, &names::PROP_OBJECT_START_COMMAND) {
-                    scripts.controls.push((name(), t.to_vec()));
-                }
-                continue;
-            }
+            role if dc_world::scripts::is_script_role(role) => continue,
             _ => {}
         }
         if o.is_class(&names::CLASS_SPRITE) {

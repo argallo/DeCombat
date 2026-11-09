@@ -1144,6 +1144,8 @@ struct Live {
     hud_layer: OverlayRenderer,
     hud: Option<crate::hud::HudDriver>,
     board_held: bool,
+    /// CLI-1953: the world map is open (its key toggles it).
+    map_open: bool,
     boxes: DebugBoxes,
     models: Option<ModelScene>,
     /// The weapon effects ([`crate::fx`]) and their colour format.
@@ -2474,11 +2476,13 @@ impl App {
         let hud_layer = OverlayRenderer::new(&ctx, format);
         // CLI-1593: the passes into the 3D target follow the renderer's sample count
         let boxes = DebugBoxes::with_msaa(&ctx, format, renderer.msaa());
-        let world = self.source.load(Some(GpuTarget {
+        let mut world = self.source.load(Some(GpuTarget {
             ctx: &ctx,
             renderer: &renderer,
         }))?;
         println!("dc-client: {}", world.summary());
+        // CLI-1953: the client's own picture of a map composed from ROM pieces, for the world map
+        let top_map = world.top_map.take();
         let gamma = dc_render::GammaStage::new(
             &ctx,
             format,
@@ -2542,6 +2546,9 @@ impl App {
                         d.set_reticle(shape, argb);
                     }
                     d.set_draw_voice(self.source.draw_voice());
+                    if let Some(m) = top_map {
+                        d.set_world_map(m);
+                    }
                     // CLI-1570: the network overlay starts as the flag / env / last choice says
                     d.set_net_mode(crate::settings::net_overlay_start());
                     // CLI-1613 / CLI-1614 / CLI-1620: the set's HUD keys, hud.draw and render.entity_visibility
@@ -2651,6 +2658,7 @@ impl App {
             hud_layer,
             hud,
             board_held: false,
+            map_open: false,
             boxes,
             models,
             fx,
@@ -2727,6 +2735,13 @@ impl App {
         // a step file's chat presses (`type`, `key enter`) reach the chat box as the keys would
         for press in crate::steps::take_chat() {
             self.chat_press(press);
+        }
+        // CLI-1953: a step file's map key presses toggle the world map as the key would
+        let map_presses = crate::steps::take_map_presses();
+        if map_presses % 2 == 1 {
+            if let Some(l) = self.live.as_mut() {
+                l.map_open = !l.map_open;
+            }
         }
         // the report form's caret blinks: its list is handed over again every frame while it is open
         if self.report_form.is_some() {
@@ -2854,6 +2869,7 @@ impl App {
                 live.player.state.crouch_held,
                 board,
             );
+            h.set_map_open(live.map_open);
             // the stamina bar follows the sprint gauge (CLI-589)
             h.set_stamina(live.player.stamina_level());
             // the kill banners' voice lines play with this frame's sounds
@@ -3503,6 +3519,22 @@ impl App {
             .and_then(|l| l.hud.as_ref())
             .is_some_and(|h| h.state.chat_input.is_open())
         {
+            return;
+        }
+        // DC-DEFAULT: CLI-1953 (proposed) the world map key opens and closes the map; with the map open, Escape closes
+        // it first (the exit box takes the next Escape)
+        if bound_key(code) == Some(crate::settings::Bound::Map) {
+            if down && !k.repeat {
+                if let Some(l) = self.live.as_mut() {
+                    l.map_open = !l.map_open;
+                }
+            }
+            return;
+        }
+        if code == KeyCode::Escape && down && !k.repeat && self.live.as_ref().is_some_and(|l| l.map_open) {
+            if let Some(l) = self.live.as_mut() {
+                l.map_open = false;
+            }
             return;
         }
         if down && !k.repeat {

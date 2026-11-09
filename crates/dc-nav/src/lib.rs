@@ -132,6 +132,10 @@ pub const ESCAPE_DROP: f32 = 400.0;
 /// and the attackers had no way to the site but a loop of 11700 units.
 // DC-DEFAULT: BOT-154 (proposed)
 pub const LADDER_END: f32 = 64.0;
+/// BOT-176: how much farther out a ladder's top is tried when the place a body's width beyond the ladder stands over
+/// the shaft (a hatch that opens wider than the ladder): half a lattice step.
+// DC-DEFAULT: BOT-176 (proposed)
+pub const LADDER_OUT: f32 = STEP * 0.5;
 
 /// Whether a body (half extents `dims`) at `p` is in danger: in a kill volume, above one (nothing but a kill volume
 /// or the void below), above a drop of more than [`DEADLY_DROP`], or with its centre over a gap that deep (BOT-131).
@@ -997,12 +1001,12 @@ impl NavGrid {
             // the two sides of the ladder's face (its thin axis): the foot on one, the top beyond the wall it stands
             // against on the other (else on the same side: a ladder up a free-standing post); BOT-154: else beside
             // its ends (`side(2.0)`, `side(-2.0)`: a ladder in a shaft whose hatch opens beside it)
-            let side = |sg: f32| {
+            let side = |sg: f32, out: f32| {
                 let (s, wide) = (sg.signum(), sg.abs() > 1.5);
                 if (ex <= ez) != wide {
-                    V3::new(c.x + s * (ex + r + 8.0), 0.0, c.z)
+                    V3::new(c.x + s * (ex + r + 8.0 + out), 0.0, c.z)
                 } else {
-                    V3::new(c.x, 0.0, c.z + s * (ez + r + 8.0))
+                    V3::new(c.x, 0.0, c.z + s * (ez + r + 8.0 + out))
                 }
             };
             // BOT-154: an end's floor may lie up to LADDER_END inside the ladder's span (a volume that reaches into
@@ -1023,13 +1027,17 @@ impl NavGrid {
             };
             let mut ends = None;
             'foot: for sg in [1.0f32, -1.0, 2.0, -2.0] {
-                let Some(f) = foot_at(&mut self, side(sg)) else {
+                let Some(f) = foot_at(&mut self, side(sg, 0.0)) else {
                     continue;
                 };
                 for tg in [-sg, sg, 2.0 * sg.abs().min(1.0), -2.0 * sg.abs().min(1.0)] {
-                    if let Some(t) = top_at(&mut self, side(tg)) {
-                        ends = Some((f, t));
-                        break 'foot;
+                    // BOT-176: else half a step farther out (a hatch that opens wider than the ladder: the body's
+                    // centre a body's width beyond the ladder still hangs over the shaft)
+                    for out in [0.0, LADDER_OUT] {
+                        if let Some(t) = top_at(&mut self, side(tg, out)) {
+                            ends = Some((f, t));
+                            break 'foot;
+                        }
                     }
                 }
             }
@@ -2443,6 +2451,32 @@ mod tests {
         grow(&mut nav, 60_000, Some(high));
         assert!(reaches_to(&mut nav, low, high), "up the ladder");
         assert!(reaches_to(&mut nav, high, low), "and down it");
+    }
+
+    /// BOT-176: a ladder up a wall through a hatch that opens 40 beyond the wall: the place a body's width out from
+    /// the ladder hangs over the shaft (its centre has no floor under it), the place half a step farther out is the
+    /// ladder's top. Before, the ladder had no top and the floor above was out of reach (Snow Valley's hatch ladder
+    /// at (-1478, 623..1119, 468)).
+    #[test]
+    fn a_ladder_up_through_a_wide_hatch_is_a_way() {
+        let w = Arc::new(CollisionWorld::from_parts(
+            vec![
+                solid_box([-2000.0, -64.0, -2000.0], [2000.0, 0.0, 2000.0]),
+                solid_box([-2000.0, 0.0, -200.0], [2000.0, 800.0, -10.0]),
+                solid_box([-2000.0, 400.0, 40.0], [2000.0, 416.0, 2000.0]),
+                solid_box([80.0, 400.0, -10.0], [2000.0, 416.0, 40.0]),
+                solid_box([-2000.0, 400.0, -10.0], [-80.0, 416.0, 40.0]),
+            ],
+            &[],
+        ));
+        let ladder =
+            ConvexVolume::from_box(V3::new(-30.0, 0.0, -10.0), V3::new(30.0, 430.0, 2.0));
+        let (low, high) = ([0.0f32, 40.0, 300.0], [0.0f32, 456.0, 300.0]);
+        let mut nav = NavGrid::new(w, [16.0, 40.0, 16.0]).with_ladders(&[ladder]);
+        assert_eq!(nav.ladders.len(), 1, "the ladder has a foot and a top");
+        nav.seed(low);
+        grow(&mut nav, 200_000, Some(high));
+        assert!(reaches_to(&mut nav, low, high), "up through the hatch");
     }
 
     /// BOT-131: a body pressed into a wall (its cylinder overlaps the wall's face a little) still joins the grid.

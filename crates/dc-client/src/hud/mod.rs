@@ -39,6 +39,7 @@ pub mod npcbar;
 pub mod panel;
 pub mod qrt;
 pub mod radar;
+pub mod worldmap;
 pub mod rank;
 pub mod scope;
 pub mod sensor;
@@ -485,6 +486,14 @@ impl Hud {
         }
         marks.push(("kill_banners", items.len()));
         self.banners.draw(state, &mut items);
+        // CLI-1953: the world map over the HUD (its backdrop spans the surface), under the network lines and the boxes
+        marks.push(("world_map", items.len()));
+        let map_at = items.len();
+        worldmap::push_items(&mut items, state, &mut self.assets);
+        widen_to_surface(
+            &mut items[map_at..],
+            VirtualScaler::new(self.size.0, self.size.1),
+        );
         // CLI-1926: the flashbang's white over the world and the HUD, under the network lines and the boxes
         marks.push(("whiteout", items.len()));
         let white_at = items.len();
@@ -1259,6 +1268,10 @@ impl HudDriver {
     // DC-DEFAULT: CLI-144 (proposed) the radar is updated with the HUD image (at least every RECOMPOSE_MS), not every
     // frame as the 2009 element is
     pub fn set_radar(&mut self, remotes: &[crate::world::RemoteBody], camera: &dc_render::Camera) {
+        // CLI-1953: the world map's team mates follow the radar's frame
+        if self.state.map_open {
+            self.state.map_mates = worldmap::mates(&self.state, remotes);
+        }
         let Some(l) = self.hud.radar.as_ref().map(|r| &r.layout) else {
             return;
         };
@@ -1273,6 +1286,20 @@ impl HudDriver {
             yaw,
             &|p| sensor::in_view(camera, p),
         ));
+    }
+
+    /// CLI-1953: opens or closes the world map (redrawn at once).
+    pub fn set_map_open(&mut self, open: bool) {
+        if self.state.map_open != open {
+            self.state.map_open = open;
+            self.dirty = true;
+        }
+    }
+
+    /// CLI-1953: the client's own picture of this match's world (a map composed from ROM pieces).
+    pub fn set_world_map(&mut self, map: worldmap::TopMap) {
+        self.hud.assets.put(worldmap::WORLD_MAP_TEX, map.tex);
+        self.state.world_map = Some(map.bounds);
     }
 
     /// The "Reality" option: the damage-direction arcs light only while it is on (2009: off by default).

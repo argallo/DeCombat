@@ -498,6 +498,11 @@ pub fn blip_at(l: &RadarLayout, own: [f32; 3], p: [f32; 3]) -> Option<[f32; 2]> 
     ])
 }
 
+/// The own team (1 or 2), `None` without one (free for all): the world map's team rule too (CLI-1953).
+pub fn own_team_of(s: &HudState) -> Option<u8> {
+    own_team(s)
+}
+
 fn own_team(s: &HudState) -> Option<u8> {
     s.own_pid
         .and_then(|p| s.roster.get(&p))

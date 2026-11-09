@@ -563,7 +563,7 @@ fn screenshots_are_checked_packed_and_named_in_the_modset() {
         "{names:?}"
     );
 
-    let frag = crate::modset_fragment(&[dir.clone()], false).unwrap();
+    let frag = crate::modset_fragment(std::slice::from_ref(&dir), false).unwrap();
     let JsonValue::Object(o) = &frag else {
         panic!()
     };

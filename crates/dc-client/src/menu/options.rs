@@ -186,6 +186,8 @@ const KEY_ROW_GAP: i32 = 8;
 pub const ROW_INSPECT: i32 = 103;
 /// CLI-1950: our team ping key on the Control tab, under the inspect row.
 pub const ROW_PING: i32 = 106;
+/// CLI-1953: our world map key on the Control tab, under the ping row.
+pub const ROW_MAP: i32 = 107;
 /// CLI-1950: the key that clears a waiting box of our own key rows (Delete, scan code set 1).
 pub const SCAN_DELETE: u8 = 0xd3;
 
@@ -771,6 +773,12 @@ impl Options {
                     KEY_BOX[1],
                     Knob::OwnKey(crate::settings::CMD_PING),
                 ),
+                (
+                    ROW_MAP,
+                    TYPE_KEYS_ONE,
+                    KEY_BOX[1],
+                    Knob::OwnKey(crate::settings::CMD_MAP),
+                ),
             ],
             _ => Vec::new(),
         };
@@ -849,6 +857,7 @@ impl Options {
             Knob::Bgm => Some(("BGM Music", &[])),
             Knob::OwnKey(crate::settings::CMD_INSPECT) => Some(("Inspect Weapon", &[])),
             Knob::OwnKey(crate::settings::CMD_PING) => Some(("Ping", &[])),
+            Knob::OwnKey(crate::settings::CMD_MAP) => Some(("Map", &[])),
             Knob::OwnKey(_) => None,
             _ => None,
         }

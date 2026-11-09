@@ -44,6 +44,10 @@ pub const SHOT_SLOW_FACTOR: f32 = 0.5;
 pub const FALL_DAMAGE_KIND: u8 = 0;
 /// BOT-143: the damage type a hazard volume hurts with (dc-dserver `killvol::DAMAGE_TYPE_POISON`, the 0x74 `zone`).
 pub const HAZARD_DAMAGE_TYPE: u8 = 9;
+/// BOT-177: damage per second from which a poison hazard volume is deadly water, not gas, for the infected too (the
+/// game server's rule, DSV-607 amend).
+// DC-DEFAULT: BOT-177 (proposed)
+pub const INFECTED_LETHAL_HAZARD_RATE: f32 = 1000.0;
 /// BOT-143: after a hazard hit the bot walks to a safe grid place for this long.
 // DC-DEFAULT: BOT-143 (proposed) 4 s, a safe place within 900 units
 pub const HAZARD_LEAVE_MS: u32 = 4000;

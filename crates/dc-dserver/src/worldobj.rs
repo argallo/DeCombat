@@ -1004,111 +1004,19 @@ pub fn plan_sounds(
         .collect()
 }
 
-/// Command words of the world's command texts (hash and length of the lower-case word).
-// OBSERVED: command texts of the ROM world files (hashes only): the message statement, its trigger / on / off /
-// visible / solid arguments and the delayed statement
-const WORD_MSG: crate::world::PropHash = ([0xe4, 0x6b, 0x32, 0x01, 0x65, 0xee, 0xc9, 0x1e], 3);
-const WORD_TRIGGER: crate::world::PropHash = ([0x68, 0x32, 0x59, 0xfe, 0xab, 0xbf, 0x5e, 0xb3], 7);
-const WORD_ON: crate::world::PropHash = ([0xb8, 0xd3, 0x1e, 0x85, 0x27, 0x25, 0xaf, 0xb1], 2);
-const WORD_OFF: crate::world::PropHash = ([0xb4, 0xdc, 0x66, 0xdd, 0xe8, 0x06, 0x26, 0x1b], 3);
-const WORD_VISIBLE: crate::world::PropHash = ([0xd4, 0x2e, 0xf1, 0x49, 0x79, 0x00, 0xbc, 0x6e], 7);
-const WORD_SOLID: crate::world::PropHash = ([0x4b, 0x3d, 0x4a, 0x0d, 0xd7, 0x32, 0xf7, 0x91], 5);
+/// What the start scripts did to one named object (the shared evaluation, `dc_world::scripts`).
+pub use dc_world::scripts::ScriptOverride;
 
-fn word_key(w: &[u8]) -> crate::world::PropHash {
-    let l = w.to_ascii_lowercase();
-    (dc_world::hash16(&l), l.len())
-}
-
-/// What the start scripts did to one named object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ScriptOverride {
-    pub visible: Option<bool>,
-    pub solid: Option<bool>,
-    pub on: Option<bool>,
-}
-
-/// Limits of the script evaluation (nesting of trigger messages, statements in all).
-const SCRIPT_DEPTH: u32 = 8;
-const SCRIPT_STATEMENTS: u32 = 4096;
-
-struct ScriptRun<'a> {
-    scripts: &'a WorldScripts,
-    out: std::collections::BTreeMap<Vec<u8>, ScriptOverride>,
-    statements: u32,
-    /// The triggers fired, one entry per fire (DSV-562 seeds the run-time counts with them).
-    fired: Vec<Vec<u8>>,
-}
-
-impl ScriptRun<'_> {
-    fn fire(&mut self, name: &[u8], depth: u32) {
-        if depth > SCRIPT_DEPTH {
-            return;
-        }
-        let Some(cmds) = self
-            .scripts
-            .triggers
-            .iter()
-            .find(|t| t.0.eq_ignore_ascii_case(name))
-            .map(|t| t.1.clone())
-        else {
-            return;
-        };
-        self.fired.push(name.to_vec());
-        for c in &cmds {
-            self.run(c, depth + 1);
-        }
-    }
-
-    fn run(&mut self, text: &[u8], depth: u32) {
-        for st in text.split(|&b| b == b';' || b == b'\n' || b == b'\r') {
-            self.statements += 1;
-            if self.statements > SCRIPT_STATEMENTS {
-                return;
-            }
-            let words: Vec<&[u8]> = st
-                .split(|b| b.is_ascii_whitespace() || *b == b'(' || *b == b')')
-                .filter(|w| !w.is_empty())
-                .collect();
-            // only immediate message statements; delayed ones (and every other statement) do not run at the start
-            if words.len() < 3 || word_key(words[0]) != WORD_MSG {
-                continue;
-            }
-            let target = words[1].to_ascii_lowercase();
-            let arg = word_key(words[2]);
-            let value = words.get(3).map(|v| crate::doors::script_flag(v));
-            if arg == WORD_TRIGGER {
-                self.fire(&target, depth);
-                continue;
-            }
-            let o = self.out.entry(target).or_default();
-            if arg == WORD_ON {
-                o.on = Some(true);
-            } else if arg == WORD_OFF {
-                o.on = Some(false);
-            } else if arg == WORD_VISIBLE {
-                if let Some(v) = value {
-                    o.visible = Some(v);
-                }
-            } else if arg == WORD_SOLID {
-                if let Some(v) = value {
-                    o.solid = Some(v);
-                }
-            }
-        }
+fn scripts_ref(scripts: &WorldScripts) -> dc_world::scripts::ScriptsRef<'_> {
+    dc_world::scripts::ScriptsRef {
+        startup: &scripts.startup,
+        triggers: &scripts.triggers,
+        controls: &scripts.controls,
     }
 }
 
-/// Evaluates the world's start scripts: every start-up command object, then the room's start triggers (the first two
-/// fields of the room's `trig` setting: the mission's and the map's start trigger) and the object-start command of
-/// the mode controller it names (the fourth field). Only immediate `msg <object> <argument>` statements count:
-/// `trigger` fires a trigger object's numbered commands, `on` / `off`, `visible 0|1` and `solid 0|1` change the
-/// object; delayed statements and the end trigger (third field) do not run. Names compare without case.
-// OBSERVED: capture 20261025_065016_tdm6 (the reference stack's objects of that world at load are those
-// this evaluation leaves: the two objects the start-up command made non-solid or switched off and the model the start
-// trigger made invisible and non-solid were removed before the real client joined, the effect switched off by it was
-// never created, the breakables made invisible by the mission start trigger and visible again by the map's start
-// trigger were created visible; REFERENCE); DSERVER_PIPE.md §3.2 (`trig` field order of the room line, our lobby's
-// writer in dc-bute)
+/// Evaluates the world's start scripts for the room's `trig` setting ([`dc_world::scripts::start_scripts_run`]: the
+/// bot evaluates the same rule on the same world, BOT-177).
 // DC-DEFAULT: DSV-37 (extended, staged) the start-script evaluation
 pub fn run_start_scripts(
     scripts: &WorldScripts,
@@ -1125,32 +1033,7 @@ pub fn start_scripts_run(
     std::collections::BTreeMap<Vec<u8>, ScriptOverride>,
     Vec<Vec<u8>>,
 ) {
-    let mut r = ScriptRun {
-        scripts,
-        out: Default::default(),
-        statements: 0,
-        fired: Vec::new(),
-    };
-    for c in &scripts.startup {
-        r.run(c, 1);
-    }
-    let fields: Vec<&str> = trig.map(|t| t.split('|').collect()).unwrap_or_default();
-    for f in fields.iter().take(2) {
-        if !f.trim().is_empty() {
-            r.fire(f.trim().as_bytes(), 1);
-        }
-    }
-    if let Some(ctrl) = fields.get(3).map(|f| f.trim()).filter(|f| !f.is_empty()) {
-        if let Some(cmd) = scripts
-            .controls
-            .iter()
-            .find(|c| c.0.eq_ignore_ascii_case(ctrl.as_bytes()))
-            .map(|c| c.1.clone())
-        {
-            r.run(&cmd, 1);
-        }
-    }
-    (r.out, r.fired)
+    dc_world::scripts::start_scripts_run(scripts_ref(scripts), trig)
 }
 
 /// A named brush in the state the start scripts leave it: their `visible` / `solid` values replace the file's (a

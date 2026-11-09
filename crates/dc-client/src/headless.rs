@@ -682,6 +682,8 @@ pub fn run_headless(
         (None, Some(rom)) => crate::overlay::load_rom_font_bytes(rom),
         (None, None) => None,
     };
+    // CLI-1953: the world map (a step file's map key toggles it)
+    let mut map_open = false;
     let mut hud = if gpu.is_some() {
         crate::hud::HudDriver::open(&opts.hud, opts.width, opts.height, hud_font)
     } else {
@@ -691,6 +693,10 @@ pub fn run_headless(
         report.hud = Some(src);
         d.set_reality(source.reality());
         d.set_draw_voice(source.draw_voice());
+        // CLI-1953: the client's own picture of a map composed from ROM pieces, for the world map
+        if let Some(m) = world.top_map.take() {
+            d.set_world_map(m);
+        }
         // MAP-31: the set's HUD overrides and hooks, as the window wires them
         if let Some(m) = mods.as_ref() {
             m.wire(&mut d);
@@ -873,6 +879,11 @@ pub fn run_headless(
                 player.state.crouch_held,
                 opts.show_board,
             );
+            // CLI-1953: a step file's map key presses toggle the world map as the key would
+            if crate::steps::take_map_presses() % 2 == 1 {
+                map_open = !map_open;
+            }
+            h.set_map_open(map_open);
             let px = crate::hud::letterbox::bar_px(
                 opts.height,
                 h.state.letterbox.progress(h.state.now_ms),

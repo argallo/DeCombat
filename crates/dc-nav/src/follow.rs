@@ -1280,9 +1280,11 @@ mod tests {
             "{next:?}"
         );
         // with the top out of reach still ahead, the stuck jump is not taken
-        let mut g = Follower::default();
-        g.pts = vec![top];
-        g.top = Some((top, true));
+        let mut g = Follower {
+            pts: vec![top],
+            top: Some((top, true)),
+            ..Default::default()
+        };
         for k in 0..(JUMP_MS / STEP_MS + 2) {
             assert_ne!(g.stuck(&mut grid, 500 + k * STEP_MS, low), Stuck::Jump);
         }
@@ -1295,15 +1297,19 @@ mod tests {
     fn a_take_off_is_reached_only_level_with_it() {
         let mut grid = NavGrid::new(walled(), BODY);
         let (takeoff, top) = ([0.0, 265.0, 0.0], [0.0, 335.0, 48.0]);
-        let mut f = Follower::default();
-        f.pts = vec![takeoff, top];
+        let mut f = Follower {
+            pts: vec![takeoff, top],
+            ..Default::default()
+        };
         let below = [10.0, 248.0, 0.0];
         assert!(matches!(f.next(&mut grid, 100, below, top, false), NavGoal::Way(w) if w == takeoff));
         let level = [10.0, 262.0, 0.0];
         assert!(matches!(f.next(&mut grid, 150, level, top, false), NavGoal::Way(w) if w == top));
         // a point that is no take-off is reached as before
-        let mut g = Follower::default();
-        g.pts = vec![takeoff, [0.0, 265.0, 96.0]];
+        let mut g = Follower {
+            pts: vec![takeoff, [0.0, 265.0, 96.0]],
+            ..Default::default()
+        };
         assert!(matches!(g.next(&mut grid, 100, below, top, false), NavGoal::Way(w) if w[2] == 96.0));
     }
 

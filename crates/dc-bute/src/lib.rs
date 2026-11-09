@@ -622,6 +622,53 @@ pub fn gms_file(
     gms_file_with_vfs(&vfs, game_room, map, mode, clan)
 }
 
+/// One room of the ROM's tables for [`room_triggers_for_world`]: its `trig=` value and whether its (map, mode) pair
+/// has a mode file at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomTrig {
+    pub trig: Option<String>,
+    pub mode_file: bool,
+}
+
+/// The `trig=` values ([`room_triggers`], objective section `Object0`) of every room of the ROM's tables (clan rows
+/// too) whose mode row has `GameType` `game_type` and whose world ([`world_for_room`]) is `world` (the world's file
+/// name without folder and `.dat`, any case). A pair with no mode file is a row with `mode_file` false (the lobby
+/// may still start it; the bot takes every object as acting then). Empty when no room plays that world in that mode (a
+/// community map). The non-clan mode row 2, the only one that reads another objective section, is refused by the
+/// lobby ([`fireteam_refusal`]).
+// DC-DEFAULT: BOT-177 (proposed) the bot's view of the room's start triggers
+pub fn room_triggers_for_world(
+    rom_dir: &Path,
+    game_room: &GameRoomData,
+    world: &str,
+    game_type: u8,
+) -> Vec<RoomTrig> {
+    let maps = game_room.maps().len();
+    let mut out = Vec::new();
+    for clan in [false, true] {
+        for (mode, md) in game_room.modes(clan).iter().enumerate() {
+            let gt = md.get("GameType").and_then(|s| s.trim().parse::<u8>().ok());
+            if gt != Some(game_type) || fireteam_refusal(clan, mode).is_some() {
+                continue;
+            }
+            for map in 0..maps {
+                let w = world_for_room(rom_dir, game_room, map, mode, clan, None);
+                let base = w.rsplit('\\').next().unwrap_or(&w);
+                if !eq_fold(base, world) {
+                    continue;
+                }
+                let (_md, g) = gms_file(rom_dir, game_room, map, mode, clan);
+                let mode_file = g.get("Object0").is_some() || g.get("Mission0").is_some();
+                out.push(RoomTrig {
+                    trig: room_triggers(&g, &room_object_section(clan, mode, 0)),
+                    mode_file,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Resolves `Worlds\<world>` for `(map, mode, clan)`.
 /// HARNESS: lobby_harness::test_world_for_room
 pub fn world_for_room(
@@ -841,6 +888,50 @@ pub struct RoomOptions {
     pub hisec_prefix: Option<String>,
 }
 
+/// The GMS objective section a room reads (`Object<goal>` for the non-clan mode row 2, else `Object0`).
+pub fn room_object_section(clan: bool, mode: usize, goal: i32) -> String {
+    if !clan && mode == 2 {
+        format!("Object{}", goal)
+    } else {
+        "Object0".to_string()
+    }
+}
+
+/// The room line's `trig=` value from GMS document `g` and its objective section `obj_sec_name`: the mission's start
+/// trigger, the map's start trigger, the end trigger and the mission's controller, `|`-separated (spaces as `_`);
+/// `None` when neither start trigger is set. The game server evaluates the world's start scripts with it (DSV-37,
+/// DSV-607); the bot rebuilds it from the same ROM tables to know which hazard volumes act (BOT-177).
+// SPEC: DSERVER_PIPE.md §3.2 (`trig` field order of the room line)
+pub fn room_triggers(g: &ButeDoc, obj_sec_name: &str) -> Option<String> {
+    let o = g.get(obj_sec_name);
+    let ostr = |k: &str| -> &str {
+        o.and_then(|sec| sec.get(k))
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    };
+    let sv = |s: &str| s.replace(' ', "_");
+    let m0 = g.get("Mission0");
+    let m0_start = m0
+        .and_then(|sec| sec.get("StartTrigger"))
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let o_start = ostr("StartTrigger");
+    if o_start.is_empty() && m0_start.is_empty() {
+        return None;
+    }
+    let m0_ctrl = m0
+        .and_then(|sec| sec.get("Controller"))
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    Some(format!(
+        "{}|{}|{}|{}",
+        sv(m0_start),
+        sv(o_start),
+        sv(ostr("EndTrigger")),
+        sv(m0_ctrl)
+    ))
+}
+
 /// Formats the `room key=...` control line from pre-loaded mode section `md` and GMS document `g`.
 pub fn room_line_from_gms(
     md: &SectionMap,
@@ -848,11 +939,7 @@ pub fn room_line_from_gms(
     room: &RoomConfig,
     opts: &RoomOptions,
 ) -> String {
-    let obj_sec_name = if !room.clan && room.mode == 2 {
-        format!("Object{}", room.goal)
-    } else {
-        "Object0".to_string()
-    };
+    let obj_sec_name = room_object_section(room.clan, room.mode, room.goal);
     let o = g.get(&obj_sec_name);
     let ostr = |k: &str| -> &str {
         o.and_then(|sec| sec.get(k))
@@ -961,8 +1048,6 @@ pub fn room_line_from_gms(
         line.push_str(&sv(map_label));
     }
 
-    let m0 = g.get("Mission0");
-
     let name = ostr("Name");
     if !name.is_empty() {
         line.push_str(" obj=");
@@ -1010,23 +1095,9 @@ pub fn room_line_from_gms(
         ));
     }
 
-    let m0_start = m0
-        .and_then(|sec| sec.get("StartTrigger"))
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let o_start = ostr("StartTrigger");
-    if !o_start.is_empty() || !m0_start.is_empty() {
-        let m0_ctrl = m0
-            .and_then(|sec| sec.get("Controller"))
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        line.push_str(&format!(
-            " trig={}|{}|{}|{}",
-            sv(m0_start),
-            sv(o_start),
-            sv(ostr("EndTrigger")),
-            sv(m0_ctrl)
-        ));
+    if let Some(trig) = room_triggers(g, &obj_sec_name) {
+        line.push_str(" trig=");
+        line.push_str(&trig);
     }
 
     if room.clan {
@@ -1853,6 +1924,57 @@ basic_point=2
         let mut m = SectionMap::new();
         m.insert("Key".to_string(), key.to_string());
         m
+    }
+
+    // ----- room triggers (BOT-177) ---------------------------------------------------------------
+
+    /// The `trig=` string is the mission's start trigger, the map's start trigger, the end trigger and the
+    /// mission's controller, spaces as `_`; a missing `Object0` leaves its three fields empty; neither start
+    /// trigger gives `None`.
+    #[test]
+    fn room_triggers_pin_the_trig_string() {
+        let g = gms(
+            "[Mission0]\nStartTrigger=Mission Go\nController=Boss One\n[Object0]\nStartTrigger=Map Go\nEndTrigger=All Done\n",
+        );
+        assert_eq!(
+            room_triggers(&g, "Object0").as_deref(),
+            Some("Mission_Go|Map_Go|All_Done|Boss_One")
+        );
+        let m_only = gms("[Mission0]\nStartTrigger=Mission Go\nController=C\n");
+        assert_eq!(
+            room_triggers(&m_only, "Object0").as_deref(),
+            Some("Mission_Go|||C")
+        );
+        let o_only = gms("[Object0]\nStartTrigger=Map Go\n");
+        assert_eq!(
+            room_triggers(&o_only, "Object0").as_deref(),
+            Some("|Map_Go||")
+        );
+        let none = gms("[Mission0]\nController=C\n[Object0]\nEndTrigger=E\n");
+        assert_eq!(room_triggers(&none, "Object0"), None);
+        assert_eq!(room_triggers(&gms(""), "Object0"), None);
+    }
+
+    /// BOT-177: a ROM-less table: a map of a mode row of the class whose world matches is a room with no mode
+    /// file (`mode_file` false) in the plain and the clan rows; another world or another class: none.
+    #[test]
+    fn room_triggers_for_world_without_mode_files() {
+        let rows = "[Map0]\nKey=Alpha\n[Mode0]\nGameType=0\n[Mode1]\nGameType=1\n[ClanMode0]\nGameType=0\n";
+        let g = GameRoomData::from_doc(ButeDoc::parse(rows));
+        let dir = std::env::temp_dir().join("dc-bute-no-such-rom-dir");
+        // Mode0 and ClanMode0 are class 0, both without a mode file
+        let bare = RoomTrig {
+            trig: None,
+            mode_file: false,
+        };
+        assert_eq!(
+            room_triggers_for_world(&dir, &g, "alpha", 0),
+            vec![bare.clone(), bare.clone()]
+        );
+        assert_eq!(room_triggers_for_world(&dir, &g, "Alpha", 1), vec![bare]);
+        // a community map: no room plays it
+        assert!(room_triggers_for_world(&dir, &g, "Community", 0).is_empty());
+        assert!(room_triggers_for_world(&dir, &g, "Alpha", 7).is_empty());
     }
 
     // ----- parser behaviour ----------------------------------------------------------------------

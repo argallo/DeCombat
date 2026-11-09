@@ -83,10 +83,12 @@ impl TextureGroup {
                         });
                     }
                     let mut params = [0.0f32; KEPT_PARAMS];
-                    for i in 0..param_count as usize {
+                    // every param is read (the reader must pass them all); the first KEPT_PARAMS are kept
+                    let mut kept = params.iter_mut();
+                    for _ in 0..param_count as usize {
                         let v = r.f32("stage param")?;
-                        if i < KEPT_PARAMS {
-                            params[i] = v;
+                        if let Some(p) = kept.next() {
+                            *p = v;
                         }
                     }
                     Stage::Script {

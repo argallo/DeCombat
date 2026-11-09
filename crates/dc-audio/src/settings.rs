@@ -218,9 +218,11 @@ mod tests {
     #[test]
     fn apply_sets_mixer() {
         let mut m = Mixer::new();
-        let mut s = AudioSettings::default();
-        s.effects_volume = 40;
-        s.music_on = false;
+        let s = AudioSettings {
+            effects_volume: 40,
+            music_on: false,
+            ..AudioSettings::default()
+        };
         s.apply(&mut m);
         assert_eq!((m.effects_volume(), m.music_volume()), (40, 0));
         assert_eq!(m.classes.gain(0), 0.75);

@@ -29,7 +29,7 @@ pub(crate) fn decode_level(
                 .as_chunks_mut::<4>()
                 .0
                 .iter_mut()
-                .zip(data.chunks_exact(4))
+                .zip(data.as_chunks::<4>().0)
             {
                 o.copy_from_slice(&[i[2], i[1], i[0], i[3]]);
             }

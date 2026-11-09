@@ -1165,8 +1165,11 @@ pub fn extension_histogram(entries: &[(String, u64, u32)]) -> BTreeMap<String, (
     h
 }
 
+/// [`rom_histogram`]'s result: `(rez_count, total_rez_file_bytes, histogram)`.
+pub type RomHistogram = (usize, u64, BTreeMap<String, (u64, u64)>);
+
 /// Whole-ROM totals: `(rez_count, total_rez_file_bytes, histogram)`; histogram bytes are entry payload bytes.
-pub fn rom_histogram(rom: &Path) -> Result<(usize, u64, BTreeMap<String, (u64, u64)>), String> {
+pub fn rom_histogram(rom: &Path) -> Result<RomHistogram, String> {
     let rezs = find_rez_files(rom)?;
     let mut all = Vec::new();
     for r in &rezs {

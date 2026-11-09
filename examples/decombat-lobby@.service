@@ -22,7 +22,9 @@ User=decombat
 Group=decombat
 WorkingDirectory=/opt/decombat/instances/%i
 EnvironmentFile=/opt/decombat/instances/%i/decombat.env
-ExecStart=/opt/decombat/bin/dc-lobby-server --config /opt/decombat/instances/%i/config/server.toml --public --check-password --no-auto-create --register "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/instances/%i/logs/dserver --admin ${DC_ADMIN} --stop-grace 10
+ExecStart=/opt/decombat/bin/dc-lobby-server --config /opt/decombat/instances/%i/config/server.toml --public --check-password --no-auto-create --register-open "--dserver-args=-bindip 0.0.0.0" --dserver --dserver-logdir /opt/decombat/instances/%i/logs/dserver --admin ${DC_ADMIN} --stop-grace 10
+# DC-DEFAULT: LG-433 (proposed) registration is open on every instance, as on the default unit (the open beta since
+# 2026-11-08): the flags after --config stay the default unit's (tools/vps/tests/instance_test.sh checks it).
 # LG-130: the graceful stop, exactly as in decombat-lobby.service (only the lobby gets SIGTERM, KillMode=mixed).
 KillSignal=SIGTERM
 KillMode=mixed

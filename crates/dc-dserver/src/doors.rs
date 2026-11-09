@@ -1099,22 +1099,8 @@ pub fn parse_statements(text: &[u8]) -> Vec<DoorStatement> {
 /// The 0 / 1 value of a `visible` / `solid` statement: a number counts by its value (`0`, `0.0` are false), the words
 /// `true` / `false` by their meaning (any case), anything else is true when it has a byte other than `0`.
 // DC-DEFAULT: DSV-562 (proposed) the ROM worlds write only `0` and `1`; the start scripts read the value the same way
-// (DSV-37)
-pub fn script_flag(v: &[u8]) -> bool {
-    if let Some(n) = std::str::from_utf8(v)
-        .ok()
-        .and_then(|t| t.trim().parse::<f32>().ok())
-    {
-        return n != 0.0;
-    }
-    if v.eq_ignore_ascii_case(b"true") {
-        return true;
-    }
-    if v.eq_ignore_ascii_case(b"false") {
-        return false;
-    }
-    v.iter().any(|&b| b != b'0')
-}
+// (DSV-37); the shared code of the start scripts (`dc_world::scripts`)
+pub use dc_world::scripts::script_flag;
 
 /// The switch a statement asks for: `Some(true)` for `on`, `Some(false)` for `off`, `None` for any other word.
 pub fn switch_word(st: &DoorStatement) -> Option<bool> {

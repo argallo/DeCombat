@@ -934,6 +934,8 @@ pub struct StepRunner {
     shots: VecDeque<String>,
     /// Chat-box presses of the game verbs (`type`, `key enter` ...), taken by the match window each frame.
     chat: VecDeque<crate::hud::chat::ChatPress>,
+    /// CLI-1953: presses of the world map key not yet taken by the window.
+    map_presses: u32,
     quit: bool,
     leave: bool,
     pub ok: usize,
@@ -957,6 +959,7 @@ impl StepRunner {
             timed: VecDeque::new(),
             shots: VecDeque::new(),
             chat: VecDeque::new(),
+            map_presses: 0,
             quit: false,
             leave: false,
             ok: 0,
@@ -1192,6 +1195,10 @@ impl StepRunner {
                     // the chat box sees these as the window's key handler would show them to it
                     Some(GameKey::Chat(p)) => {
                         self.chat.push_back(p);
+                        Outcome::Done
+                    }
+                    Some(GameKey::Map) => {
+                        self.map_presses += 1;
                         Outcome::Done
                     }
                     Some(GameKey::Hold(a)) => {
@@ -1507,6 +1514,8 @@ enum GameKey {
     Press(Vec<DeviceInput>),
     /// A key the match's chat box takes (Enter opens or sends, Escape closes, Backspace edits).
     Chat(crate::hud::chat::ChatPress),
+    /// CLI-1953: the world map key (the window opens or closes the map).
+    Map,
 }
 
 /// The game keys by name (the window's key map: [`crate::window`]'s `action_for` / weapon / shell keys).
@@ -1531,6 +1540,7 @@ fn game_key_named(k: &str) -> Option<GameKey> {
         "r" | "reload" => Press(vec![DeviceInput::Reload]),
         "i" | "inspect" => Press(vec![DeviceInput::Inspect]),
         "ping" => Press(vec![DeviceInput::Ping]),
+        "m" | "map" => Map,
         "e" | "use" => Press(vec![DeviceInput::Use]),
         "enter" => Chat(crate::hud::chat::ChatPress::Enter),
         "escape" => Chat(crate::hud::chat::ChatPress::Escape),
@@ -1599,6 +1609,17 @@ pub fn game_frame(view: &mut ViewAngles, out: &mut Vec<DeviceInput>) {
     if let Some(r) = runner().as_mut() {
         r.poll(&mut Here::Game { view, out });
     }
+}
+
+/// CLI-1953: the world map key presses the game verbs made since the last call (the match window toggles its map).
+pub fn take_map_presses() -> u32 {
+    if !active() {
+        return 0;
+    }
+    runner()
+        .as_mut()
+        .map(|r| std::mem::take(&mut r.map_presses))
+        .unwrap_or(0)
 }
 
 /// The chat-box presses the game verbs queued since the last call (the match window feeds them to its chat box).
