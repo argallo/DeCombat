@@ -78,9 +78,12 @@ pub fn parse_room(d: &[u8]) -> Option<(u32, bool, Vec<u16>)> {
         return None;
     }
     let body = d.get(18..18 + n * 2)?;
+    // `body` is exactly n * 2 bytes, so there is no remainder
     let ladder = body
-        .chunks_exact(2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes(*b))
         .collect();
     Some((room, on, ladder))
 }

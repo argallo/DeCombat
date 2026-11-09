@@ -37,6 +37,7 @@ on:
       - "tools/gunkit_pack_mac.sh"
       - "tools/gunkit_pack_win.py"
       - "tools/gunkit_examples.py"
+      - "tools/modkit_pack.py"
       - "tools/gunkit_examples.txt"
       - "assets/icon/**"
       - ".github/workflows/release.yml"
@@ -212,9 +213,17 @@ jobs:
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --locked --release --bins --all-features -p dc-mapkit --target "$t"
             cargo build --locked --release -p dc-lobby-server -p dc-dserver -p dc-client --bin dc-lobby-server --bin dc-dserver --bin dc-client --target "$t"
+            cargo build --locked --release -p dc-modkit --bin dc-modkit --target "$t"
           done
       - name: package DeCombat MapKit.app
         run: bash tools/mapkit_pack_mac.sh --bin-dir target/aarch64-apple-darwin/release --x86-dir target/x86_64-apple-darwin/release --name "DeCombat-MapKit-mac-$LABEL"
+      - name: package the ModKit zip (one universal dc-modkit, signed ad hoc; MOD-30)
+        run: |
+          set -euo pipefail
+          mkdir -p out_modkit/bin
+          lipo -create -output out_modkit/bin/dc-modkit target/aarch64-apple-darwin/release/dc-modkit target/x86_64-apple-darwin/release/dc-modkit
+          codesign --force --sign - out_modkit/bin/dc-modkit
+          python3 tools/modkit_pack.py --exe out_modkit/bin/dc-modkit --platform mac --name "DeCombat-ModKit-mac-$LABEL"
       - name: sign and notarise (needs the DC_MAC_* secrets; skipped with a warning without them)
         if: github.ref_type == 'tag'
         env:
@@ -230,6 +239,13 @@ jobs:
         with:
           name: DeCombat-MapKit-mac-${{ github.sha }}
           path: out_mapkit/*.zip
+          if-no-files-found: error
+          retention-days: 90
+      - name: upload ModKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-ModKit-mac-${{ github.sha }}
+          path: out_modkit/*.zip
           if-no-files-found: error
           retention-days: 90
 
@@ -252,14 +268,25 @@ jobs:
           set -euo pipefail
           cargo build --locked --release --bins --all-features -p dc-mapkit --target x86_64-pc-windows-msvc
           cargo build --locked --release -p dc-lobby-server -p dc-dserver -p dc-client --bin dc-lobby-server --bin dc-dserver --bin dc-client --target x86_64-pc-windows-msvc
+          cargo build --locked --release -p dc-modkit --bin dc-modkit --target x86_64-pc-windows-msvc
       - name: package the MapKit zip
         shell: bash
         run: python tools/mapkit_pack_win.py --bin-dir target/x86_64-pc-windows-msvc/release --name "DeCombat-MapKit-win-$LABEL" --commit "$SHORT_SHA"
+      - name: package the ModKit zip (MOD-30)
+        shell: bash
+        run: python tools/modkit_pack.py --exe target/x86_64-pc-windows-msvc/release/dc-modkit.exe --platform win --name "DeCombat-ModKit-win-$LABEL"
       - name: upload MapKit package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: DeCombat-MapKit-win-${{ github.sha }}
           path: out_mapkit/*.zip
+          if-no-files-found: error
+          retention-days: 90
+      - name: upload ModKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-ModKit-win-${{ github.sha }}
+          path: out_modkit/*.zip
           if-no-files-found: error
           retention-days: 90
 
@@ -346,7 +373,7 @@ jobs:
       - name: build settings
         run: bash tools/ci_env.sh
       - name: build release servers
-        run: cargo build --locked --release --bins --target x86_64-unknown-linux-gnu -p dc-lobby-server -p dc-dserver -p dc-rez -p dc-botclient -p dc-config -p dc-host
+        run: cargo build --locked --release --bins --target x86_64-unknown-linux-gnu -p dc-lobby-server -p dc-dserver -p dc-rez -p dc-botclient -p dc-config -p dc-host -p dc-modkit
       - name: package release servers
         run: bash tools/package_servers.sh --bin-dir target/x86_64-unknown-linux-gnu/release --name "decombat-servers-linux-x86_64-$LABEL" --out dist --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - name: upload release servers
@@ -354,6 +381,15 @@ jobs:
         with:
           name: decombat-servers-linux-x86_64-${{ github.sha }}
           path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 90
+      - name: package the ModKit zip (the one pack-repository workflows download; MOD-30)
+        run: python3 tools/modkit_pack.py --exe target/x86_64-unknown-linux-gnu/release/dc-modkit --platform linux-x86_64 --name "DeCombat-ModKit-linux-x86_64-$LABEL"
+      - name: upload ModKit package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: DeCombat-ModKit-linux-x86_64-${{ github.sha }}
+          path: out_modkit/*.zip
           if-no-files-found: error
           retention-days: 90
 
@@ -398,6 +434,8 @@ jobs:
           for want in "DeCombat-win-$GITHUB_REF_NAME.zip" "DeCombat-win-$GITHUB_REF_NAME-bots.zip" "DeCombat-mac-$GITHUB_REF_NAME.zip" \
                       "DeCombat-MapKit-win-$GITHUB_REF_NAME.zip" "DeCombat-MapKit-mac-$GITHUB_REF_NAME.zip" \
                       "DeCombat-GunKit-win-$GITHUB_REF_NAME.zip" "DeCombat-GunKit-mac-$GITHUB_REF_NAME.zip" \
+                      "DeCombat-ModKit-win-$GITHUB_REF_NAME.zip" "DeCombat-ModKit-mac-$GITHUB_REF_NAME.zip" \
+                      "DeCombat-ModKit-linux-x86_64-$GITHUB_REF_NAME.zip" \
                       "decombat-servers-linux-x86_64-$GITHUB_REF_NAME.tar.gz"; do
             [ -s "$want" ] || { echo "::error::missing asset $want; nothing is published"; exit 1; }
           done
@@ -407,8 +445,8 @@ jobs:
           done
           [ "$ipas" -le 1 ] || { echo "::error::expected at most one .ipa, found $ipas; nothing is published"; exit 1; }
           [ "$ipas" -eq 1 ] || echo "::warning::no .ipa (the iOS job failed): the release goes out without it"
-          # the 8 packages checked above (SHA256SUMS is written after this), plus the .ipa when it built
-          [ "$(ls | wc -l)" -eq $((8 + ipas)) ] || { echo "::error::expected $((8 + ipas)) assets; nothing is published"; exit 1; }
+          # the 11 packages checked above (SHA256SUMS is written after this), plus the .ipa when it built
+          [ "$(ls | wc -l)" -eq $((11 + ipas)) ] || { echo "::error::expected $((11 + ipas)) assets; nothing is published"; exit 1; }
           sha256sum -- * > ../SHA256SUMS
           mv ../SHA256SUMS SHA256SUMS
           cat SHA256SUMS

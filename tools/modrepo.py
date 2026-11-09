@@ -35,7 +35,9 @@ not reproduce its listed hash is a pack that was changed after review. `lock` co
 that packs different bytes fails the run instead of publishing hashes nobody reviewed.
 
 `dc-modkit` is found through `--modkit`, the `DC_MODKIT` environment variable, `dc-modkit` on PATH, or (inside a
-DeCombat checkout) `cargo run -q -p dc-modkit --`. The generated workflow installs it with `cargo install --git`.
+DeCombat checkout) `cargo run -q -p dc-modkit --`. The generated workflow downloads the ModKit asset of the DeCombat
+release `decombat_rev` names (`DeCombat-ModKit-linux-x86_64-<tag>.zip`, checked against that release's SHA256SUMS) and
+builds it from source with `cargo install --git` only when the release has none, with a warning in the run.
 Exit codes: 0 ok, 1 a check failed, 2 usage.
 """
 import argparse
@@ -116,19 +118,47 @@ jobs:
             exit 1
           fi
           echo "rev=$rev" >> "$GITHUB_OUTPUT"
-      - name: Install Rust
+      - name: dc-modkit, the ModKit asset of the DeCombat release decombat_rev names (checked against its SHA256SUMS)
+        id: modkit
+        run: |
+          set -euo pipefail
+          rev="${{ steps.rev.outputs.rev }}"
+          zip="DeCombat-ModKit-linux-x86_64-$rev.zip"
+          base="__DECOMBAT_GIT__/releases/download/$rev"
+          mkdir -p "$HOME/modkit"
+          cd "$HOME/modkit"
+          if [ "${{ steps.rev.outputs.kind }}" = tag ] && curl -fsSL -o SHA256SUMS "$base/SHA256SUMS" && curl -fsSL -o "$zip" "$base/$zip"; then
+            # a zip that does not match the release's own checksum fails the run; it never falls back
+            awk -v z="$zip" '$2 == z' SHA256SUMS > want.sha
+            [ -s want.sha ] || { echo "::error::$zip is not in the SHA256SUMS of release $rev"; exit 1; }
+            sha256sum -c want.sha
+            unzip -q -o "$zip" -d x
+            exe=$(find "$PWD/x" -type f -name dc-modkit | head -n 1)
+            chmod +x "$exe"
+            echo "dc-modkit from the ModKit asset of $rev: $exe"
+            echo "exe=$exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no ModKit asset ($zip) on release $rev of __DECOMBAT_GIT__ (a release before ModKit, or a commit pin): dc-modkit is BUILT FROM SOURCE below, which takes several minutes"
+            echo "exe=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Rust (only without the ModKit asset)
+        if: steps.modkit.outputs.exe == ''
         run: rustup toolchain install stable --profile minimal && rustup default stable
-      - name: Cache dc-modkit
+      - name: Cache dc-modkit (only without the ModKit asset)
+        if: steps.modkit.outputs.exe == ''
         id: cache
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/dc-modkit
           key: dc-modkit-${{ runner.os }}-${{ steps.rev.outputs.rev }}
-      - name: Build dc-modkit
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Build dc-modkit from source (only without the ModKit asset)
+        if: steps.modkit.outputs.exe == '' && steps.cache.outputs.cache-hit != 'true'
         run: cargo install --git __DECOMBAT_GIT__ --${{ steps.rev.outputs.kind }} "${{ steps.rev.outputs.rev }}" dc-modkit --locked
       - name: Build the packs
-        run: python3 tools/modrepo.py build . --modkit ~/.cargo/bin/dc-modkit
+        run: |
+          exe="${{ steps.modkit.outputs.exe }}"
+          [ -n "$exe" ] || exe="$HOME/.cargo/bin/dc-modkit"
+          python3 tools/modrepo.py build . --modkit "$exe"
       - name: The hashes are the locked ones (packs.lock.json, written by `modrepo.py lock` after a trusted local build)
         run: |
           if [ -f packs.lock.json ]; then
@@ -161,8 +191,10 @@ packs are in the DeCombat repository (`docs/MODDING_GUIDE.md`); this repository 
 
     python3 tools/modrepo.py build .            # validates, lints and packs every mod into dist/
 
-`dc-modkit` comes from the DeCombat repository: `cargo install --git {decombat_git} dc-modkit --locked`, or pass the
-binary with `--modkit`. Add `--rom <your client folder>` to check weapon rows against the real tables.
+`dc-modkit` comes from the DeCombat release: the ModKit zip for your platform (`DeCombat-ModKit-win|mac|linux-x86_64-<tag>.zip`
+on {decombat_git}/releases), or build it with `cargo install --git {decombat_git} dc-modkit --locked`; pass the binary
+with `--modkit`. Add `--rom <your client folder>` to check weapon rows against the real tables. The workflow uses the
+ModKit of the tag in modrepo.json.
 
 ## Release
 
@@ -366,8 +398,8 @@ def find_modkit(explicit, repo):
     for base in (os.path.dirname(here), git_root(repo) or ""):
         if base and os.path.isdir(os.path.join(base, "crates", "dc-modkit")):
             return ["cargo", "run", "-q", "--manifest-path", os.path.join(base, "Cargo.toml"), "-p", "dc-modkit", "--"]
-    die("dc-modkit not found: pass --modkit <exe>, set DC_MODKIT, or `cargo install --git "
-        f"{DECOMBAT_GIT} dc-modkit --locked`")
+    die("dc-modkit not found: pass --modkit <exe>, set DC_MODKIT, or download the ModKit zip of a release "
+        f"({DECOMBAT_GIT}/releases) or `cargo install --git {DECOMBAT_GIT} dc-modkit --locked`")
 
 
 def run_modkit(modkit, args):
@@ -646,6 +678,11 @@ def cmd_selftest(_a):
         with open(os.path.join(repo, ".github", "workflows", "packs.yml"), encoding="utf-8") as f:
             wf = f.read()
         assert "is a branch name" in wf and "--${{ steps.rev.outputs.kind }}" in wf
+        # MOD-30: the ModKit asset first, checked against the release's SHA256SUMS; source only without it, loudly
+        assert "DeCombat-ModKit-linux-x86_64-$rev.zip" in wf and "sha256sum -c want.sha" in wf, "the ModKit download"
+        assert "BUILT FROM SOURCE" in wf and "if: steps.modkit.outputs.exe == ''" in wf, "the loud fallback"
+        assert wf.index("ModKit asset of the DeCombat release") < wf.index("cargo install --git"), "download before build"
+        assert "verify . --against packs.lock.json --all" in wf, "the lock check stays"
         for f in ("modrepo.json", ".gitattributes", ".gitignore", "README.md", "tools/modrepo.py",
                   ".github/workflows/packs.yml", "generators/README.md"):
             assert os.path.isfile(os.path.join(repo, f)), f

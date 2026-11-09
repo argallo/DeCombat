@@ -133,12 +133,15 @@ pub fn read_tcp_frame<R: Read>(reader: &mut R) -> io::Result<Option<(i32, Vec<u8
     Ok(Some((parsed.id, payload)))
 }
 
+/// The `(frame_id, payload)` frames [`parse_tcp_frames`] slices from a buffer, in order.
+pub type TcpFrames = Vec<(i32, Vec<u8>)>;
+
 /// Slices as many complete `(frame_id, payload)` frames as available from a byte buffer.
 ///
 /// Returns `Ok((frames, consumed))`, where `consumed` is the byte count of the complete frames, or
 /// `Err(InvalidData)` if an invalid frame size
 /// (`< 0` or `> 0x8000`) is encountered.
-pub fn parse_tcp_frames(buf: &[u8]) -> io::Result<(Vec<(i32, Vec<u8>)>, usize)> {
+pub fn parse_tcp_frames(buf: &[u8]) -> io::Result<(TcpFrames, usize)> {
     let mut frames = Vec::new();
     let mut offset = 0usize;
 

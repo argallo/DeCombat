@@ -120,7 +120,7 @@ jobs:
           -p dc-audio -p dc-bute -p dc-config -p dc-fx-data -p dc-mod-lua -p dc-model -p dc-modkit
           -p dc-net-engine -p dc-render -p dc-rez -p dc-rom -p dc-sim -p dc-tex -p dc-ui-data
           -p dc-wire -p dc-world -p dc-xtask -p dc-lobby-server -p dc-dserver -p dc-host -p dc-mapkit -p dc-gunkit -- --check
-      # clippy-dirty at the time of writing: dc-audio dc-fx-data dc-modkit dc-tex dc-wire dc-world.
+      # clippy-dirty at the time of writing: dc-audio dc-fx-data dc-modkit dc-tex dc-world (dc-wire joined 2026-11-09).
       # dc-mapkit (DC_DEFAULTS.md MAP-76): --no-deps keeps the gate on the crate's own code (its path
       # dependencies dc-tex and dc-world are on the dirty list); the GUI feature compiles without a GPU and no
       # test opens a window, so the workspace build above covers it on all four targets.
@@ -129,7 +129,7 @@ jobs:
           cargo clippy --no-deps --all-targets
           -p dc-bute -p dc-config -p dc-mod-lua -p dc-model -p dc-net-engine -p dc-render
           -p dc-rez -p dc-rom -p dc-sim -p dc-ui-data -p dc-xtask -p dc-lobby-server -p dc-dserver -p dc-host
-          -p dc-mapkit -p dc-gunkit
+          -p dc-mapkit -p dc-gunkit -p dc-wire
           -- -D warnings
       - name: clean-room gate (public mode)
         run: python3 tools/assetcheck.py
@@ -138,6 +138,7 @@ jobs:
           set -e
           python3 tools/modrepo.py selftest
           python3 tools/gunkit_examples.py selftest
+          python3 tools/modkit_pack.py selftest
           bash tools/ship_servers_test.sh
           bash tools/host/update_test.sh
           bash tools/vps/tests/instance_test.sh

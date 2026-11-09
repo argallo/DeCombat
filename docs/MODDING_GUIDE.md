@@ -762,7 +762,8 @@ remote game host (`[[lobby.servers]]` `host`) is refused for them.
 **Your own mod repository.** A pack lives in a repository of its own, not in the game's. `tools/modrepo.py` (Python 3,
 standard library) makes one and keeps it buildable: `modrepo.py init <dir> --github <owner/repo> --decombat-rev <tag>` writes the layout
 (`mods/<id>/` per pack, `generators/<id>/` for the scripts that drew a pack's art, `.gitattributes` so Windows checkouts
-never change a hash, a GitHub workflow that installs `dc-modkit` and packs every mod on each push, and a copy of the tool);
+never change a hash, a GitHub workflow that downloads the release's prebuilt `dc-modkit` (the ModKit zip; it builds
+from source only for a release without one) and packs every mod on each push, and a copy of the tool);
 `modrepo.py add <repo> <mod folder>` copies a pack in from a clean git copy; `modrepo.py build <repo> [--modkit <exe>]
 [--rom <client folder>]` validates, lints and packs every mod into `dist/` with `packs.json` and `SHA256SUMS`;
 `modrepo.py rows <repo> --format vanilla-plus|known-mods|server-toml|catalog-toml` prints the review-list row, the
