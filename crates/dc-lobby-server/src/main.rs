@@ -26,6 +26,7 @@ mod coupons;
 mod db;
 mod delivery;
 mod deploy;
+mod devsession;
 mod diag;
 mod doctor;
 mod freepass;
@@ -59,6 +60,7 @@ mod nxrewards;
 mod opscfg;
 mod opsmon;
 mod opsweb;
+mod packsync;
 mod playeradmin;
 mod public_games;
 mod pwhash;
@@ -179,6 +181,15 @@ fn main() {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         std::process::exit(adminweb::run_cli(&rest, &env));
+    }
+    // `packs sync` installs a pack repository release's packs into the mods folder, on any host (LG-434)
+    if args.get(1).map(|a| a == "packs").unwrap_or(false) {
+        let rest: Vec<String> = args
+            .iter()
+            .skip(2)
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        std::process::exit(packsync::run(&rest));
     }
     // `reports` reads the diagnostic reports the lobby stored (LG-362)
     if args.get(1).map(|a| a == "reports").unwrap_or(false) {
@@ -664,6 +675,8 @@ fn main() {
     }
     // 11. periodic item expiry
     net::spawn_expiry(Arc::clone(&shared));
+    // SES-3: the hourly device-session sweep (only an issuing lobby with device sessions on)
+    devsession::web::spawn_sweep(Arc::clone(&shared));
     public_games::start(&shared);
     // LG-316: the report mails waiting in the DB
     net::spawn_report_mail(Arc::clone(&shared));

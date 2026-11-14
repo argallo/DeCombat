@@ -44,6 +44,12 @@ pub struct HostConfig {
     /// DeCombat limit; the 2009 host has none. When reached the join is refused with `accepted = 0, same_app = 1`.
     // SPEC: UDP_TRANSPORT_2009.md §5.3 (a Rust host may add a limit and must then send same_app = 1)
     pub max_links: Option<usize>,
+    /// NET-29: at `max_links`, an open link whose peer the session never proved ([`Host::set_proven`]) and that is at
+    /// least this old is evicted for the newcomer instead of refusing the join (`None`: no eviction, the join is
+    /// refused as before). A join datagram opens a link with no round trip, so spoofed source addresses could
+    /// otherwise hold every link slot; a real client proves itself within a few datagrams.
+    // DC-DEFAULT: NET-29 (proposed) eviction of unproven links at the link limit
+    pub evict_unproven_after_ms: Option<u32>,
 }
 
 impl Default for HostConfig {
@@ -55,6 +61,7 @@ impl Default for HostConfig {
             host_byte: 0,
             local_rate_bps: TODO_HOST_LOCAL_DEFAULT_RATE_BPS,
             max_links: None,
+            evict_unproven_after_ms: None,
         }
     }
 }
@@ -107,6 +114,8 @@ pub struct HostStats {
     /// Proven moves refused because the link already moved [`crate::link::MOVE_LIMIT`] times within
     /// [`crate::link::MOVE_WINDOW_MS`] (NET-25).
     pub migrations_limited: u64,
+    /// Unproven links evicted at the link limit for a newcomer (NET-29).
+    pub evicted_unproven: u64,
 }
 
 /// The host: one per listening socket.
@@ -176,6 +185,36 @@ impl<A: Ord + Clone> Host<A> {
         self.links
             .get_mut(peer)
             .is_some_and(|l| l.send_unreliable(now, msg))
+    }
+
+    /// NET-29: the session accepted `peer` (for a game server: its hello); its link is never evicted for a newcomer.
+    pub fn set_proven(&mut self, peer: &A) {
+        if let Some(l) = self.links.get_mut(peer) {
+            l.set_proven();
+        }
+    }
+
+    /// NET-29: at the link limit, the oldest open link that was never proven and is at least `after_ms` old (ties by
+    /// address order) is removed at once and reported closed (`CloseCause::Local`, code `DROP_STALE`), like a stale
+    /// re-join: its peer either never existed (a spoofed source) or never answered. True when a link was evicted.
+    fn evict_unproven(&mut self, now: Millis, after_ms: u32) -> bool {
+        let victim = self
+            .links
+            .iter()
+            .filter(|(_, l)| l.is_open() && !l.proven() && since(now, l.opened_at()) >= after_ms)
+            .min_by_key(|(_, l)| l.opened_at())
+            .map(|(a, _)| a.clone());
+        let Some(victim) = victim else {
+            return false;
+        };
+        self.links.remove(&victim);
+        self.stats.evicted_unproven += 1;
+        self.events.push_back(HostEvent::LinkClosed {
+            peer: victim,
+            code: dc_wire::udp::DROP_STALE,
+            cause: CloseCause::Local,
+        });
+        true
     }
 
     /// Drops a peer's link, optionally with a bye (4 copies, 100 ms apart).
@@ -372,7 +411,13 @@ impl<A: Ord + Clone> Host<A> {
             );
             return;
         };
-        if self.cfg.max_links.is_some_and(|m| self.open_links() >= m) {
+        let full = self.cfg.max_links.is_some_and(|m| self.open_links() >= m);
+        let evicted = full
+            && self
+                .cfg
+                .evict_unproven_after_ms
+                .is_some_and(|after| self.evict_unproven(now, after));
+        if full && !evicted {
             self.stats.joins_refused += 1;
             self.reply(
                 from,

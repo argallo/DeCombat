@@ -62,7 +62,8 @@ the VPS instead.
 ## 4a. Packs from a release (`tools/vps/packs_sync.sh`)
 
 Our packs (camos, the Case Reel, the inspect pack, community maps) come from pack repositories, as tagged releases
-(docs/PACKS_FROM_REPOSITORIES.md). To put a release's packs on the box:
+(docs/PACKS_FROM_REPOSITORIES.md). Any other host, Windows included, runs `dc-lobby-server packs sync` with the same
+checks (HOSTING.md "Packs"). To put a release's packs on the box:
 
 ```
 sudo bash /opt/decombat/tools/packs_sync.sh argallo/DeCombat-mods v1            # every pack of the release

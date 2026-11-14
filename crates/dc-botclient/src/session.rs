@@ -180,6 +180,59 @@ pub const MATE_ON_TOP: f32 = 40.0;
 /// the roam goal.
 // DC-DEFAULT: BOT-143 (proposed) 64 probes
 pub const ROAM_GROW: usize = 64;
+
+/// BOT-180: a target out of clear sight this long (dead, gone behind a wall) no longer keeps a bot with no walk goal
+/// from roaming.
+// DC-DEFAULT: BOT-180 (proposed) 3 s
+pub const SEEING_HOLD_MS: u32 = 3_000;
+
+/// BOT-117 / BOT-143: the roam goal on the grid `nav` from `pos` (`x`: the pick): a node at least [`ROAM_MIN`] away,
+/// else, after growing the grid by [`ROAM_GROW`] probes, the farthest known node. BOT-180: a grid made afresh (every
+/// world change starts it empty) first takes the bot's own place as a node; before, an empty grid gave no roam goal,
+/// nothing else grew it, and a Spy Hunt hunter with no case or chase stood 26..60 s where it spawned.
+// DC-DEFAULT: BOT-117 (proposed), BOT-143 (proposed), BOT-180 (proposed)
+fn roam_pick(
+    nav: &mut crate::nav::NavGrid,
+    pos: [f32; 3],
+    x: u64,
+) -> Option<([f32; 3], &'static str)> {
+    if nav.is_empty() {
+        nav.seed(pos);
+    }
+    if let Some(g) = nav.far_node(pos, ROAM_MIN, x) {
+        return Some((g, "far"));
+    }
+    nav.expand(ROAM_GROW, None);
+    match nav.far_node(pos, ROAM_MIN, x) {
+        Some(g) => Some((g, "far")),
+        None => nav.farthest_node(pos).map(|g| (g, "farthest")),
+    }
+}
+
+/// BOT-189: the landing of a walk (`run`: its places) that leads off an edge more than the grid's walk off below
+/// `from_y` (`evade::deep_landing`) when it is a dead end on the grid `nav` (`NavGrid::dead_end`, within [`LOST_MIN`]):
+/// the greedy way-finder takes no such heading and the walk guard holds such a walk. Two Towers (`out_boteval`
+/// matrix rooms): bots walked off the upper walk and the floor by the pool onto the ledge, the beams round the pool and
+/// the slot by the tower (falls of 235..384) and stayed there 20..130 s.
+// DC-DEFAULT: BOT-189 (proposed)
+fn dead_end_below(
+    nav: Option<&crate::nav::NavGrid>,
+    world: &dc_sim::CollisionWorld,
+    dims: [f32; 3],
+    from_y: f32,
+    run: &[[f32; 3]],
+) -> Option<[f32; 3]> {
+    let nav = nav?;
+    let l = crate::evade::deep_landing(world, dims, from_y, run.iter().copied())?;
+    nav.dead_end(l, crate::nav::DEAD_END_PROBES, LOST_MIN)
+        .then_some(l)
+}
+
+/// BOT-180: whether the shooter's target (`target`: one is held) still counts as seen at `now` for the roam gate:
+/// it was in clear sight within [`SEEING_HOLD_MS`] (`in_view_at`: when it last was).
+fn target_seen(target: bool, in_view_at: Option<Millis>, now: Millis) -> bool {
+    target && in_view_at.is_some_and(|t| since(now, t) < SEEING_HOLD_MS)
+}
 /// BOT-136: the posts round the sites are kept this long (this long while a site has fewer than three, when the
 /// grid also grows by this many probes toward it); the view turns toward the watched place at this rate (rad/s).
 // DC-DEFAULT: BOT-136 (proposed) 15 s / 3 s, 48 probes, 3 rad/s
@@ -193,6 +246,13 @@ pub const WATCH_TURN: f32 = 3.0;
 /// BOT-136: a defuse hold counts as ending in time when it ends this long before the blast (the 0x51 reaches the
 /// bot a little after the server's plant).
 pub const HOLD_DONE_SLACK_MS: u32 = 300;
+/// BOT-167: the team's sight of attackers near the sites is checked this often; a defender before the plant plans a
+/// way to a site it has no whole way to yet this often (the grid grows toward it meanwhile, by the follower's growth
+/// budget per tick).
+// DC-DEFAULT: BOT-167 (proposed) 500 ms, 1 s, ladders within 1200 units of a site
+pub const CONTACT_CHECK_MS: u32 = 500;
+pub const SCOUT_MS: u32 = 1000;
+pub const SCOUT_LADDERS: f32 = 1200.0;
 
 /// BOT-136: the posts round the sites as last worked out.
 #[derive(Debug, Clone)]
@@ -467,11 +527,11 @@ pub enum GameEvent {
 /// shot counter, WEAPON_FIRE_2009_addendum_cone.md AC-1.5), and the mode messages the client HUD reads: 0x4f / 0x50 /
 /// 0x51 / 0x56 / 0xad Search and Destroy, 0xc6 flag state, 0xc9 Fire Team mission (goal list, banner), 0xcb Spy Hunt,
 /// 0xd3 Quarantine; 0xcd the radar switch (the answer to the heartbeat sensor's switch, CLI-1912); and our own 0xf1, other players' health in a match with wallhacks (DSV-480,
-/// `dc_wire::remotehealth`); 0xf2 the Possession move (DSV-483); 0xf5 the team pings (DSV-651, `dc_wire::teamping`).
+/// `dc_wire::remotehealth`); 0xf2 the Possession move (DSV-483); 0xf5 the team pings (DSV-651, `dc_wire::teamping`); 0xf6 the kill cards (DSV-652, `dc_wire::killcard`).
 // DC-DEFAULT: BOT-95 (proposed, playtest report "no flag sounds, no visual when you grab the flag") the mode shells
 // were parsed by the HUD (hud::msgs::read_shell) but never handed over, so no notice, sound or counter followed them
 // SPEC: GAME_MESSAGES_2009_S2C.md Â§2.1, Â§2.4 (0x68), Â§3.2 (0x6c), Â§3.3, Â§3.5, Â§4.2 (0xd9), Â§8.3, 0x77 row, 0xda row
-pub const RAW_SHELL_EVENTS: [u8; 29] = [
+pub const RAW_SHELL_EVENTS: [u8; 30] = [
     0x3f,
     0x45,
     0x46,
@@ -503,6 +563,9 @@ pub const RAW_SHELL_EVENTS: [u8; 29] = [
     // DC-DEFAULT: CLI-1952 (proposed) the team pings' offer and notices reach the client HUD (without it the offer
     // never arrived and the ping key stayed inert, owner play test 2026-11-09)
     dc_wire::teamping::SHELL_ID,
+    // DC-DEFAULT: CLI-1956 (proposed) the kill cards' offer and the victim's card reach the client (without it the
+    // kill zoom never starts, as the pings' offer never arrived before CLI-1952)
+    dc_wire::killcard::SHELL_ID,
 ];
 
 /// Client states (UDP_SESSION_2009_A.md §8.1 names).
@@ -692,6 +755,8 @@ pub struct BotSession {
     /// BOT-117: the place the bot roams to and when it was picked; the picks' counter.
     roam: Option<([f32; 3], Millis)>,
     roam_seed: u64,
+    /// BOT-180: when the shooter's target was last in clear sight (the roam gate).
+    target_view_at: Option<Millis>,
     /// BOT-130: since when the bot is the last one alive of its side in an elimination round (`None`: it is not).
     cautious_since: Option<Millis>,
     /// BOT-145: the place of the first of the stuck events counted, since when, how many; the goal walked to instead
@@ -806,6 +871,8 @@ pub struct BotSession {
     /// BOT-160: a Quarantine human's own place at the stand (whether it was picked after the outbreak, and when);
     /// whether it keeps to the stand this tick (no roam, no hunt).
     qrt_guard: Option<([f32; 3], bool, Millis)>,
+    /// BOT-183: when a post short of the stand was last picked again.
+    qrt_post_repick: Option<Millis>,
     qrt_camp: bool,
     /// BOT-160: the round as the server's messages tell it (outbreak, infected, stand, chase), the world's ranked
     /// stands, and the human's plan for the track.
@@ -848,6 +915,10 @@ pub struct BotSession {
     ring_cache: Option<([f32; 3], Millis, Vec<[f32; 3]>)>,
     /// BOT-142: the attackers' guard places round the planted bomb: the bomb, when worked out, the places.
     guard_cache: Option<([f32; 3], Millis, Vec<[f32; 3]>)>,
+    /// BOT-167: when the team last saw an attacker near each site (the round, the check), and BOT-167's way grown
+    /// toward the other sites (the round, the sites a whole way is known to, the last route).
+    site_contact: (u32, Millis, Vec<Option<Millis>>),
+    site_scout: (u32, Vec<u8>, Millis),
     /// The bot is within the stop distance of its timeline `approach` player (`approach_reached` was logged).
     approach_near: bool,
     /// The goto point whose `goto_reached` was logged.
@@ -869,7 +940,7 @@ impl BotSession {
         // BOT-143: the speed rows of the loadout, read at run time from the user's ROM as the client does
         let speed_rows = rom
             .as_ref()
-            .and_then(|r| dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(r.rom())).ok())
+            .and_then(|r| dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(r.rom())).ok())
             .map(std::sync::Arc::new);
         // BOT-149: the gear rows of the lobby loadout (0x323), as the client reads its own equipment (CLI-1137)
         let speed_gear = crate::motion::gear_rows(
@@ -906,6 +977,7 @@ impl BotSession {
             confined_check: 0,
             health: None,
             escape_trail: None,
+            target_view_at: None,
             roam_seed: 0x00f0_a3e5
                 ^ cfg
                     .nick
@@ -973,6 +1045,7 @@ impl BotSession {
             knife: Default::default(),
             qrt_retreat: None,
             qrt_guard: None,
+            qrt_post_repick: None,
             qrt_camp: false,
             qrt_round: Default::default(),
             qrt_spots: None,
@@ -997,6 +1070,8 @@ impl BotSession {
             posts_cache: None,
             ring_cache: None,
             guard_cache: None,
+            site_contact: (0, 0, Vec::new()),
+            site_scout: (0, Vec::new(), 0),
             approach_near: false,
             goto_logged: None,
             stream_watch: BTreeMap::new(),
@@ -2164,20 +2239,8 @@ impl BotSession {
         x ^= x >> 7;
         x ^= x << 17;
         self.roam_seed = x;
-        // BOT-143: with no node that far (a young grid: Junk Flea's round 1 knew 61..200 nodes within 800 units) the
-        // grid grows a little, then the farthest known node is the goal (walking to the grid's edge grows it); before,
-        // the bot had no goal and the grid never grew
         let nav = self.nav.as_mut()?;
-        let (g, why) = match nav.far_node(pos, ROAM_MIN, x) {
-            Some(g) => (g, "far"),
-            None => {
-                nav.expand(ROAM_GROW, None);
-                match nav.far_node(pos, ROAM_MIN, x) {
-                    Some(g) => (g, "far"),
-                    None => (nav.farthest_node(pos)?, "farthest"),
-                }
-            }
-        };
+        let (g, why) = roam_pick(nav, pos, x)?;
         self.roam = Some((g, now));
         self.rec.event(
             "roam",
@@ -2424,6 +2487,10 @@ impl BotSession {
         };
         self.lost = Some((g, now));
         self.roam = None;
+        // BOT-183: a Quarantine search place given up is searched
+        if let Some((s, _)) = self.qrt_round.search.take() {
+            self.qrt_round.searched.push(s);
+        }
         self.nav_reset();
         self.nav_end = None;
         self.walk_check = None;
@@ -2443,8 +2510,15 @@ impl BotSession {
         else {
             return false;
         };
+        // BOT-181: an end at a known node off the island leaves it too (a level walk back along a strip)
+        let nav = self.nav.as_ref();
+        let known = |p: [f32; 3]| crate::evade::known_off_island(nav, &part, p);
+        // BOT-189: and an end no way of the grid leads on from (a dead end) does not count
+        let dead_end = |p: [f32; 3]| {
+            nav.is_some_and(|n| n.dead_end(p, crate::nav::DEAD_END_PROBES, LOST_MIN))
+        };
         let e = match (self.body.as_ref(), self.world.as_ref()) {
-            (Some(b), Some(w)) if b.rom_world => crate::evade::escape_move(
+            (Some(b), Some(w)) if b.rom_world => crate::evade::escape_move_open(
                 b,
                 &w.collision,
                 if self.in_hazard {
@@ -2457,6 +2531,8 @@ impl BotSession {
                     (FALL_SAFE + (h - ESCAPE_HEALTH_LEFT).max(0.0) / FALL_DAMAGE_PER_UNIT)
                         .min(crate::nav::ESCAPE_DROP)
                 }),
+                &known,
+                &dead_end,
             ),
             _ => None,
         };
@@ -2577,6 +2653,8 @@ impl BotSession {
                    "stuck_replans": s.stuck_replans, "refusals": s.refusals,
                    "refusals_kept": s.refusals_kept, "traps": s.traps,
                    "place_spent": s.place_spent, "out_of_reach": s.out_of_reach,
+                   "takeoffs": s.takeoffs, "jump_fails": s.jump_fails, "burst_holds": s.burst_holds,
+                   "rung_holds": s.rung_holds,
                    "waypoints": self.follow.points().len(),
                    "busy_us": c.busy_us, "steps": c.steps, "step_max_us": c.step_max_us,
                    "plan_max_us": s.plan_max_us, "grow_max_us": s.grow_max_us,
@@ -3840,7 +3918,16 @@ impl BotSession {
                 stood = self.body.as_ref().map(|b| b.pos());
             }
             // BOT-117: nothing to walk to, no target and no objective to stand at: the bot roams the grid
-            let seeing = self.shooter.as_ref().is_some_and(|s| s.target().is_some());
+            // BOT-180: a target out of clear sight for SEEING_HOLD_MS (dead, behind a wall) keeps it no longer
+            if self
+                .shooter
+                .as_ref()
+                .is_some_and(|s| s.target().is_some() && s.target_dist().is_some())
+            {
+                self.target_view_at = Some(now);
+            }
+            let held = self.shooter.as_ref().is_some_and(|s| s.target().is_some());
+            let seeing = target_seen(held, self.target_view_at, now);
             let goal = match goal {
                 None if may_roam && !self.qrt_camp && stood.is_none() && (!seeing || spy_free) => {
                     self.roam_goal(now).map(|g| (g, "roam"))
@@ -3903,7 +3990,7 @@ impl BotSession {
             let goal = match (goal, self.lost) {
                 (Some((_, k)), Some((g, at)))
                     if since(now, at) < LOST_MS
-                        && matches!(k, "hunt" | "idle" | "roam" | "spy_chase" | "spy_guard") =>
+                        && matches!(k, "hunt" | "idle" | "roam" | "spy_chase" | "spy_guard" | "search") =>
                 {
                     let near = self.body.as_ref().is_some_and(|b| {
                         let p = b.pos();
@@ -4089,6 +4176,8 @@ impl BotSession {
                     };
                     // BOT-111: a probe that ends in danger (a kill volume, above one, a high drop) made no progress;
                     // BOT-145: and is no way to fall back on either
+                    // BOT-189: and one that leads off an edge deeper than the grid's walk off onto a dead end
+                    let nav = self.nav.as_ref();
                     let probe = |y: f32| {
                         body.map_or(Some(pos), |b| {
                             let path = b.probe_path(
@@ -4102,6 +4191,7 @@ impl BotSession {
                                 Some(w) if !crate::evade::path_safe(w, kill, b.dims(), &path) => {
                                     None
                                 }
+                                Some(w) if dead_end_below(nav, w, b.dims(), pos[1], &path).is_some() => None,
                                 _ => Some(end),
                             }
                         })
@@ -4352,7 +4442,13 @@ impl BotSession {
                     // walking to the goal itself at the end of a whole way
                     let to_goal = self.follow.points().is_empty() && self.follow.whole();
                     let stuck = match self.nav.as_mut() {
-                        Some(nav) => self.follow.stuck(nav, now, p),
+                        // BOT-196: a jump only when the body's jump leaves the ground now
+                        Some(nav) => self.follow.stuck(
+                            nav,
+                            now,
+                            p,
+                            self.body.as_ref().is_none_or(|b| b.can_jump()),
+                        ),
                         None => crate::nav::follow::Stuck::No,
                     };
                     match stuck {
@@ -4364,6 +4460,8 @@ impl BotSession {
                             let safe = self.jump_ok(steer, jump_move(evade));
                             if safe {
                                 evade = jump_move(evade);
+                            } else {
+                                self.follow.jump_not_taken();
                             }
                             let why = self.follow.last_jump;
                             // BOT-145: a jump up whose flight the jump test refuses is no way for this body: the
@@ -4536,30 +4634,87 @@ impl BotSession {
             // BOT-150: in Quarantine a walk whose next half second (run on a copy) passes over a deadly drop or into a
             // kill or hazard volume while the body stands safe is held until the next check (Two Towers: bots on
             // the upper walk slipped off its edge into the poison water on their way to the group)
-            // DC-DEFAULT: BOT-150 (proposed)
-            if self.obs.mode_class == Some(crate::qrt::QRT_CLASS) {
-                if let (Some(y), Some(b), Some(w)) =
-                    (body_steer, self.body.as_ref(), self.world.as_ref())
-                {
+            // BOT-181: in every mode and for every arm that walks (the way, the greedy way-finder, a spacing or roam
+            // goal, the step away from a kill volume's edge), with `evade::walk_danger`; the run is tested up to its
+            // first place at a ladder, the way off an island (BOT-159, which may take a drop on purpose) and a body on
+            // a ladder are not tested
+            // (Two Towers: bots walked off the bridge on the greedy way-finder's stale heading, a corner cut of the
+            // way and the step away from the hole in the bridge, which led over its other edge)
+            // DC-DEFAULT: BOT-150 (proposed), BOT-181 (proposed)
+            {
+                // BOT-181: nor a leg of the way that is a ladder's climb (top to foot or foot to top: the run on a copy
+                // walks past the rungs beside the ladder and held every Waverider bot at its spawn ladder's top)
+                let ladder_leg = match (self.body.as_ref(), self.follow.points().first(), self.nav.as_ref()) {
+                    (Some(b), Some(wp), Some(n)) if self.branch == "way" => {
+                        let p = b.pos();
+                        n.ladder_ends(*wp, p).is_some() || n.ladder_ends(p, *wp).is_some()
+                    }
+                    _ => false,
+                };
+                let on_ladder = ladder_leg || self.body.as_ref().is_some_and(|b| b.on_ladder());
+                if let (Some(y), Some(b), Some(w), None, false) = (
+                    body_steer,
+                    self.body.as_ref(),
+                    self.world.as_ref(),
+                    escaping,
+                    on_ladder,
+                ) {
                     if b.rom_world {
                         if since(now, self.walk_guard.0) >= EVADE_CHECK_MS || self.walk_guard.0 == 0
                         {
-                            let (coll, kill, dims) = (&w.collision, &self.kill_now, b.dims());
-                            let here = crate::nav::in_danger(coll, kill, dims, b.pos());
-                            let path = b.probe_path(Some(y), None, crate::qrt::WALK_GUARD_SECS, 5);
-                            let held = !here && !crate::evade::path_safe(coll, kill, dims, &path);
+                            let kill = if self.in_hazard {
+                                &self.kill_only
+                            } else {
+                                &self.kill_now
+                            };
+                            let (coll, dims) = (&w.collision, b.dims());
+                            let here = crate::evade::walk_danger(coll, kill, dims, b.pos());
+                            let path =
+                                b.probe_path_ladder(Some(y), None, crate::qrt::WALK_GUARD_SECS, 5);
+                            // (the run is tested up to the first place at a ladder: from there the climb steers)
+                            let mut held = !here
+                                && path
+                                    .iter()
+                                    .take_while(|(_, ladder)| !ladder)
+                                    .any(|(p, _)| crate::evade::walk_danger(coll, kill, dims, *p));
                             let pos = b.pos();
-                            if held && !self.walk_guard.1 {
-                                // the grid's step that leads there is given up, so the way is planned anew
-                                // around the edge (a held body that only waited made the stuck watchdog jump)
-                                let wp = self.follow.points().first().copied();
-                                if let (Some(wp), Some(n)) = (wp, self.nav.as_mut()) {
-                                    n.ban_step(pos, wp);
-                                    self.follow.clear();
-                                }
+                            // BOT-189: a walk off an edge deeper than the grid's walk off (no link takes it) onto a dead
+                            // end is held too, unless the way steers down a drop of its own
+                            let way_drops = self.branch == "way"
+                                && self
+                                    .follow
+                                    .points()
+                                    .first()
+                                    .is_some_and(|w| pos[1] - w[1] > crate::nav::STEP_UP);
+                            let dead_end = (!here && !held && !way_drops)
+                                .then(|| {
+                                    let run: Vec<[f32; 3]> = path
+                                        .iter()
+                                        .take_while(|(_, ladder)| !ladder)
+                                        .map(|(p, _)| *p)
+                                        .collect();
+                                    dead_end_below(self.nav.as_ref(), coll, dims, pos[1], &run)
+                                })
+                                .flatten();
+                            held |= dead_end.is_some();
+                            // the grid's step that leads there is given up, so the way is planned anew around the
+                            // edge (a held body that only waited made the stuck watchdog jump); BOT-181: only when the
+                            // way steers the body (not the greedy way-finder or a step away), at every check that
+                            // holds it, and as the watchdog's kick (a straight leg the follower pulled again past the
+                            // given-up step held the body 6 s; the second kick in one place is a trap, BOT-133)
+                            let wp = (held && self.branch == "way" && body_steer == steer)
+                                .then(|| self.follow.points().first().copied())
+                                .flatten();
+                            let mut trap = false;
+                            if let (Some(wp), Some(n)) = (wp, self.nav.as_mut()) {
+                                n.ban_step(pos, wp);
+                                trap = self.follow.kick(n, now, pos);
+                            }
+                            if held && (!self.walk_guard.1 || trap) {
                                 self.rec.event(
                                     "walk_guard",
-                                    json!({"ms": self.ms(now), "pos": pos, "yaw": y, "way": wp}),
+                                    json!({"ms": self.ms(now), "pos": pos, "yaw": y, "way": wp,
+                                           "trap": trap, "dead_end": dead_end}),
                                 );
                             }
                             self.walk_guard = (now.max(1), held);
@@ -4571,6 +4726,13 @@ impl BotSession {
                 } else {
                     self.walk_guard.1 = false;
                 }
+            }
+            // BOT-181: a body on a ladder goes on climbing: no evasive move and no step away from a kill volume's edge
+            // (a strafe or a step on the rungs left the ladder and fell: Waverider's 813-unit spawn ladder), and with
+            // nothing steering (the way lost mid-ladder, a hold) it keeps its last heading
+            if let Some(b) = self.body.as_ref().filter(|b| b.on_ladder()) {
+                evade = None;
+                body_steer = steer.or(b.steer);
             }
             if let Some(b) = self.body.as_mut() {
                 b.steer = body_steer;
@@ -4860,11 +5022,13 @@ impl BotSession {
                         .shooter
                         .as_mut()
                         .and_then(|sh| sh.throw_now(now, &view));
+                    // BOT-195: the throw begins (the grenade drawn); the shooter's polls wind it up and release it
                     match f {
-                        Some(f) => self.run_actions(now, vec![Action::Throw(f)]),
+                        Some(acts) => self.run_actions(now, acts),
                         None => self.rec.event(
                             "timeline_skipped",
-                            json!({"ms": ms, "verb": "throw", "why": "no shooter or no slot-3 grant"}),
+                            json!({"ms": ms, "verb": "throw",
+                                   "why": "no shooter, no slot-3 grant or a throw under way"}),
                         ),
                     }
                 }
@@ -5088,12 +5252,10 @@ impl BotSession {
             return;
         };
         let lapsed = sh.knife_lapsed(alive);
-        let contact = if alive {
-            sh.contact(now, &view, knife::HEAR_RANGE)
-        } else {
-            None
-        };
         let knifing = sh.knifing();
+        // BOT-182: a start looks further out than a stop (a hysteresis)
+        let hear = if knifing { knife::HEAR_RANGE } else { knife::START_HEAR_RANGE };
+        let contact = if alive { sh.contact(now, &view, hear) } else { None };
         let ready = sh.knife_ready();
         if lapsed {
             let why = if alive {
@@ -5112,6 +5274,13 @@ impl BotSession {
             self.knife.contact = Some((now, c));
         }
         let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        // BOT-182: how long the walk has had no goal a run goes toward
+        let walking = kind.is_some_and(|k| knife::FREE_KINDS.contains(&k) || knife::CONTESTED_KINDS.contains(&k));
+        if walking {
+            self.knife.goal_lost = None;
+        } else {
+            self.knife.goal_lost.get_or_insert(now);
+        }
         let barred = if matches!(
             self.obs.mode_class,
             Some(crate::qrt::QRT_CLASS | crate::spyrun::SPY_CLASS)
@@ -5136,6 +5305,8 @@ impl BotSession {
             level,
             ready,
             since_stop: self.knife.stopped.map(|t| since(now, t)),
+            run_ms: self.knife.started.filter(|_| knifing).map_or(0, |t| since(now, t)),
+            goal_lost_ms: self.knife.goal_lost.map_or(0, |t| since(now, t)),
         };
         match knife::verdict(knifing, &s) {
             Verdict::Start(why) => {
@@ -5254,6 +5425,9 @@ impl BotSession {
             hold_in_time: false,
             guard_ring: Vec::new(),
             defuser: None,
+            bomb_way: None,
+            enemies: Vec::new(),
+            contact: Vec::new(),
         })
     }
 
@@ -5287,6 +5461,136 @@ impl BotSession {
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|x| (x.1, x.2))
+    }
+
+    /// BOT-166: the places of the living enemies the bot knows of: streamed (not parked, the stream not silent for
+    /// more than `shooter::UNSEEN_SILENT_MS`), above the world's floor (as BOT-142's defuser).
+    // DC-DEFAULT: BOT-166 (proposed)
+    fn known_enemies(&self, now: Millis) -> Vec<[f32; 3]> {
+        let Some(own_team) = self.own_team() else {
+            return Vec::new();
+        };
+        let floor = self.table.extents.map(|e| e.min[1]);
+        self.obs
+            .roster
+            .values()
+            .filter(|r| r.team != own_team && !r.dead)
+            .filter(|r| !self.shooter.as_ref().is_some_and(|s| s.is_down(r.pid)))
+            .filter(|r| {
+                self.stream_watch
+                    .get(&r.character)
+                    .is_some_and(|w| since(now, w.1) <= shooter::UNSEEN_SILENT_MS)
+            })
+            .filter_map(|r| self.table.objects.get(&r.character).and_then(|o| o.pos))
+            .filter(|p| floor.is_none_or(|f| p[1] > f + 2.0))
+            .collect()
+    }
+
+    /// BOT-167: per site, whether the team saw an attacker near it in the last `squad::CONTACT_MS`: a living enemy
+    /// the bot knows of within `squad::THREAT_NEAR` (flat) of the site with a clear line to his eye from the eye of a
+    /// living defender (the bot itself too) within `squad::CONTACT_SEE`. Checked every [`CONTACT_CHECK_MS`] by a
+    /// defender before the plant; forgotten with each round.
+    // DC-DEFAULT: BOT-167 (proposed)
+    fn site_contact(&mut self, now: Millis, team: &crate::squad::Team) -> Vec<bool> {
+        let n = team.sites.len();
+        if self.site_contact.0 != team.round || self.site_contact.2.len() != n {
+            self.site_contact = (team.round, now.wrapping_sub(CONTACT_CHECK_MS), vec![None; n]);
+        }
+        if !team.attacking && !team.planted && since(now, self.site_contact.1) >= CONTACT_CHECK_MS
+        {
+            self.site_contact.1 = now;
+            let world = self.world.as_ref().map(|w| w.collision.clone());
+            let eye = 0.5 * BOT_STAND_DIMS[1];
+            let seers: Vec<[f32; 3]> = team
+                .mates
+                .iter()
+                .filter(|m| m.alive || m.pid == team.own_pid)
+                .filter_map(|m| m.pos)
+                .collect();
+            for (i, site) in team.sites.iter().enumerate() {
+                let seen = team
+                    .enemies
+                    .iter()
+                    .filter(|e| crate::roles::flat_dist(**e, *site) <= crate::squad::THREAT_NEAR)
+                    .any(|e| {
+                        seers.iter().any(|q| {
+                            let d = ((q[0] - e[0]).powi(2) + (q[1] - e[1]).powi(2) + (q[2] - e[2]).powi(2))
+                                .sqrt();
+                            d <= crate::squad::CONTACT_SEE
+                                && world.as_deref().is_none_or(|w| {
+                                    crate::hunt::line_clear(
+                                        w,
+                                        [q[0], q[1] + eye, q[2]],
+                                        [e[0], e[1] + eye, e[2]],
+                                    )
+                                })
+                        })
+                    });
+                if seen {
+                    self.site_contact.2[i] = Some(now);
+                }
+            }
+        }
+        self.site_contact
+            .2
+            .iter()
+            .map(|c| c.is_some_and(|t| since(now, t) <= crate::squad::CONTACT_MS))
+            .collect()
+    }
+
+    /// BOT-167: a bot before the plant whose own way is known (or that stands at its end) grows its grid toward the
+    /// sites: first toward a site it has no whole way to yet (a route to it every [`SCOUT_MS`], so the grid's partial search leads the growth,
+    /// BOT-139, and the grid grown between the bot and the site by the follower's growth budget each tick), then toward
+    /// the ends of the ladders within [`SCOUT_LADDERS`] (flat) of the site that are not joined to the grid yet (the
+    /// end nearest the bot first), so the short way up or down is known too. A rotation or the run to a planted bomb
+    /// then finds its way at once. Before, the grid grew a far site's way only as the bot walked there: Rattlesnake's
+    /// run to the other site (3000 units) lost 8 s at a dead end below the site's level and took a way round of 32 s
+    /// where the whole way takes 19 s; on Snow Valley the defenders whose grid had a way to site B round the west of
+    /// the map (40 s) but not the shaft ladder (6 s) took the long way.
+    // DC-DEFAULT: BOT-167 (proposed)
+    fn site_scout(&mut self, now: Millis, team: &crate::squad::Team) {
+        // (not while the follower grows its own partial way: the grid's partial search is its)
+        if team.planted || !(self.follow.whole() || self.follow.points().is_empty()) {
+            return;
+        }
+        let n = team.sites.len();
+        if self.site_scout.0 != team.round || self.site_scout.1.len() != n {
+            self.site_scout = (team.round, vec![0; n], now.wrapping_sub(SCOUT_MS));
+        }
+        let Some(i) = (0..n).find(|&i| self.site_scout.1[i] < 2) else {
+            return;
+        };
+        let (pos, site) = (team.own_pos, team.sites[i]);
+        let Some(nav) = self.nav.as_mut() else {
+            return;
+        };
+        if self.site_scout.1[i] == 0 {
+            if since(now, self.site_scout.2) >= SCOUT_MS {
+                self.site_scout.2 = now;
+                let whole = nav.route(pos, site).is_some_and(|p| {
+                    let e = p[p.len() - 1];
+                    crate::roles::flat_dist(e, site) <= crate::nav::follow::AT_TARGET
+                        && (e[1] - site[1]).abs() <= crate::nav::follow::REACHED_RISE
+                });
+                if whole {
+                    self.site_scout.1[i] = 1;
+                    return;
+                }
+            }
+            nav.expand_between(crate::nav::follow::GROW_PROBES, pos, site);
+            return;
+        }
+        let ends = nav.ladders_unjoined_near(site, SCOUT_LADDERS);
+        let Some(end) = ends.into_iter().min_by(|a, b| {
+            crate::roles::flat_dist(*a, pos).total_cmp(&crate::roles::flat_dist(*b, pos))
+        }) else {
+            self.site_scout.1[i] = 2;
+            return;
+        };
+        // (a ladder whose ends the grid never grows to is left once the grid stops growing)
+        if nav.expand_between(crate::nav::follow::GROW_PROBES, pos, end) == 0 && !nav.growing() {
+            self.site_scout.1[i] = 2;
+        }
     }
 
     /// BOT-136: the bomb fuse left at `now` (ms; `None` before a plant or when it is not known).
@@ -5508,6 +5812,14 @@ impl BotSession {
                 team.defuser = self.seen_defuser(now, team.bomb_pos).map(|d| d.1);
                 team.fuse_left = self.fuse_left(now);
                 team.hold_in_time = self.hold_in_time();
+                // BOT-166: a defender's way left to the bomb, the attackers it knows of; BOT-167: the sites hit, the
+                // way grown toward the other sites
+                team.enemies = self.known_enemies(now);
+                team.contact = self.site_contact(now, &team);
+                if team.planted && !team.attacking {
+                    team.bomb_way = team.bomb_pos.and_then(|b| self.nav_way_left(team.own_pos, b));
+                }
+                self.site_scout(now, &team);
                 let nav = self.nav.as_ref();
                 let mut snap = |p: [f32; 3]| {
                     nav?.links_near(p, 512.0)
@@ -5657,9 +5969,10 @@ impl BotSession {
             kill.retain(|k| !hazard.contains(k));
             if let (Some(w), Some(nav)) = (world, self.nav.as_mut()) {
                 for c in fresh {
-                    // BOT-163: a pass while the grid grows is tested again later
-                    let provisional = nav.growing() || nav.is_empty();
                     let why = crate::spyrun::case_reach(nav, &w, &kill, c);
+                    // BOT-163: a pass while the grid grows is tested again later (BOT-184: also one after the deep
+                    // falls toward the case, which set the grid growing again)
+                    let provisional = nav.growing() || nav.is_empty();
                     self.spy.note_reach(c, why, provisional, now);
                     if let Some(why) = why {
                         self.rec.event(
@@ -5722,11 +6035,19 @@ impl BotSession {
                        "fails": self.spy.fail_count(&c)}),
             );
         }
-        // BOT-163: a case place that defeated the bot's attempts is out of its reach for the match
+        // BOT-163: a case place that defeated the bot's attempts is out of its reach (BOT-180: for 60..90 s)
         if let Some(c) = self.spy.just_given_up.take() {
             self.rec.event(
                 "spy_unreachable",
-                json!({"ms": self.ms(now), "case": c, "pos": at, "fails": self.spy.fail_count(&c)}),
+                json!({"ms": self.ms(now), "case": c, "pos": at, "fails": self.spy.fail_count(&c),
+                       "hints": self.spy.hint_count(&c)}),
+            );
+        }
+        // BOT-180: the give-up ran out: the bot tries the place again
+        if let Some(c) = self.spy.just_retry.take() {
+            self.rec.event(
+                "spy_retry",
+                json!({"ms": self.ms(now), "case": c, "pos": at}),
             );
         }
         // BOT-151: the agent waits away from the hunters until the uplink is about to open; a guard holds its
@@ -6166,6 +6487,9 @@ impl BotSession {
                     .map(|o| (o.0, o.2))
                     .collect();
                 let ms = self.ms(now);
+                // BOT-183: the walked cells and the humans' last places feed the search
+                self.qrt_round.note_walk(at);
+                self.qrt_round.note_humans(ms, &humans);
                 let (g, gave_up) = self.qrt_round.chase_pick(ms, at, &humans);
                 if let Some(pid) = gave_up {
                     self.rec.event(
@@ -6173,7 +6497,11 @@ impl BotSession {
                         json!({"ms": ms, "pos": at, "pid": pid, "next": g.map(|g| g.0)}),
                     );
                 }
-                return (g.map(|g| (g.1, "chase")), false);
+                if let Some(g) = g {
+                    self.qrt_round.search = None;
+                    return (Some((g.1, "chase")), false);
+                }
+                return (self.qrt_search(now, at).map(|g| (g, "search")), false);
             }
             // a hunt goal of the shooter's own: the chase clock starts again with the next chase
             self.qrt_round.chase = None;
@@ -6199,7 +6527,11 @@ impl BotSession {
             |o: &(u8, u8, [f32; 3])| o.1 == qrt::INFECTED || self.qrt_round.infected.contains(&o.0);
         let infected: Vec<[f32; 3]> = others.iter().filter(|o| is_infected(o)).map(|o| o.2).collect();
         let mates: Vec<[f32; 3]> = others.iter().filter(|o| !is_infected(o)).map(|o| o.2).collect();
+        // BOT-183: where the other humans stand, for the search once this bot is infected
+        let seen_humans: Vec<(u8, [f32; 3])> =
+            others.iter().filter(|o| !is_infected(o)).map(|o| (o.0, o.2)).collect();
         self.qrt_round.note_seen(ms, &infected);
+        self.qrt_round.note_humans(ms, &seen_humans);
         let spot = self.qrt_spot(now);
         let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
         // the nearest infected in view, or a place one was seen at moments ago (it went round a corner)
@@ -6222,6 +6554,8 @@ impl BotSession {
         match qrt::human_plan(outbreak, threat.map(|t| t.1), alone) {
             qrt::Plan::FallBack => {
                 self.qrt_plan = Some("fall_back");
+                // BOT-194: off the post; its give-up clock starts again
+                qrt::post_clock_restart(&mut self.qrt_guard, now);
                 // and away from where infected were seen lately
                 let mut infected = infected;
                 infected.extend(self.qrt_round.seen_within(ms, qrt::SEEN_KEEP_MS));
@@ -6265,6 +6599,7 @@ impl BotSession {
                 // BOT-160: an infected within reach of the guns, none too close: stand and fire (BOT-150's focus)
                 self.qrt_retreat = None;
                 self.qrt_plan = Some("hold");
+                qrt::post_clock_restart(&mut self.qrt_guard, now);
                 (None, true)
             }
             qrt::Plan::Post => {
@@ -6291,9 +6626,10 @@ impl BotSession {
                     self.qrt_guard = None;
                 }
                 // BOT-161: a place not reached in 15 s is given up for the round
-                if let Some(g) = self.qrt_guard.filter(|g| {
-                    since(now, g.2) >= qrt::POST_GIVE_UP_MS && flat(g.0, at) > qrt::POST_REACHED
-                }) {
+                if let Some(g) = self
+                    .qrt_guard
+                    .filter(|g| qrt::post_given_up(since(now, g.2), flat(g.0, at)))
+                {
                     self.rec.event(
                         "qrt_post_drop",
                         json!({"ms": ms, "pos": at, "post": g.0}),
@@ -6301,33 +6637,45 @@ impl BotSession {
                     self.qrt_round.bad.push(g.0);
                     self.qrt_guard = None;
                 }
-                if self.qrt_guard.is_none() {
-                    let bad = self.qrt_round.bad.clone();
-                    let nodes: Vec<[f32; 3]> = self
-                        .nav
-                        .as_ref()
-                        .map(|n| n.links_near(spot, max))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|(p, l)| !l.is_empty() && bad.iter().all(|b| flat(*b, *p) > 64.0))
-                        .map(|(p, _)| p)
-                        .collect();
-                    let slot = own_pid.unwrap_or(0).wrapping_add(self.qrt_round.round);
-                    let crowd: &[[f32; 3]] = if outbreak { &[] } else { &mates };
-                    let cands = qrt::posts(spot, &nodes, min, max, slot, crowd);
-                    // BOT-161: only a place the grid has a short way to; else the reachable place nearest the stand
-                    let mut g = None;
+                let slot = own_pid.unwrap_or(0).wrapping_add(self.qrt_round.round);
+                // BOT-183: a post short of the stand (the young grid's frontier) is picked again while the grid grows
+                // toward the stand
+                if let Some(g) = self.qrt_guard.filter(|g| {
+                    (g.0 == spot || qrt::post_short(g.0, spot, max))
+                        && self
+                            .qrt_post_repick
+                            .is_none_or(|t| since(now, t) >= qrt::POST_FAR_REPICK_MS)
+                }) {
+                    self.qrt_post_repick = Some(now);
                     if let Some(nav) = self.nav.as_mut() {
-                        g = cands.iter().take(qrt::POST_TRIES).copied().find(|c| {
-                            nav.path(at, *c).is_some_and(|p| qrt::way_reaches(at, &p, *c))
-                        });
-                        if g.is_none() {
-                            g = nav
-                                .path(at, spot)
-                                .and_then(|p| p.last().copied())
-                                .filter(|p| bad.iter().all(|b| flat(*b, *p) > 64.0));
-                        }
+                        nav.expand_between(POSTS_GROW, at, spot);
                     }
+                    let crowd = if outbreak { Vec::new() } else { mates.clone() };
+                    let new = self.qrt_pick_post(at, spot, min, max, slot, &crowd);
+                    if let Some(p) = qrt::post_repick(g.0, new, spot, max) {
+                        self.rec.event(
+                            "qrt_post",
+                            json!({"ms": ms, "pos": at, "spot": spot, "post": p, "outbreak": outbreak,
+                                   "repick": g.0}),
+                        );
+                        self.qrt_guard = Some((p, outbreak, now));
+                    } else if g.0 != spot
+                        && flat(g.0, at) <= qrt::POST_REACHED
+                        && self.qrt_round.bad.iter().all(|b| flat(*b, spot) > 64.0)
+                    {
+                        // at the frontier with nothing better: on toward the stand itself (the way grows the grid)
+                        self.rec.event(
+                            "qrt_post",
+                            json!({"ms": ms, "pos": at, "spot": spot, "post": spot, "outbreak": outbreak,
+                                   "repick": g.0}),
+                        );
+                        self.qrt_guard = Some((spot, outbreak, now));
+                    }
+                }
+                if self.qrt_guard.is_none() {
+                    let crowd = if outbreak { Vec::new() } else { mates.clone() };
+                    let g = self.qrt_pick_post(at, spot, min, max, slot, &crowd);
+                    let bad = &self.qrt_round.bad;
                     if let Some(g) = g {
                         self.rec.event(
                             "qrt_post",
@@ -6352,6 +6700,96 @@ impl BotSession {
                 }
             }
         }
+    }
+
+    /// BOT-160/161: a human's own place at the stand `spot` (`min`..`max` from it, the bearing of `slot`, away from
+    /// `crowd`): the first of the best places the grid has a short way to, else the end of the grid's way toward the
+    /// stand; never a place given up this round.
+    // DC-DEFAULT: BOT-160 (proposed), BOT-161 (proposed)
+    fn qrt_pick_post(
+        &mut self,
+        at: [f32; 3],
+        spot: [f32; 3],
+        min: f32,
+        max: f32,
+        slot: u8,
+        crowd: &[[f32; 3]],
+    ) -> Option<[f32; 3]> {
+        use crate::qrt;
+        let flat = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        let bad = &self.qrt_round.bad;
+        let nav = self.nav.as_mut()?;
+        let nodes: Vec<[f32; 3]> = nav
+            .links_near(spot, max)
+            .into_iter()
+            .filter(|(p, l)| !l.is_empty() && bad.iter().all(|b| flat(*b, *p) > 64.0))
+            .map(|(p, _)| p)
+            .collect();
+        let cands = qrt::posts(spot, &nodes, min, max, slot, crowd);
+        // BOT-161: only a place the grid has a short way to; else the reachable place nearest the stand
+        cands
+            .iter()
+            .take(qrt::POST_TRIES)
+            .copied()
+            .find(|c| nav.path(at, *c).is_some_and(|p| qrt::way_reaches(at, &p, *c)))
+            .or_else(|| {
+                nav.path(at, spot)
+                    .and_then(|p| p.last().copied())
+                    .filter(|p| bad.iter().all(|b| flat(*b, *p) > 64.0))
+            })
+    }
+
+    /// BOT-183: an infected that knows of no living human searches (see [`crate::qrt::SEARCH_REACHED`]): the place
+    /// it walks to until reached or given up, then its next share of the last-seen places, the stand and its ring and
+    /// the other stands, then the sweep of grid cells it has not walked this round. `None` when nothing is left (the
+    /// roam takes over).
+    // DC-DEFAULT: BOT-183 (proposed)
+    fn qrt_search(&mut self, now: Millis, at: [f32; 3]) -> Option<[f32; 3]> {
+        use crate::qrt;
+        let ms = self.ms(now);
+        if let Some(g) = self.qrt_round.search_keep(ms, at) {
+            return Some(g);
+        }
+        let stand = self.qrt_spot(now);
+        let stands: Vec<[f32; 3]> = self
+            .qrt_spots
+            .as_ref()
+            .map(|s| s.1.iter().take(qrt::SPOT_TURNS).copied().collect())
+            .unwrap_or_default();
+        let seen = self.qrt_round.humans_seen_places(ms);
+        let nav = self.nav.as_ref();
+        let ring: Vec<[f32; 3]> = stand
+            .map(qrt::ring)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| nav.and_then(|n| n.safe_node(p, 0.5 * qrt::SEARCH_RING)))
+            .collect();
+        let fixed = qrt::search_places(&seen, stand, &ring, &stands);
+        let nodes: Vec<[f32; 3]> = nav
+            .map(|n| n.links_near(at, f32::INFINITY))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, l)| !l.is_empty())
+            .map(|(p, _)| p)
+            .collect();
+        let own = self.obs.client_id.map(|c| c.0 as u8);
+        let (slot, n) = qrt::infected_slot(own, &self.qrt_round.infected);
+        let g = qrt::search_pick(
+            at,
+            slot,
+            n,
+            &fixed,
+            &nodes,
+            &self.qrt_round.visited,
+            &self.qrt_round.searched,
+        )?;
+        self.qrt_round.search = Some((g, ms));
+        self.rec.event(
+            "qrt_search",
+            json!({"ms": ms, "pos": at, "goal": g, "slot": slot, "of": n,
+                   "fixed": fixed.len(), "searched": self.qrt_round.searched.len()}),
+        );
+        Some(g)
     }
 
     /// BOT-160: the Quarantine humans' stand of this round: the world's spawn places ranked (once per world) by
@@ -6613,14 +7051,16 @@ impl BotSession {
         use crate::cover;
         let ms = self.ms(now);
         let h = &self.guard_hold;
-        let every = if h.spots.len() < 2 {
+        let every = if h.pool.len() < cover::SHARE_MIN {
             POSTS_THIN_MS
         } else {
             GUARD_RERANK_MS
         };
+        // BOT-179: a guard with no free place to go asks for new spots (at most every POSTS_THIN_MS)
         let stale = !h.ranked
             || crate::roles::flat_dist(h.center, flag) > 64.0
-            || ms.wrapping_sub(h.ranked_at) >= every;
+            || ms.wrapping_sub(h.ranked_at) >= every
+            || (h.rerank && ms.wrapping_sub(h.ranked_at) >= POSTS_THIN_MS);
         if stale {
             let other = if team == 1 { 2 } else { 1 };
             let anchors: Vec<[f32; 3]> = self
@@ -6631,22 +7071,23 @@ impl BotSession {
                 .into_iter()
                 .collect();
             let ranked = self.cover_spots(flag, crate::roles::FLAG_COVER_BAND, &anchors);
-            if ranked.len() < 2 {
+            if ranked.iter().filter(|s| s.sees).count() < cover::SHARE_MIN {
                 if let Some(nav) = self.nav.as_mut() {
                     nav.expand(POSTS_GROW, Some(flag));
                 }
             }
             let mine = cover::share(&ranked, j.guard, j.guards);
+            let pool: Vec<cover::Spot> = ranked.iter().filter(|s| s.sees).cloned().collect();
             if mine.iter().map(|s| s.at).ne(self.guard_hold.spots.iter().map(|s| s.at)) {
                 self.rec.event(
                     "guard_spots",
                     json!({"ms": ms, "mode": "flag", "center": flag, "ranked": ranked.len(),
-                           "guard": j.guard, "guards": j.guards,
+                           "seeing": pool.len(), "guard": j.guard, "guards": j.guards,
                            "mine": mine.iter().map(|s| json!({"at": s.at, "score": s.score, "open": s.open,
-                                                              "peek": s.peek})).collect::<Vec<_>>()}),
+                                                              "sees": s.sees, "peek": s.peek})).collect::<Vec<_>>()}),
                 );
             }
-            self.guard_hold.set_spots(flag, mine, ms);
+            self.guard_hold.set_spots(flag, mine, pool, ms);
         }
         let crowd: Vec<[f32; 3]> = mates.iter().filter(|m| m.0 < j.guard).map(|m| m.1).collect();
         let avoid: Vec<[f32; 3]> = mates.iter().map(|m| m.1).collect();
@@ -6665,7 +7106,7 @@ impl BotSession {
             self.rec.event(
                 "guard_spot",
                 json!({"ms": ms, "mode": "flag", "spot": s.at, "score": s.score, "open": s.open,
-                       "dwell": dwell, "why": why.name(), "spots": self.guard_hold.spots.len()}),
+                       "sees": s.sees, "dwell": dwell, "why": why.name(), "spots": self.guard_hold.spots.len()}),
             );
         }
         self.guard_hold.goal(ms)
@@ -6825,13 +7266,10 @@ impl BotSession {
             if unreachable(self.flag_unreach, enemy, p, now) {
                 return None;
             }
-            // BOT-144: within the grab distance of the enemy flag the attacker runs on for it with an enemy in sight
-            // (it fights on the way; before, it stopped at the guards' ring and fought them there)
-            let near = self
-                .body
-                .as_ref()
-                .is_some_and(|b| flat(b.pos(), p) <= crate::flagrun::FLAG_DASH);
-            if in_sight && !near {
+            // BOT-193: with an enemy in clear sight the attacker fights it first (the hunt) and runs on for the flag
+            // only when the take is a step away (BOT-144 ran on from 600 units into the guards' fire)
+            let d = self.body.as_ref().map_or(f32::MAX, |b| flat(b.pos(), p));
+            if !crate::flagrun::run_on(d, in_sight) {
                 return None;
             }
             self.flag_walk_team = Some(enemy);
@@ -6938,6 +7376,28 @@ impl BotSession {
 mod tests {
     use super::*;
     use crate::shell::{MoveTrailer, PlayerStatus};
+
+    /// BOT-180: a grid made afresh by a world change (empty) still gives a roam goal: the bot's place joins it and
+    /// it grows from there; a target out of clear sight for 3 s no longer counts as seen.
+    #[test]
+    fn a_fresh_grid_gives_a_roam_goal_and_an_unseen_target_stops_holding_the_bot() {
+        use crate::hunt::tests::solid_box;
+        let w = std::sync::Arc::new(dc_sim::CollisionWorld::from_parts(
+            vec![solid_box([-2000.0, -64.0, -2000.0], [2000.0, 0.0, 2000.0])],
+            &[],
+        ));
+        let mut nav = crate::nav::NavGrid::new(w, BOT_STAND_DIMS);
+        assert!(nav.is_empty());
+        let pos = [0.0, BOT_STAND_DIMS[1], 0.0];
+        let (g, _) = roam_pick(&mut nav, pos, 7).expect("a roam goal on a fresh grid");
+        assert!(!nav.is_empty());
+        assert!((g[0] - pos[0]).hypot(g[2] - pos[2]) > 1.0, "the goal is not the bot's own place");
+        // the roam gate
+        assert!(!target_seen(false, Some(1_000), 1_000));
+        assert!(target_seen(true, Some(1_000), 1_000 + SEEING_HOLD_MS - 1));
+        assert!(!target_seen(true, Some(1_000), 1_000 + SEEING_HOLD_MS));
+        assert!(!target_seen(true, None, 1_000));
+    }
 
     fn shell_message(id: u8, body: impl FnOnce(&mut BitWriter)) -> BitWriter {
         let mut w = BitWriter::new();
@@ -7326,6 +7786,38 @@ mod tests {
             })
             .collect();
         assert_eq!(raw, [(0x68, 2 * 16 + 3 * 16 + 72), (0x6c, 16)]);
+    }
+
+    /// CLI-1956: the kill cards' shell is handed to the client whole and reads back as the card the server wrote.
+    #[test]
+    fn a_kill_card_reaches_the_client_whole() {
+        use dc_wire::killcard::{read_notice, write_notice, Card, Notice};
+        let mut s = external_session();
+        let card = Notice::Card(Card {
+            killer: 4,
+            obj: 0x0123,
+            health: 37,
+            health_max: 100,
+            armor: 12,
+            armor_max: 100,
+        });
+        for (seq, n) in [(1, Notice::Offer { hold_ms: 1000 }), (2, card)] {
+            s.process(
+                seq,
+                &shell_message(dc_wire::killcard::SHELL_ID, |w| write_notice(w, n)),
+            );
+        }
+        let got: Vec<Notice> = s
+            .take_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                GameEvent::Shell { shell, body, bits } if shell == dc_wire::killcard::SHELL_ID => {
+                    read_notice(&mut BitReader::with_bit_len(&body, bits))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(got, [Notice::Offer { hold_ms: 1000 }, card]);
     }
 
     #[test]

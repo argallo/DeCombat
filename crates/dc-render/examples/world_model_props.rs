@@ -2,14 +2,13 @@
 //! the properties given on the command line (by name, as the user's files spell them), counted. Printed only.
 //! Usage: `cargo run -p dc-render --example world_model_props -- <prop> [<prop> ...]`.
 
-use dc_render::WorldSource;
 use dc_world::{FieldValue, World};
 use std::collections::BTreeMap;
 
 fn main() {
     let props: Vec<String> = std::env::args().skip(1).collect();
     let rom = dc_rom::resolve_rom().expect("CA_ROM");
-    let src = WorldSource::open(&rom).expect("world archive");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
     let mut counts: BTreeMap<(String, String, String), u64> = BTreeMap::new();
     for map in src.map_names() {
         let data = src.read(&map).expect("read").expect("present");

@@ -1600,6 +1600,10 @@ impl Editor {
                 let mut op = Op::SettingsSet {
                     bake_shadow: None,
                     bake_lightmap: None,
+                    bake_ambient: None,
+                    bake_sun: None,
+                    bake_hemisphere: None,
+                    bake_ao: None,
                     fog_enable: None,
                     fog_near: None,
                     fog_far: None,
@@ -1612,6 +1616,7 @@ impl Editor {
                     sky_size: None,
                     sky_material: None,
                     two_sided: None,
+                    sky_inner: None,
                 };
                 let mut any = false;
                 if let Op::SettingsSet {

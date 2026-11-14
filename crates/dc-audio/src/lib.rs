@@ -13,6 +13,7 @@ pub mod attrib;
 pub mod bgm;
 pub mod decode;
 pub mod law;
+pub mod limiter;
 pub mod mixer;
 pub mod output;
 pub mod reverb;
@@ -48,5 +49,5 @@ impl KeyId {
 
 /// `sha256(text)[..16]` as lowercase hex.
 pub fn hash16(text: &str) -> String {
-    dc_rom::sha256_hex(text.as_bytes())[..16].to_string()
+    dc_core::sha256_hex(text.as_bytes())[..16].to_string()
 }

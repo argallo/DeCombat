@@ -11,7 +11,7 @@ use std::path::Path;
 // DC-DEFAULT: CLI-210 (proposed), see the staged rows (the profile is read once at start; the options page that
 // changes it is not implemented; no ROM: the code default)
 pub fn client_gamma(rom: Option<&Path>) -> f32 {
-    rom.and_then(dc_render::profile_gamma)
+    rom.and_then(crate::romglue::profile_gamma)
         .unwrap_or(dc_render::PROFILE_GAMMA_DEFAULT)
 }
 

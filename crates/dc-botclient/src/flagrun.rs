@@ -96,9 +96,18 @@ pub const TOUCH_HEIGHT: f32 = 96.0;
 pub const LOOSE_GRAB: f32 = 600.0;
 pub const LOOSE_ALL_MS: u32 = 6_000;
 pub const LOOSE_ALL_RANGE: f32 = 2_500.0;
-/// BOT-144: an attacker this near the enemy flag runs on for it with an enemy in sight (it fights on the way).
-// DC-DEFAULT: BOT-144 (proposed) 600 units (as the grab of a loose flag)
-pub const FLAG_DASH: f32 = 600.0;
+/// BOT-193 (amends BOT-144 (4)): an attacker runs on for the enemy flag with an enemy in clear sight only this near
+/// it (the take is a step away); farther, it fights first. BOT-144 ran on from 600 units: the guards on their
+/// seeing spots (BOT-179) shot the runner, and the carrier died at the flag (matrix 6: 0 captures from 6 takes on
+/// Sand Hog, every carrier killed by a guard 0..2 s after the take).
+// DC-DEFAULT: BOT-193 (proposed) 160 units (2.5 touches)
+pub const FLAG_GRAB: f32 = 160.0;
+
+/// BOT-193: whether a non-carrier attacker `d` units (flat) from the enemy flag walks on for it this tick: always
+/// without an enemy in clear sight (`in_sight`), with one only within [`FLAG_GRAB`].
+pub fn run_on(d: f32, in_sight: bool) -> bool {
+    !in_sight || d <= FLAG_GRAB
+}
 /// A flag walk whose distance to the flag gets no [`STALL_GAIN`] units shorter for [`STALL_MS`] ends: the flag is
 /// out of the bot's reach from here (event `flag_unreachable`) and it is not walked to for [`UNREACH_MS`] unless it
 /// moves [`UNREACH_MOVED`] units.
@@ -264,6 +273,16 @@ mod tests {
             !loose_rush([3000.0, 0.0, 0.0], flag, &[], 0),
             "alone, too far"
         );
+    }
+
+    /// BOT-193: an attacker fights a guard it sees before it runs on for the flag, unless the take is a step away.
+    #[test]
+    fn an_attacker_fights_the_guard_it_sees_before_the_take() {
+        assert!(run_on(3000.0, false), "nobody in sight: on for the flag");
+        assert!(!run_on(500.0, true), "a guard in sight 500 units out: fight first (BOT-144 ran on)");
+        assert!(!run_on(FLAG_GRAB + 1.0, true));
+        assert!(run_on(FLAG_GRAB, true), "a step from the take: take it");
+        assert!(run_on(40.0, true));
     }
 
     /// BOT-138: the touch is the server's (64 across, 96 up / down); a flag walk that gets no nearer for 10 s

@@ -618,6 +618,7 @@ const EMPTIED: &[(&str, &str)] = &[
     ("nx_clan_wins", "user_no"),
     ("nx_events", "user_no"),
     ("identity_links", "user_no"),
+    ("device_sessions", "user_no"),
     ("recovery_codes", "user_no"),
     ("beta_signups", "user_no"),
 ];
@@ -643,6 +644,7 @@ fn seed(sh: &Shared, a: u32, login: &str, other: u32) {
         ("INSERT INTO nx_clan_wins (user_no, day, wins) VALUES (?1, 1, 1)", vec![n]),
         ("INSERT INTO nx_events (event_id, user_no, amount, label, created) VALUES ('e', ?1, 1, 'l', 0)", vec![n]),
         ("INSERT INTO identity_links (issuer, remote_no, user_no) VALUES ('iss', ?1, ?1)", vec![n]),
+        ("INSERT INTO device_sessions (device, user_no, cur_hash, created, last_used) VALUES ('dv_' || ?1, ?1, x'00', 1, 1)", vec![n]),
         ("INSERT INTO recovery_codes (user_no, code_hash, created, expires) VALUES (?1, 'h', 0, 0)", vec![n]),
         ("INSERT INTO beta_signups (email, status, user_no) VALUES ('s' || ?1 || '@example.com', 'registered', ?1)", vec![n]),
         ("INSERT INTO shop_log (user_no, product_id) VALUES (?1, 7)", vec![n]),

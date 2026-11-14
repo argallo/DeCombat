@@ -139,7 +139,11 @@ fn culling_and_merging_keep_the_synthetic_frame() {
 #[test]
 fn culling_keeps_every_rom_map_frame() {
     let rom = dc_rom::rom_or_skip!();
-    let mut viewer = match RomViewer::open(&rom, AdapterChoice::Auto, RenderSettings::default()) {
+    let mut viewer = match RomViewer::open(
+        dc_rez::RezVfs::new(&rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => v,
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");

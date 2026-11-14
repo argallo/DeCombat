@@ -2,12 +2,12 @@
 //! channel values; counts only). Tells in which units the grid is stored relative to the lightmaps.
 //! Usage: `CA_ROM=<dir> cargo run -p dc-render --example grid_levels`.
 
-use dc_render::{decode_lightmap, AmbientGrid, WorldSource};
+use dc_render::{decode_lightmap, AmbientGrid};
 use dc_world::{ObjectRole, World};
 
 fn main() {
     let rom = dc_rom::resolve_rom().expect("CA_ROM");
-    let src = WorldSource::open(&rom).expect("world archive");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
     for map in src.map_names() {
         let data = src.read(&map).expect("read").expect("present");
         let w = World::parse(&data).expect("parse");

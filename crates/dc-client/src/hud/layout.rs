@@ -445,6 +445,8 @@ pub struct HudLayout {
     pub clan_marks: crate::menu::clan::ClanMarks,
     /// The chat colours, the chat input element and the system banner ([`super::chat`]; filled by `Hud::from_rom`).
     pub chat_look: super::chat::ChatLook,
+    /// CLI-1954: the game files of the team pings ([`super::teamping::PingArt`]; filled by `Hud::from_rom`).
+    pub ping_art: super::teamping::PingArt,
 }
 
 fn img(v: &HudView<'_>, tex: K, pos: K, size: K) -> Option<Img> {
@@ -960,6 +962,7 @@ impl HudLayout {
             board_columns: super::board::BoardColumns::default(),
             clan_marks: Default::default(),
             chat_look: super::chat::ChatLook::fallback(),
+            ping_art: Default::default(),
         }
     }
 
@@ -1101,6 +1104,7 @@ impl HudLayout {
             board_columns: super::board::BoardColumns::default(),
             clan_marks: Default::default(),
             chat_look: super::chat::ChatLook::fallback(),
+            ping_art: Default::default(),
         }
     }
 }

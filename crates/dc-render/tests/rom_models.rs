@@ -15,7 +15,11 @@ const ROM_SKY_MODELS: u64 = 24;
 const ROM_BLENDED_MODELS: u64 = 339;
 
 fn viewer(rom: &std::path::Path) -> Option<RomViewer> {
-    match RomViewer::open(rom, AdapterChoice::Auto, RenderSettings::default()) {
+    match RomViewer::open(
+        dc_rez::RezVfs::new(rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => Some(v),
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");

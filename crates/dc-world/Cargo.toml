@@ -6,9 +6,14 @@ license.workspace = true
 description = "Reader for version-85 world files (.dat) of the 2009 client, written from rust/specs/FMT_DAT85.md"
 
 [dependencies]
-# dc-rom: its in-tree SHA-256, used to identify ROM class/property names by hash (FMT_DAT85.md 6.2) and to pin the
-# ROM worlds a composed map is built from (MAP-116).
-dc-rom = { path = "../dc-rom" }
-# dc-rez: the composer reads the pieces of a map out of the user's own world archive at load time (MAP-116); the
-# ROM-gated test and the stats example read the world files the same way.
+# dc-core: its SHA-256, used to identify class/property names by hash (FMT_DAT85.md 6.2) and to pin the worlds a
+# composed map is built from (MAP-116).
+dc-core = { path = "../dc-core" }
+# dc-vfs: the composer reads the pieces of a map through the caller's file system at load time (MAP-116); the
+# apps pass one whose archive layer is the user's ROM.
+dc-vfs = { path = "../dc-vfs" }
+
+[dev-dependencies]
+# dc-rez / dc-rom: the ROM-gated tests and the stats example read the user's own world archive at run time.
 dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }

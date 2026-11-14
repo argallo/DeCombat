@@ -1,8 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/dc-core",
     "crates/dc-rom",
     "crates/dc-rez",
+    "crates/dc-vfs",
+    "crates/dc-attr",
     "crates/dc-bute",
     "crates/dc-wire",
     "crates/dc-mod-lua",
@@ -31,6 +34,8 @@ members = [
     "crates/dc-mapkit",
     "crates/dc-gunkit",
     "crates/dc-netlab",
+    "crates/dc-session",
+    "crates/dc-localhost",
 ]
 
 [workspace.package]
@@ -63,6 +68,16 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.miniz_oxide]
 opt-level = 3
+# OPS-32: the bots' grid, the movement simulation and the world parse run whole maps in the tests (nav_rom 660 s
+# unoptimized, 181 s at 2)
+[profile.dev.package.dc-nav]
+opt-level = 2
+[profile.dev.package.dc-sim]
+opt-level = 2
+[profile.dev.package.dc-world]
+opt-level = 2
+[profile.dev.package.dc-botclient]
+opt-level = 2
 [profile.dev.package.dc-rez]
 opt-level = 3
 [profile.dev.package.dc-rom]

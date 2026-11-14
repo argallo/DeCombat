@@ -28,6 +28,17 @@ use dc_wire::udp::BitWriter;
 pub const WORLD_FILE_ID: u16 = 1;
 /// LG-327: refused seats logged one by one in a match.
 const SEAT_REFUSALS_LOGGED: u32 = 20;
+/// LOC-5: a seat taken with the join secret is free for another hello with the secret once its link has been silent
+/// this long. A live client sends at least a heartbeat ack every 200 ms (UDP_TRANSPORT_2009.md §11.1), so 3 s is
+/// fifteen missed keep-alives: a client that restarted or whose NAT moved it to a new port gets back in within
+/// seconds instead of waiting for the 20 s silent drop (DSV-490), and a live link is never taken.
+// DC-DEFAULT: LOC-5 (proposed) 3000 ms
+pub const SECRET_REJOIN_SILENCE_MS: u32 = 3000;
+/// LOC-6: the join secret makes at most this many roster entries per player of `-maxplayers` (else per
+/// [`SECRET_ENTRY_FALLBACK_PLAYERS`]); past that a new name reuses an entry whose link is gone.
+// DC-DEFAULT: LOC-6 (proposed) 2 x max players, 32 players without -maxplayers
+pub const SECRET_ENTRY_FACTOR: usize = 2;
+pub const SECRET_ENTRY_FALLBACK_PLAYERS: usize = 32;
 /// First object id handed out (lowest free id from here, CD-66 proposed). 0 is avoided as a DeCombat choice.
 // DC-DEFAULT: CD-66 (proposed) lowest free id; start value DSV-3 (staged proposal, dserver-slice1)
 pub const FIRST_OBJECT_ID: u16 = 1;
@@ -65,6 +76,20 @@ pub const ADDRESS_MOVE_SILENCE_MS: u32 = 250;
 /// Default of [`ServerTuning::silent_drop_ms`].
 // DC-DEFAULT: DSV-490 (proposed, project decision) 20 s
 pub const SILENT_DROP_MS: u32 = 20_000;
+/// DSV-657: a link whose hello was not accepted this long after it opened is dropped (a client sends `C2S_HELLO` as
+/// its first message, tens of milliseconds after the join reply; a spoofed source never sends one).
+// SPEC: UDP_SESSION_2009_A.md §5.2 (C2S_HELLO first)
+// DC-DEFAULT: DSV-657 (proposed) 10 s
+pub const HELLO_DEADLINE_MS: u32 = 10_000;
+/// DSV-653: at most this many links from one host (or the player limit, when that is larger) may be waiting for their
+/// hello at once; a further join from that host is closed at once. Never below the player limit: a bot swarm or a LAN
+/// party joins a whole room from one address at the match start.
+// DC-DEFAULT: DSV-653 (proposed) 16 links, at least the player limit
+pub const PRE_HELLO_LINKS_PER_HOST: usize = 16;
+/// DSV-654 / NET-29: at the player limit, a link without an accepted hello at least this old gives its slot to a
+/// newcomer.
+// DC-DEFAULT: DSV-654 (proposed) 2 s
+pub const EVICT_UNPROVEN_AFTER_MS: u32 = 2_000;
 /// Bye code of the close after a leave.
 // SPEC: UDP_SESSION_2009_A.md §5.6 (C2S_BYE -> drop with bye code 5)
 pub const EXIT_BYE_CODE: u32 = 5;
@@ -116,6 +141,9 @@ pub struct ServerTuning {
     pub refuse_code: u32,
     /// Accept clients whose hello name is not in the roster (local experiments; off for lobby use).
     pub accept_unlisted: bool,
+    /// `-joinsecret`: a hello whose seat ticket is this secret gets a seat without a `user` line; see [`JoinSecret`].
+    // DC-DEFAULT: LOC-2 (proposed)
+    pub join_secret: Option<JoinSecret>,
     /// Stop after this long with no client (`-idle`); `None` = never.
     // SPEC: DSERVER_PIPE.md §2 (`-idle`), §6 (idle with zero clients)
     pub idle_ms: Option<u32>,
@@ -181,6 +209,7 @@ impl Default for ServerTuning {
             silent_drop_ms: Some(SILENT_DROP_MS),
             refuse_code: 6,
             accept_unlisted: false,
+            join_secret: None,
             idle_ms: Some(60_000),
             send_sky_table: TODO_SEND_SKY_TABLE,
             preload_sounds: true,
@@ -204,6 +233,28 @@ impl Default for ServerTuning {
             world_sounds: true,
             cam_shot: true,
         }
+    }
+}
+
+/// The join secret of a match others may join (`-joinsecret <32 hex>`). A hello that carries it as its seat ticket
+/// (`dc_wire::seatticket`, the same hello field) is seated: an unlisted name gets a new roster entry, a roster name
+/// without a ticket of its own is seated only with it and never while another live link holds that seat. Never printed.
+// DC-DEFAULT: LOC-2 (proposed)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct JoinSecret(pub dc_wire::seatticket::Ticket);
+
+impl std::fmt::Debug for JoinSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("JoinSecret(..)")
+    }
+}
+
+impl JoinSecret {
+    /// True when `sent` (the ticket of a hello) is the secret; compares in constant time.
+    pub fn accepts(&self, sent: Option<&dc_wire::seatticket::Ticket>) -> bool {
+        let same =
+            dc_wire::seatticket::same(&self.0, sent.unwrap_or(&[0; dc_wire::seatticket::LEN]));
+        same && sent.is_some()
     }
 }
 
@@ -351,6 +402,8 @@ pub struct Server<A: Ord + Clone + Display> {
     roster: Vec<RosterEntry>,
     /// LG-327: hellos refused for a missing or wrong seat ticket.
     seat_refusals: u32,
+    /// LOC-6: the roster entries the join secret made (user ids).
+    secret_uids: BTreeSet<u32>,
     room: RoomSettings,
     clients: BTreeMap<A, Client>,
     objects_used: BTreeSet<u16>,
@@ -480,6 +533,7 @@ impl<A: Ord + Clone + Display> Server<A> {
         let host = Host::new(HostConfig {
             session_name: cfg.session_name.as_bytes().to_vec(),
             max_links: cfg.max_players,
+            evict_unproven_after_ms: Some(EVICT_UNPROVEN_AFTER_MS),
             ..HostConfig::default()
         });
         let files = vec![FileEntry {
@@ -509,6 +563,7 @@ impl<A: Ord + Clone + Display> Server<A> {
             files,
             roster: Vec::new(),
             seat_refusals: 0,
+            secret_uids: BTreeSet::new(),
             room: RoomSettings::default(),
             clients: BTreeMap::new(),
             objects_used: BTreeSet::new(),
@@ -1304,6 +1359,21 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.same_host = Some(same_host);
     }
 
+    /// True when `a`'s datagrams of a batch go before a newcomer's (LOC-12): `a` has a link whose hello was accepted
+    /// (DSV-655: a link that never proved its source is no known peer) and the match has a join secret (the only rule
+    /// that reads a link's silence at a hello). Without a join secret the order stays as it came.
+    // DC-DEFAULT: DSV-655 (proposed) a known peer has an accepted hello
+    pub fn knows_peer(&self, a: &A) -> bool {
+        self.join_secret_set()
+            && self.host.link(a).is_some()
+            && self.clients.get(a).is_some_and(|c| c.hello.is_some())
+    }
+
+    /// True when the match has a join secret (LOC-12: the runner reads its datagrams in bounded batches).
+    pub fn join_secret_set(&self) -> bool {
+        self.cfg.join_secret.is_some()
+    }
+
     /// A datagram from the network.
     pub fn handle_datagram(&mut self, now: Millis, from: A, bytes: &[u8]) {
         if let Some(same) = self.same_host {
@@ -1629,6 +1699,21 @@ impl<A: Ord + Clone + Display> Server<A> {
             self.host.disconnect(now, &peer, Bye::Plain);
             return;
         }
+        // DC-DEFAULT: DSV-653 (proposed) one host holds at most PRE_HELLO_LINKS_PER_HOST links without a hello
+        if let Some(same) = self.same_host {
+            let waiting = self
+                .clients
+                .iter()
+                .filter(|(p, c)| c.hello.is_none() && same(p, &peer))
+                .count();
+            let cap = self.cfg.max_players.map_or(PRE_HELLO_LINKS_PER_HOST, |m| {
+                m.max(PRE_HELLO_LINKS_PER_HOST)
+            });
+            if waiting >= cap {
+                self.host.disconnect(now, &peer, Bye::Plain);
+                return;
+            }
+        }
         let Some(client_id) = self.lowest_free_client_id() else {
             self.host.disconnect(now, &peer, Bye::Plain);
             return;
@@ -1757,7 +1842,12 @@ impl<A: Ord + Clone + Display> Server<A> {
     // SPEC: UDP_SESSION_2009_A.md §5.2, §9.2 S1; DC-DEFAULT: CD-60 (proposed)
     fn on_hello(&mut self, now: Millis, peer: &A, blob: &[u8]) {
         let hello = msg::parse_hello(blob);
-        let name = hello.name();
+        let mut name = hello.name();
+        // DC-DEFAULT: LOC-6 (proposed, amended) with a join secret the name is normalised once, before the roster
+        // lookup, the same way a secret-made entry stores it (no control characters), so a rejoin finds its entry
+        if self.cfg.join_secret.is_some() {
+            name = secret_nick(&name);
+        }
         let Some(c) = self.clients.get_mut(peer) else {
             return;
         };
@@ -1766,7 +1856,7 @@ impl<A: Ord + Clone + Display> Server<A> {
         }
         let client_id = c.client_id;
         c.mark(Step::Hello, now);
-        let entry = self
+        let mut entry = self
             .roster
             .iter()
             .find(|r| r.nick == name || r.nick == underscore(&name))
@@ -1781,9 +1871,18 @@ impl<A: Ord + Clone + Display> Server<A> {
             self.refuse_seat(now, peer, client_id, &e, hello.ticket.is_some());
             return;
         }
+        // DC-DEFAULT: LOC-2 (proposed) with a join secret, a seat without a ticket of its own needs the secret and is
+        // never taken from a live link; an unlisted name with the secret gets a new entry
+        if let Some(secret) = self.cfg.join_secret {
+            if !self.secret_seat(now, peer, client_id, secret, &hello, &name, &mut entry) {
+                return;
+            }
+        }
         if let Some(c) = self.clients.get_mut(peer) {
             c.hello = Some(hello.clone());
         }
+        // DSV-654 / NET-29: an accepted hello proves the source; the link never gives its slot to a newcomer
+        self.host.set_proven(peer);
         self.log(format!(
             "client {client_id}: hello name {:?} (second string {} bytes)",
             name,
@@ -1833,12 +1932,153 @@ impl<A: Ord + Clone + Display> Server<A> {
         self.try_send_world(now, peer);
     }
 
+    /// The join secret's part of a hello (LOC-2). Returns false when the link was refused. A roster entry with a ticket
+    /// of its own was already checked (LG-327) and is left alone; an entry without one needs the secret and is refused
+    /// while another live link holds it; an unlisted name with the secret gets a new roster entry in `entry`.
+    // DC-DEFAULT: LOC-2 (proposed)
+    #[allow(clippy::too_many_arguments)]
+    fn secret_seat(
+        &mut self,
+        now: Millis,
+        peer: &A,
+        client_id: u16,
+        secret: JoinSecret,
+        hello: &Hello,
+        name: &str,
+        entry: &mut Option<RosterEntry>,
+    ) -> bool {
+        let has_secret = secret.accepts(hello.ticket.as_ref());
+        match entry {
+            Some(e) if e.seat_ticket() != pipe::SeatTicket::NotRequired => true,
+            Some(e) => {
+                let uid = e.uid;
+                // DC-DEFAULT: LOC-5 (proposed, amended) a link silent for SECRET_REJOIN_SILENCE_MS no longer holds the
+                // seat against a hello from the SAME IP address (a client restart, a new port); a hello from another
+                // address waits until the link is gone (the 20 s silent drop, DSV-490), so a short silence of a live
+                // player (a loss burst, a long load) cannot hand its seat to someone else. Once the link is gone,
+                // any holder of the secret may take the name: the secret is the trust boundary
+                let same_host = self.same_host;
+                let held = self.clients.iter().any(|(p, c)| {
+                    p != peer
+                        && c.player.as_ref().is_some_and(|x| x.uid == uid)
+                        && self.host.link(p).is_some_and(|l| {
+                            let from_same = same_host.is_some_and(|f| f(p, peer));
+                            l.is_open()
+                                && (!from_same
+                                    || since(now, l.last_recv()) < SECRET_REJOIN_SILENCE_MS)
+                        })
+                });
+                if has_secret && !held {
+                    return true;
+                }
+                if self.count_refusal() {
+                    self.log(format!(
+                        "client {client_id}: seat of uid {uid} refused ({}, refusal {}), bye code {}",
+                        if held {
+                            "in use by a live link"
+                        } else {
+                            "no join secret"
+                        },
+                        self.seat_refusals,
+                        self.cfg.refuse_code
+                    ));
+                }
+                self.host
+                    .disconnect(now, peer, Bye::Code(self.cfg.refuse_code));
+                false
+            }
+            // without the secret the rules of an unlisted name stay (accepted on an open server, else refused)
+            None if !has_secret => true,
+            None => {
+                // DC-DEFAULT: LOC-6 (proposed) the nick loses control characters; names match case-sensitively
+                // (the roster rule, CD-60), so "Al" and "al" are two seats
+                let nick = underscore(name);
+                // the uids live links hold (this hello's link aside); teams are balanced over them only
+                let live: Vec<(u32, u8)> = self
+                    .clients
+                    .iter()
+                    .filter(|(p, _)| *p != peer)
+                    .filter_map(|(_, c)| c.player.as_ref().map(|x| (x.uid, x.team)))
+                    .collect();
+                let on = |t: u8| live.iter().filter(|x| x.1 == t).count();
+                let team = u8::from(on(1) < on(0));
+                let cap = SECRET_ENTRY_FACTOR
+                    * self
+                        .cfg
+                        .max_players
+                        .unwrap_or(SECRET_ENTRY_FALLBACK_PLAYERS);
+                let reuse = self
+                    .secret_uids
+                    .iter()
+                    .copied()
+                    .find(|u| !live.iter().any(|x| x.0 == *u));
+                let uid = if self.secret_uids.len() < cap {
+                    Some(
+                        self.roster
+                            .iter()
+                            .map(|r| r.uid)
+                            .chain(self.played.keys().copied())
+                            .max()
+                            .unwrap_or(0)
+                            .saturating_add(1),
+                    )
+                } else {
+                    reuse
+                };
+                let (Some(uid), false) = (uid, nick.is_empty()) else {
+                    if self.count_refusal() {
+                        self.log(format!(
+                            "client {client_id}: join secret refused ({}, refusal {}), bye code {}",
+                            if nick.is_empty() {
+                                "an empty name"
+                            } else {
+                                "every seat in use"
+                            },
+                            self.seat_refusals,
+                            self.cfg.refuse_code
+                        ));
+                    }
+                    self.host
+                        .disconnect(now, peer, Bye::Code(self.cfg.refuse_code));
+                    return false;
+                };
+                let e = RosterEntry {
+                    uid,
+                    sid: 0,
+                    key: 0,
+                    team,
+                    exp: 0,
+                    nick,
+                    extra: Vec::new(),
+                };
+                self.log(format!(
+                    "client {client_id}: joined with the join secret: roster uid {uid} team {team} nick {}",
+                    e.nick
+                ));
+                self.game.note_roster(uid, now);
+                self.secret_uids.insert(uid);
+                match self.roster.iter_mut().find(|r| r.uid == uid) {
+                    Some(old) => *old = e.clone(),
+                    None => self.roster.push(e.clone()),
+                }
+                *entry = Some(e);
+                true
+            }
+        }
+    }
+
+    /// Counts one refused seat; true when it is to be logged. A stranger may repeat a refused hello for as long as he
+    /// likes: the log gets the first ones, then every hundredth.
+    // DC-DEFAULT: LG-327 (proposed, project decision); LOC-5 (proposed) the join secret's refusals too
+    fn count_refusal(&mut self) -> bool {
+        self.seat_refusals += 1;
+        self.seat_refusals <= SEAT_REFUSALS_LOGGED || self.seat_refusals.is_multiple_of(100)
+    }
+
     /// A hello for a roster name without its ticket: closes this link with the code of an unlisted name.
     // DC-DEFAULT: LG-327 (proposed, project decision)
     fn refuse_seat(&mut self, now: Millis, peer: &A, client_id: u16, e: &RosterEntry, sent: bool) {
-        self.seat_refusals += 1;
-        // a stranger may repeat this for as long as he likes: the log gets the first ones, then every hundredth
-        if self.seat_refusals <= SEAT_REFUSALS_LOGGED || self.seat_refusals.is_multiple_of(100) {
+        if self.count_refusal() {
             self.log(format!(
                 "client {client_id} from {peer}: seat of uid {} refused ({} ticket, refusal {}), bye code {}",
                 e.uid,
@@ -3896,6 +4136,25 @@ impl<A: Ord + Clone + Display> Server<A> {
             self.host
                 .disconnect(now, &p, Bye::Code(dc_wire::udp::DROP_STALE));
         }
+        // DC-DEFAULT: DSV-657 (proposed) no accepted hello within HELLO_DEADLINE_MS: dropped like a start-up miss
+        let no_hello: Vec<A> = self
+            .clients
+            .iter()
+            .filter(|(p, c)| {
+                c.hello.is_none()
+                    && since(now, c.joined_at) > HELLO_DEADLINE_MS
+                    && self.host.link(p).is_some_and(|l| l.is_open())
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+        for p in no_hello {
+            self.log(format!(
+                "{p}: no hello within {HELLO_DEADLINE_MS} ms, dropping (bye code 3)"
+            ));
+            self.mark_leave(&p, pipe::LeaveHow::Startup);
+            self.host
+                .disconnect(now, &p, Bye::Code(dc_wire::udp::DROP_STALE));
+        }
         // DC-DEFAULT: DSV-490 (proposed, project decision) a client silent for 20 s is gone: bye code 3 and the
         // normal leave path (the link's close event reports `@leave` and removes its objects)
         if let Some(limit) = self.cfg.silent_drop_ms {
@@ -4688,6 +4947,11 @@ impl<A: Ord + Clone + Display> Server<A> {
     pub fn active_hazards(&self) -> &[usize] {
         &self.hazard_active
     }
+}
+
+/// LOC-6: a name as the join secret's path stores and matches it: no control characters.
+fn secret_nick(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 fn underscore(s: &str) -> String {

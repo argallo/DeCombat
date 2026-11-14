@@ -11,8 +11,11 @@ default = []
 device = ["dep:cpal"]
 
 [dependencies]
-dc-rom = { path = "../dc-rom" }
-dc-bute = { path = "../dc-bute" }
+# dc-core: the SHA-256 of a sound name (lib.rs); dc-attr: the attribute-text parser of the sound and music
+# tables; dc-vfs: the file system they are read through (the apps pass one whose archive layer is the ROM).
+dc-core = { path = "../dc-core" }
+dc-attr = { path = "../dc-attr" }
+dc-vfs = { path = "../dc-vfs" }
 # hound: public WAV reader, the ROM's 1,529 effects are all PCM16 RIFF/WAVE.
 hound = "3.5.1"
 # dc-hangdump (ours): lock-free breadcrumbs at the blocking points, read by the hang gate (T1).
@@ -23,4 +26,7 @@ symphonia = { version = "0.5.4", default-features = false, features = ["mp3"] }
 cpal = { version = "0.15.3", optional = true }
 
 [dev-dependencies]
+# dc-rez / dc-rom / dc-bute: the ROM census test reads the user's own archives at run time.
 dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }
+dc-bute = { path = "../dc-bute" }

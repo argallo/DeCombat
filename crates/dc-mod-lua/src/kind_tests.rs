@@ -1278,7 +1278,7 @@ fn a_curated_entry_that_allows_local_mods_loads_only_local_client_visual_ones() 
 
 #[test]
 fn a_new_weapon_row_of_a_curated_pack_stays_in_the_reserved_numbers() {
-    use dc_bute::modpatch::{PatchOp, WeaponContent, WeaponPatch};
+    use dc_attr::modpatch::{PatchOp, WeaponContent, WeaponPatch};
     let row = |weapon, op| WeaponPatch {
         weapon,
         op,

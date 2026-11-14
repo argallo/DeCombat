@@ -427,7 +427,7 @@ pub fn encloses_space(m: &dc_world::BspModel<'_>) -> bool {
 // DC-DEFAULT: MAP-116
 pub fn load_world_file(path: &Path, rom: Option<&Path>) -> Result<LoadedWorld, String> {
     let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let data = dc_world::compose::compose_with_rom(data, rom)
+    let data = dc_world::compose::compose_with_rom(data, rom.map(dc_rez::RezVfs::new).as_deref())
         .map_err(|e| format!("{}: {e}", path.display()))?;
     world_from_bytes(&path.display().to_string(), &data)
 }

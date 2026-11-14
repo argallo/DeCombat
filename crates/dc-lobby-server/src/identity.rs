@@ -346,6 +346,8 @@ pub struct Authority {
     /// The signing pair: Some on an issuing lobby.
     pub signer: Option<Arc<Ed25519KeyPair>>,
     pub token_hours: u32,
+    /// SES-3 / SES-4: the device sessions of an issuing lobby.
+    pub devices: crate::devsession::web::DeviceRules,
 }
 
 impl std::fmt::Debug for Authority {
@@ -375,6 +377,7 @@ impl Authority {
             } else {
                 token_hours
             },
+            devices: Default::default(),
         }
     }
 
@@ -385,6 +388,7 @@ impl Authority {
             public_key: Some(public_key),
             signer: None,
             token_hours: DEFAULT_TOKEN_HOURS,
+            devices: Default::default(),
         }
     }
 
@@ -393,7 +397,7 @@ impl Authority {
         self.signer.is_some() && c.issuer == self.issuer
     }
 
-    /// A token for an account of this lobby.
+    /// A token for an account of this lobby, with the password endpoint's lifetime (`token_hours`).
     pub fn issue(
         &self,
         account: u32,
@@ -401,11 +405,23 @@ impl Authority {
         nick: &str,
         now: i64,
     ) -> Result<(String, i64), String> {
+        self.issue_for(account, login, nick, now, self.token_hours as i64 * 3600)
+    }
+
+    /// A token for an account of this lobby that lives `lifetime_secs` (device sessions: SES-4).
+    pub fn issue_for(
+        &self,
+        account: u32,
+        login: &str,
+        nick: &str,
+        now: i64,
+        lifetime_secs: i64,
+    ) -> Result<(String, i64), String> {
         let kp = self
             .signer
             .as_ref()
             .ok_or("this lobby does not issue identity tokens")?;
-        let expires = now + self.token_hours as i64 * 3600;
+        let expires = now + lifetime_secs.max(0);
         // a nickname that cannot be carried is left out (it is informational only)
         let nick = if valid_field(nick) { nick } else { "" };
         let t = sign(
@@ -451,11 +467,13 @@ pub fn from_options(o: &crate::cli::Options) -> Result<(Authority, Vec<String>),
         {
             notes.push("identity: WARNING: identity.public_key differs from the own key pair; the own key is used".into());
         }
-        let a = Authority::issuing(issuer, kp, o.identity_token_hours);
+        let mut a = Authority::issuing(issuer, kp, o.identity_token_hours);
         notes.push(format!(
             "identity: issuing tokens as {issuer:?} ({} h) on POST {TOKEN_PATH} of the web port; public key {own}",
             a.token_hours
         ));
+        a.devices = crate::devsession::web::DeviceRules::from_options(o);
+        notes.push(a.devices.describe());
         return Ok((a, notes));
     }
     match (issuer.is_empty(), key.is_empty()) {
@@ -675,7 +693,9 @@ pub fn json_strings(s: &str) -> Option<Vec<(String, String)>> {
 
 pub(crate) const MSG_REFUSED: &str = "{\"error\":\"wrong login or password\"}";
 
-/// What the first (locked) phase of `POST /identity/token` leaves for the password check.
+/// What the first (locked) phase of `POST /identity/token` (and of the device sign-in) leaves for the password check.
+// one short-lived value per request: the size difference of the variants does not matter
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// Answered without a password check.
     Done((u16, String)),
@@ -691,8 +711,10 @@ pub struct Pending {
     refuse: Option<&'static str>,
     password: String,
     keys: [String; 2],
-    ip: String,
+    pub(crate) ip: String,
     login: String,
+    /// What a device sign-in (SES-1) asks for besides the token; None for the token endpoint.
+    pub(crate) device: Option<Box<crate::devsession::web::DeviceAsk>>,
 }
 
 /// A fixed Argon2id hash nobody knows the password of, for the unknown-account path.
@@ -780,10 +802,32 @@ pub fn begin(
     if login.is_empty() {
         return done(400, "{\"error\":\"login is missing\"}".into());
     }
+    lookup(
+        st,
+        login,
+        password,
+        peer,
+        now,
+        None,
+        (401, MSG_REFUSED.into()),
+    )
+}
+
+/// The account lookup of a password sign-in (the token endpoint, and the device sign-in of SES-1 with `device`
+/// set). `locked` is the answer while the name or the address is locked out (LG-146).
+pub(crate) fn lookup(
+    st: &mut Core,
+    login: String,
+    password: String,
+    peer: &str,
+    now: Instant,
+    device: Option<Box<crate::devsession::web::DeviceAsk>>,
+    locked: (u16, String),
+) -> db::DbResult<Step> {
     // LG-146: the same lockout as the game login (name and address), counted alike; one answer for every refusal (LG-231)
     let keys = crate::limits::login_keys(&login, peer);
     if st.limits.login.locked(&keys, now).is_some() {
-        return done(401, MSG_REFUSED.into());
+        return Ok(Step::Done(locked));
     }
     let ip = crate::limits::peer_ip(peer);
     let acc = db::account_by_login(&st.db, &login)?;
@@ -801,7 +845,45 @@ pub fn begin(
         keys,
         ip,
         login,
+        device,
     }))
+}
+
+/// Phase 2 (locked again) of a password sign-in: counts the outcome (a refusal in the LG-146 lockout, a success
+/// clears the name's failures), upgrades an old hash, and returns the account when the password was right. `what`
+/// names the request in the log line of a refusal.
+pub(crate) fn settle(
+    st: &mut Core,
+    p: &Pending,
+    check: crate::auth::PwCheck,
+    now: Instant,
+    what: &str,
+) -> db::DbResult<Option<db::Account>> {
+    let refused = |st: &mut Core, why: &str| {
+        crate::auth::count_failure(st, &p.keys, now);
+        st.note(&format!(
+            "identity: {what} refused ({why}): {} from {}",
+            p.login, p.ip
+        ));
+        Ok(None)
+    };
+    if let Some(why) = p.refuse {
+        return refused(st, why);
+    }
+    let Some(acc) = p.acc.clone() else {
+        return refused(st, "unknown account");
+    };
+    match check {
+        crate::auth::PwCheck::Ok => {}
+        crate::auth::PwCheck::OkUpgrade => {
+            crate::auth::store_password(st, acc.user_no, &p.password)?
+        }
+        crate::auth::PwCheck::Bad | crate::auth::PwCheck::NoPassword => {
+            return refused(st, "password")
+        }
+    }
+    st.limits.login.success(&p.keys[0]);
+    Ok(Some(acc))
 }
 
 /// Phase 2 (locked again): count the outcome and issue the token.
@@ -812,35 +894,10 @@ pub fn finish(
     now: Instant,
 ) -> db::DbResult<(u16, String)> {
     use crate::register::json_str;
-    let Pending {
-        acc,
-        refuse,
-        password,
-        keys,
-        ip,
-        login,
-    } = p;
-    let refused = |st: &mut Core, why: &str| {
-        crate::auth::count_failure(st, &keys, now);
-        st.note(&format!(
-            "identity: token refused ({why}): {login} from {ip}"
-        ));
-        Ok((401, MSG_REFUSED.into()))
+    let Some(acc) = settle(st, &p, check, now, "token")? else {
+        return Ok((401, MSG_REFUSED.into()));
     };
-    if let Some(why) = refuse {
-        return refused(st, why);
-    }
-    let Some(acc) = acc else {
-        return refused(st, "unknown account");
-    };
-    match check {
-        crate::auth::PwCheck::Ok => {}
-        crate::auth::PwCheck::OkUpgrade => crate::auth::store_password(st, acc.user_no, &password)?,
-        crate::auth::PwCheck::Bad | crate::auth::PwCheck::NoPassword => {
-            return refused(st, "password")
-        }
-    }
-    st.limits.login.success(&keys[0]);
+    let ip = &p.ip;
     let nick = st
         .character(acc.user_no)
         .map(|c| c.nick.clone())

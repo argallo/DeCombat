@@ -187,7 +187,7 @@ impl State {
         }
         let (rom, _) = crate::romlist::discover_rom(None)
             .ok_or_else(|| format!("no ROM was found ({})", crate::romlist::ROM_ATTEMPTS))?;
-        let bytes = dc_world::compose::rom_reader(&rom)(world)?;
+        let bytes = dc_world::compose::rom_reader(&dc_rez::RezVfs::new(&rom))(world)?;
         let w = dc_world::World::parse_with(&bytes, dc_world::ParseOptions { render: false })
             .map_err(|e| format!("{world}: {e}"))?;
         let filter = dc_sim::from_world::WorldFilter {
@@ -206,7 +206,7 @@ impl State {
         }
         let (rom, _) = crate::romlist::discover_rom(None)
             .ok_or_else(|| format!("no ROM was found ({})", crate::romlist::ROM_ATTEMPTS))?;
-        let bytes = dc_world::compose::rom_reader(&rom)(world)?;
+        let bytes = dc_world::compose::rom_reader(&dc_rez::RezVfs::new(&rom))(world)?;
         let w = dc_world::World::parse_with(&bytes, dc_world::ParseOptions { render: false })
             .map_err(|e| format!("{world}: {e}"))?;
         let mut list = Vec::new();

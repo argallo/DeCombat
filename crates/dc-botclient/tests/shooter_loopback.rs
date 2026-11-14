@@ -589,7 +589,7 @@ fn round(skill: Option<dc_botclient::skill::Skill>) {
             std::sync::Arc::new(dc_botclient::shooter::RomWeapons::open(r).expect("ROM weapons"))
         }),
         table: Some(std::sync::Arc::new(dc_cone::ShotTable::open(
-            rom.as_deref(),
+            rom.as_deref().map(dc_rez::RezVfs::new).as_deref(),
         ))),
         skill,
         ..ShooterConfig::default()

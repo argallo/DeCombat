@@ -126,13 +126,18 @@ fn packs_hint(cfg: &Config) -> String {
         .sources
         .iter()
         .filter(|s| is_github_repo(&s.repo) && is_release_tag(&s.tag))
-        .map(|s| format!("tools/vps/packs_sync.sh {} {}", s.repo, s.tag))
+        .map(|s| format!("dc-lobby-server packs sync {} {}", s.repo, s.tag))
         .collect();
+    let dir = if cfg.paths.mods_dir.is_empty() {
+        "<mods dir>"
+    } else {
+        cfg.paths.mods_dir.as_str()
+    };
     if cmds.is_empty() {
         String::new()
     } else {
         format!(
-            "; a declared release may hold it: {} (or the dashboard's Sync packs)",
+            "; a declared release may hold it: {} --mods-dir {dir} (every source: dc-lobby-server packs sync --config              server.toml; on the VPS also the dashboard's Sync packs)",
             cmds.join(", ")
         )
     }
@@ -1178,6 +1183,25 @@ pub fn check(cfg: &Config, opts: CheckOptions) -> Vec<Issue> {
                 "must be the issuer's 32-byte public key in base64 (44 characters, from `dc-lobby-server identity`)",
             ));
         }
+    }
+    // DC-DEFAULT: SES-3, SES-4 (proposed) device-session lifetimes and the cap stay in range
+    if !(1..=1440).contains(&id.device_token_minutes) {
+        out.push(Issue::error(
+            "identity.device_token_minutes",
+            "must be 1..1440 (minutes; default 15)",
+        ));
+    }
+    if !(1..=3650).contains(&id.device_idle_days) {
+        out.push(Issue::error(
+            "identity.device_idle_days",
+            "must be 1..3650 (days; default 180)",
+        ));
+    }
+    if !(1..=100).contains(&id.max_devices) {
+        out.push(Issue::error(
+            "identity.max_devices",
+            "must be 1..100 (default 10)",
+        ));
     }
     if cfg.auth.first_account_no == 0 {
         out.push(Issue::error("auth.first_account_no", "must be at least 1"));

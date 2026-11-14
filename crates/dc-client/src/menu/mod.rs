@@ -74,6 +74,7 @@ pub mod shop;
 pub mod shopxray;
 pub mod signup;
 pub mod slotpick;
+pub mod soundmixer;
 pub mod storage;
 pub mod sysfont;
 pub mod textbox;
@@ -204,6 +205,8 @@ pub fn apply_sound(s: &crate::settings::Settings, d: &mut crate::sound::SoundDir
     a.effects_on = s.effects_on;
     a.music_on = s.music_on;
     d.apply_settings(a);
+    // CLI-1955: the sound mixer's groups
+    d.apply_mix(&s.sound_mix);
     // CLI-1599: the BGM style; a change is reported so the caller cues the screen again
     d.set_bgm_classic(s.bgm == crate::settings::BGM_CLASSIC)
 }

@@ -33,7 +33,7 @@ fn walk_mods() -> dc_sim::SpeedMods {
         let Some(rom) = rom else {
             return dc_sim::SpeedMods::default();
         };
-        let rows = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(std::path::Path::new(&rom)))
+        let rows = dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(std::path::Path::new(&rom)))
             .expect("speed rows");
         let eq = [20, 1, 0, 7, -1, -1, -1, 2000, -1, 7001, -1, -1, -1, -1, -1];
         dc_botclient::motion::loadout_mods(
@@ -198,9 +198,11 @@ fn rom_grayhammer_the_body_walks_every_link_near_the_stuck_places() {
     }
     assert!(links > 3000, "{links} links");
     // (BOT-132's jump nodes shift two walk links by the ladder at x -1185 and on the stairs at x 754 that the body
-    // stops 42-50 units short of: OBSERVED 2026-11-07, known, at most two allowed)
+    // stops 42-50 units short of: OBSERVED 2026-11-07, known, at most two allowed; BOT-185's corner rule shifts the
+    // nodes on those stairs, the one link up there becomes two drops off their side at x 713 the body stops 40-44
+    // short of: OBSERVED 2026-11-09, at most three)
     assert!(
-        bad.len() <= 2,
+        bad.len() <= 3,
         "{} of {links} links the body does not walk: {bad:?}",
         bad.len()
     );
@@ -280,6 +282,13 @@ fn world_data(rom: &std::path::Path, listed: &str) -> Vec<u8> {
     }
 }
 
+/// BOT-189: the session's test (`session::dead_end_below`): the run leads off an edge deeper than the grid's walk
+/// off onto a dead end.
+fn dead_end_below(nav: &NavGrid, world: &dc_sim::CollisionWorld, from_y: f32, run: &[[f32; 3]]) -> bool {
+    dc_botclient::evade::deep_landing(world, BODY, from_y, run.iter().copied())
+        .is_some_and(|l| nav.dead_end(l, dc_botclient::nav::DEAD_END_PROBES, 600.0))
+}
+
 /// A ROM world as a room's server sets it up before its start scripts (BOT-110): the linked models whose object has
 /// the solid property off are left out of the collision set (water planes, fall-through floors), with the world's
 /// kill volumes, ladders, spawn points and flags.
@@ -330,6 +339,46 @@ fn room_world(r: &RomWorlds, announced: &[u8]) -> RoomWorld {
 }
 
 const BODY: [f32; 3] = [16.0, 50.0, 16.0];
+
+/// BOT-181: the game server's fall track (DSV-76) over a walk's movement trailers: the highest place since the last
+/// grounded or ladder trailer, and the highest fall a landing ended.
+#[derive(Default)]
+struct FallTrack {
+    top: Option<f32>,
+    airborne: bool,
+    worst: f32,
+    /// BOT-186: the steps (of 50 ms) left of the 3 s after the last jump, and the falls of more than 30 units in them.
+    after_jump: u32,
+    jump_falls: u32,
+}
+
+impl FallTrack {
+    fn feed(&mut self, b: &dc_botclient::motion::Body) {
+        let t = b.update(0.0).trailer;
+        let y = t.pos[1];
+        if t.surface == dc_botclient::motion::LADDER_SURFACE {
+            (self.top, self.airborne) = (Some(y), false);
+        } else if t.on_ground != 0 {
+            if self.airborne {
+                self.worst = self.worst.max(self.top.unwrap_or(y) - y);
+                if self.after_jump > 0 && self.top.unwrap_or(y) - y > 30.0 {
+                    self.jump_falls += 1;
+                }
+            }
+            (self.top, self.airborne) = (Some(y), false);
+        } else {
+            self.top = Some(self.top.map_or(y, |t| t.max(y)));
+            self.airborne = true;
+        }
+    }
+}
+
+std::thread_local! {
+    /// BOT-181: the highest fall of the last walk on this thread (`RoomWorld::walk_known`).
+    static LAST_FALL: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+    /// BOT-186: the jumps of the last walk on this thread, and its falls of more than 30 units within 3 s of a jump.
+    static LAST_JUMPS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
 
 /// [`room_world`] with every door and switch open (the bots' grid takes doors as ways, BOT-120, and a bot opens the
 /// door it walks into): their models are left out of the collision set.
@@ -519,7 +568,7 @@ impl RoomWorld {
     /// has a way, the greedy way-finder on an island of the grid (BOT-145), standing where the grid gives no way yet. `Ok(seconds)` when it gets within 72 units, `Err` with where it ended (or died
     /// in a kill volume).
     fn goto(&self, from: [f32; 3], to: [f32; 3], secs: u32) -> Result<f32, String> {
-        self.walk(from, to, secs, |p| {
+        self.walk(None, from, to, secs, |p| {
             flat(p, to) <= 72.0 && (p[1] - to[1]).abs() <= 90.0
         })
     }
@@ -528,23 +577,73 @@ impl RoomWorld {
     /// units across, its centre at most 32 above and 53 below the case's point, DSV-391): a body under a case on a
     /// crate has not got it.
     fn take(&self, from: [f32; 3], case: [f32; 3], secs: u32) -> Result<f32, String> {
-        self.walk(from, case, secs, |p| {
+        self.take_on(None, from, case, secs)
+    }
+
+    /// BOT-184: [`Self::take`] on the grid `nav` (a grid the bot grew before, with its deep falls toward the case),
+    /// or a new one.
+    fn take_on(
+        &self,
+        nav: Option<NavGrid>,
+        from: [f32; 3],
+        case: [f32; 3],
+        secs: u32,
+    ) -> Result<f32, String> {
+        self.walk(nav, from, case, secs, |p| {
             flat(p, case) <= 56.0 && (-53.0..=32.0).contains(&(p[1] - case[1]))
         })
     }
 
     fn walk(
         &self,
+        pre: Option<NavGrid>,
         from: [f32; 3],
         to: [f32; 3],
         secs: u32,
         arrived: impl Fn([f32; 3]) -> bool,
     ) -> Result<f32, String> {
+        self.walk_known(pre, from, to, secs, arrived, None)
+    }
+
+    /// BOT-181: [`Self::goto`] with the grid grown first from `known` (where the bot walked before it got to `from`),
+    /// the way a session's grid knows the map beyond the place it stands at.
+    fn goto_known(
+        &self,
+        from: [f32; 3],
+        to: [f32; 3],
+        secs: u32,
+        known: [f32; 3],
+    ) -> Result<f32, String> {
+        self.walk_known(
+            None,
+            from,
+            to,
+            secs,
+            |p| flat(p, to) <= 72.0 && (p[1] - to[1]).abs() <= 90.0,
+            Some(known),
+        )
+    }
+
+    fn walk_known(
+        &self,
+        pre: Option<NavGrid>,
+        from: [f32; 3],
+        to: [f32; 3],
+        secs: u32,
+        arrived: impl Fn([f32; 3]) -> bool,
+        known: Option<[f32; 3]>,
+    ) -> Result<f32, String> {
         use dc_botclient::motion::{Body, MotionKind};
         use dc_botclient::nav::follow::{Follower, NavGoal, Stuck, GROW_PROBES};
         // (the session's danger tests take the hazard volumes as kill volumes, BOT-143)
         let danger: Vec<_> = self.kill.iter().chain(&self.hazard).cloned().collect();
-        let mut nav = self.grid();
+        let mut nav = pre.unwrap_or_else(|| self.grid());
+        if let Some(k) = known {
+            assert!(nav.seed(k), "the known place stands");
+            while nav.growing() && nav.probes < 4_000_000 {
+                nav.expand(2_000, None);
+            }
+        }
         let mut f = Follower::default();
         let mut b = Body::new(
             from,
@@ -569,6 +668,11 @@ impl RoomWorld {
         let mut kicks: Vec<(u32, [f32; 3])> = Vec::new();
         let mut jumped = false;
         let mut esc_last: Option<[f32; 3]> = None;
+        let mut guard_held = false;
+        let mut falls = FallTrack::default();
+        LAST_FALL.with(|c| c.set(0.0));
+        LAST_JUMPS.with(|c| c.set((0, 0)));
+        let mut jumps = 0u32;
         for step in 0..secs * 20 {
             let now = step * 50;
             let p = b.pos();
@@ -594,7 +698,9 @@ impl RoomWorld {
                     });
                     for _ in 0..3 {
                         b.advance(16_667);
+                        falls.feed(&b);
                     }
+                    LAST_FALL.with(|c| c.set(falls.worst));
                     let q = b.pos();
                     if self
                         .kill
@@ -612,12 +718,20 @@ impl RoomWorld {
             if island_since.is_some_and(|t| now - t >= 8000) {
                 island_since = None;
                 if let Some(part) = nav.confined_part(p, 600.0) {
-                    escape = dc_botclient::evade::escape_move(
+                    // BOT-181: an end at a known node off the island leaves it too
+                    let known =
+                        |q: [f32; 3]| dc_botclient::evade::known_off_island(Some(&nav), &part, q);
+                    // BOT-189: an end that is a dead end does not count
+                    let dead_end =
+                        |q: [f32; 3]| nav.dead_end(q, dc_botclient::nav::DEAD_END_PROBES, 600.0);
+                    escape = dc_botclient::evade::escape_move_open(
                         &b,
                         &self.w.collision,
                         &danger,
                         &part,
                         dc_botclient::nav::ESCAPE_DROP,
+                        &known,
+                        &dead_end,
                     )
                     .map(|e| (e, now));
                     jumped = false;
@@ -628,7 +742,10 @@ impl RoomWorld {
                 }
             }
             match watch {
-                Some((at, _)) if flat(at, p) > 48.0 => watch = Some((p, now)),
+                // (on a ladder the height climbed counts, as the session's watchdog)
+                Some((at, _)) if flat(at, p) > 48.0 || (b.on_ladder() && (at[1] - p[1]).abs() >= 48.0) => {
+                    watch = Some((p, now))
+                }
                 Some((_, since)) if now - since >= 3000 => {
                     if !f.points().is_empty() {
                         f.kick(&mut nav, now, p);
@@ -648,7 +765,9 @@ impl RoomWorld {
             }
             f.grow(&mut nav, p, GROW_PROBES);
             let mut jump = false;
-            b.steer = match f.next(&mut nav, now, p, to, true) {
+            let next = f.next(&mut nav, now, p, to, true);
+            let way_arm = matches!(next, NavGoal::Way(_));
+            b.steer = match next {
                 NavGoal::Way(w) => {
                     greedy_check = None;
                     hunter.stop();
@@ -656,7 +775,9 @@ impl RoomWorld {
                     // BOT-139: the ladder pitch follows the next point's height
                     b.goal_y = Some(w[1]);
                     // BOT-134: the session takes the stuck jump only when its flight and landing are safe
-                    jump = f.stuck(&mut nav, now, p) == Stuck::Jump
+                    // BOT-196: a jump only when the body's jump leaves the ground now
+                    let said = f.stuck(&mut nav, now, p, b.can_jump()) == Stuck::Jump;
+                    jump = said
                         && dc_botclient::evade::jump_safe(
                             &b,
                             &self.w.collision,
@@ -664,6 +785,15 @@ impl RoomWorld {
                             Some(steer),
                             None,
                         );
+                    // BOT-145: the session refuses a jump up whose flight its jump test refused (BOT-191: such
+                    // refusals near one another count together)
+                    // BOT-196: a jump not taken is no jump of a run
+                    if said && !jump {
+                        f.jump_not_taken();
+                    }
+                    if said && !jump && f.last_jump.is_some_and(|w| w.top) {
+                        f.refuse(&mut nav, now, p, false);
+                    }
                     Some(steer)
                 }
                 // (at the end of a partial way the session's greedy way-finder walks on: not modelled, the body
@@ -676,10 +806,12 @@ impl RoomWorld {
                 // danger made no progress, BOT-111), with its stuck jump when the body made no way for 1.5 s
                 NavGoal::Hold => {
                     island_since.get_or_insert(now);
+                    // (BOT-189: nor a walk off an edge deeper than the grid's walk off onto a dead end)
                     let probe = |y: f32| {
                         let path = b.probe_path(Some(y), None, dc_botclient::hunt::PROBE_SECS, 4);
-                        dc_botclient::evade::path_safe(&self.w.collision, &danger, BODY, &path)
-                            .then(|| path[path.len() - 1])
+                        (dc_botclient::evade::path_safe(&self.w.collision, &danger, BODY, &path)
+                            && !dead_end_below(&nav, &self.w.collision, p[1], &path))
+                        .then(|| path[path.len() - 1])
                     };
                     let y = hunter.steer(now, p, to, Some(&probe));
                     match greedy_check {
@@ -701,6 +833,50 @@ impl RoomWorld {
                     y
                 }
             };
+            // BOT-150 / BOT-181: the session's walk guard: a walk whose next half second (run on a copy) passes danger
+            // while the body stands safe is held until the next check (every 250 ms); the way's step it took is
+            // given up at every check that holds it (a ladder's climb leg is not tested)
+            let ladder_leg = way_arm
+                && f.points().first().is_some_and(|wp| {
+                    nav.ladder_ends(*wp, p).is_some() || nav.ladder_ends(p, *wp).is_some()
+                });
+            match (b.steer, b.on_ladder() || ladder_leg) {
+                (Some(y), false) => {
+                    if step % 5 == 0 {
+                        let coll = &self.w.collision;
+                        let here = dc_botclient::evade::walk_danger(coll, &danger, BODY, p);
+                        let path = b.probe_path_ladder(
+                            Some(y),
+                            None,
+                            dc_botclient::qrt::WALK_GUARD_SECS,
+                            5,
+                        );
+                        let run: Vec<[f32; 3]> =
+                            path.iter().take_while(|(_, ladder)| !ladder).map(|(q, _)| *q).collect();
+                        // BOT-189: a walk off an edge deeper than the grid's walk off onto a dead end is held too,
+                        // unless the way steers down a drop of its own
+                        let way_drops = way_arm
+                            && f.points().first().is_some_and(|w| p[1] - w[1] > dc_botclient::nav::STEP_UP);
+                        let held = !here
+                            && (run.iter().any(|q| dc_botclient::evade::walk_danger(coll, &danger, BODY, *q))
+                                || (!way_drops && dead_end_below(&nav, coll, p[1], &run)));
+                        if held && way_arm {
+                            if let Some(wp) = f.points().first().copied() {
+                                nav.ban_step(p, wp);
+                                f.kick(&mut nav, now, p);
+                            }
+                        }
+                        guard_held = held;
+                    }
+                    if guard_held {
+                        b.steer = None;
+                    }
+                }
+                _ => guard_held = false,
+            }
+            falls.after_jump = if jump { 60 } else { falls.after_jump.saturating_sub(1) };
+            jumps += u32::from(jump);
+            LAST_JUMPS.with(|c| c.set((jumps, falls.jump_falls)));
             b.evade = jump.then_some(dc_botclient::evade::Move {
                 yaw: 0.0,
                 strafe: 0,
@@ -712,7 +888,9 @@ impl RoomWorld {
             });
             for _ in 0..3 {
                 b.advance(16_667);
+                falls.feed(&b);
             }
+            LAST_FALL.with(|c| c.set(falls.worst));
             let q = b.pos();
             if self
                 .kill
@@ -1430,4 +1608,500 @@ fn rom_cover_probe() {
         lines.push(format!("{} {} {} {open:.4} {walls}", v[1], v[2], v[3]));
     }
     std::fs::write(out, lines.join("\n")).unwrap();
+}
+
+/// BOT-181: Waverider's spawn at (-5009, -2286, 1700) (an FFA room's collision set): the way to the deck below runs
+/// down an 813-unit ladder. A body that climbs down sends the ladder surface, so the game server's fall track (DSV-76)
+/// restarts on the rungs and the landing at the foot is no fall. Before, every trailer said surface 0 and the descent
+/// was one fall: 3 of 3 bots spawned there died at the foot within 5 s.
+#[test]
+fn rom_waverider_the_spawn_ladder_down_is_no_fall() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/WAVERIDER.DAT", SPY_OFF_WAVERIDER);
+    let spawn = [-5009.0f32, -2286.4, 1700.0];
+    let walk = room.goto(spawn, [-4952.8, -3099.3, 1643.4], 40);
+    let fall = LAST_FALL.with(|c| c.get());
+    assert!(walk.is_ok(), "{walk:?}");
+    assert!(fall <= 300.0, "a fall of {fall} on the way down");
+}
+
+/// BOT-181: Two Towers in a team deathmatch room's collision set.
+const OFF_TDM_TWOTOWERS: &[&str] = &[
+    "collision_box01",
+    "collision_mdl01",
+    "worldmodel01",
+    "worldmodel02",
+    "worldmodel0",
+    "worldmodel1",
+    "worldmodel2",
+    "blender01",
+    "worldmodel3",
+    "worldmodel4",
+    "qrt_blood",
+    "qrt_show_g",
+    "qrt_show_l",
+    "qrt_show_r",
+    "qrt_show_f",
+    "qrt_show_n",
+];
+
+/// BOT-181: walks from the places of Two Towers' bridge where TDM bots of `out_boteval/matrix5` fell off (a spacing
+/// goal's way that cut a corner over the edge at (1686, -696, 929), the walk by the bridge at (1085, -896, 295)) and
+/// near the holes in it do not fall: the walk guard holds a step whose next half second leads off. Before, the walk
+/// by the bridge slid off its edge into the fall volume.
+#[test]
+fn rom_twotowers_walks_on_the_bridge_do_not_fall_off() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/TWOTOWERS.DAT", OFF_TDM_TWOTOWERS);
+    for (from, to) in [
+        ([1906.0f32, -713.0, -27.0], [1694.9, -701.9, 710.3]),
+        ([1753.8, -701.9, -2.8], [1794.9, -701.9, 713.3]),
+    ] {
+        let walk = room.goto(from, to, 40);
+        let fall = LAST_FALL.with(|c| c.get());
+        eprintln!("{from:?} -> {to:?}: {walk:?}, fall {fall}");
+        assert!(
+            !walk.as_ref().is_err_and(|e| e.starts_with("died")),
+            "{from:?} -> {to:?}: {walk:?}"
+        );
+        assert!(fall <= 300.0, "{from:?} -> {to:?}: a fall of {fall}");
+    }
+}
+
+/// BOT-181: the corner under Two Towers' bridge by the pool (a one-node island beside the pool's kill volume, whose
+/// only way out is the walk back along the volume's edge) is left: the bot's grid knows the map from its spawn, and
+/// the way off the island takes the walk along the edge to a known node. Before, no way off counted (no drop, and the
+/// body's box touched the volume at every place of the walk) and bots stood there 20..110 s.
+#[test]
+fn rom_twotowers_the_corner_under_the_bridge_is_left() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/TWOTOWERS.DAT", OFF_TDM_TWOTOWERS);
+    let spawn = [3676.8f32, -969.9, -634.7];
+    for from in [
+        [2900.0f32, -970.0, -300.0],
+        [2902.6, -969.9, -296.5],
+        [2884.0, -970.0, -312.0],
+    ] {
+        let walk = room.goto_known(from, [1700.0, -702.0, 700.0], 60, spawn);
+        assert!(walk.is_ok(), "from {from:?}: {walk:?}");
+    }
+}
+
+/// BOT-166: Snow Valley's ladders between the lower area round S&D site A and the upper level of site B (offline, the
+/// room's collision set): a defender on site A's floor walks to the shaft ladder and climbs it to the upper level, and
+/// one in the cellar under site A climbs the cellar ladder and then the shaft ladder to the bomb's defuse point at
+/// site B. Before, the shaft ladder's foot counted as a jump's take-off (BOT-162) and was never reached by a body on
+/// the rungs above it, the climb made no way for the stuck count, and the body on the cellar ladder hung under the floor
+/// slab beside the hatch: the walks ended under the upper level after 60 s (2026-11-08 rooms: the defenders' way round
+/// took 31 s, every bomb at site B detonated).
+#[test]
+fn rom_snowvalley_defenders_climb_to_site_b() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let sv = spy_room(&r, 0);
+    let walk = sv.goto([-137.0, 236.0, 921.0], [818.0, 847.0, 1068.0], 60);
+    eprintln!("Snow Valley site A floor to the shaft ladder's top: {walk:?}");
+    assert!(walk.as_ref().is_ok_and(|s| *s <= 25.0), "site A floor: {walk:?}");
+    let walk = sv.goto([-488.0, 90.0, 845.0], [473.9, 796.6, 654.6], 60);
+    eprintln!("Snow Valley cellar under site A to site B's defuse point: {walk:?}");
+    assert!(walk.as_ref().is_ok_and(|s| *s <= 30.0), "cellar: {walk:?}");
+}
+
+/// BOT-184: Warhead's Spy Hunt "door case" at (301.5, 2686, -1195) lies on the floor of a pit (2633) under a lid
+/// (2916, a kill volume over it), west of the ramp the bots circled on (a wall between, 100 above the pit floor) and
+/// beneath the walk at 2920. A player gets in by walking off the walk's west edge into the open part of the pit: a
+/// drop of 287, under the 300 that do no fall damage (DSV-76); the way out runs through a low door in the pit's west
+/// wall, up a stair and off a ledge (drops of 150..180). Before, the grid's walks off an edge stopped at 200: no node
+/// stood within 275 units of the case, and in matrix5 BNT_08 no bot got closer than 289 in 207 samples with it as goal.
+/// Bots from the places they circled at (the ramp east of the wall, the walk above) and from spawn points across the
+/// map get into the case's touch window.
+#[test]
+fn rom_warhead_door_case_is_reached_by_the_drop_into_its_pit() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = spy_room(&r, 8);
+    let case = [301.5, 2686.0, -1195.0];
+    // the grid a bot grew in full, then the case check (twice: the second after the grid grew on)
+    let ready = || {
+        let (mut nav, _) = room.grown();
+        assert!(!nav.growing());
+        // (the grid's own ways end 275 units off; the check makes the deep falls toward the case, the grid grows on)
+        assert!(nav
+            .links_near(case, 128.0)
+            .iter()
+            .all(|n| (n.0[1] - case[1]).abs() > 60.0));
+        let why = dc_botclient::spyrun::case_reach(&mut nav, &room.w.collision, &room.kill, case);
+        assert_eq!(why, None);
+        assert!(nav.growing());
+        while nav.growing() && nav.probes < 4_000_000 {
+            nav.expand(2_000, None);
+        }
+        let why = dc_botclient::spyrun::case_reach(&mut nav, &room.w.collision, &room.kill, case);
+        assert_eq!(why, None);
+        nav
+    };
+    let mut bad = Vec::new();
+    for from in [
+        [600.0, 2783.0, -1300.0],
+        [200.0, 2970.0, -1300.0],
+        [-2951.5, 2803.0, -371.0],
+        [1682.5, 2795.0, -980.0],
+    ] {
+        match room.take_on(Some(ready()), from, case, 120) {
+            Ok(s) => eprintln!("{from:?} -> door case in {s} s"),
+            Err(e) => bad.push((from, e)),
+        }
+    }
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+/// BOT-184: Gray Hammer's two girder points (BOT-163, BOT-176) lie on islands of beams the grid walks once it stands
+/// on them, and no way of the grid leads onto them. A grid seeded at each case reaches it and walks off its island
+/// to the spawn (drops of 180..190 from the girder of (2251, 299, -2030), of about 176 from the box top of (644, 211,
+/// 272)); the grid grown in full from a spawn point, with the case check's deep falls (none: nothing stands 200..290
+/// above either), has no node by them. The way on, as the ROM shows it: (2251, ...) is entered from the end of the
+/// pipe at z -2432 (24 wide, top 203; the grid reaches it) by a jump across a gap of about 100 (no floor between z
+/// -2420 and -2312) onto the truss member climbing from 172 to 276, then along girders 24..36 wide; (644, ...) from the
+/// end of a ledge 12 wide (top 257) by a corner step of 23 down onto a beam 12 wide. The grid has no jump across a gap
+/// and no step between two beams that touch at a corner, so the bots keep giving these places up by BOT-163/180.
+#[test]
+fn rom_grayhammer_girder_cases_lie_on_islands_no_grid_way_enters() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = spy_room(&r, 1);
+    let (mut nav, start) = room.grown();
+    assert!(!nav.growing());
+    for case in [[2251.0f32, 304.0, -2030.5], [644.0, 216.0, 272.5]] {
+        let why = dc_botclient::spyrun::case_reach(&mut nav, &room.w.collision, &room.kill, case);
+        assert_eq!(why, Some(dc_botclient::spyrun::NO_REACH), "{case:?}");
+        assert!(!nav.growing(), "{case:?}: no deep fall toward it");
+        let mut island = room.grid();
+        assert!(island.seed([case[0], case[1] + 40.0, case[2]]), "{case:?}");
+        while island.growing() && island.probes < 4_000_000 {
+            island.expand(2_000, None);
+        }
+        let by = island
+            .links_near(case, dc_botclient::spyrun::REACH)
+            .into_iter()
+            .map(|n| n.0)
+            .find(|n| (n[1] - case[1]).abs() <= dc_botclient::spyrun::REACH_RISE);
+        let by = by.unwrap_or_else(|| panic!("{case:?}: the island stands by the case"));
+        assert!(island.path(by, start).is_some(), "{case:?}: the island's way off");
+    }
+    // the gap between the pipe's end and the truss member: no floor from 120 to 330 at x 1790, z -2408..-2324
+    use dc_sim::{Collider, Cylinder, V3};
+    let thin = Cylinder::from_dims(V3::new(2.0, 2.0, 2.0));
+    for z in (0..8).map(|i| -2408.0 + 12.0 * i as f32) {
+        let hit = room
+            .w
+            .collision
+            .sweep(&thin, V3::new(1790.0, 330.0, z), V3::new(1790.0, 120.0, z));
+        assert!(hit.is_none_or(|h| h.t >= 0.999), "floor at z {z}");
+    }
+}
+
+/// BOT-185: the linked models an Elimination Pro room's server leaves out of the collision set on Overdose (OBSERVED
+/// 2026-11-09: the bots' `world_set` event `off`, TSV room of the bot evaluation); doors are open as in
+/// [`room_world_set`].
+const OFF_OVERDOSE_TSV: &[&str] = &[
+    "g00",
+    "worldmodel7",
+    "light_burb_long_02_func00.worldmodel0",
+    "light_burb_long_02_func01.worldmodel0",
+    "light_burb_long_02_func02.worldmodel0",
+    "light_burb_long_02_func03.worldmodel0",
+    "light_burb_long_02_func04.worldmodel0",
+    "light_burb_long_02_func05.worldmodel0",
+    "light_burb_long_02_func06.worldmodel0",
+    "light_burb_long_02_func07.worldmodel0",
+    "light_burb_long_02_func08.worldmodel0",
+    "bard_01",
+    "bard_02",
+    "bard_03",
+    "bard_05",
+    "bard_06",
+    "bard_07",
+    "bard_08",
+    "bard_09",
+    "bard_10",
+    "bard_04",
+    "bar_01_3",
+    "bar_02_3",
+    "bar_03_3",
+    "bar_04_3",
+    "bar_05_3",
+    "bar_01_2",
+    "bar_02_2",
+    "bar_03_2",
+    "bar_04_2",
+    "bar_05_2",
+    "ele_out_r01",
+    "ele_out_l01",
+    "ele_d_open_01",
+    "ele_in_r01",
+    "ele_in_l01",
+    "dp_03_01",
+    "dp_05_01",
+    "dp_06_01",
+    "dp_04_01",
+    "dp_07_01",
+    "dp_02_01",
+    "light_burb_long_02_func09.worldmodel0",
+    "redalarmon01",
+    "worldmodel01",
+    "light_burb_long_02_on02.worldmodel0",
+    "room_switch_01",
+    "room_switch_02",
+    "light_room_01.vis_on",
+    "light_room_02.vis_on",
+    "worldmodel03",
+    "worldmodel05",
+    "debriswnd00",
+    "debriswnd01",
+    "debriswnd02",
+    "ele_out_r02",
+    "ele_out_l02",
+    "ele_in_r02",
+    "ele_in_l02",
+    "ele_d_open_02",
+    "dp_03_02",
+    "dp_05_02",
+    "dp_06_02",
+    "dp_04_02",
+    "dp_07_02",
+    "dp_02_02",
+    "redalarmon02",
+    "worldmodel00",
+    "worldmodel1",
+    "worldmodel2",
+    "worldmodel6",
+    "worldmodel5",
+    "light_fluore_01_on01.worldmodel0",
+    "light_fluore_01_on00.worldmodel0",
+    "worldmodel4",
+    "tdm_hide01",
+];
+
+/// BOT-185: on Overdose (Elimination Pro) a bot from team 2's spawn hall gets onto team 1's ledge (481 above the hall's
+/// 114). Before, the grid's way climbed the crate stack under the ledge by a step of 15 from one crate onto the corner
+/// of the next (the body stood there on a sliver of its rim): the body went on past the corner and fell to the floor,
+/// jumped up again, and after 60 s stood at the foot of the stack (18 jumps in 30 s in a TSV room).
+#[test]
+fn rom_overdose_team_two_climbs_to_the_ledge_without_falling_off_the_crates() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/OVERDOSE.DAT", OFF_OVERDOSE_TSV);
+    let walk = room.goto([-85.0, 114.1, 1159.0], [-450.0, 481.0, 930.0], 30);
+    eprintln!("Overdose ledge: {walk:?}");
+    assert!(walk.is_ok(), "Overdose ledge: {walk:?}");
+}
+
+/// BOT-186: on Gray Hammer (Elimination Pro) a bot climbs the crate stairs (50, 93, 135, 182, 238) up to the walk at 250
+/// without falling back: falls of more than 30 units within 3 s of a jump at most four in six walks (grids grown in
+/// full from three team-2 spawn points the bots of a TSV room grew theirs from, starts on the floor at the stairs' foot).
+/// The crates are 40 deep and the walk's slab overhangs the back of the lower ones. Before, a body that landed on the
+/// 93 crate under the slab jumped at the next one from there and struck its head (its flight topped out 37 up, short of
+/// 42), and a top that became the next point while the body rose toward it counted as no top, was reached in the
+/// flight and the body steered on over the crate's rim: 13 such falls and 34 jumps in these six walks, 34 s in all
+/// (MEASURED 2026-11-09; with the rule 3 falls, 22 jumps, 16 s).
+#[test]
+fn rom_grayhammer_crate_stairs_are_climbed_without_falling_back() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(
+        &r,
+        b"WORLDS/GRAYHAMMER.DAT",
+        &["collision_box01", "collision_mdl01", "worldmodel1"],
+    );
+    let top = [-1460.0f32, 250.1, -1499.0];
+    let mut falls = 0;
+    for (seed, from) in [
+        ([274.88f32, 40.1, -3260.68], [-1186.0f32, 50.1, -1626.0]),
+        ([39.4, 50.1, -3228.0], [-1210.0, 50.1, -1609.0]),
+        ([39.4, 50.1, -3228.0], [-1186.0, 50.1, -1626.0]),
+        ([39.4, 50.1, -3228.0], [-1150.0, 50.1, -1595.0]),
+        ([39.4, 50.1, -3228.0], [-1250.0, 50.1, -1640.0]),
+        ([317.5, 50.1, -3132.4], [-1186.0, 50.1, -1626.0]),
+    ] {
+        let mut nav = room.grid();
+        assert!(nav.seed(seed), "the spawn stands");
+        while nav.growing() && nav.probes < 4_000_000 {
+            nav.expand(2_000, None);
+        }
+        let walk = room.walk(Some(nav), from, top, 30, |p| {
+            flat(p, top) <= 72.0 && (p[1] - top[1]).abs() <= 40.0
+        });
+        let (jumps, fell) = LAST_JUMPS.with(|c| c.get());
+        eprintln!("from {from:?} (grid from {seed:?}): {walk:?}, {jumps} jumps, {fell} falls");
+        assert!(walk.is_ok(), "from {from:?}: {walk:?}");
+        falls += fell;
+    }
+    assert!(falls <= 4, "{falls} falls after jumps");
+}
+
+
+/// BOT-191: the linked models a Rattlesnake Elimination room's server leaves out of the collision set (OBSERVED
+/// 2026-11-10: the bots' `world_set` event `off`, TDM room of the bot evaluation; the shutters stay); doors are open
+/// as in [`room_world_set`].
+const OFF_RATTLESNAKE_TDM: &[&str] = &[
+    "worldmodel0",
+    "worldmodel3",
+    "worldmodel1",
+    "worldmodel01",
+    "worldmodel8",
+    "worldmodel9",
+    "worldmodel10",
+    "blender01",
+];
+
+/// BOT-191: on Rattlesnake (Elimination) a bot at team 2's spawn exit walks down to the lower floor without hopping at
+/// the parapet beside it (53 high, 10 wide, with a beam across the pit behind it at the same height): the grid's
+/// ways jump onto the parapet or the beam, the body falls back to the floor (or the jump test refuses the flight) and
+/// the next plan jumps at the node beside the last. Before, each node kept its own failure count and the walks
+/// jumped 5 and 6 times there (11 in all, MEASURED 2026-11-10); with the failures near one another counted together
+/// the ways up go after the third and the walks go round (2 and 3).
+#[test]
+fn rom_rattlesnake_team_two_leaves_the_spawn_exit_without_hopping_at_the_parapet() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/RATTLESNAKE.DAT", OFF_RATTLESNAKE_TDM);
+    let from = [-526.0f32, -912.0, 1400.0];
+    let mut jumps = 0;
+    for to in [[-737.0f32, -1232.0, 1407.0], [-696.0, -1232.0, 1241.0]] {
+        let walk = room.goto(from, to, 30);
+        let (j, fell) = LAST_JUMPS.with(|c| c.get());
+        eprintln!("to {to:?}: {walk:?}, {j} jumps, {fell} falls");
+        assert!(walk.is_ok(), "to {to:?}: {walk:?}");
+        jumps += j;
+    }
+    assert!(jumps <= 7, "{jumps} jumps");
+}
+
+/// BOT-189: the places of Two Towers where bots of `out_boteval/matrix6` stayed 60..130 s with every plan closed are
+/// dead ends (`NavGrid::dead_end`: a grid seeded there grows shut within 600 units): the beams round the pool under the
+/// bridge (y -974), the ledge above them (y -702, z 1079) and the slot beside the tower's wall (y -318); the floors the
+/// bots walk on, the plank walk over the water and the landings of BOT-159's escapes on Rattlesnake and Snow Valley are
+/// not. From the upper walk where the matrix6 Spy Hunt bot left for the ledge, a greedy heading the danger test lets
+/// through drops onto a dead end, and is no way now (`dead_end_below`).
+#[test]
+fn rom_twotowers_no_way_off_an_island_ends_in_a_dead_end() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/TWOTOWERS.DAT", OFF_TDM_TWOTOWERS);
+    let probes = dc_botclient::nav::DEAD_END_PROBES;
+    let nav = room.grid();
+    for p in [
+        [2589.5f32, -973.6, 776.1],
+        [2000.0, -973.6, 610.0],
+        [2700.0, -701.9, 1079.0],
+        [2414.0, -318.0, 300.0],
+    ] {
+        assert!(nav.dead_end(p, probes, 600.0), "{p:?} is a dead end");
+    }
+    for p in [[1700.0f32, -702.0, 700.0], [1063.0, -895.5, 400.0], [312.0, -696.0, 1824.0]] {
+        assert!(!nav.dead_end(p, probes, 600.0), "{p:?} is no dead end");
+    }
+    let rs = room_world_set(&r, b"WORLDS/RATTLESNAKE.DAT", OFF_RATTLESNAKE);
+    assert!(!rs.grid().dead_end([1323.0, -912.0, 600.0], probes, 600.0));
+    let sv = spy_room(&r, 0);
+    assert!(!sv.grid().dead_end([-1450.0, 360.0, 2350.0], probes, 600.0));
+    // the greedy way-finder on the upper walk where the matrix6 Spy Hunt bot left it for the ledge (its way down to
+    // the floor by the pool): a heading the danger test lets through drops 201 onto a dead end; it is no way now
+    let from = [2490.0f32, -326.0, 892.0];
+    let danger: Vec<_> = room.kill.iter().chain(&room.hazard).cloned().collect();
+    let mut b = dc_botclient::motion::Body::new(
+        from,
+        BODY,
+        0.0,
+        dc_botclient::motion::MotionKind::Hunt,
+        60,
+        Some(room.w.collision.clone()),
+    );
+    b.mods = walk_mods();
+    let mut refused = 0;
+    for i in 0..16 {
+        let y = i as f32 * std::f32::consts::TAU / 16.0;
+        let path = b.probe_path(Some(y), None, dc_botclient::hunt::PROBE_SECS, 4);
+        if dc_botclient::evade::path_safe(&room.w.collision, &danger, BODY, &path)
+            && dead_end_below(&nav, &room.w.collision, from[1], &path)
+        {
+            refused += 1;
+        }
+    }
+    assert!(refused > 0, "a heading off the upper walk onto a dead end");
+}
+
+
+/// BOT-197: a bot that spawns on Waverider's spawn platform at (-5009, -2286, 1700) (an FFA room's collision set) with
+/// a grid grown on the lower deck before (it died there) walks down the spawn ladder. Before, the lattice place of that
+/// grid 55 units off the ladder's foot held the foot's key, the ladder joined no way, its top grew the platform as an
+/// island and the bot paced the platform's far end (-4790, -2285) for a minute (an FFA room of the 2026-11-10 bot
+/// evaluation); a grid grown from the platform itself was fine.
+#[test]
+fn rom_waverider_a_bot_spawned_on_the_platform_with_a_known_deck_walks_down_the_ladder() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/WAVERIDER.DAT", SPY_OFF_WAVERIDER);
+    let spawn = [-5009.0f32, -2286.4, 1700.0];
+    let deck = [-3824.0f32, -3310.0, 1194.0];
+    for to in [[-3899.0f32, -2986.0, 1567.0], [-4952.8, -3099.3, 1643.4]] {
+        let walk = room.goto_known(spawn, to, 40, deck);
+        eprintln!("to {to:?}: {walk:?}");
+        assert!(walk.is_ok(), "to {to:?}: {walk:?}");
+    }
+}
+
+/// BOT-197 (OPEN, ignored): the far end of Waverider's spawn platform (x -4850..-4740), where an FFA bot of a
+/// 2026-11-11 headless room paced for 110 s with every plan closed (28 islands; its grid's part there 39 nodes), joins
+/// the rest of the platform only through a passage a little wider than the body by (-4850, -2284, 1610). A grid grown
+/// from a place there whose lattice misses the passage (each lattice place and the half-step places beside it fall on
+/// the obstacles to either side) grows shut (5 of 284 places 6 units apart, MEASURED 2026-11-12; 8 nodes from
+/// (-4833, -2283.6, 1652.5)): the plans end there and the greedy way-finder walks the body back into the end, toward
+/// goals across the map. The walks from (-4833, 1652.5) stand where they begin. A grid that knows the spawn end first
+/// threads the passage (the walks get there). Tried and not kept: quarter-step places for every node (5 other tests
+/// of this file failed), for the nodes of small closed parts grown again (Two Towers' bridge walk fell off), and links
+/// along the body's own walk (Two Towers' corner under the bridge was not left).
+#[test]
+#[ignore = "OPEN: BOT-197 far end of Waverider's spawn platform"]
+fn rom_waverider_a_bot_walks_out_of_the_spawn_platforms_far_end() {
+    let Some(r) = RomWorlds::from_env() else {
+        eprintln!("no CA_ROM: skipped");
+        return;
+    };
+    let room = room_world_set(&r, b"WORLDS/WAVERIDER.DAT", SPY_OFF_WAVERIDER);
+    let from = [-4833.0f32, -2283.57, 1652.45];
+    assert!(
+        room.grid().dead_end(from, dc_botclient::nav::DEAD_END_PROBES, 600.0),
+        "{from:?} grows shut"
+    );
+    for to in [[-5074.0f32, -2286.4, 1731.0], [-4952.8, -3099.3, 1643.4]] {
+        let walk = room.goto(from, to, 40);
+        eprintln!("to {to:?}: {walk:?}");
+        assert!(walk.is_ok(), "to {to:?}: {walk:?}");
+    }
 }

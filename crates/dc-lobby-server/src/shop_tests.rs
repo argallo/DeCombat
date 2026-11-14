@@ -1928,6 +1928,7 @@ fn play_match(st: &mut Core, id: u64, players: &[(u32, u32)]) -> Vec<String> {
             clients: Default::default(),
             left: Default::default(),
             result_done: false,
+            unranked: false,
             entry_keys: Default::default(),
             seat_tickets: Default::default(),
             seat_told: Default::default(),

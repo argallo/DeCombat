@@ -304,6 +304,10 @@ pub struct Link {
     moves: VecDeque<Millis>,
     /// Time of the last move.
     moved_at: Option<Millis>,
+    /// When the link opened (NET-29).
+    opened_at: Millis,
+    /// The session above accepted the peer (NET-29).
+    proven: bool,
 }
 
 impl Link {
@@ -343,7 +347,24 @@ impl Link {
             move_trailer: None,
             moves: VecDeque::new(),
             moved_at: None,
+            opened_at: now,
+            proven: false,
         }
+    }
+
+    /// When the link opened (NET-29: the age of a link that has not proven its peer).
+    pub fn opened_at(&self) -> Millis {
+        self.opened_at
+    }
+
+    /// Whether the session above said the peer proved itself (NET-29; the session decides what proof is).
+    pub fn proven(&self) -> bool {
+        self.proven
+    }
+
+    /// The session above accepted the peer (NET-29): the link is never evicted for a newcomer.
+    pub fn set_proven(&mut self) {
+        self.proven = true;
     }
 
     // ------------------------------------------------------------------------------------------- accessors

@@ -1,0 +1,97 @@
+/* The dashboard's charts (DC_DEFAULTS.md LG-449): meters, split bars, columns and line charts. Colours are the
+   design library's tokens; the four series colours have a step of their own for the dark surface, because the
+   library's are the same in both and two of them fail on dark.
+   Provenance: ORIGINAL (DeCombat operator tooling) */
+
+.viz {
+  --viz-1: light-dark(#0171e3, #3987e5);
+  --viz-2: light-dark(#eb6e00, #d95926);
+  --viz-3: light-dark(#6b1efd, #9085e9);
+  --viz-4: light-dark(#0b991f, #199e70);
+  --viz-rest: var(--color-data-neutral);
+  --viz-grid: var(--color-border);
+  --viz-axis: var(--color-border-emphasized);
+  --viz-surface: var(--color-background-card);
+  --viz-ink: var(--color-text-secondary);
+  position: relative;
+  font-variant-numeric: tabular-nums;
+}
+
+/* what a mark is painted with: a state (the library's status colours and their pale step as the track) or a series */
+.viz-good { --viz-fill: var(--color-success); --viz-track: var(--color-success-muted); }
+.viz-warn { --viz-fill: var(--color-warning); --viz-track: var(--color-warning-muted); }
+.viz-bad { --viz-fill: var(--color-error); --viz-track: var(--color-error-muted); }
+.viz-none { --viz-fill: var(--viz-rest); --viz-track: var(--color-neutral); }
+.viz-s1 { --viz-fill: var(--viz-1); --viz-track: color-mix(in srgb, var(--viz-1) 18%, transparent); }
+.viz-s2 { --viz-fill: var(--viz-2); --viz-track: color-mix(in srgb, var(--viz-2) 18%, transparent); }
+.viz-s3 { --viz-fill: var(--viz-3); --viz-track: color-mix(in srgb, var(--viz-3) 18%, transparent); }
+.viz-s4 { --viz-fill: var(--viz-4); --viz-track: color-mix(in srgb, var(--viz-4) 18%, transparent); }
+.viz-rest { --viz-fill: var(--viz-rest); --viz-track: var(--color-neutral); }
+/* nothing there: a free seat */
+.viz-empty { --viz-fill: var(--color-neutral); }
+
+/* a meter: one value against a fixed scale, a tick for a second value (the worst) */
+.viz-meter { height: 8px; border-radius: 4px; background: var(--viz-track); min-width: 40px; }
+.viz-meter > .fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--viz-fill); }
+.viz-meter > .tick { position: absolute; top: -3px; bottom: -3px; width: 2px; border-radius: 1px; background: var(--viz-ink); }
+
+/* one whole split into parts */
+.viz-split { display: flex; gap: 2px; height: 8px; min-width: 40px; }
+.viz-split > span { flex: 0 1 0; min-width: 4px; border-radius: 4px; background: var(--viz-fill); }
+.viz-split.thick { height: 12px; }
+.viz-split.thick > span { border-radius: 6px; }
+
+/* a small filled circle that names a series or a state beside its text */
+.viz-key { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--viz-fill); flex: none; }
+.viz-key.line { width: 14px; height: 2px; border-radius: 1px; }
+.viz-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 10px; align-items: center; font-size: 12px; color: var(--viz-ink); }
+.viz-legend > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* the frame both charts share: the axis values on the left, the plot, the labels under it */
+.viz-chart { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 4px; padding-top: 4px; }
+.viz-yaxis { position: relative; font-size: 11px; line-height: 1; color: var(--viz-ink); text-align: end; }
+.viz-yaxis > span { display: block; visibility: hidden; height: 0; }
+.viz-yaxis > b { position: absolute; inset-inline-end: 0; font-weight: 400; transform: translateY(50%); white-space: nowrap; }
+.viz-plot { position: relative; height: var(--viz-h, 120px); touch-action: pan-y; }
+.viz-plot > .rule { position: absolute; left: 0; right: 0; height: 1px; background: var(--viz-grid); }
+.viz-plot > .rule.base { background: var(--viz-axis); }
+.viz-xaxis { grid-column: 2; display: flex; gap: 2px; font-size: 11px; line-height: 1.2; color: var(--viz-ink); }
+.viz-xaxis > span { flex: 1 1 0; min-width: 0; display: flex; justify-content: center; white-space: nowrap; }
+.viz-xaxis > span.first { justify-content: flex-start; }
+.viz-xaxis > span.last { justify-content: flex-end; }
+.viz-xaxis.ends { justify-content: space-between; }
+.viz-xaxis.ends > span { flex: none; }
+
+/* columns: a count per span of time, parts stacked from the baseline with the surface showing between them */
+.viz-bars { position: absolute; inset: 0; display: flex; align-items: stretch; gap: 2px; }
+.viz-bars > .slot { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column-reverse; align-items: center; gap: 2px; }
+.viz-bars .seg { width: 100%; max-width: 24px; min-height: 2px; background: var(--viz-fill); }
+.viz-bars .seg:last-child { border-radius: 4px 4px 0 0; }
+.viz-bars > .slot:hover .seg, .viz-bars > .slot.on .seg { filter: brightness(1.18); }
+.viz-bars > .slot.unknown { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--color-neutral) 5px 6px); }
+
+/* lines: one or more values over time */
+.viz-plot > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.viz-plot path { fill: none; stroke: var(--viz-fill); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.viz-plot path.viz-rest { stroke-width: 1.5; opacity: 0.75; }
+.viz-plot path.wash { stroke: none; fill: var(--viz-fill); opacity: 0.1; }
+.viz-plot > .cross { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--viz-ink); opacity: 0.6; pointer-events: none; }
+.viz-plot > .dot { position: absolute; width: 8px; height: 8px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid var(--viz-surface); background: var(--viz-fill); pointer-events: none; }
+
+/* what the pointer is on: the value first, then its name */
+.viz-tip { position: absolute; top: 4px; z-index: 2; pointer-events: none; white-space: nowrap; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--color-border-emphasized); background: var(--color-background-popover, var(--viz-surface)); color: var(--color-text-primary); font-size: 12px; line-height: 1.45; box-shadow: 0 2px 10px rgb(0 0 0 / 0.16); }
+.viz-tip > .head { color: var(--viz-ink); }
+.viz-tip > .row { display: flex; align-items: center; gap: 6px; }
+.viz-tip > .row > b { font-weight: 600; }
+.viz-tip > .row > i { font-style: normal; color: var(--viz-ink); max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+
+/* the status headline of the Overview: the one loud thing on the page */
+.viz-hero { display: flex; gap: 14px; align-items: flex-start; }
+.viz-hero > .sign { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--viz-fill); color: var(--viz-surface); font-size: 26px; }
+.viz-hero.viz-warn > .sign { color: #1b1b1b; }
+.viz-hero .say { margin: 0; font-size: clamp(24px, 3.4vw, 38px); line-height: 1.12; font-weight: 600; text-wrap: balance; overflow-wrap: anywhere; color: var(--color-text-primary); }
+/* a legend that is a tile's note has nothing under it to keep clear of */
+.viz-note > .viz-legend { margin-bottom: 0; }
+.viz-under { margin-top: 4px; }
+.viz-dots { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 12px; }
+.viz-dots > span { width: 12px; height: 12px; border-radius: 50%; background: var(--viz-fill); }

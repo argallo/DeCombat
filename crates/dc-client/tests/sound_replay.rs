@@ -342,6 +342,7 @@ fn render(
                 position: s.pos.unwrap_or(ear.eye),
                 class: s.class,
                 reverb: true,
+                group: 0,
             };
             if let Ok(id) = m.play(req) {
                 if is_fire {

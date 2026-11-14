@@ -1,6 +1,7 @@
 # PACKS_FROM_REPOSITORIES.md: packs come from pack repositories, pinned by release and hash
 
-Status: design, 2026-11-09. Decided: our own packs (the weapon camos, the Case Reel, the inspect pack, the community
+Status: in use since 2026-11-09 (DeCombat-mods v1 released; any host syncs with `dc-lobby-server packs sync`,
+the VPS also with `tools/vps/packs_sync.sh` and the dashboard). Decided: our own packs (the weapon camos, the Case Reel, the inspect pack, the community
 maps) leave this repository for repositories of their own, and the game sources them from there. This note says how,
 what each part trusts, and in which order the pieces land. Nothing here changes the client.
 
@@ -20,9 +21,12 @@ came from is provenance, never trust: a GitHub tag can be moved, so no part of t
 
 ## 2. The server: a sync step, not a live fetch
 
-`tools/vps/packs_sync.sh` (proposed) runs on the host, by the operator or from the dashboard:
+`dc-lobby-server packs sync` runs on any host (Windows, Linux, macOS) by the operator; on the VPS,
+`tools/vps/packs_sync.sh` does the same as root, by hand or from the dashboard's Sync packs (HOSTING.md "Packs"):
 
 ```
+dc-lobby-server packs sync <owner/repo> <tag> --mods-dir DIR [--only id,id] [--format entry|set] [--dry-run]
+dc-lobby-server packs sync --config server.toml       # every [[packs.sources]] row into paths.mods_dir
 packs_sync.sh <owner/repo> <tag> [--only id,id] [--mods-dir DIR] [--dry-run]
 ```
 
@@ -89,8 +93,9 @@ appearing on the site says nothing about trust; the text says so.
 
 1. **mods-out**: the folders leave this repository (except the three fixtures and, until step 4, the five gunkit
    examples); the review-list rows and the website links point at the pack repositories.
-2. **packs-sync**: `tools/vps/packs_sync.sh` with its test (`tools/vps/tests/packs_sync_test.sh`, a local fake
-   release folder), `docs/VPS.md` and `docs/OPS.md` paragraphs. No lobby change yet.
+2. **packs-sync** (done): `tools/vps/packs_sync.sh` with its test (`tools/vps/tests/packs_sync_test.sh`, a local fake
+   release folder), `docs/VPS.md` and `docs/OPS.md` paragraphs; then `dc-lobby-server packs sync` (the same checks
+   in the lobby binary, for hosts that are not the VPS: Windows, no root, no bash) and HOSTING.md "Packs".
 3. **packs-sources** (done, LG-434): `[[packs.sources]]` in `dc-config` (check + `--fs` hint) and the dashboard's Sync packs action
    calling the script; a correctness review at merge (lobby code).
 4. **gunkit-examples**: run-time examples, the packaging scripts fill `examples/` from the release; the five folders

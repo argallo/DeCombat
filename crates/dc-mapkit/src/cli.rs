@@ -368,7 +368,7 @@ pub fn command() -> Command {
         )
         .subcommand(
             Command::new("walk")
-                .about("walk the map offline with the game's own movement and collision: routes (reached, died, stuck), a --survey for holes and kill floors, or --reach for traps and deadly moves")
+                .about("walk the map offline with the game's own movement and collision: routes (reached, died, stuck), a --survey for holes and kill floors, --reach for traps and deadly moves, or --sight for spawn sight lines")
                 .arg(dir_arg())
                 .arg(opt("rom", "ROM folder (the ROM pieces are composed from it)"))
                 .arg(opt("from", "x,y,z: where a walk starts (on the floor under it)").allow_hyphen_values(true))
@@ -402,11 +402,20 @@ pub fn command() -> Command {
                         .action(ArgAction::SetTrue)
                         .help("every floor of a grid and every move between neighbours: the main component, traps (no way back), deadly moves, islands"),
                 )
+                .arg(
+                    Arg::new("sight")
+                        .long("sight")
+                        .action(ArgAction::SetTrue)
+                        .help("spawn sight lines: team spawns that see an enemy spawn, and the positions outside a spawn's base (upper ones apart) that see it"),
+                )
+                .arg(f32_opt("range", "sight: how far a watcher may be from the spawn (default 4000)"))
+                .arg(f32_opt("own-radius", "sight: positions this close (across) to a spawn of its own team are its base and do not count (default 700)"))
+                .arg(f32_opt("upper", "sight: a watcher's floor this much over the spawn's is an upper position (default 150)"))
                 .arg(opt("seed", "reach: x,y,z on a floor of the main component (default: the component holding the most player spawns)").allow_hyphen_values(true))
                 .arg(opt("seed-piece", "reach: a piece id; the main component is the largest holding one of its player spawns"))
                 .arg(opt("nodes", "reach: write the main component's nodes to this JSON file ({\"step\": S, \"nodes\": [[x, y, z], ...]})"))
                 .arg(opt("box", "survey / reach: x0,z0,x1,z1 or a piece id (default: the box of every floor)").allow_hyphen_values(true))
-                .arg(f32_opt("step", "survey: the grid spacing (default 128); reach: 48"))
+                .arg(f32_opt("step", "survey: the grid spacing (default 128); reach: 48; sight: 96"))
                 .arg(opt("size", "the picture's WxH (default: 1536 on the long side)"))
                 .arg(
                     Arg::new("out")
@@ -1140,10 +1149,12 @@ fn verb_walk(m: &ArgMatches) -> Result<Outcome, Diagnostics> {
     let text = |k: &str| m.get_one::<String>(k).cloned();
     let survey = m.get_flag("survey");
     let reach = m.get_flag("reach");
+    let sight = m.get_flag("sight");
     let (from, to, routes) = (text("from"), text("to"), text("routes"));
     let picked = [
         survey,
         reach,
+        sight,
         from.is_some() || to.is_some(),
         routes.is_some(),
     ]
@@ -1155,7 +1166,7 @@ fn verb_walk(m: &ArgMatches) -> Result<Outcome, Diagnostics> {
             Diagnostic::new(
                 Code::OpInvalid,
                 "walk",
-                "give one of --from and --to, --routes FILE, --survey or --reach",
+                "give one of --from and --to, --routes FILE, --survey, --reach or --sight",
             )
             .with_fix("dc-mapkit walk <dir> --from x,y,z --to x,y,z --json"),
         ));
@@ -1167,7 +1178,28 @@ fn verb_walk(m: &ArgMatches) -> Result<Outcome, Diagnostics> {
             "--seed, --seed-piece and --nodes go with --reach".into(),
         ));
     }
-    let job = if reach {
+    let sight_args = ["range", "own-radius", "upper"];
+    if !sight && sight_args.iter().any(|k| m.get_one::<f32>(k).is_some()) {
+        return Err(bad(
+            "walk",
+            "--range, --own-radius and --upper go with --sight".into(),
+        ));
+    }
+    let job = if sight {
+        let d = crate::sight::SightJob::default();
+        Job::Sight(crate::sight::SightJob {
+            area: text("box")
+                .map(|b| walk::parse_area(&b).map_err(|e| bad("--box", e)))
+                .transpose()?,
+            step: m.get_one::<f32>("step").copied().unwrap_or(d.step),
+            range: m.get_one::<f32>("range").copied().unwrap_or(d.range),
+            own_radius: m
+                .get_one::<f32>("own-radius")
+                .copied()
+                .unwrap_or(d.own_radius),
+            upper: m.get_one::<f32>("upper").copied().unwrap_or(d.upper),
+        })
+    } else if reach {
         let seed = match (seed, seed_piece) {
             (Some(_), Some(_)) => {
                 return Err(bad(

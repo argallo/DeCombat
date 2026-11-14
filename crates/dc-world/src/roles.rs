@@ -7,7 +7,7 @@ use crate::names::{self, Key};
 
 /// First 8 bytes (16 hex digits) of SHA-256 of `name`.
 pub fn hash16(name: &[u8]) -> [u8; 8] {
-    let d = dc_rom::sha256(name);
+    let d = dc_core::sha256(name);
     let mut out = [0u8; 8];
     out.copy_from_slice(&d[..8]);
     out

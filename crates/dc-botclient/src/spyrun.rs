@@ -151,6 +151,41 @@ pub const FAIL_SEEN_MS: u32 = 3_000;
 /// after this long.
 pub const RECHECK_MS: u32 = 5_000;
 
+/// BOT-180 (amends BOT-163): (1) only the bot's own failed attempts give a case place up: the failures of other
+/// players it sees (a holder one case short standing under the case, his death there) are hints, [`HINTS_PER_FAIL`]
+/// of them stand for at most [`HINT_CAP`] own attempt, and the give-up itself always comes with an own attempt (before,
+/// every bot counted the same holders under the case at the same moment and all 8 gave it up together). (2) A give-up
+/// lasts [`GIVE_UP_MS`] plus [`GIVE_UP_STAGGER_MS`] x (client id mod [`GIVE_UP_STEPS`]) (60..90 s), then the bot tries
+/// again with [`FAIL_MAX`] - 1 counts (one more own failure gives it up again). (3) While a single case lies and a
+/// player holds all but one, a bot whose turn it is ((time / [`TURN_MS`] + client id) mod [`TURNS`] = 0: about a
+/// quarter of the bots at a time, staggered) ignores its give-up and BOT-127's stall block for that case. (4) A walk
+/// to a case that gets the bot no [`STALL_GAIN`] units nearer (straight, in 3D) than the nearest it ever got, while it
+/// stands within [`HEADWAY_BAND`] of that, for [`HEADWAY_MS`] of walking in all (over its lives), is an own failed
+/// attempt (Warhead's door case below the bots: 207 samples walking to it, 0 failures counted: BOT-163 counted only
+/// failures from below, BOT-127's stall restarted at every switch between the grid way and the greedy walk).
+// DC-DEFAULT: BOT-180 (proposed)
+pub const HINTS_PER_FAIL: u32 = 2;
+pub const HINT_CAP: u32 = 1;
+pub const GIVE_UP_MS: u32 = 60_000;
+pub const GIVE_UP_STAGGER_MS: u32 = 10_000;
+pub const GIVE_UP_STEPS: u32 = 4;
+pub const TURN_MS: u32 = 15_000;
+pub const TURNS: u32 = 4;
+pub const HEADWAY_MS: u32 = 15_000;
+pub const HEADWAY_BAND: f32 = 200.0;
+/// (a walk tick farther than this from the last one is a new walk: the time between does not count)
+pub const HEADWAY_GAP_MS: u32 = 1_000;
+
+/// BOT-180: how long the bot with client id `me` keeps a case place given up.
+pub fn give_up_ms(me: u32) -> u32 {
+    GIVE_UP_MS + GIVE_UP_STAGGER_MS * (me % GIVE_UP_STEPS)
+}
+
+/// BOT-180: whether it is the turn of the bot with client id `me` at `now` to try the last case whatever it gave up.
+pub fn last_case_turn(me: u32, now: u32) -> bool {
+    (now / TURN_MS + me).is_multiple_of(TURNS)
+}
+
 /// Why a case is no goal for a bot (BOT-137).
 pub const NO_REACH: &str = "reach";
 pub const IN_DANGER: &str = "danger";
@@ -187,10 +222,19 @@ pub fn case_reach(
         return Some(NO_FLOOR);
     }
     let fits = |s: [f32; 3]| flat(s, c) <= REACH && (s[1] - c[1]).abs() <= REACH_RISE;
-    if nav.growing() || nav.is_empty() {
+    if nav.is_empty() {
         return None;
     }
     let node = nav.links_near(c, REACH).iter().any(|n| fits(n.0));
+    // BOT-184: a grid with no node by the case (grown in full or still growing: a check while it grows is made
+    // again every few seconds) tries the deep falls toward it from the nodes it has (a case in a pit reached only by
+    // a drop of 200..290); the grid grows on from their landings
+    if !node {
+        nav.reach_down(c);
+    }
+    if nav.growing() {
+        return None;
+    }
     (!node).then_some(NO_REACH)
 }
 
@@ -261,16 +305,28 @@ pub struct SpyRun {
     provisional: Vec<([f32; 3], u32)>,
     pub just_given_up: Option<[f32; 3]>,
     lost_holders: Vec<([f32; 3], u32)>,
+    /// BOT-180: the bot's own client id (the stagger of its give-up span and of its last-case turn); a case place
+    /// whose give-up just ran out (taken by the session for its event).
+    me: u32,
+    pub just_retry: Option<[f32; 3]>,
 }
 
 /// BOT-163: the failed attempts at one case place: how many, when the last one counted, and the players standing
-/// under it (pid, since when, when last counted).
+/// under it (pid, since when, when last counted). BOT-180: `count` is the bot's own failed attempts; `hints` the
+/// other players' failures it saw (and when the last one counted); `given_at` when the bot gave the place up; the
+/// no-headway watch: the least distance the bot got to it, the walk time since without headway, its last walk tick.
 #[derive(Debug, Clone, PartialEq)]
 struct CaseFails {
     at: [f32; 3],
     count: u32,
     last: Option<u32>,
     under: Vec<(u32, u32, Option<u32>)>,
+    hints: u32,
+    last_hint: Option<u32>,
+    given_at: Option<u32>,
+    best: f32,
+    idle: u32,
+    tick: Option<u32>,
 }
 
 /// BOT-141: what the bot's follower knows of its way to `target`: the way left along it, or that the grid is still
@@ -806,24 +862,43 @@ impl SpyRun {
 
     /// Whether the case at `c` is out of the bot's reach at `now` (BOT-127's stall, BOT-137's reach and danger).
     pub fn is_blocked(&self, c: &[f32; 3], now: u32) -> bool {
-        self.blocked
-            .iter()
-            .any(|(b, at)| same(*b, *c) && now.wrapping_sub(*at) < BLOCK_MS)
+        self.is_blocked_for(c, now, false)
+    }
+
+    /// [`Self::is_blocked`]; BOT-180: on the bot's `turn` at the last case neither its give-up nor BOT-127's stall
+    /// block holds.
+    fn is_blocked_for(&self, c: &[f32; 3], now: u32, turn: bool) -> bool {
+        (!turn
+            && (self
+                .blocked
+                .iter()
+                .any(|(b, at)| same(*b, *c) && now.wrapping_sub(*at) < BLOCK_MS)
+                || self.given_up(c, now)))
             || self.unreachable.iter().any(|(b, _)| same(*b, *c))
-            || self.given_up(c)
     }
 
-    /// BOT-163: whether the bot gave the case place `c` up for the match ([`FAIL_MAX`] failed attempts).
-    pub fn given_up(&self, c: &[f32; 3]) -> bool {
-        self.fail_count(c) >= FAIL_MAX
+    /// BOT-163: whether the bot gave the case place `c` up; BOT-180: for [`give_up_ms`] from when it did.
+    pub fn given_up(&self, c: &[f32; 3], now: u32) -> bool {
+        let span = give_up_ms(self.me);
+        self.fails.iter().any(|f| {
+            same(f.at, *c) && f.given_at.is_some_and(|t| now.wrapping_sub(t) < span)
+        })
     }
 
-    /// BOT-163: the failed attempts counted at the case place `c`.
+    /// BOT-163: the bot's own failed attempts counted at the case place `c`.
     pub fn fail_count(&self, c: &[f32; 3]) -> u32 {
         self.fails
             .iter()
             .find(|f| same(f.at, *c))
             .map_or(0, |f| f.count)
+    }
+
+    /// BOT-180: the other players' failures at the case place `c` the bot counted as hints.
+    pub fn hint_count(&self, c: &[f32; 3]) -> u32 {
+        self.fails
+            .iter()
+            .find(|f| same(f.at, *c))
+            .map_or(0, |f| f.hints)
     }
 
     fn fails_of(&mut self, c: [f32; 3]) -> &mut CaseFails {
@@ -835,6 +910,12 @@ impl SpyRun {
                     count: 0,
                     last: None,
                     under: Vec::new(),
+                    hints: 0,
+                    last_hint: None,
+                    given_at: None,
+                    best: f32::INFINITY,
+                    idle: 0,
+                    tick: None,
                 });
                 self.fails.len() - 1
             }
@@ -842,19 +923,77 @@ impl SpyRun {
         &mut self.fails[i]
     }
 
-    /// BOT-163: one failed attempt at the case place `c` at `now` (none within [`FAIL_GAP_MS`] of the last one).
+    /// BOT-163: one failed attempt of the bot's own at the case place `c` at `now` (none within [`FAIL_GAP_MS`] of
+    /// the last one). BOT-180: at [`FAIL_MAX`] own attempts, or [`FAIL_MAX`] - [`HINT_CAP`] with
+    /// [`HINTS_PER_FAIL`] hints, the bot gives the place up for [`give_up_ms`].
     pub fn fail(&mut self, c: [f32; 3], now: u32) {
         let f = self.fails_of(c);
-        if f.count >= FAIL_MAX || f.last.is_some_and(|t| now.wrapping_sub(t) < FAIL_GAP_MS) {
+        if f.given_at.is_some() || f.last.is_some_and(|t| now.wrapping_sub(t) < FAIL_GAP_MS) {
             return;
         }
         f.count += 1;
         f.last = Some(now);
-        if f.count >= FAIL_MAX {
+        let hinted = (f.hints / HINTS_PER_FAIL).min(HINT_CAP);
+        if f.count + hinted >= FAIL_MAX {
+            f.given_at = Some(now);
             self.just_given_up = Some(c);
             if self.current.is_some_and(|x| same(x, c)) {
                 self.current = None;
             }
+        }
+    }
+
+    /// BOT-180: another player's failure at the case place `c` seen at `now` (a hint: it never gives the place up by
+    /// itself; none within [`FAIL_GAP_MS`] of the last one).
+    pub fn hint(&mut self, c: [f32; 3], now: u32) {
+        let f = self.fails_of(c);
+        if f.given_at.is_some() || f.last_hint.is_some_and(|t| now.wrapping_sub(t) < FAIL_GAP_MS) {
+            return;
+        }
+        f.hints += 1;
+        f.last_hint = Some(now);
+    }
+
+    /// BOT-180: give-ups older than [`give_up_ms`] run out: the bot tries the place again with [`FAIL_MAX`] - 1
+    /// counts and no hints (one more own failure gives it up again).
+    fn expire_give_ups(&mut self, now: u32) {
+        let span = give_up_ms(self.me);
+        for f in self.fails.iter_mut() {
+            if f.given_at.is_some_and(|t| now.wrapping_sub(t) >= span) {
+                f.given_at = None;
+                f.count = FAIL_MAX - 1;
+                f.hints = 0;
+                f.idle = 0;
+                f.best = f32::INFINITY;
+                self.just_retry = Some(f.at);
+            }
+        }
+    }
+
+    /// BOT-180: the no-headway watch of the walk to the case `c` from `at` at `now` (see [`HEADWAY_MS`]).
+    fn headway(&mut self, c: [f32; 3], at: [f32; 3], now: u32) {
+        // (unlike BOT-141's stall count, the watch runs on while the grid still grows a way there: on a large world it
+        // grows for minutes toward a case no way leads to, Warhead's door case)
+        let f = self.fails_of(c);
+        let d = ((at[0] - c[0]).powi(2) + (at[1] - c[1]).powi(2) + (at[2] - c[2]).powi(2)).sqrt();
+        let dt = f
+            .tick
+            .map(|t| now.wrapping_sub(t))
+            .filter(|t| *t <= HEADWAY_GAP_MS)
+            .unwrap_or(0);
+        f.tick = Some(now);
+        if f.given_at.is_some() {
+            return;
+        }
+        if d < f.best - STALL_GAIN {
+            f.best = d;
+            f.idle = 0;
+        } else if d <= f.best + HEADWAY_BAND {
+            f.idle += dt;
+        }
+        if f.idle >= HEADWAY_MS {
+            f.idle = 0;
+            self.fail(c, now);
         }
     }
 
@@ -899,7 +1038,9 @@ impl SpyRun {
             for u in f.under.iter_mut().filter(|u| !under.contains(&u.0)) {
                 u.1 = u32::MAX;
             }
-            let mut count = false;
+            // BOT-180: the bot's own standing under it is an own attempt, another holder's a hint
+            let (mut count, mut hint) = (false, false);
+            let me = own.map(|o| o.0);
             for pid in under {
                 match f.under.iter_mut().find(|u| u.0 == pid) {
                     Some(u) if u.1 == u32::MAX => u.1 = now,
@@ -908,11 +1049,18 @@ impl SpyRun {
                         if now.wrapping_sub(u.1) >= UNDER_MS && gap {
                             u.2 = Some(now);
                             u.1 = now;
-                            count = true;
+                            if Some(pid) == me {
+                                count = true;
+                            } else {
+                                hint = true;
+                            }
                         }
                     }
                     None => f.under.push((pid, now, None)),
                 }
+            }
+            if hint {
+                self.hint(*c, now);
             }
             if count {
                 self.fail(*c, now);
@@ -968,6 +1116,9 @@ impl SpyRun {
         others: &[(u32, [f32; 3])],
         now: u32,
     ) -> Option<SpyGoal> {
+        if let Some(me) = own {
+            self.me = me;
+        }
         self.blocked
             .retain(|(_, t)| now.wrapping_sub(*t) < BLOCK_MS);
         self.walks.retain(|w| now.wrapping_sub(w.seen) <= FORGET_MS);
@@ -1057,13 +1208,20 @@ impl SpyRun {
                 .filter(|c| flat(**c, p) <= FAIL_NEAR && c[1] - p[1] > UNDER_RISE)
                 .min_by(|a, b| flat(**a, p).total_cmp(&flat(**b, p)))
                 .copied();
+            // BOT-180: another player's failure is a hint, not the bot's own attempt
             if let Some(c) = under {
-                self.fail(c, now);
+                self.hint(c, now);
             }
         }
+        // BOT-180: a give-up runs out after a while; while one case lies and a player holds all the others, the bot
+        // whose turn it is tries that case whatever it gave up (and walks to it when the spread gives it none)
+        self.expire_give_ups(now);
+        let short = self.total >= 2
+            && (self.held + 1 == self.total || self.holders.values().any(|n| n + 1 == self.total));
+        let turn = cases.len() == 1 && short && last_case_turn(me, now);
         let pick = spread(
             &cases,
-            |c| !self.is_blocked(c, now),
+            |c| !self.is_blocked_for(c, now, turn),
             me,
             at,
             others,
@@ -1075,10 +1233,17 @@ impl SpyRun {
                     self.holders.get(&pid).copied().unwrap_or(0)
                 }
             },
-        );
+        )
+        .or_else(|| {
+            cases
+                .first()
+                .copied()
+                .filter(|c| turn && self.is_blocked(c, now) && !self.is_blocked_for(c, now, true))
+        });
         self.current = pick;
         if let Some(c) = pick {
             self.walk(c, at, now);
+            self.headway(c, at, now);
             return Some(SpyGoal::Case(c));
         }
         // BOT-140: a hunter without a case chases a holder only as one of his nearest two; else it plays on (the
@@ -1344,9 +1509,22 @@ mod tests {
         }
         s.goal(&t, Some(1), under, &[], 10_000);
         assert_eq!(s.just_blocked.take(), Some(case));
-        // the grid still grows a way: the count waits, 90 s at most
+        // the grid still grows a way: the count waits, 90 s at most (a bot walking to it the while)
         let mut s = SpyRun::default();
-        for ms in (0..90_000).step_by(500) {
+        for (i, ms) in (0..90_000).step_by(500).enumerate() {
+            s.way = Some(SpyWay {
+                target: case,
+                left: None,
+                growing: true,
+            });
+            s.goal(&t, Some(1), [3000.0 - 30.0 * i as f32, 0.0, 0.0], &[], ms);
+            assert!(s.just_blocked.is_none(), "{ms}");
+        }
+        s.goal(&t, Some(1), under, &[], 90_000);
+        assert_eq!(s.just_blocked, Some(case));
+        // BOT-180: standing still under it meanwhile is no headway: an own failure every 15 s, given up at 45 s
+        let mut s = SpyRun::default();
+        for ms in (0..=45_000).step_by(500) {
             s.way = Some(SpyWay {
                 target: case,
                 left: None,
@@ -1355,8 +1533,7 @@ mod tests {
             s.goal(&t, Some(1), under, &[], ms);
             assert!(s.just_blocked.is_none(), "{ms}");
         }
-        s.goal(&t, Some(1), under, &[], 90_000);
-        assert_eq!(s.just_blocked, Some(case));
+        assert_eq!(s.just_given_up, Some(case));
     }
 
     /// BOT-127: the bots spread over the cases (each its nearest free one by the same rule), a bot left without a
@@ -1518,23 +1695,25 @@ mod tests {
         s.on_died([900.0, 60.0, 0.0], 40_000);
         assert_eq!(s.fail_count(&deck), 2);
         assert!(!s.is_blocked(&deck, 40_000));
-        // a holder (player 5 holds a case) stands under it for 3 s: the third attempt
+        // BOT-180: a holder (player 5 holds a case) standing under it for 3 s is a hint, not the bot's own attempt
         s.on_bounty(&sub0(1, 2, 5), Some(1));
         let others = [(5u32, [10.0, 60.0, 10.0])];
         let at = [1500.0, 0.0, 0.0];
         s.goal(&t, Some(1), at, &others, 50_000);
-        s.goal(&t, Some(1), at, &others, 52_000);
-        assert_eq!(s.fail_count(&deck), 2);
         s.goal(&t, Some(1), at, &others, 53_000);
+        assert_eq!((s.fail_count(&deck), s.hint_count(&deck)), (2, 1));
+        assert!(!s.is_blocked(&deck, 53_000));
+        // a third own attempt (it dies under it again): out of its reach for a while; it takes the other case
+        assert_eq!(s.goal(&t, Some(1), under, &[], 60_000), Some(SpyGoal::Case(deck)));
+        s.on_died(under, 60_500);
         assert_eq!(s.fail_count(&deck), 3);
         assert_eq!(s.just_given_up.take(), Some(deck));
-        // out of its reach for the match: long after BOT-127's minute it still takes the other case
-        assert!(s.is_blocked(&deck, 500_000));
-        assert_eq!(s.goal(&t, Some(1), [0.0, 60.0, 0.0], &[], 500_000), Some(SpyGoal::Case(other)));
+        assert!(s.is_blocked(&deck, 100_000));
+        assert_eq!(s.goal(&t, Some(1), [0.0, 60.0, 0.0], &[], 100_000), Some(SpyGoal::Case(other)));
         // somebody took the deck case: when a case lies there again it is a goal again
         let gone = table(&[(11, intel(), other)]);
-        s.goal(&gone, Some(1), at, &[], 501_000);
-        assert!(!s.is_blocked(&deck, 502_000));
+        s.goal(&gone, Some(1), at, &[], 101_000);
+        assert!(!s.is_blocked(&deck, 102_000));
         assert_eq!(s.fail_count(&deck), 0);
         // a hunter (no case) under it is no attempt; the bot under a case it does not walk to neither
         let mut h = SpyRun::default();
@@ -1561,8 +1740,131 @@ mod tests {
         d.on_bounty(&sub0(0, 1, 5), Some(1));
         d.on_bounty(&sub0(0, 1, 6), Some(1));
         d.goal(&t, Some(1), away, &[], 1_500);
-        assert_eq!(d.fail_count(&deck), 1);
-        assert_eq!(d.fail_count(&other), 0);
+        // (BOT-180: a hint, not an own attempt)
+        assert_eq!((d.fail_count(&deck), d.hint_count(&deck)), (0, 1));
+        assert_eq!(d.hint_count(&other), 0);
+    }
+
+    /// BOT-180: the other players' failures are hints shared by every bot that sees them: they never give a case
+    /// place up by themselves (8 bots no longer give it up together); hints stand for one own attempt at most; a
+    /// give-up runs out after 60..90 s by the client id, with one more own failure giving it up again.
+    #[test]
+    fn a_give_up_takes_own_attempts_and_runs_out() {
+        let deck = [0.0, 300.0, 0.0];
+        let other = [3000.0, 0.0, 0.0];
+        let t = table(&[(10, intel(), deck), (11, intel(), other)]);
+        let at = [1500.0, 0.0, 0.0];
+        let holder = [(5u32, [10.0, 60.0, 10.0])];
+        let watch = |s: &mut SpyRun| {
+            for k in 0..40u32 {
+                s.goal(&t, Some(1), at, &holder, k * 3_000);
+            }
+        };
+        // a bot that only sees the holder fail many times keeps the place
+        let mut seen = SpyRun::default();
+        seen.on_bounty(&sub0(1, 2, 5), Some(1));
+        watch(&mut seen);
+        assert!(seen.hint_count(&deck) >= 2);
+        assert_eq!(seen.fail_count(&deck), 0);
+        assert!(!seen.is_blocked(&deck, 120_000));
+        assert_eq!(seen.just_given_up, None);
+        // with the hints, two own attempts give it up (the give-up comes with the bot's own failure)
+        let by = [300.0, 60.0, 0.0];
+        assert_eq!(seen.goal(&t, Some(1), by, &[], 130_000), Some(SpyGoal::Case(deck)));
+        seen.on_died(by, 130_500);
+        assert!(!seen.is_blocked(&deck, 131_000));
+        assert_eq!(seen.goal(&t, Some(1), by, &[], 140_000), Some(SpyGoal::Case(deck)));
+        seen.on_died(by, 140_500);
+        assert_eq!(seen.just_given_up.take(), Some(deck));
+        // client id 1: 70 s
+        assert_eq!(give_up_ms(1), 70_000);
+        assert!((0..8).all(|me| (60_000..=90_000).contains(&give_up_ms(me))));
+        assert!(seen.is_blocked(&deck, 140_500 + 69_999));
+        seen.goal(&t, Some(1), at, &[], 140_500 + 70_000);
+        assert_eq!(seen.just_retry.take(), Some(deck));
+        assert!(!seen.is_blocked(&deck, 140_500 + 70_000));
+        assert_eq!((seen.fail_count(&deck), seen.hint_count(&deck)), (FAIL_MAX - 1, 0));
+        // the retry: one more own failure gives it up again
+        let back = 140_500 + 80_000;
+        assert_eq!(seen.goal(&t, Some(1), by, &[], back), Some(SpyGoal::Case(deck)));
+        seen.on_died(by, back + 500);
+        assert_eq!(seen.just_given_up.take(), Some(deck));
+        assert!(seen.is_blocked(&deck, back + 1_000));
+    }
+
+    /// BOT-180: a walk to a case that gets no nearer than the nearest the bot got for 15 s of walking in all is an
+    /// own failed attempt, also when BOT-127's stall restarts at every switch between the grid way and the greedy
+    /// walk, and a walk from afar (beyond the band round the best) does not count.
+    #[test]
+    fn a_walk_without_headway_is_a_failed_attempt() {
+        let door = [0.0, -80.0, 0.0];
+        let t = table(&[(10, intel(), door)]);
+        let mut s = SpyRun::default();
+        let stuck = [280.0, 20.0, 0.0];
+        let mut now = 0;
+        // from afar first: the approach sets the best
+        for x in [1300.0f32, 1000.0, 700.0, 400.0, 280.0] {
+            s.goal(&t, Some(1), [x, 20.0, 0.0], &[], now);
+            now += 500;
+        }
+        let mut k = 0;
+        while s.fail_count(&door) == 0 && now < 40_000 {
+            // the follower's way and the greedy walk take turns (the stall's count starts afresh each time)
+            s.way = (k % 2 == 0).then_some(SpyWay {
+                target: door,
+                left: Some(300.0 + (k % 4) as f32),
+                growing: false,
+            });
+            assert_eq!(s.goal(&t, Some(1), stuck, &[], now), Some(SpyGoal::Case(door)));
+            now += 500;
+            k += 1;
+        }
+        assert_eq!(s.fail_count(&door), 1);
+        assert!((2_500 + HEADWAY_MS..=2_500 + HEADWAY_MS + 1_000).contains(&now), "at {now}");
+        // a walk from beyond the band, and a gap in the walk, add nothing
+        let mut f = SpyRun::default();
+        f.goal(&t, Some(1), stuck, &[], 0);
+        for k in 1..40u32 {
+            f.way = (k % 2 == 0).then_some(SpyWay {
+                target: door,
+                left: Some(900.0),
+                growing: false,
+            });
+            f.goal(&t, Some(1), [900.0, 20.0, 0.0], &[], k * 500);
+        }
+        f.way = None;
+        f.goal(&t, Some(1), stuck, &[], 30_000);
+        f.goal(&t, Some(1), stuck, &[], 40_000);
+        assert_eq!(f.fail_count(&door), 0);
+    }
+
+    /// BOT-180: while one case lies and a player holds the others, about a quarter of the bots at a time (staggered
+    /// by client id) try it whatever they gave up; every bot gets its turn within a minute.
+    #[test]
+    fn the_last_case_is_tried_in_turns_whatever_was_given_up() {
+        for now in (0..120_000).step_by(1_000) {
+            assert_eq!((0..8u32).filter(|me| last_case_turn(*me, now)).count(), 2);
+        }
+        assert!((0..8u32).all(|me| (0..60_000).step_by(1_000).any(|n| last_case_turn(me, n))));
+        let last = [0.0, 300.0, 0.0];
+        let t = table(&[(10, intel(), last)]);
+        let mut s = SpyRun::default();
+        s.on_bounty(&sub1(2), Some(1));
+        s.on_bounty(&sub0(1, 2, 5), Some(1));
+        let holder = [(5u32, [900.0, 0.0, 900.0])];
+        let at = [200.0, 0.0, 0.0];
+        s.goal(&t, Some(1), at, &holder, 0);
+        for k in 0..3u32 {
+            s.fail(last, 1_000 + k * 4_000);
+        }
+        assert!(s.is_blocked(&last, 10_000));
+        // client id 1: its turn is 45..60 s of each minute
+        assert!(!last_case_turn(1, 30_000) && last_case_turn(1, 45_000));
+        assert_ne!(s.goal(&t, Some(1), at, &holder, 30_000), Some(SpyGoal::Case(last)));
+        assert_eq!(s.goal(&t, Some(1), at, &holder, 45_000), Some(SpyGoal::Case(last)));
+        // with another case lying it is no last case: no turn
+        let two = table(&[(10, intel(), last), (11, intel(), [5000.0, 0.0, 0.0])]);
+        assert_ne!(s.goal(&two, Some(1), at, &holder, 46_000), Some(SpyGoal::Case(last)));
     }
 
     /// BOT-164: a chaser fights the player it chases from where it stands while he is its target in clear sight;

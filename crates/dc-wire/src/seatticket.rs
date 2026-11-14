@@ -34,6 +34,17 @@ pub const BLOB_MARK: &[u8; 4] = b"DCST";
 /// One ticket.
 pub type Ticket = [u8; LEN];
 
+/// A ticket held where a `Debug` print could show it (options, settings): `Debug` prints `Ticket(..)`, never the bytes.
+// DC-DEFAULT: LOC-8 (proposed)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Hidden(pub Ticket);
+
+impl core::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Ticket(..)")
+    }
+}
+
 /// The 0x3f0c frame.
 pub fn push_frame(t: &Ticket) -> Vec<u8> {
     let mut w = PktWriter::new(PUSH);
@@ -114,6 +125,7 @@ mod tests {
         assert_eq!(from_blob(&blob), Some(t));
         assert_eq!(from_blob(&blob[..blob.len() - 1]), None, "cut short");
         assert!(same(&t, &t));
+        assert_eq!(format!("{:?}", Some(Hidden(t))), "Some(Ticket(..))");
         let mut o = t;
         o[LEN - 1] ^= 1;
         assert!(!same(&t, &o));

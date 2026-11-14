@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 dc-rom = { path = "../dc-rom" }
+# dc-vfs: the layered file system; this crate is its archive layer (RomLayer) and RezVfs wraps it.
+dc-vfs = { path = "../dc-vfs" }

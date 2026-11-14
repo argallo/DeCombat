@@ -2,13 +2,12 @@
 //! ROM: colours, slots against the block's lightmap sections, patch rectangles against the lightmap sizes,
 //! patch byte statistics. Counts and ranges only.
 
-use dc_render::WorldSource;
 use dc_world::World;
 use std::collections::BTreeMap;
 
 fn main() {
     let rom = dc_rom::resolve_rom().expect("CA_ROM");
-    let src = WorldSource::open(&rom).expect("world archive");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
     for map in src.map_names() {
         let data = src.read(&map).unwrap().unwrap();
         let w = World::parse(&data).unwrap();

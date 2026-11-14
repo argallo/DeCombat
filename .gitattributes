@@ -13,3 +13,7 @@ examples/mods/**/*.jpeg binary
 examples/mods/**/*.dat binary
 examples/mods/**/*.dtx binary
 examples/mods/**/*.r16 binary
+# the operator dashboard (docs/ADMIN_WEB.md section 8): its sources are LF on every checkout, and the built files the
+# lobby embeds are bytes, so a rebuild on any system can be compared with what is committed
+web/admin/** text eol=lf
+crates/dc-lobby-server/src/admin_app/** -text

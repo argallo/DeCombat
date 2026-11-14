@@ -25,7 +25,7 @@ pub const TEXEL_CONTRACT: &str = "dc-texels/1";
 /// the same digest from a PNG.
 pub fn texel_hash(width: u32, height: u32, rgba: &[u8]) -> [u8; 32] {
     debug_assert_eq!(rgba.len(), width as usize * height as usize * 4);
-    let mut h = dc_rom::Sha256::new();
+    let mut h = dc_core::Sha256::new();
     h.update(format!("{TEXEL_CONTRACT} rgba8 {width}x{height}\n").as_bytes());
     h.update(rgba);
     h.finalize()
@@ -103,7 +103,7 @@ impl Journal {
 }
 
 /// Starts (`true`, clearing earlier notes) or stops the GPU-object journal (process-global; one exact-lane run at a
-/// time, see `dc_rom::journal::lock`).
+/// time, see `dc_core::journal::lock`).
 pub fn journal_enable(on: bool) {
     if on {
         *JOURNAL.lock().unwrap_or_else(|p| p.into_inner()) = Journal::new();
@@ -132,7 +132,7 @@ pub fn shader_module(
 ) -> wgpu::ShaderModule {
     if journal_on() {
         let digest = match &desc.source {
-            wgpu::ShaderSource::Wgsl(src) => dc_rom::sha256(src.as_bytes()),
+            wgpu::ShaderSource::Wgsl(src) => dc_core::sha256(src.as_bytes()),
             #[allow(unreachable_patterns)]
             _ => [0u8; 32],
         };
@@ -182,7 +182,7 @@ pub(crate) fn render_pipeline_for(
 ) -> wgpu::RenderPipeline {
     crate::warm::note("pipeline", desc.label, detail);
     if journal_on() {
-        let digest = dc_rom::sha256(pipeline_settings(desc).as_bytes());
+        let digest = dc_core::sha256(pipeline_settings(desc).as_bytes());
         JOURNAL
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -201,7 +201,7 @@ pub fn sampler(device: &wgpu::Device, desc: &wgpu::SamplerDescriptor<'_>) -> wgp
     if journal_on() {
         let mut d = desc.clone();
         d.label = None;
-        let digest = dc_rom::sha256(format!("{d:?}").as_bytes());
+        let digest = dc_core::sha256(format!("{d:?}").as_bytes());
         JOURNAL
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -225,7 +225,7 @@ mod tests {
         b[5] ^= 1;
         assert_ne!(h, texel_hash(2, 3, &b), "one bit of one texel");
         // the header form is part of the contract (tools/pixhash.py computes the same bytes)
-        let mut s = dc_rom::Sha256::new();
+        let mut s = dc_core::Sha256::new();
         s.update(b"dc-texels/1 rgba8 2x3\n");
         s.update(&a);
         assert_eq!(h, s.finalize());

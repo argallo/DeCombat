@@ -303,6 +303,7 @@ fn bare_game(id: u64) -> crate::game::Game {
         clients: Default::default(),
         left: Default::default(),
         result_done: false,
+        unranked: false,
         entry_keys: Default::default(),
         seat_tickets: Default::default(),
         seat_told: Default::default(),

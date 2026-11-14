@@ -71,13 +71,30 @@ case "$1" in
 esac
 exit 0
 S
+# pgrep lists the dc-dservers on the machine: 4242 a match of this host, 4243 one whose binary an update replaced,
+# 5151 a foreign one (a playtest elsewhere); readlink reads $T/proc/<pid>/exe as a text file
 cat > "$T/stubs/pgrep" <<'S'
 #!/usr/bin/env bash
-[ -n "${STUB_MATCHES:-}" ]
+out=
+[ -z "${STUB_MATCHES:-}" ] || out="$out 4242"
+[ -z "${STUB_OLD_MATCH:-}" ] || out="$out 4243"
+[ -z "${STUB_FOREIGN:-}" ] || out="$out 5151"
+[ -n "$out" ] || exit 1
+printf '%s
+' $out
+S
+cat > "$T/stubs/readlink" <<'S'
+#!/usr/bin/env bash
+[ -f "$1" ] && cat "$1"
 S
 chmod +x "$T/stubs/"*
 export STUB_LOG="$T/log" STUB_SITE="$SITE" DC_ROOT="$ROOT" DC_UPDATE_CURL="$T/stubs/curl" DC_UPDATE_SYSTEMCTL="$T/stubs/systemctl"
 export DC_UPDATE_PGREP="$T/stubs/pgrep" DC_UPDATE_SETTLE=0 DC_UPDATE_ELF_CHECK=0
+export DC_UPDATE_READLINK="$T/stubs/readlink" DC_UPDATE_PROC="$T/proc"
+mkdir -p "$T/proc/4242" "$T/proc/4243" "$T/proc/5151"
+printf '%s' "$ROOT/bin/dc-dserver" > "$T/proc/4242/exe"
+printf '%s' "$ROOT/bin/dc-dserver (deleted)" > "$T/proc/4243/exe"
+printf '%s' "/home/friend/playtest/dc-dserver" > "$T/proc/5151/exe"
 
 fresh() { # a host as tools/host/push.sh leaves it, on the old build
   rm -rf "${ROOT:?}"
@@ -137,6 +154,12 @@ expect "after the match it updates" state_is updated
 fresh; pointer "$NEW" "$TGZ"
 STUB_MATCHES=1 run --force
 expect "--force updates during a match" state_is updated
+fresh; pointer "$NEW" "$TGZ"
+STUB_OLD_MATCH=1 run
+expect "a match under a replaced binary waits too" state_is waiting
+fresh; pointer "$NEW" "$TGZ"
+STUB_FOREIGN=1 run
+expect "a foreign dc-dserver (another path) does not hold an update" state_is updated
 
 # ---- verification
 fresh; pointer "$NEW" "$TGZ" 0000000000000000000000000000000000000000000000000000000000000000

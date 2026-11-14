@@ -22,7 +22,8 @@ fn two_rom_worlds_compose_side_by_side() {
         .map(|e| (e.0, e.2 as u64))
         .collect();
     worlds.sort_by_key(|w| w.1);
-    let mut read = compose::rom_reader(&rom);
+    let vfs = dc_rez::RezVfs::new(&rom);
+    let mut read = compose::rom_reader(&vfs);
     let mut pieces = Vec::new();
     let mut x = 0.0f32;
     for (k, (path, _)) in worlds.iter().take(2).enumerate() {
@@ -83,7 +84,12 @@ fn two_rom_worlds_compose_side_by_side() {
         extent_min: [-200.0, -3100.0, -200.0],
         extent_max: [200.0, -2900.0, 200.0],
         tree_shape: vec![false],
-        models: vec![fixture::model("level", 0, [0.0; 3], &[floor.clone()])],
+        models: vec![fixture::model(
+            "level",
+            0,
+            [0.0; 3],
+            std::slice::from_ref(&floor),
+        )],
         objects,
         grid_origin: [-200.0, -3100.0, -200.0],
         grid_cell: [400.0, 200.0, 400.0],
@@ -157,7 +163,8 @@ fn every_rom_world_is_left_alone_by_the_loaders_hook() {
         .filter(|p| p.to_ascii_uppercase().ends_with(".DAT"))
         .collect();
     assert!(!worlds.is_empty(), "no worlds in the archive");
-    let mut read = compose::rom_reader(&rom);
+    let vfs = dc_rez::RezVfs::new(&rom);
+    let mut read = compose::rom_reader(&vfs);
     let mut checked = 0;
     for path in &worlds {
         let bytes = read(path).expect("read world");
@@ -174,7 +181,7 @@ fn every_rom_world_is_left_alone_by_the_loaders_hook() {
                 .is_none(),
             "compose has nothing to do on a ROM world"
         );
-        let out = compose::compose_with_rom(bytes.clone(), Some(&rom)).expect("compose_with_rom");
+        let out = compose::compose_with_rom(bytes.clone(), Some(&vfs)).expect("compose_with_rom");
         assert_eq!(out.len(), bytes.len(), "world {checked}: size changed");
         assert!(out == bytes, "world {checked}: bytes changed");
         checked += 1;

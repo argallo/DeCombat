@@ -35,7 +35,7 @@ pub struct RomTextureSource {
 impl RomTextureSource {
     pub fn open(rom: &std::path::Path) -> Result<Self, String> {
         Ok(RomTextureSource {
-            index: dc_render::TextureIndex::open(rom).map_err(|e| e.to_string())?,
+            index: dc_rez::RomLayer::indexed(rom).map(dc_render::TextureIndex::new).map_err(|e| e.to_string())?,
         })
     }
 }

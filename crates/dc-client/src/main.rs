@@ -33,12 +33,12 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
                  [--adapter auto|dx12|vulkan|metal|fallback] [--no-overlay]
                  [--stress bsp|characters|fx|hud|cold|match [--stress-view SPAWN,YAW_DEG,PITCH_DEG]
                   [--stress-remotes N]] [--stress-search]
-       dc-client (--lobby HOST:PORT | --udp HOST:PORT) --name NICK [--room n|new|any] [--walk-test]
+       dc-client (--lobby HOST:PORT | --udp HOST:PORT [--ticket HEX]) --name NICK [--room n|new|any] [--walk-test]
                  [--user ID] [--start-after N] [--title T] [--mode N|NAME] [--pilot-entry ID] [--pilot-map NAME|N] [--max-players N] [--password P]
                  [--login-password P] [--server-fingerprint SHA256] [--identity HOST:PORT|off]
                  [--identity-fingerprint SHA256] [--community URL|off]
                  [--channel ID] [--goal n|min] [--world-file PATH] [--net-log JSONL] [--capture JSONL]
-                 [--sound-log JSONL] [--no-sound] [--audio device|null] [--volume N] [--music-volume N]
+                 [--sound-log JSONL] [--no-sound] [--audio device|null] [--volume N] [--music-volume N] [--limiter on|off|DB] [--voice-caps on|off]
                  [--match-wait S] [--load-timeout S] [--leave-after S] [--duration S] [--no-move-notices]
                  [--shoot-test] [--draw-voice] [--solid-bodies on|off]
                  [--slots w,w,..] [--debug-boxes] [--net-overlay[=2]] [--no-hud] [--debug-overlay] [--show-board]
@@ -47,6 +47,7 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
        scenario options (any mode): [--steps FILE.jsonl [--steps-strict]] [--events FILE.jsonl] [--shot-dir DIR]
                  [--no-activate]
        hang gate (any mode): [--heartbeat FILE.jsonl]
+       content profile (any mode): [--game DIR] (a folder holding game.json: run with your own content; docs/CONTENT_PROFILES.md)
        dc-client [--rom DIR] --list
        dc-client --world-file PATH.dat [--rom DIR] [--mod-dir DIR] [--spawn N] [--headless-frames N --out DIR]
                  (the standalone preview of a world file: ROM textures by name when a ROM is at hand,
@@ -60,7 +61,9 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   centred borderless window (test tools), with --windowed it is the windowed size for this run.
   --lobby is the auth address (the lobby address comes from its server list); --room new creates a room and starts
   it once --start-after members (default 2) are in and ready; any joins the first listed room; a number joins
-  that room. --udp joins a game server directly (it must expect the nick). The world the server announces is
+  that room. --local-match SPEC.json runs a match on this PC (the description's server and bots start as children of
+  the client, dc-dserver and dc-botclient beside it, and end with it) and joins it. --udp joins a game server directly (it must expect the nick; --ticket HEX, or DC_SEAT_TICKET, gives the
+  hello the seat's 32-hex-digit ticket or the match's join secret). The world the server announces is
   loaded from the ROM (or --world-file). --walk-test walks a repeating square instead of reading the keyboard
   (headless network runs always use it); --test-correction-after N shifts the reported position once after N
   updates so a validating server corrects it.
@@ -109,7 +112,9 @@ const USAGE: &str = "usage: dc-client [--rom DIR] --map NAME [--spawn N] [--tick
   Sound: a window run plays through the default output device (--audio null: mixed but not played; headless runs
   always use the null backend); --volume / --music-volume are the 2009 options page's effects / music volume
   0..100 (default 100); --no-sound turns the sound director off. A status line of the output (callbacks, period,
-  latency, late callbacks = probable underruns, lock waits, peak, clipping) is printed every 10 s and at the end.
+  latency, late callbacks = probable underruns, lock waits, peak, clipping, limiter) is printed every 10 s and at the
+  end. --limiter on|off|DB: the peak limiter on the final mix (default off; a number -6..0 turns it on with that
+  ceiling in dBFS, default -1). --voice-caps on|off: the most voices each kind of sound plays at once (default off).
   --rom defaults to CA_ROM.
   Stress scenarios (docs/RENDER_PERF_GATES.md G1, with --profile JSON): --stress NAME replaces the scripted walk with
   a frame-indexed made-up scene on --map (bsp: the view with the most world triangles, nothing else; characters:
@@ -160,6 +165,10 @@ struct Args {
     clean_frame: bool,
     stress_remotes: usize,
     stress_search: bool,
+    /// `--game DIR`: the content profile of this run (loaded and installed by `main`, read through
+    /// `dc_client::gameprofile::active`).
+    // DC-DEFAULT: ENG-3 (proposed)
+    game: Option<PathBuf>,
     rom: Option<PathBuf>,
     map: Option<String>,
     spawn: usize,
@@ -186,6 +195,10 @@ struct Args {
     list: bool,
     lobby: Option<SocketAddr>,
     udp: Option<SocketAddr>,
+    /// LOC-3: `--ticket <32 hex>`, the seat ticket of a direct join (never printed).
+    ticket: Option<String>,
+    /// LOC-10: `--local-match <spec.json>`: run the match on this PC and join it.
+    local_match: Option<PathBuf>,
     name: Option<String>,
     user: Option<String>,
     room: String,
@@ -214,6 +227,11 @@ struct Args {
     audio_out: dc_client::sound::AudioOut,
     volume: u16,
     music_volume: u16,
+    /// `--limiter`: on / off and the ceiling in dBFS (None: the defaults).
+    limiter: Option<bool>,
+    limiter_ceiling_db: Option<f32>,
+    /// `--voice-caps`.
+    voice_caps: Option<bool>,
     capture: Option<PathBuf>,
     match_wait: f64,
     load_timeout: Option<f64>,
@@ -258,6 +276,7 @@ fn addr(s: &str, flag: &str) -> Result<SocketAddr, String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
+        game: None,
         rom: None,
         map: None,
         spawn: 0,
@@ -282,6 +301,8 @@ fn parse_args() -> Result<Args, String> {
         list: false,
         lobby: None,
         udp: None,
+        ticket: None,
+        local_match: None,
         name: None,
         user: None,
         room: "any".into(),
@@ -305,6 +326,9 @@ fn parse_args() -> Result<Args, String> {
         audio_out: dc_client::sound::AudioOut::Device,
         volume: 100,
         music_volume: 100,
+        limiter: None,
+        limiter_ceiling_db: None,
+        voice_caps: None,
         capture: None,
         match_wait: 60.0,
         load_timeout: None,
@@ -361,6 +385,7 @@ fn parse_args() -> Result<Args, String> {
         };
         match key.as_str() {
             "--rom" => a.rom = Some(PathBuf::from(val("--rom")?)),
+            "--game" => a.game = Some(PathBuf::from(val("--game")?)),
             "--map" => a.map = Some(val("--map")?),
             "--spawn" => a.spawn = val("--spawn")?.parse().map_err(|_| "--spawn: integer")?,
             "--tick" => {
@@ -491,6 +516,10 @@ fn parse_args() -> Result<Args, String> {
             "--server-fingerprint" => dc_botclient::tls::set_pin(&val("--server-fingerprint")?)
                 .map_err(|e| format!("--server-fingerprint: {e}"))?,
             "--udp" => a.udp = Some(addr(&val("--udp")?, "--udp")?),
+            // DC-DEFAULT: LOC-3 (proposed) the seat ticket of a direct join
+            "--ticket" => a.ticket = Some(val("--ticket")?),
+            // DC-DEFAULT: LOC-10 (proposed) a match on this PC from a match description
+            "--local-match" => a.local_match = Some(PathBuf::from(val("--local-match")?)),
             "--name" => a.name = Some(val("--name")?),
             "--user" => a.user = Some(val("--user")?),
             "--room" => a.room = val("--room")?,
@@ -572,6 +601,26 @@ fn parse_args() -> Result<Args, String> {
                     .filter(|v| *v <= 100)
                     .ok_or("--music-volume: 0..100")?
             }
+            // DC-DEFAULT: CLI-1960 (proposed) the output limiter's switch
+            "--limiter" => match val("--limiter")?.as_str() {
+                "on" => a.limiter = Some(true),
+                "off" => a.limiter = Some(false),
+                o => {
+                    let db = o
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|d| (-6.0..=0.0).contains(d))
+                        .ok_or("--limiter: on, off or a ceiling -6..0 (dBFS)")?;
+                    a.limiter = Some(true);
+                    a.limiter_ceiling_db = Some(db);
+                }
+            },
+            // DC-DEFAULT: CLI-1961 (proposed) the voice caps' switch
+            "--voice-caps" => match val("--voice-caps")?.as_str() {
+                "on" => a.voice_caps = Some(true),
+                "off" => a.voice_caps = Some(false),
+                o => return Err(format!("--voice-caps: on or off, got {o:?}")),
+            },
             "--capture" => a.capture = Some(PathBuf::from(val("--capture")?)),
             "--match-wait" => a.match_wait = num(val("--match-wait")?, "--match-wait")?.max(0.0),
             "--load-timeout" => {
@@ -672,6 +721,12 @@ fn parse_args() -> Result<Args, String> {
 
 /// The network options of the command line, when `--lobby` or `--udp` was given.
 fn net_options(a: &Args) -> Result<Option<NetOptions>, String> {
+    // DC-DEFAULT: LOC-3 (proposed) `--ticket`, else DC_SEAT_TICKET, on a direct join only
+    let direct = a.udp.is_some() && a.lobby.is_none();
+    let env_ticket =
+        dc_client::net::env_ticket_text(std::env::var(dc_client::net::SEAT_TICKET_ENV), direct)?;
+    let seat_ticket =
+        dc_client::net::direct_ticket(a.ticket.as_deref(), env_ticket.as_deref(), direct)?;
     let connect = match (a.lobby, a.udp) {
         (Some(_), Some(_)) => return Err("give --lobby or --udp, not both".into()),
         (None, None) => return Ok(None),
@@ -729,6 +784,7 @@ fn net_options(a: &Args) -> Result<Option<NetOptions>, String> {
         o.world_file = Some(WorldFile::from_path(p).map_err(|e| e.to_string())?);
     }
     o.mods = mod_recipe_of(a)?;
+    o.seat_ticket = seat_ticket;
     Ok(Some(o))
 }
 
@@ -903,6 +959,9 @@ fn run_net(a: Args, opts: NetOptions) -> Result<(), String> {
 }
 
 fn run(a: Args) -> Result<(), String> {
+    if a.local_match.is_some() {
+        return run_local_match(a);
+    }
     if a.menu == "lobby" {
         return run_menu(a);
     }
@@ -956,6 +1015,37 @@ fn run(a: Args) -> Result<(), String> {
         None => Box::new(RomWorld::new(&rom, &map)),
     };
     run_window_mode(src, a, view, font_rom)
+}
+
+/// LOC-10: `--local-match <spec.json>`: starts the match's server and bots as children, joins it on loopback with
+/// the player's ticket, and ends them with the session (the supervisor's handle is dropped on every way out).
+fn run_local_match(mut a: Args) -> Result<(), String> {
+    if a.lobby.is_some() || a.udp.is_some() || a.ticket.is_some() || a.menu == "lobby" {
+        return Err(
+            "--local-match runs its own server: no --lobby, --udp, --ticket or --menu lobby".into(),
+        );
+    }
+    let path = a.local_match.clone().unwrap_or_default();
+    let spec = dc_client::localmatch::read_spec(&path)?;
+    let profile = dc_client::settings::own_profile_dir().unwrap_or_else(std::env::temp_dir);
+    // LOC-10: the start waits up to 30 s for the server before any window exists: say so
+    eprintln!("dc-client: local match: starting the game server...");
+    let started = dc_client::localmatch::start(
+        &spec,
+        &dc_client::localmatch::programs()?,
+        dc_client::localmatch::options(&profile, a.rom.as_deref()),
+    )?;
+    eprintln!(
+        "dc-client: local match on {} as {} ({} bots)",
+        started.server, started.name, spec.bots.count
+    );
+    a.udp = Some(started.server);
+    a.name = Some(started.name.clone());
+    let opts = net_options(&a)?.ok_or("--local-match: no network options")?;
+    let opts = dc_client::localmatch::net_options(&started, opts)?;
+    let r = run_net(a, opts);
+    started.supervisor.stop();
+    r
 }
 
 /// The headless options of a map run (`--map`, `--world-file`): `frames` frames of `--frame-ms`, the PNGs under
@@ -1237,6 +1327,13 @@ fn run_window_mode(
             out: a.audio_out,
             effects_volume: a.volume,
             music_volume: a.music_volume,
+            limiter: a.limiter.unwrap_or(dc_audio::limiter::DEFAULT_ENABLED),
+            limiter_ceiling_db: a
+                .limiter_ceiling_db
+                .unwrap_or(dc_audio::limiter::DEFAULT_CEILING_DB),
+            voice_caps: a
+                .voice_caps
+                .unwrap_or(dc_client::soundmix::VOICE_CAPS_DEFAULT),
             ..Default::default()
         },
     };
@@ -1547,6 +1644,13 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
             out: a.audio_out,
             effects_volume: a.volume,
             music_volume: a.music_volume,
+            limiter: a.limiter.unwrap_or(dc_audio::limiter::DEFAULT_ENABLED),
+            limiter_ceiling_db: a
+                .limiter_ceiling_db
+                .unwrap_or(dc_audio::limiter::DEFAULT_CEILING_DB),
+            voice_caps: a
+                .voice_caps
+                .unwrap_or(dc_client::soundmix::VOICE_CAPS_DEFAULT),
             ..Default::default()
         },
     };
@@ -1568,6 +1672,7 @@ fn run_menu_window(menu: dc_client::menu::Menu, a: Args, base: NetOptions) -> Re
         let scale = |own: u16, flag: u16| (u32::from(own) * u32::from(flag.min(100)) / 100) as u16;
         opts.audio.effects_volume = scale(s.effective_effects(), a.volume);
         opts.audio.music_volume = scale(s.effective_music(), a.music_volume);
+        opts.audio.mix = s.sound_mix;
     }
     // fix-hang: --menu-pilot clicks through the screens in the window as the headless scripted player does
     // (an unknown --mode / --pilot-map name stops here, before the window opens)
@@ -1746,6 +1851,19 @@ fn main() -> ExitCode {
     };
     // CLI-1941: the run stamp is the first line, so a log cut short (a kill, a power loss) still names its build
     println!("dc-client run: {}", dc_client::diag::run_stamp());
+    // ENG-3: the content profile, when --game names one (without the flag nothing is loaded or installed)
+    if let Some(dir) = &a.game {
+        match dc_client::gameprofile::load(dir) {
+            Ok(p) => {
+                println!("dc-client: {}", p.summary());
+                dc_client::gameprofile::install(Some(p));
+            }
+            Err(e) => {
+                eprintln!("dc-client: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     // CLI-1948: other programs' Vulkan layers known to crash the game are kept out before any Vulkan instance
     dc_client::vklayers::guard();
     // CLI-1470: the trust-on-first-use fingerprints live in the profile folder

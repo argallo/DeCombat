@@ -17,7 +17,7 @@
 
 use crate::error::RomError;
 use crate::rom::{RomId, KNOWN_BUILDS, SENTINEL_FILES};
-use crate::sha256::{sha256_hex, Sha256};
+use crate::{sha256_hex, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};

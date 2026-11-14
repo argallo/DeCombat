@@ -24,11 +24,12 @@
 
 use super::catalog::{prefix_of_a, Catalog, OverlayPaths};
 use super::dropdown::{self, Dropdown};
-use super::modbrowser::PageAct;
+use super::modbrowser::{Buttons, ModPageView, PageAct};
 use super::optionsmods::{
     ModsTab, TabClick, CMD_SETTINGS_BASE as CMD_MOD_SETTINGS, CMD_TAB_MODS, TAB_MODS,
 };
 use super::sheet::{place_text, Look, Part, Sheet};
+use super::soundmixer::CMD_SOUND_MIXER;
 use super::{build_sheet, Ctx, Go, MenuData, MenuKey, Screen};
 use crate::hud::compose::part_of;
 use crate::hud::items::DrawItem;
@@ -481,6 +482,10 @@ pub struct Options {
     mods: Option<ModsTab>,
     /// CLI-1916: the field-of-view range of the joined server (`None`: it publishes none).
     fov_range: Option<(u32, u32)>,
+    /// CLI-1955: the Sound tab's Sound Mixer button and its page while open (it covers the options as a mod's
+    /// settings page does).
+    mixer_button: Buttons,
+    mixer: Option<ModPageView>,
 }
 
 impl Options {
@@ -505,6 +510,8 @@ impl Options {
             split: None,
             mods: data.match_mods.clone().map(ModsTab::new),
             fov_range: data.fov_range,
+            mixer_button: Buttons::default(),
+            mixer: None,
         };
         o.open_tab(cat, 0);
         o
@@ -549,18 +556,94 @@ impl Options {
         };
         m.place(&self.sheet, open);
         if m.view.is_some() {
-            for p in self.sheet.parts.iter_mut() {
-                let blind = p.page == FRAME_PAGE && p.kind == WidgetKind::Window && p.layer == 0;
-                if !blind {
-                    p.shown = false;
+            self.hide_under_page();
+        }
+    }
+
+    /// Every control of the options is hidden under an open page (it covers the box; nothing under it takes the
+    /// pointer), the frame's blind stays.
+    fn hide_under_page(&mut self) {
+        for p in self.sheet.parts.iter_mut() {
+            let blind = p.page == FRAME_PAGE && p.kind == WidgetKind::Window && p.layer == 0;
+            if !blind {
+                p.shown = false;
+            }
+        }
+    }
+
+    /// The open settings page: the Sound Mixer's (CLI-1955) or a mod's (CLI-1908).
+    fn view(&self) -> Option<&ModPageView> {
+        self.mixer
+            .as_ref()
+            .or_else(|| self.mods.as_ref().and_then(|m| m.view.as_ref()))
+    }
+
+    fn view_mut(&mut self) -> Option<&mut ModPageView> {
+        match self.mixer.as_mut() {
+            Some(v) => Some(v),
+            None => self.mods.as_mut().and_then(|m| m.view.as_mut()),
+        }
+    }
+
+    /// CLI-1955: the Sound Mixer page is open.
+    pub fn mixer_open(&self) -> bool {
+        self.mixer.is_some()
+    }
+
+    /// CLI-1955: opens the Sound Mixer page with the volumes being edited.
+    fn open_mixer(&mut self, cat: &Catalog) {
+        if self.tab != 1 || self.mixer.is_some() {
+            return;
+        }
+        self.drop = None;
+        self.mixer = Some(ModPageView::new(
+            cat,
+            super::soundmixer::page(&self.edit.sound_mix),
+            super::soundmixer::T_NOTE,
+        ));
+        self.mixer_button.list.clear();
+        self.hide_under_page();
+    }
+
+    /// CLI-1955: the Sound Mixer page's volumes are heard at once and edited with the tab's rows (OK keeps them,
+    /// Cancel restores the ones in effect); Back shows the Sound tab again.
+    fn mixer_done(&mut self, act: PageAct, ctx: &mut Ctx) {
+        match act {
+            PageAct::Changed => {
+                if let Some(v) = &self.mixer {
+                    self.edit.sound_mix = super::soundmixer::mix_of(&v.page, &self.edit.sound_mix);
+                    ctx.data.sound_live = Some(self.edit.clone());
                 }
             }
+            PageAct::Back => {
+                self.mixer = None;
+                self.open_tab(ctx.cat, 1);
+            }
+            PageAct::None => {}
+        }
+    }
+
+    /// CLI-1955: the Sound tab's Sound Mixer button under its last row (none on the other tabs or under a page).
+    fn place_mixer_button(&mut self) {
+        self.mixer_button.list.clear();
+        if self.tab != 1 || self.mixer.is_some() {
+            return;
+        }
+        if let Some(last) = self.rows.last() {
+            let below = last.at[1] - self.scroll + last.height;
+            self.mixer_button
+                .list
+                .push(super::soundmixer::button(self.list_left + CTRL_X, below));
         }
     }
 
     /// CLI-1908: what the open settings page did: a changed value goes into the settings in effect and the edited
     /// ones at once (the match applies it, OK or Cancel alike, as the Mods screen saves at once); Back shows the tab.
     fn page_done(&mut self, act: PageAct, ctx: &mut Ctx) {
+        if self.mixer.is_some() {
+            self.mixer_done(act, ctx);
+            return;
+        }
         let Some(m) = self.mods.as_mut() else {
             return;
         };
@@ -890,6 +973,7 @@ impl Options {
     /// The row controls as sheet parts (rebuilt after every change).
     fn build_rows(&mut self) {
         self.sheet.parts.truncate(self.base_parts);
+        self.place_mixer_button();
         let art = &self.art;
         let tex = |t: &Option<String>| t.clone().unwrap_or_default();
         let parent = self
@@ -1507,8 +1591,9 @@ impl Screen for Options {
     }
 
     fn key(&mut self, k: MenuKey, ctx: &mut Ctx) {
-        // CLI-1908: an open mod settings page: Escape closes it (back to the Mods tab), other keys do nothing
-        if self.mods.as_ref().is_some_and(|m| m.view.is_some()) {
+        // CLI-1908: an open mod settings page: Escape closes it (back to the Mods tab), other keys do nothing; the
+        // Sound Mixer page (CLI-1955) likewise
+        if self.view().is_some() {
             if k == MenuKey::Escape {
                 self.page_done(PageAct::Back, ctx);
             }
@@ -1532,7 +1617,7 @@ impl Screen for Options {
     // DC-DEFAULT: CLI-700 (proposed) one wheel notch moves the options list by one key step (the options pages'
     // scroll lists, Page14 / Page16 records with the scroll flag, are laid out by this screen, not by the layout list)
     fn wheel(&mut self, _p: [f32; 2], notches: i32, _ctx: &mut Ctx) -> bool {
-        if let Some(v) = self.mods.as_mut().and_then(|m| m.view.as_mut()) {
+        if let Some(v) = self.view_mut() {
             v.wheel(notches);
             return true;
         }
@@ -1552,6 +1637,26 @@ impl Screen for Options {
     /// CLI-1908: the Mods tab's controls and the open mod settings page hold the pointer over them.
     fn modal_input(&mut self, ev: &super::MenuInput, ctx: &mut Ctx) -> bool {
         use super::MenuInput;
+        // CLI-1955: the Sound Mixer page holds the pointer while open; its button on the Sound tab
+        if let Some(v) = self.mixer.as_mut() {
+            let act = v.modal_input(ev, ctx);
+            self.mixer_done(act, ctx);
+            return true;
+        }
+        if !self.mixer_button.list.is_empty() {
+            match *ev {
+                MenuInput::Move(p) if self.mixer_button.moved(p) => {
+                    ctx.sound(super::frontfx::SOUND_SELECT_CHANGE);
+                }
+                MenuInput::Press(p) if self.mixer_button.press(p) => return true,
+                MenuInput::Release(p) if self.mixer_button.release(p).is_some() => {
+                    ctx.sound(super::frontfx::SOUND_SELECT);
+                    self.open_mixer(ctx.cat);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         let Some(m) = self.mods.as_mut() else {
             return false;
         };
@@ -1590,14 +1695,11 @@ impl Screen for Options {
     }
 
     fn copy_text(&self) -> Option<String> {
-        self.mods
-            .as_ref()
-            .and_then(|m| m.view.as_ref())
-            .map(|v| v.page.code.clone())
+        self.view().map(|v| v.page.code.clone())
     }
 
     fn paste(&mut self, text: &str, ctx: &mut Ctx) -> bool {
-        let Some(v) = self.mods.as_mut().and_then(|m| m.view.as_mut()) else {
+        let Some(v) = self.view_mut() else {
             return false;
         };
         if v.paste(text) {
@@ -1607,19 +1709,16 @@ impl Screen for Options {
     }
 
     fn slider_rects(&self) -> Vec<[i32; 4]> {
-        self.mods
-            .as_ref()
-            .and_then(|m| m.view.as_ref())
-            .map_or_else(Vec::new, |v| v.slider_rects())
+        self.view().map_or_else(Vec::new, |v| v.slider_rects())
     }
 
     /// The open mod settings page's preview fires its burst.
     fn animate(&mut self, _secs: f32) -> bool {
-        self.mods.as_ref().is_some_and(|m| m.view.is_some())
+        self.view().is_some()
     }
 
     fn animating(&self) -> bool {
-        self.mods.as_ref().is_some_and(|m| m.view.is_some())
+        self.view().is_some()
     }
 
     /// The bar's step is the first row's height; a moved bar moves the rows.
@@ -1701,10 +1800,10 @@ impl Screen for Options {
                     self.place_mods();
                 }
             }
-            c if self.mods.as_ref().is_some_and(|m| m.view.is_some())
-                && super::modbrowser::is_page_command(c) =>
-            {
-                let act = match self.mods.as_mut().and_then(|m| m.view.as_mut()) {
+            // CLI-1955: the Sound Mixer button (also by command: keys, tests)
+            CMD_SOUND_MIXER => self.open_mixer(ctx.cat),
+            c if self.view().is_some() && super::modbrowser::is_page_command(c) => {
+                let act = match self.view_mut() {
                     Some(v) => v.act(c, ctx),
                     None => PageAct::None,
                 };
@@ -1790,7 +1889,13 @@ impl Screen for Options {
     }
 
     fn draw_extra(&self, cat: &mut Catalog, data: &MenuData, secs: f32, out: &mut Vec<DrawItem>) {
+        // CLI-1955: the Sound Mixer page covers the options; else the Sound tab shows its button
+        if let Some(v) = &self.mixer {
+            v.draw(cat, secs, out);
+            return;
+        }
         self.draw_rows(cat, data, out);
+        self.mixer_button.draw(cat, out);
         // CLI-1907 / CLI-1908: over a match: the Mods tab, its page or a mod's settings page, the Graphic tab's note
         if let Some(m) = &self.mods {
             if let Some(v) = &m.view {

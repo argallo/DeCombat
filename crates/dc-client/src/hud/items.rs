@@ -590,9 +590,13 @@ pub fn build_marked(
     for m in s.marks.iter().filter(|_| notes) {
         let colour = match m.state {
             MarkState::Mate => mk.mate,
-            MarkState::Enemy => {
-                super::marks::mark_colour(mk, s.mark_hits.get(&m.obj).copied(), s.now_ms)
-            }
+            // CLI-1954: a fresh ping blinks the tag in the ping colour; the own hit's flash comes first
+            MarkState::Enemy => match s.pings.fresh.iter().find(|(o, _)| *o == m.obj) {
+                Some((_, age)) if !s.mark_hits.contains_key(&m.obj) => {
+                    super::teamping::flash_colour(mk.enemy, *age)
+                }
+                _ => super::marks::mark_colour(mk, s.mark_hits.get(&m.obj).copied(), s.now_ms),
+            },
             MarkState::Dead => mk.dead,
         };
         // client-hudgaps: the rank icon left of the caption (super::rank)
@@ -617,9 +621,31 @@ pub fn build_marked(
             anchor: [0.5, 1.0],
         });
     }
-    // CLI-1952: the team's place markers, in the names' element, in the mate colour and the system banner's font
+    // CLI-1952: the team's place markers, in the names' element; CLI-1954: the pinger's name in the nametags' font
+    // and the mate colour, the distance in the flag mode's marker text (the system banner's font without a ROM)
     if notes {
-        super::teamping::push_items(&mut out, &s.ping_marks, mk.mate, super::chat::BANNER_FONT);
+        let fl = &layout.top.flag;
+        let metres = if layout.from_rom {
+            TextStyle {
+                font: fl.text_font,
+                colour: [255; 4],
+                size: fl.text_size,
+            }
+        } else {
+            TextStyle {
+                font: super::chat::BANNER_FONT,
+                colour: [255; 4],
+                size: Some(0xe),
+            }
+        };
+        let st = super::teamping::MarkStyles {
+            name: TextStyle {
+                colour: mk.mate,
+                ..mk.style
+            },
+            metres,
+        };
+        super::teamping::push_items(&mut out, &s.ping_marks, &layout.ping_art, &st);
     }
     // Fire Team: the AI health bars where the names stand and the own points popup, with the marks' layer
     // DC-DEFAULT: CLI-1871, CLI-1872 (proposed)
@@ -852,6 +878,8 @@ pub fn build_marked(
         .as_ref()
         .map_or(&[], |r| r.small.as_slice());
     super::death::items(&mut out, &layout.death, s, small);
+    // CLI-1957: the kill card over the kill zoom
+    super::killcard::items(&mut out, s.kill_card.as_ref());
     elems.push(("kill_feed", out.len()));
     // ---- kill feed
     // EVIDENCE: cshell+0x9d4a0 (line top = pos.y + step x line; killer name, then the weapon icon lifted by its

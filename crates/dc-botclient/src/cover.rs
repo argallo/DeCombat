@@ -88,6 +88,9 @@ pub struct Spot {
     pub open: f32,
     pub looks: Vec<[f32; 3]>,
     pub peek: Option<[f32; 3]>,
+    /// BOT-179: whether the spot sees the guarded place, and whether its peek place does.
+    pub sees: bool,
+    pub peek_sees: bool,
 }
 
 /// BOT-173: the cover score of spot `p` from its rays `shares` (see [`COVER_RAY_LEN`]), whether it sees the
@@ -139,6 +142,18 @@ pub const APPROACH_R: f32 = 900.0;
 // DC-DEFAULT: BOT-173 (proposed) 72..200 units
 pub const PEEK_NEAR: f32 = 72.0;
 pub const PEEK_FAR: f32 = 200.0;
+/// BOT-179: while fewer than [`SEEING_WANT`] band nodes see the guarded place, the nodes from [`NEAR_MIN`] to the
+/// band's inner edge are scored too; every guard holds at least [`SHARE_MIN`] spots that see it (a blind spot is
+/// never a guard's only one); a spot within [`TAKEN`] of a teammate guard is taken; a guard stays at most
+/// [`STAY_CAP`] times its dwell at a spot; with no free place to go it stays and tries again after
+/// [`STAY_RETRY_MS`] (event `why: stay`, the spots ranked again).
+// DC-DEFAULT: BOT-179 (proposed) 4 seeing nodes, 64 units, 2 spots, 96 units, 2 x the dwell, 3 s
+pub const SEEING_WANT: usize = 4;
+pub const NEAR_MIN: f32 = 64.0;
+pub const SHARE_MIN: usize = 2;
+pub const TAKEN: f32 = 96.0;
+pub const STAY_CAP: u32 = 2;
+pub const STAY_RETRY_MS: u32 = 3000;
 
 /// BOT-173: the nodes of the band round `center` to score: `nodes` in the band, nearest the ideal first, each at
 /// least [`TEST_SPREAD`] from those taken, at most [`SCORE_TESTS`].
@@ -214,6 +229,8 @@ pub fn peek_place(p: [f32; 3], look: [f32; 3], nodes: &[[f32; 3]]) -> Option<[f3
 /// BOT-173: the guard spots round `center`: the band's [`candidates`] among `nodes`, each scored ([`score`]) from
 /// its rays (`free`, as [`ray_shares`]) and sight lines (`sees(from, to)`, node to place, the caller adds the eye
 /// heights), best first and [`SPOT_APART`] apart, at most [`SPOTS_MAX`]; each with its peek place among `nodes`.
+/// BOT-179: while fewer than [`SEEING_WANT`] of the band's nodes see the place, the nodes nearer it
+/// ([`NEAR_MIN`] up to the band's inner edge, nearest that edge first) are scored too.
 pub fn rank_guard_spots(
     center: [f32; 3],
     nodes: &[[f32; 3]],
@@ -222,16 +239,36 @@ pub fn rank_guard_spots(
     mut free: impl FnMut([f32; 3], [f32; 3]) -> f32,
     mut sees: impl FnMut([f32; 3], [f32; 3]) -> bool,
 ) -> Vec<Spot> {
-    let cands = candidates(center, nodes, band);
-    let mut spots: Vec<Spot> = Vec::with_capacity(cands.len());
-    for p in &cands {
-        let shares = ray_shares(*p, COVER_RAY_LEN, &mut free);
-        let sees_center = sees(*p, center);
-        let seen: Vec<bool> = approaches.iter().map(|a| sees(*p, *a)).collect();
-        let s = score(*p, center, &shares, sees_center, approaches, &seen, band);
+    let mut eval = |p: [f32; 3]| {
+        let shares = ray_shares(p, COVER_RAY_LEN, &mut free);
+        let sees_center = sees(p, center);
+        let seen: Vec<bool> = approaches.iter().map(|a| sees(p, *a)).collect();
+        let s = score(p, center, &shares, sees_center, approaches, &seen, band);
         let mut looks = vec![center];
         looks.extend(approaches.iter().zip(&seen).filter(|(_, s)| **s).map(|(a, _)| *a));
-        spots.push(Spot { at: *p, score: s, open: open_share(&shares), looks, peek: None });
+        Spot {
+            at: p,
+            score: s,
+            open: open_share(&shares),
+            looks,
+            peek: None,
+            sees: sees_center,
+            peek_sees: false,
+        }
+    };
+    let mut spots: Vec<Spot> = candidates(center, nodes, band).into_iter().map(&mut eval).collect();
+    if spots.iter().filter(|s| s.sees).count() < SEEING_WANT && band.min > NEAR_MIN {
+        let near = Band {
+            min: NEAR_MIN,
+            max: band.min,
+            ideal: band.min,
+            rise: band.rise,
+        };
+        let extra: Vec<[f32; 3]> = candidates(center, nodes, near)
+            .into_iter()
+            .filter(|n| spots.iter().all(|s| flat(s.at, *n) >= TEST_SPREAD))
+            .collect();
+        spots.extend(extra.into_iter().map(&mut eval));
     }
     let order: Vec<(f32, usize, usize)> = spots.iter().enumerate().map(|(i, s)| (s.score, i, i)).collect();
     let picked = best_apart(order, SPOT_APART, SPOTS_MAX, |i| spots[*i].at);
@@ -240,6 +277,7 @@ pub fn rank_guard_spots(
         .map(|i| {
             let mut s = spots[i].clone();
             s.peek = peek_place(s.at, *s.looks.get(1).unwrap_or(&center), nodes);
+            s.peek_sees = s.peek.is_some_and(|q| sees(q, center));
             s
         })
         .collect()
@@ -294,20 +332,47 @@ pub const LOOK_SPAN_MS: u32 = 2500;
 pub const SWAY: f32 = 0.35;
 
 /// BOT-173: guard `g` of `n`'s share of the `ranked` spots (best first). See [`SPOTS_PER_GUARD`].
+/// BOT-179: only the spots that see the guarded place are shared out (guard `g` the seeing spots `g`, `g + n`,
+/// ...); a guard with fewer than [`SHARE_MIN`] of its own also gets the others' last ones (any guard, not only the
+/// first: the runtime keeps two guards off one spot by [`TAKEN`]); then the peek places of its spots that see the
+/// place ([`peek_spot`]); a blind spot only fills up to [`SHARE_MIN`] beside a seeing one when nothing else does;
+/// with no seeing spot at all the share is empty (the ring's place then).
 pub fn share(ranked: &[Spot], g: usize, n: usize) -> Vec<Spot> {
     let n = n.max(1);
-    let mut own: Vec<Spot> = ranked.iter().skip(g % n).step_by(n).take(SPOTS_PER_GUARD).cloned().collect();
-    if own.len() < 2 && g.is_multiple_of(n) {
-        for s in ranked {
-            if own.len() >= 2 {
+    let seeing: Vec<&Spot> = ranked.iter().filter(|s| s.sees).collect();
+    let mut own: Vec<Spot> = seeing.iter().skip(g % n).step_by(n).take(SPOTS_PER_GUARD).map(|s| (*s).clone()).collect();
+    let fill = |own: &mut Vec<Spot>, from: &mut dyn Iterator<Item = &Spot>| {
+        for s in from {
+            if own.len() >= SHARE_MIN {
                 break;
             }
             if !own.iter().any(|o| o.at == s.at) {
                 own.push(s.clone());
             }
         }
+    };
+    fill(&mut own, &mut seeing.iter().rev().copied());
+    if own.is_empty() {
+        return own;
     }
+    let peeks: Vec<Spot> = own.iter().filter_map(peek_spot).collect();
+    fill(&mut own, &mut peeks.iter());
+    fill(&mut own, &mut ranked.iter().filter(|s| !s.sees));
     own
+}
+
+/// BOT-179: the peek place of spot `s` as a spot of its own when it sees the guarded place (its looks, no peek).
+pub fn peek_spot(s: &Spot) -> Option<Spot> {
+    let at = s.peek.filter(|pk| s.peek_sees && flat(*pk, s.at) >= 1.0)?;
+    Some(Spot {
+        at,
+        score: if s.sees { s.score } else { s.score + BLIND_COST },
+        open: s.open,
+        looks: s.looks.clone(),
+        peek: None,
+        sees: true,
+        peek_sees: false,
+    })
 }
 
 /// BOT-173: how long a guard stays at a spot it reached (`seed` a mixed random number, `level` the bot's skill
@@ -334,6 +399,10 @@ pub enum Why {
     Reach,
     Crowd,
     Contact,
+    /// BOT-179: it stood [`STAY_CAP`] times its dwell (contact or not) and moves on.
+    Cap,
+    /// BOT-179: no free place to go: it stays where it is (the spot it holds is returned) and asks for new spots.
+    Stay,
 }
 
 impl Why {
@@ -344,6 +413,8 @@ impl Why {
             Why::Reach => "reach",
             Why::Crowd => "crowd",
             Why::Contact => "contact",
+            Why::Cap => "cap",
+            Why::Stay => "stay",
         }
     }
 }
@@ -356,7 +427,11 @@ pub struct Hold {
     pub ranked: bool,
     pub ranked_at: u32,
     pub spots: Vec<Spot>,
+    /// BOT-179: every seeing spot of the place (the team's), taken when none of its own is free.
+    pub pool: Vec<Spot>,
     pub cur: Option<Spot>,
+    /// BOT-179: it found no free place to go and wants its spots ranked again.
+    pub rerank: bool,
     since: u32,
     arrived: Option<u32>,
     dwell: u32,
@@ -365,18 +440,22 @@ pub struct Hold {
     next_peek: u32,
     look: Option<[f32; 3]>,
     next_look: u32,
+    retry_at: u32,
 }
 
 impl Hold {
-    /// New spots for the place `center` (the spot it holds stays until it moves on).
-    pub fn set_spots(&mut self, center: [f32; 3], spots: Vec<Spot>, now: u32) {
-        if flat(center, self.center) > 64.0 {
+    /// New spots for the place `center` (the spot it holds stays until it moves on; none when it has no spot) and
+    /// the place's `pool` of seeing spots.
+    pub fn set_spots(&mut self, center: [f32; 3], spots: Vec<Spot>, pool: Vec<Spot>, now: u32) {
+        if flat(center, self.center) > 64.0 || spots.is_empty() {
             self.cur = None;
         }
         self.center = center;
         self.spots = spots;
+        self.pool = pool;
         self.ranked = true;
         self.ranked_at = now;
+        self.rerank = false;
     }
 
     /// The dwell at the spot it holds (0 before it got there).
@@ -397,11 +476,13 @@ impl Hold {
         contact: bool,
         (seed, level): (u64, Option<u8>),
     ) -> Option<(Spot, Why, u32)> {
+        let free = |s: &&Spot| avoid.iter().all(|a| flat(*a, s.at) >= TAKEN);
         let Some(cur) = self.cur.clone() else {
             let first = self
                 .spots
                 .iter()
-                .find(|s| avoid.iter().all(|a| flat(*a, s.at) >= SPOT_APART))
+                .find(free)
+                .or_else(|| self.pool.iter().find(free))
                 .or(self.spots.first())?
                 .clone();
             return Some(self.take(first, Why::First, now, seed, level));
@@ -419,7 +500,7 @@ impl Hold {
                 let near = self
                     .spots
                     .iter()
-                    .filter(|s| avoid.iter().all(|a| flat(*a, s.at) >= SPOT_APART))
+                    .filter(free)
                     .min_by(|a, b| flat(a.at, p).total_cmp(&flat(b.at, p)))
                     .filter(|s| flat(s.at, p) + CONTACT_NEARER < flat(cur.at, p))
                     .cloned();
@@ -428,19 +509,32 @@ impl Hold {
                 }
             }
         }
-        if crowd.iter().any(|m| flat(*m, cur.at) < SPOT_APART) {
+        // BOT-179: after a stay it tries again only after STAY_RETRY_MS (it still peeks meanwhile)
+        let waiting = now < self.retry_at;
+        if !waiting && self.arrived.is_some_and(|t| now.wrapping_sub(t) >= STAY_CAP * self.dwell.max(1)) {
+            return self.next(&cur, Why::Cap, now, avoid, seed, level);
+        }
+        if !waiting && crowd.iter().any(|m| flat(*m, cur.at) < TAKEN) {
             return self.next(&cur, Why::Crowd, now, avoid, seed, level);
         }
         match self.arrived {
+            _ if waiting => {
+                self.peek_tick(now, contact, &cur, seed);
+                None
+            }
             Some(t) if !contact && now.wrapping_sub(t) >= self.dwell => self.next(&cur, Why::Dwell, now, avoid, seed, level),
             None if !contact && now.wrapping_sub(self.since) >= REACH_MS => self.next(&cur, Why::Reach, now, avoid, seed, level),
             _ => {
-                if self.arrived.is_some() && !contact && now >= self.next_peek && cur.peek.is_some() {
-                    self.peek_until = now + PEEK_MS;
-                    self.next_peek = now + PEEK_MS + PEEK_GAP_MIN_MS + (mix(seed ^ u64::from(now)) % u64::from(PEEK_GAP_SPAN_MS)) as u32;
-                }
+                self.peek_tick(now, contact, &cur, seed);
                 None
             }
+        }
+    }
+
+    fn peek_tick(&mut self, now: u32, contact: bool, cur: &Spot, seed: u64) {
+        if self.arrived.is_some() && !contact && now >= self.next_peek && cur.peek.is_some() {
+            self.peek_until = now + PEEK_MS;
+            self.next_peek = now + PEEK_MS + PEEK_GAP_MIN_MS + (mix(seed ^ u64::from(now)) % u64::from(PEEK_GAP_SPAN_MS)) as u32;
         }
     }
 
@@ -471,20 +565,47 @@ impl Hold {
         self.look.map(|l| (l, sway))
     }
 
+    /// BOT-179: where it goes from `cur`: a random free other spot of its own, else the best free seeing spot of the
+    /// pool, else its spot's peek place when that sees the guarded place and is free; at the stay cap ([`Why::Cap`])
+    /// also a place a teammate guard stands near (the one farthest from the guards). With none it stays: the spot it
+    /// holds comes back as [`Why::Stay`], it asks for new spots and tries again after [`STAY_RETRY_MS`] (at the cap
+    /// its stay starts over). Before, it stayed silently and dwelt again, without end (CTF review round 3: 150 s on
+    /// one blind spot, two guards on one spot for 44 s).
     fn next(&mut self, cur: &Spot, why: Why, now: u32, avoid: &[[f32; 3]], seed: u64, level: Option<u8>) -> Option<(Spot, Why, u32)> {
-        let others: Vec<&Spot> = self
-            .spots
-            .iter()
-            .filter(|s| flat(s.at, cur.at) >= 1.0 && avoid.iter().all(|a| flat(*a, s.at) >= SPOT_APART))
-            .collect();
-        if others.is_empty() {
-            // no other spot free: it stays where it is and dwells again
-            self.since = now;
-            self.arrived = None;
-            return None;
+        let free = |p: [f32; 3]| avoid.iter().all(|a| flat(*a, p) >= TAKEN);
+        let other = |s: &&Spot| flat(s.at, cur.at) >= TAKEN;
+        let own: Vec<&Spot> = self.spots.iter().filter(other).filter(|s| free(s.at)).collect();
+        let pick = if !own.is_empty() {
+            Some(own[(mix(seed ^ self.moves ^ u64::from(now)) % own.len() as u64) as usize].clone())
+        } else if let Some(p) = self.pool.iter().filter(other).find(|s| free(s.at)) {
+            Some(p.clone())
+        } else if let Some(pk) = peek_spot(cur).filter(|p| free(p.at)) {
+            Some(pk)
+        } else if why == Why::Cap {
+            let room = |p: [f32; 3]| avoid.iter().map(|a| flat(*a, p)).fold(f32::INFINITY, f32::min);
+            let mut any: Vec<Spot> = self.spots.iter().chain(&self.pool).filter(other).cloned().collect();
+            if let Some(pk) = cur.peek.filter(|pk| flat(*pk, cur.at) >= 1.0) {
+                any.push(Spot {
+                    at: pk,
+                    peek: None,
+                    peek_sees: false,
+                    sees: cur.peek_sees,
+                    ..cur.clone()
+                });
+            }
+            any.into_iter().max_by(|a, b| room(a.at).total_cmp(&room(b.at)))
+        } else {
+            None
+        };
+        if let Some(p) = pick {
+            return Some(self.take(p, why, now, seed, level));
         }
-        let pick = others[(mix(seed ^ self.moves ^ u64::from(now)) % others.len() as u64) as usize].clone();
-        Some(self.take(pick, why, now, seed, level))
+        self.retry_at = now + STAY_RETRY_MS;
+        self.rerank = true;
+        if why == Why::Cap {
+            self.arrived = Some(now);
+        }
+        Some((cur.clone(), Why::Stay, self.dwell))
     }
 
     fn take(&mut self, s: Spot, why: Why, now: u32, seed: u64, level: Option<u8>) -> (Spot, Why, u32) {
@@ -494,6 +615,7 @@ impl Hold {
         self.arrived = None;
         self.peek_until = 0;
         self.look = None;
+        self.retry_at = 0;
         // the dwell is drawn when the spot is reached; logged with the draw it will get
         let d = dwell_ms(seed ^ self.moves.wrapping_mul(0x51) ^ u64::from(now), level);
         self.dwell = d;
@@ -646,6 +768,8 @@ mod tests {
             open: 0.0,
             looks: vec![[0.0; 3]],
             peek: Some([x + 100.0, 0.0, z]),
+            sees: true,
+            peek_sees: true,
         }
     }
 
@@ -658,13 +782,14 @@ mod tests {
         assert_eq!((a.len(), b.len()), (4, 4));
         assert!(a.iter().all(|s| !b.iter().any(|t| t.at == s.at)));
         assert_eq!(share(&ranked, 0, 1).len(), SPOTS_PER_GUARD);
-        // two spots, two guards: the first gets both, the second only its own (never the first one's)
+        // BOT-179: two spots, two guards: both get both (its own first; the runtime keeps them apart), one spot:
+        // the later guard gets it too, and its peek place
         let few = share(&ranked[..2], 0, 2);
-        assert_eq!(few.len(), 2);
+        assert_eq!(few.iter().map(|s| s.at).collect::<Vec<_>>(), vec![ranked[0].at, ranked[1].at]);
         let second = share(&ranked[..2], 1, 2);
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].at, ranked[1].at);
-        assert!(share(&ranked[..1], 1, 2).is_empty());
+        assert_eq!(second.iter().map(|s| s.at).collect::<Vec<_>>(), vec![ranked[1].at, ranked[0].at]);
+        let lone = share(&ranked[..1], 1, 2);
+        assert_eq!(lone.iter().map(|s| s.at).collect::<Vec<_>>(), vec![ranked[0].at, ranked[0].peek.unwrap()]);
         assert!(share(&[], 0, 2).is_empty());
     }
 
@@ -674,7 +799,7 @@ mod tests {
     fn a_guard_rotates_between_its_spots() {
         let spots = vec![spot(0.0, 300.0), spot(300.0, 0.0), spot(-300.0, 0.0)];
         let mut h = Hold::default();
-        h.set_spots([0.0; 3], spots.clone(), 0);
+        h.set_spots([0.0; 3], spots.clone(), Vec::new(), 0);
         let (first, why, dwell) = h.tick(0, Some([0.0, 0.0, 900.0]), &[], &[], false, (7, None)).unwrap();
         assert_eq!((first.at, why), (spots[0].at, Why::First));
         assert!((DWELL_MIN_MS..=DWELL_MIN_MS + DWELL_SPAN_MS).contains(&dwell));
@@ -725,7 +850,7 @@ mod tests {
     fn contact_never_takes_a_mates_spot_and_waits_between_moves() {
         let spots = vec![spot(0.0, 300.0), spot(300.0, 0.0), spot(-300.0, 0.0)];
         let mut h = Hold::default();
-        h.set_spots([0.0; 3], spots.clone(), 0);
+        h.set_spots([0.0; 3], spots.clone(), Vec::new(), 0);
         h.tick(0, None, &[], &[], false, (3, None)).unwrap();
         let mate = spots[1].at;
         let by = [mate[0] - 20.0, 0.0, mate[2]];
@@ -740,5 +865,133 @@ mod tests {
             }
         }
         assert!(moves <= 20_000 / CONTACT_MS as usize, "{moves}");
+    }
+
+    fn blind(x: f32, z: f32) -> Spot {
+        Spot {
+            sees: false,
+            score: -6.0,
+            ..spot(x, z)
+        }
+    }
+
+    /// BOT-179: every guard gets two spots that see the flag (Power Surge: the later guard's only spot was blind);
+    /// with enough seeing spots no blind one is shared out; a blind one only beside a seeing one; none seeing: none.
+    #[test]
+    fn every_guard_gets_two_seeing_spots_and_a_blind_one_is_never_alone() {
+        let ranked = vec![spot(0.0, 300.0), spot(300.0, 0.0), blind(-300.0, 0.0)];
+        let g0 = share(&ranked, 0, 2);
+        let g1 = share(&ranked, 1, 2);
+        assert!(g0.len() == 2 && g0.iter().all(|s| s.sees), "{g0:?}");
+        assert!(g1.len() == 2 && g1.iter().all(|s| s.sees), "{g1:?}");
+        assert_eq!(g1[0].at, ranked[1].at, "its own spot first");
+        let mut many: Vec<Spot> = (0..6).map(|i| spot(i as f32 * 300.0, 0.0)).collect();
+        many.push(blind(0.0, 900.0));
+        many.push(blind(300.0, 900.0));
+        for g in 0..3 {
+            let s = share(&many, g, 3);
+            assert!(s.len() >= SHARE_MIN && s.iter().all(|x| x.sees), "{g} {s:?}");
+        }
+        // one seeing spot: its seeing peek place before a blind spot; a blind one only when the peek is blind
+        let one = vec![spot(300.0, 0.0), blind(0.0, 300.0)];
+        let s = share(&one, 1, 2);
+        assert_eq!(s.iter().map(|x| (x.at, x.sees)).collect::<Vec<_>>(), vec![(one[0].at, true), (one[0].peek.unwrap(), true)]);
+        let blind_peek = vec![Spot { peek_sees: false, ..spot(300.0, 0.0) }, blind(0.0, 300.0)];
+        let s = share(&blind_peek, 1, 2);
+        assert_eq!(s.len(), 2);
+        assert!(s[0].sees && !s[1].sees);
+        assert!(share(&[blind(0.0, 300.0), blind(300.0, 0.0)], 0, 1).is_empty());
+    }
+
+    /// BOT-179: the Gray Hammer stack: a later guard crowded off its spot with its other spot taken goes to a free
+    /// pool spot, else to its peek place that sees the flag; with nothing free it says so (stay), asks for new spots
+    /// and tries again after STAY_RETRY_MS, never silently.
+    #[test]
+    fn a_crowded_guard_never_stays_silently() {
+        let a = spot(0.0, 300.0);
+        let b = spot(300.0, 0.0);
+        let c = spot(-300.0, 0.0);
+        let mate = [a.at[0] - 22.0, 0.0, a.at[2]];
+        let fresh = |own: Vec<Spot>, pool: Vec<Spot>| {
+            let mut h = Hold::default();
+            h.set_spots([0.0; 3], own, pool, 0);
+            assert_eq!(h.tick(0, Some(a.at), &[], &[], false, (5, None)).unwrap().0.at, a.at);
+            h
+        };
+        let mut h = fresh(vec![a.clone(), b.clone()], vec![a.clone(), b.clone(), c.clone()]);
+        let (n, why, _) = h.tick(100, Some(a.at), &[mate], &[mate, b.at], false, (5, None)).unwrap();
+        assert_eq!((n.at, why), (c.at, Why::Crowd));
+        let mut h = fresh(vec![a.clone(), b.clone()], vec![a.clone(), b.clone(), c.clone()]);
+        let (n, why, _) = h.tick(100, Some(a.at), &[mate], &[mate, b.at, c.at], false, (5, None)).unwrap();
+        assert_eq!((n.at, why), (a.peek.unwrap(), Why::Crowd));
+        assert!(n.sees);
+        let blind_peek = Spot {
+            peek_sees: false,
+            ..a.clone()
+        };
+        let mut h = fresh(vec![blind_peek.clone(), b.clone()], Vec::new());
+        let r = h.tick(100, Some(a.at), &[mate], &[mate, b.at], false, (5, None)).unwrap();
+        assert_eq!((r.0.at, r.1), (a.at, Why::Stay));
+        assert!(h.rerank);
+        assert!(h.tick(200, Some(a.at), &[mate], &[mate, b.at], false, (5, None)).is_none());
+        let r = h.tick(100 + STAY_RETRY_MS, Some(a.at), &[mate], &[mate, b.at], false, (5, None));
+        assert_eq!(r.map(|x| x.1), Some(Why::Stay));
+        h.set_spots([0.0; 3], vec![blind_peek, b.clone(), c.clone()], Vec::new(), 4000);
+        assert!(!h.rerank);
+        let r = h.tick(4000 + 2 * STAY_RETRY_MS, Some(a.at), &[mate], &[mate, b.at], false, (5, None)).unwrap();
+        assert_eq!((r.0.at, r.1), (c.at, Why::Crowd));
+    }
+
+    /// BOT-179: a stay ends at STAY_CAP times the dwell even in a long fight; at the cap it moves on even to a
+    /// place a later guard stands near; a lone spot with nowhere to go starts its stay over (event stay).
+    #[test]
+    fn a_stay_is_capped_at_twice_the_dwell() {
+        let a = spot(0.0, 300.0);
+        let b = spot(300.0, 0.0);
+        let mut h = Hold::default();
+        h.set_spots([0.0; 3], vec![a.clone(), b.clone()], Vec::new(), 0);
+        let (_, _, dwell) = h.tick(0, None, &[], &[], false, (9, None)).unwrap();
+        assert!(h.tick(10, Some(a.at), &[], &[], true, (9, None)).is_none());
+        let mut t = 10;
+        let moved = loop {
+            t += 100;
+            assert!(t < 10 + 3 * dwell, "never moved");
+            if let Some(m) = h.tick(t, Some(a.at), &[], &[], true, (9, None)) {
+                break m;
+            }
+        };
+        assert_eq!((moved.0.at, moved.1), (b.at, Why::Cap));
+        assert!((10 + STAY_CAP * dwell..10 + STAY_CAP * dwell + 200).contains(&t), "{t} {dwell}");
+        let a2 = Spot { peek: None, ..a.clone() };
+        let mut h = Hold::default();
+        h.set_spots([0.0; 3], vec![a2.clone(), b.clone()], Vec::new(), 0);
+        let (_, _, dwell) = h.tick(0, None, &[], &[], false, (9, None)).unwrap();
+        h.tick(10, Some(a.at), &[], &[], true, (9, None));
+        let later = [b.at[0] + 30.0, 0.0, b.at[2]];
+        let r = h.tick(10 + STAY_CAP * dwell, Some(a.at), &[], &[later], true, (9, None)).unwrap();
+        assert_eq!((r.0.at, r.1), (b.at, Why::Cap));
+        let mut h = Hold::default();
+        h.set_spots([0.0; 3], vec![a2], Vec::new(), 0);
+        let (_, _, dwell) = h.tick(0, None, &[], &[], false, (9, None)).unwrap();
+        h.tick(10, Some(a.at), &[], &[], true, (9, None));
+        let r = h.tick(10 + STAY_CAP * dwell, Some(a.at), &[], &[], true, (9, None)).unwrap();
+        assert_eq!(r.1, Why::Stay);
+        assert!(h.tick(10 + STAY_CAP * dwell + STAY_RETRY_MS + 100, Some(a.at), &[], &[], true, (9, None)).is_none());
+    }
+
+    /// BOT-179: when the band's nodes do not see the flag, the nodes nearer it are scored too and a seeing one ranks
+    /// first; with enough seeing band nodes they are not tried.
+    #[test]
+    fn nodes_nearer_the_flag_are_tried_when_the_band_is_blind() {
+        let flag = [0.0; 3];
+        let near = [0.0, 0.0, 100.0];
+        let nodes = [[300.0, 0.0, 0.0], [-300.0, 0.0, 0.0], near];
+        let r = rank_guard_spots(flag, &nodes, BAND, &[], |_, _| 1.0, |a, _| a == near);
+        assert_eq!(r.first().map(|s| (s.at, s.sees)), Some((near, true)), "{r:?}");
+        assert!(r.len() == 3 && r[1..].iter().all(|s| !s.sees));
+        let mut ring: Vec<[f32; 3]> = (0..6).map(|k| [300.0 * (k as f32).sin(), 0.0, 300.0 * (k as f32).cos()]).collect();
+        ring.push(near);
+        let r = rank_guard_spots(flag, &ring, BAND, &[], |_, _| 1.0, |_, _| true);
+        assert!(!r.is_empty() && r.iter().all(|s| s.at != near), "{r:?}");
     }
 }

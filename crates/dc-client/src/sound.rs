@@ -518,11 +518,13 @@ impl ClipSteps {
 /// One sound-related thing the session saw since the last frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SoundCue {
-    /// A sound record start; `file` is the file table name; `at_load` when it came with the world-load creates.
+    /// A sound record start; `file` is the file table name; `at_load` when it came with the world-load creates;
+    /// `impact`: a bullet's impact sound (the effects stage made it; a voice group of its own, CLI-1961).
     Server {
         start: WireSound,
         file: Option<String>,
         at_load: bool,
+        impact: bool,
     },
     /// A tracked sound moves.
     Move { track: u16, pos: [f32; 3] },
@@ -659,6 +661,8 @@ pub enum Trigger {
     },
     /// A one-shot sound record.
     OneShot,
+    /// A bullet's impact sound (a one-shot of the effects stage, CLI-1961).
+    Impact,
     /// A type 0x19 relay: weapon sound `k` of `player`, or the jump sound (k 15).
     SoundRelay {
         k: u8,
@@ -716,6 +720,9 @@ impl Trigger {
             Trigger::LoadSound { .. } => "load_sound",
             Trigger::TrackedSound { .. } => "tracked_sound",
             Trigger::OneShot => "one_shot",
+            // the label the sound log and the event stream always wrote for these (a one-shot record); the
+            // impacts' own group (CLI-1961) changes nothing in the logs
+            Trigger::Impact => "one_shot",
             Trigger::SoundRelay { .. } => "relay_sound",
             Trigger::ShotFire { .. } => "shot_fire",
             Trigger::OwnWeapon { .. } => "own_weapon",
@@ -868,6 +875,13 @@ pub struct AudioConfig {
     pub status_every_s: f64,
     /// Linear gain after the mixer on the device (1.0: the 2009 levels; device tests use a very low gain).
     pub out_gain: f32,
+    /// CLI-1955: the sound mixer's group volumes.
+    pub mix: crate::soundmix::Mix,
+    /// CLI-1960: the peak limiter on the final mix, and its ceiling in dBFS (-6..=0).
+    pub limiter: bool,
+    pub limiter_ceiling_db: f32,
+    /// CLI-1961: the voice caps per group ([`crate::soundmix::SoundGroup::default_cap`]).
+    pub voice_caps: bool,
 }
 
 impl Default for AudioConfig {
@@ -880,6 +894,10 @@ impl Default for AudioConfig {
             music_volume: 100,
             status_every_s: 10.0,
             out_gain: 1.0,
+            mix: crate::soundmix::DEFAULT_MIX,
+            limiter: dc_audio::limiter::DEFAULT_ENABLED,
+            limiter_ceiling_db: dc_audio::limiter::DEFAULT_CEILING_DB,
+            voice_caps: crate::soundmix::VOICE_CAPS_DEFAULT,
         }
     }
 }
@@ -931,6 +949,8 @@ pub struct SoundDirector {
     /// before CLI-201, kept for comparisons).
     fire_voices: FireVoices,
     fire_cut: bool,
+    /// CLI-1955: the front end is playing its cues (they go to the mixer's menu group).
+    in_menu: bool,
     rng: u64,
     pub log: Vec<SoundLogEntry>,
     /// The JSONL log: a bounded writer thread, never file I/O on the frame thread (perf-hitch).
@@ -1087,6 +1107,7 @@ impl SoundDirector {
             tracked: HashMap::new(),
             fire_voices: FireVoices::default(),
             fire_cut: true,
+            in_menu: false,
             // DC-DEFAULT: CLI-68 (proposed) the random picks (footstep variant, jump sound) come from a fixed-seed
             // xorshift (the 2009 client uses its C library generator, cshell+0x29eb40)
             rng: 0x9e37_79b9_7f4a_7c15,
@@ -1234,6 +1255,31 @@ impl SoundDirector {
         self.fire_cut = on;
     }
 
+    /// CLI-1960: switches the output limiter and sets its ceiling (dBFS, clamped to -6..=0).
+    pub fn set_limiter(&mut self, on: bool, ceiling_db: f32) {
+        let mut m = self.mixer();
+        m.set_limiter_enabled(on);
+        m.set_limiter_ceiling_db(ceiling_db);
+    }
+
+    /// CLI-1955: the sound mixer's group volumes (0..=100 each, in [`crate::soundmix::GROUPS`] order). A group the
+    /// page does not show (the impacts, CLI-1961) follows the slider it belongs to.
+    pub fn apply_mix(&mut self, mix: &crate::soundmix::Mix) {
+        let mut m = self.mixer();
+        for g in crate::soundmix::ALL_GROUPS {
+            m.set_group_volume(g.id(), u16::from(mix[g.index()]));
+        }
+    }
+
+    /// CLI-1961: the voice caps of the groups: each group's [`crate::soundmix::SoundGroup::default_cap`] when `on`,
+    /// none when off.
+    pub fn set_voice_caps(&mut self, on: bool) {
+        let mut m = self.mixer();
+        for g in crate::soundmix::ALL_GROUPS {
+            m.set_group_cap(g.id(), if on { g.default_cap() } else { None });
+        }
+    }
+
     /// Applies volumes and class gains (the options page and profile values, SPEC AUDIO_2009 §11).
     pub fn apply_settings(&mut self, s: AudioSettings) {
         s.apply(&mut self.mixer());
@@ -1246,11 +1292,20 @@ impl SoundDirector {
         s.effects_volume = i32::from(c.effects_volume.min(100));
         s.music_volume = i32::from(c.music_volume.min(100));
         self.apply_settings(s);
+        self.apply_mix(&c.mix);
+        self.set_limiter(c.limiter, c.limiter_ceiling_db);
+        self.set_voice_caps(c.voice_caps);
         let note = self.open_output(c.out, c.out_gain);
         format!(
-            "{note}; effects volume {} music volume {}",
+            "{note}; effects volume {} music volume {}; limiter {}; voice caps {}",
             self.settings.effective_effects(),
-            self.settings.effective_music()
+            self.settings.effective_music(),
+            if c.limiter {
+                format!("on, ceiling {:.1} dBFS", self.mixer().limiter_ceiling_db())
+            } else {
+                "off".to_string()
+            },
+            if c.voice_caps { "on" } else { "off" }
         )
     }
 
@@ -1302,10 +1357,15 @@ impl SoundDirector {
     pub fn output_line(&self) -> String {
         match &self.sink {
             Sink::Null(n) => {
-                let rate = self.mixer().output_rate();
+                let m = self.mixer();
+                let rate = m.output_rate();
+                let meter = m.limiter_meter();
                 format!(
-                    "audio out: null backend | {:.2} s rendered at {rate} Hz",
-                    n.frames as f64 / f64::from(rate)
+                    "audio out: null backend | {:.2} s rendered at {rate} Hz | clipped {} | limiter {} limited {}",
+                    n.frames as f64 / f64::from(rate),
+                    meter.clipped_samples(),
+                    if m.limiter_enabled() { "on" } else { "off" },
+                    meter.limited_frames()
                 )
             }
             #[cfg(feature = "audio")]
@@ -1442,6 +1502,7 @@ impl SoundDirector {
                 position: p.pos.unwrap_or(listener),
                 class: p.class,
                 reverb: p.reverb,
+                group: crate::soundmix::SoundGroup::of(&p.trigger, self.in_menu).id(),
             };
             if let Some(t) = p.track {
                 if let Some(old) = self.tracked.remove(&t) {
@@ -1937,6 +1998,7 @@ impl SoundDirector {
     // EVIDENCE: cshell+0x1b20c0 (the interface play helper; the front end has no listener: local voices)
     pub fn menu_cues(&mut self, cues: &[SoundCue]) {
         let now = self.last_now.unwrap_or(0);
+        self.in_menu = true;
         for c in cues {
             match c {
                 SoundCue::Interface { file, what } => self.interface(now, [0.0; 3], file.clone(), what),
@@ -1951,6 +2013,7 @@ impl SoundDirector {
                 _ => {}
             }
         }
+        self.in_menu = false;
     }
 
     /// One music step outside a match (the menu, the loading screen): installs a finished decode, advances the
@@ -2126,7 +2189,8 @@ impl SoundDirector {
                 start,
                 file,
                 at_load,
-            } => self.server_sound(now, listener, start, file.clone(), *at_load),
+                impact,
+            } => self.server_sound(now, listener, start, file.clone(), *at_load, *impact),
             SoundCue::Move { track, pos } => {
                 if let Some(&id) = self.tracked.get(track) {
                     self.mixer().set_voice_position(id, *pos);
@@ -2775,6 +2839,7 @@ impl SoundDirector {
         s: &WireSound,
         file: Option<String>,
         at_load: bool,
+        impact: bool,
     ) {
         let fl = s.flags;
         let kind = if fl & flag::LOCAL_IF_OWN != 0 {
@@ -2789,6 +2854,7 @@ impl SoundDirector {
         let trigger = match (s.track, at_load) {
             (Some(t), true) => Trigger::LoadSound { track: t },
             (Some(t), false) => Trigger::TrackedSound { track: t },
+            (None, _) if impact => Trigger::Impact,
             (None, _) => Trigger::OneShot,
         };
         match trigger {
@@ -3704,11 +3770,13 @@ ReloadSndRadius=50
                 start: wind,
                 file: None,
                 at_load: true,
+                impact: false,
             },
             SoundCue::Server {
                 start: pain,
                 file: None,
                 at_load: false,
+                impact: false,
             },
             SoundCue::Player {
                 k: 3,
@@ -3803,11 +3871,13 @@ ReloadSndRadius=50
                 start: wind,
                 file: Some("TEST\\WIND.WAV".into()),
                 at_load: true,
+                impact: false,
             },
             SoundCue::Server {
                 start: hum,
                 file: Some("TEST\\WIND.WAV".into()),
                 at_load: false,
+                impact: false,
             },
         ];
         d.frame(&frame(0, &cues, &[]));
@@ -3877,6 +3947,7 @@ ReloadSndRadius=50
                 start: world_loop.clone(),
                 file: Some("TEST\\WIND.WAV".into()),
                 at_load: true,
+                impact: false,
             },
             SoundCue::Server {
                 start: WireSound {
@@ -3886,6 +3957,7 @@ ReloadSndRadius=50
                 },
                 file: Some("TEST\\WIND.WAV".into()),
                 at_load: false,
+                impact: false,
             },
             SoundCue::Interface {
                 file: Some("TEST\\INTRO.WAV".into()),
@@ -4119,7 +4191,7 @@ ReloadSndRadius=50
         });
         assert!(note.starts_with("audio out: null backend"), "{note}");
         assert!(
-            note.ends_with("effects volume 50 music volume 100"),
+            note.ends_with("effects volume 50 music volume 100; limiter off; voice caps off"),
             "{note}"
         );
         assert!(!d.has_device());
@@ -4465,5 +4537,59 @@ ReloadSndRadius=50
             (0, 1, 1)
         );
         assert!(d.rig_stats.hwm_pending <= RIG_PENDING);
+    }
+
+    /// CLI-1961: a bullet impact plays in the impacts group at the "Explosions / Map" slider's volume; the caps
+    /// are off unless switched on, then each group gets its default cap.
+    #[test]
+    fn impacts_have_their_own_group_and_the_caps_follow_the_switch() {
+        use crate::soundmix::SoundGroup;
+        const HIT: &str = r"TEST\HIT.WAV";
+        let mut d = SoundDirector::open(None);
+        d.set_sound(
+            HIT,
+            Pcm {
+                rate: 22_050,
+                channels: 1,
+                samples: vec![0.1; 22_050],
+            },
+        );
+        let mut mix = crate::soundmix::DEFAULT_MIX;
+        mix[SoundGroup::World.index()] = 40;
+        let note = d.configure(&AudioConfig {
+            mix,
+            ..AudioConfig::default()
+        });
+        assert!(note.ends_with("voice caps off"), "{note}");
+        let id = SoundGroup::Impacts.id();
+        assert_eq!(d.mixer().group_volume(id), 40);
+        assert_eq!(d.mixer().group_cap(id), None);
+        let cue = crate::fx::impact_cue(HIT.into(), glam::Vec3::new(0.0, 0.0, 100.0), 800.0, true);
+        d.frame(&frame(0, &[cue], &[]));
+        let impacts = |d: &SoundDirector| {
+            d.log
+                .iter()
+                .filter(|e| e.trigger == Trigger::Impact)
+                .count()
+        };
+        assert_eq!(impacts(&d), 1);
+        assert_eq!(
+            d.starts_of("one_shot").len(),
+            1,
+            "logged with the label it always had"
+        );
+        assert_eq!(d.mixer().group_live_voices(id), 1);
+        // a blast's sound stays a one-shot of the world group
+        let blast =
+            crate::fx::impact_cue(HIT.into(), glam::Vec3::new(0.0, 0.0, 100.0), 800.0, false);
+        d.frame(&frame(16, &[blast], &[]));
+        assert_eq!(d.starts_of("one_shot").len(), 2);
+        assert_eq!(impacts(&d), 1, "the blast is no impact");
+        d.configure(&AudioConfig {
+            voice_caps: true,
+            ..AudioConfig::default()
+        });
+        assert_eq!(d.mixer().group_cap(id), Some(32));
+        assert_eq!(d.mixer().group_cap(SoundGroup::OwnFire.id()), None);
     }
 }

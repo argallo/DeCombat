@@ -1,0 +1,37 @@
+[package]
+name = "dc-localhost"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat local matches: one match description and the game server's launch line and control lines built from it"
+
+[lib]
+name = "dc_localhost"
+path = "src/lib.rs"
+
+[dependencies]
+# dc-wire (ours, an engine crate): the seat ticket type and its `user` line form (LG-327).
+dc-wire = { path = "../dc-wire" }
+# serde (derive): the match description is read from and written to JSON; the same version and features as dc-config.
+serde = { version = "1", features = ["derive"] }
+# getrandom 0.2 (MIT OR Apache-2.0, already in the lock through the workspace's TLS and UI stacks): the seat tickets
+# and the join secret of a local match come from the operating system's random source.
+getrandom = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# windows-sys 0.59 (MIT OR Apache-2.0, already in the lock, the version dc-hangdump and the lobby use): the job object
+# that kills a local match's server and bots with their parent.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# dc-dserver (ours): the tests feed the built launch line and control lines to the game server's own parsers.
+dc-dserver = { path = "../dc-dserver" }
+# dc-net-engine (ours): the loopback socket reader of the supervisor test's player client.
+dc-net-engine = { path = "../dc-net-engine" }
+# serde_json (vetted, CLEANROOM.md 4a): the round-trip test of the JSON form.
+serde_json = "1"

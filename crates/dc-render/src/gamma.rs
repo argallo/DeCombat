@@ -7,7 +7,6 @@
 //! at start and sets the three engine gamma values to it.
 
 use crate::gpu::GpuContext;
-use std::path::Path;
 
 /// The game's gamma when the profile has no gamma entry.
 // EVIDENCE: cshell+0x1ea350 (display section of the profile: the gamma entry read with the float default 0x3f9c28f6
@@ -54,12 +53,13 @@ pub fn apply_ramp(rgba: &mut [u8], ramp: &[u16; 256]) {
 /// Where the 2009 client keeps the player's profile (relative to the client folder).
 // OBSERVED: CA_ROM `Profiles/` holds the player's profile (written by the 2009 client's options page, read at start)
 // and three detail presets with the same display section
-const PROFILE_FILE: &str = "Profiles/player.txt";
+pub const PROFILE_FILE: &str = "Profiles/player.txt";
 /// The profile key string in the user's CShell.dll: the constructor of the profile object stores its address.
 // EVIDENCE: cshell+0x259930 (profile object constructor: key pointer = VA of rva 0x3ee6e4); only the SHA-256 of the
 // string is kept here
-const PROFILE_KEY_RVA: u32 = 0x3ee6e4;
-const PROFILE_KEY_SHA256: &str = "050ec4c5d1f667e1c803635636f11e1f3f832ad40cd24dd6ff7915703bf92057";
+pub const PROFILE_KEY_RVA: u32 = 0x3ee6e4;
+pub const PROFILE_KEY_SHA256: &str =
+    "050ec4c5d1f667e1c803635636f11e1f3f832ad40cd24dd6ff7915703bf92057";
 /// Display section and gamma entry of the profile (`sha256(name)[:16]`, length).
 // EVIDENCE: cshell+0x1ea350 (section and entry names read there), cshell+0x1e91d0 (written back at save)
 const SECTION_DISPLAY: (&str, usize) = ("34e108c0896d0158", 7);
@@ -96,30 +96,6 @@ fn entry_of_profile_text(text: &str, section: (&str, usize), entry: (&str, usize
         }
     }
     None
-}
-
-/// The gamma of the user's profile in the client folder `rom` (decrypted with the client's own profile key, read
-/// from its CShell.dll by RVA and accepted by its pinned SHA-256); `None` when anything is missing.
-// SPEC: same framing as the archive attributes (Blowfish ECB over byte-swapped words, plain tail), dc-rez;
-// OBSERVED: the four CA_ROM profiles decrypt this way to plain text with a display section
-pub fn profile_gamma(rom: &Path) -> Option<f32> {
-    let key = profile_key(rom)?;
-    let raw = std::fs::read(rom.join(PROFILE_FILE)).ok()?;
-    dc_rom::journal::note(
-        || format!("file:{}", rom.join(PROFILE_FILE).display()),
-        &raw,
-    );
-    let plain = dc_rez::decrypt_with_key(&raw, &key).ok()?;
-    gamma_of_profile_text(&String::from_utf8_lossy(&plain))
-}
-
-/// The client's own profile key (read from the user's CShell.dll by RVA, accepted by its pinned SHA-256); `None`
-/// when the binary is missing or does not match. The options screen of dc-client reads and writes the profile with
-/// it (w3-options).
-// EVIDENCE: cshell+0x259930 (see PROFILE_KEY_RVA)
-pub fn profile_key(rom: &Path) -> Option<Vec<u8>> {
-    let pe = dc_rom::PeFile::from_file(&rom.join("Game").join("CShell.dll")).ok()?;
-    dc_rom::crypt_key_from_pe(&pe, PROFILE_KEY_RVA, PROFILE_KEY_SHA256).ok()
 }
 
 /// Final copy of a frame through the gamma ramp: the frame is drawn into [`GammaStage::view`] (an intermediate

@@ -174,6 +174,11 @@ where
     let st = stats.clone();
     let st_err = stats.clone();
     let mut lr: Vec<f32> = Vec::new();
+    // the limiter's meter (atomics): read after each render without allocating
+    let meter = mixer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .limiter_meter();
     dev.build_output_stream(
         config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
@@ -193,6 +198,11 @@ where
                     }
                     Err(_) => None,
                 };
+            let limiter = (
+                meter.enabled(),
+                meter.limited_frames(),
+                meter.reduction_db(),
+            );
             if silent.is_none() {
                 block.fill(0.0);
             }
@@ -208,6 +218,7 @@ where
                 s.silent_callbacks += 1;
             }
             s.on_block(block);
+            s.on_limiter(limiter.0, limiter.1, limiter.2);
         },
         move |e| lock_stats(&st_err).on_error(e.to_string()),
         None,

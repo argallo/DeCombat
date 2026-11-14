@@ -91,7 +91,41 @@ pub mod anchors {
     /// `shooter::FLICKER_MS` and aims at the chest or head when the line to its aim point is blocked
     /// (`shooter::PEEK_FRACTIONS`): from level 70.
     pub const KEEP_SIGHT: [(u8, f32); 3] = [(0, 0.0), (65, 0.0), (75, 1.0)];
+    /// BOT-178: BOT-23's widening of the rifle aim error by level: the full `shooter::AIM_ERROR_SCALE` (1.7) up to 50
+    /// (the average player hits about one shot in seven at 300..400 u), fading to 1.1 at 85 and to none at 100, so
+    /// the error the good band shoots with (sigma x scale: 2.40 deg at 65, 1.33 at 80, 1.03 at 85) is clearly below
+    /// the average band's (3.74 at 50) instead of 1.9 deg at 80 (what 57 had before). Applied in full only from
+    /// `FULL_WIDEN_U`, none within `NO_WIDEN_U` ([`super::Skill::aim_error_scale`]).
+    // DC-DEFAULT: BOT-178 (proposed) 1.7 to 50, 1.1 at 85, 1.0 at 100
+    pub const AIM_SCALE: [(u8, f32); 4] = [
+        (0, crate::shooter::AIM_ERROR_SCALE),
+        (50, crate::shooter::AIM_ERROR_SCALE),
+        (85, 1.1),
+        (100, 1.0),
+    ];
+    /// BOT-178: within `CLOSE_BURST_RANGE` a burst is this many times longer (BOT-24's range scaled): the average
+    /// band and below keep their taps, a good player holds the trigger (skill 80: 15..26 shots, about a clip).
+    // DC-DEFAULT: BOT-178 (proposed) 1.0 to 50, 2.0 at 65, 2.5 at 85, 3.0 at 100
+    pub const CLOSE_BURST_MULT: [(u8, f32); 5] = [(0, 1.0), (50, 1.0), (65, 2.0), (85, 2.5), (100, 3.0)];
+    /// BOT-178: within `CLOSE_BURST_RANGE` the pause between bursts is this share of BOT-24's pause, never below
+    /// `CLOSE_PAUSE_FLOOR_MS` (a finger lifted and pressed again): every level pauses less near the target.
+    // DC-DEFAULT: BOT-178 (proposed) 0.75 at 0, 0.6 at 50, 0.4 at 65, 0.3 at 85, 0.25 at 100
+    pub const CLOSE_PAUSE_SHARE: [(u8, f32); 5] = [(0, 0.75), (50, 0.6), (65, 0.4), (85, 0.3), (100, 0.25)];
 }
+
+/// BOT-178: within this distance to the target the rifle aim error is not widened (BOT-23) at any level; the
+/// widening grows linearly to its full value at [`FULL_WIDEN_U`]. The close-range floor (BOT-135) still keeps a
+/// near target from being a sure hit.
+// DC-DEFAULT: BOT-178 (proposed) 150 units, full from 300 units
+pub const NO_WIDEN_U: f32 = 150.0;
+pub const FULL_WIDEN_U: f32 = 300.0;
+/// BOT-178: a burst begun or ended nearer the target than this uses [`anchors::CLOSE_BURST_MULT`] and
+/// [`anchors::CLOSE_PAUSE_SHARE`] (a person with a rifle holds the trigger at close range).
+// DC-DEFAULT: BOT-178 (proposed) 300 units
+pub const CLOSE_BURST_RANGE: f32 = 300.0;
+/// BOT-178: the least pause between two close-range bursts, ms (before BOT-24's +-25 %).
+// DC-DEFAULT: BOT-178 (proposed) 200 ms
+pub const CLOSE_PAUSE_FLOOR_MS: u32 = 200;
 
 /// The aiming parameters of one skill level.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -167,6 +201,12 @@ pub struct Skill {
     /// BOT-170: how much farther a weakened enemy may be than the nearest and still be taken
     /// ([`anchors::WEAK_RATIO`]).
     pub weak_ratio: f32,
+    /// BOT-178: BOT-23's rifle error widening at this level ([`anchors::AIM_SCALE`]); see [`Skill::aim_error_scale`].
+    pub aim_scale: f32,
+    /// BOT-178: the close-range burst factor ([`anchors::CLOSE_BURST_MULT`]).
+    pub close_burst_mult: f32,
+    /// BOT-178: the close-range pause share ([`anchors::CLOSE_PAUSE_SHARE`]).
+    pub close_pause_share: f32,
 }
 
 /// BOT-135: the distance up to which the close-range floor holds (the skill's angular error there), units.
@@ -252,6 +292,42 @@ impl Skill {
             aim_lift: at(&anchors::AIM_LIFT),
             keep_sight: at(&anchors::KEEP_SIGHT) >= 0.5,
             weak_ratio: at(&anchors::WEAK_RATIO),
+            aim_scale: at(&anchors::AIM_SCALE),
+            close_burst_mult: at(&anchors::CLOSE_BURST_MULT),
+            close_pause_share: at(&anchors::CLOSE_PAUSE_SHARE),
+        }
+    }
+
+    /// BOT-178: the factor a rifle's per-shot error is widened by at a target `dist` units away: none within
+    /// [`NO_WIDEN_U`], the level's [`Skill::aim_scale`] from [`FULL_WIDEN_U`], linear between.
+    pub fn aim_error_scale(&self, dist: f32) -> f32 {
+        let ramp = ((dist - NO_WIDEN_U) / (FULL_WIDEN_U - NO_WIDEN_U)).clamp(0.0, 1.0);
+        1.0 + (self.aim_scale - 1.0) * ramp
+    }
+
+    /// BOT-24 / BOT-178: the shots of a burst begun at a target `dist` units away, least and most (at least 1):
+    /// BOT-24's range, times [`Skill::close_burst_mult`] nearer than [`CLOSE_BURST_RANGE`].
+    pub fn burst_at(&self, dist: f32) -> (u32, u32) {
+        let m = if dist < CLOSE_BURST_RANGE {
+            self.close_burst_mult
+        } else {
+            1.0
+        };
+        let lo = (self.burst_min as f32 * m).round().max(1.0) as u32;
+        let hi = (self.burst_max as f32 * m).round().max(lo as f32) as u32;
+        (lo, hi)
+    }
+
+    /// BOT-24 / BOT-178: the pause after a burst ended at a target `dist` units away, ms (before BOT-24's +-25 %):
+    /// nearer than [`CLOSE_BURST_RANGE`] [`Skill::close_pause_share`] of it, at least [`CLOSE_PAUSE_FLOOR_MS`]
+    /// (never more than the far pause).
+    pub fn burst_pause_at(&self, dist: f32) -> u32 {
+        if dist < CLOSE_BURST_RANGE {
+            ((self.burst_pause_ms as f32 * self.close_pause_share).round() as u32)
+                .max(CLOSE_PAUSE_FLOOR_MS)
+                .min(self.burst_pause_ms)
+        } else {
+            self.burst_pause_ms
         }
     }
 
@@ -695,5 +771,62 @@ mod tests {
             let d = r.in_cone(f0, 0.05);
             assert!(d[2].acos() <= 0.0501, "{d:?}");
         }
+    }
+
+    /// BOT-178: BOT-23's widening is the full 1.7 to level 50 (the average player), falls with the level above (1.1 at
+    /// 85, none at 100), so the error a skill-80 bot shoots with is well below the average band's; near the target
+    /// (within 150 u) no level is widened, and the widening grows to its full value at 300 u.
+    #[test]
+    fn the_aim_widening_fades_with_skill_and_near_the_target() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        for l in [0u8, 20, 30, 50] {
+            assert!(close(Skill::new(l).aim_scale, 1.7), "{l}");
+        }
+        assert!(close(Skill::new(85).aim_scale, 1.1));
+        assert!(close(Skill::new(100).aim_scale, 1.0));
+        let mut prev = f32::MAX;
+        for l in (50..=100u8).step_by(5) {
+            let s = Skill::new(l);
+            assert!(s.aim_scale <= prev && (1.0..=1.7).contains(&s.aim_scale), "{l}");
+            prev = s.aim_scale;
+        }
+        // the effective far error (sigma x scale): 80 shoots well inside the average band's error
+        let eff = |l: u8| Skill::new(l).aim_sigma_deg * Skill::new(l).aim_error_scale(1000.0);
+        assert!(eff(80) < 1.45 && eff(80) < 0.4 * eff(50), "{} {}", eff(80), eff(50));
+        assert!(eff(30) > eff(50) && eff(50) > eff(65) && eff(65) > eff(80) && eff(80) > eff(100));
+        // near the target: none within 150 u, linear to the full scale at 300 u
+        for l in [30u8, 50, 80] {
+            let s = Skill::new(l);
+            assert!(close(s.aim_error_scale(20.0), 1.0) && close(s.aim_error_scale(NO_WIDEN_U), 1.0));
+            assert!(close(s.aim_error_scale(225.0), 1.0 + (s.aim_scale - 1.0) * 0.5), "{l}");
+            assert!(close(s.aim_error_scale(FULL_WIDEN_U), s.aim_scale));
+            assert!(close(s.aim_error_scale(900.0), s.aim_scale));
+        }
+    }
+
+    /// BOT-178: within 300 u a good player (65 and up) holds the trigger (bursts two to three times as long, pauses
+    /// near the 200 ms floor); the average band and below keep BOT-24's taps but pause less; beyond 300 u nothing
+    /// changes.
+    #[test]
+    fn close_range_bursts_are_held_by_good_players_and_tapped_by_the_rest() {
+        for l in [0u8, 30, 50, 65, 80, 100] {
+            let s = Skill::new(l);
+            assert_eq!(s.burst_at(CLOSE_BURST_RANGE), (s.burst_min, s.burst_max), "{l}");
+            assert_eq!(s.burst_pause_at(600.0), s.burst_pause_ms, "{l}");
+            let p = s.burst_pause_at(100.0);
+            assert!(p >= CLOSE_PAUSE_FLOOR_MS && (p < s.burst_pause_ms || l == 100), "{l}: {p}");
+        }
+        for l in [0u8, 30, 50] {
+            let s = Skill::new(l);
+            assert_eq!(s.burst_at(100.0), (s.burst_min, s.burst_max), "{l}");
+        }
+        let s30 = Skill::new(30);
+        assert!((400..=500).contains(&s30.burst_pause_at(100.0)), "{}", s30.burst_pause_at(100.0));
+        let s80 = Skill::new(80);
+        let (lo, hi) = s80.burst_at(100.0);
+        assert!(lo >= 14 && hi >= 24, "{lo}..{hi}");
+        assert_eq!(s80.burst_pause_at(100.0), CLOSE_PAUSE_FLOOR_MS);
+        let s65 = Skill::new(65);
+        assert_eq!(s65.burst_at(250.0), (2 * s65.burst_min, 2 * s65.burst_max));
     }
 }

@@ -1676,7 +1676,9 @@ impl Arsenal {
     /// The cone's random table (loaded once: the ROM entry when the ROM has one, else the generator).
     pub fn shot_table(&mut self) -> std::sync::Arc<crate::cone::ShotTable> {
         if self.shot_table.is_none() {
-            let t = crate::cone::ShotTable::open(self.cfg.rom.as_deref());
+            let t = crate::cone::ShotTable::open(
+                self.cfg.rom.as_deref().map(dc_rez::RezVfs::new).as_deref(),
+            );
             self.shot_table = Some(std::sync::Arc::new(t));
         }
         self.shot_table.clone().expect("loaded above")

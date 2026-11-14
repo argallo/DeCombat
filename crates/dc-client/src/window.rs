@@ -2962,6 +2962,12 @@ impl App {
         // the death panel shows the followed player (CLI-128)
         if let Some(h) = live.hud.as_mut() {
             h.set_observed(crate::deathcam::observed(live.death_cam.mode(), &fs.remotes));
+            // CLI-1957: the kill card over the kill zoom
+            h.set_kill_card(crate::killzoom::hud_card(live.death_cam.shown_card()));
+        }
+        // CLI-1956: the killer stands frozen as he was at the kill while the kill zoom runs
+        if let Some(b) = live.death_cam.frozen_killer() {
+            crate::killzoom::freeze_into(&mut fs.remotes, b);
         }
         // the own camera draws the hit jar's offsets and the recoil's kick-back (crate::camfx)
         let own_view = fs.death.is_none();

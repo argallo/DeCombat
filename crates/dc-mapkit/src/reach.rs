@@ -268,7 +268,11 @@ impl Nodes {
 }
 
 /// Runs `f(0) .. f(count - 1)` on `threads` scoped threads and returns the answers in order.
-fn parallel<T: Send>(count: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+pub(crate) fn parallel<T: Send>(
+    count: usize,
+    threads: usize,
+    f: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
     let next = AtomicUsize::new(0);
     let mut parts: Vec<(usize, T)> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads.clamp(1, count.max(1)))

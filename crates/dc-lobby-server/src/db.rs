@@ -349,6 +349,8 @@ pub fn prepare(conn: &Connection) -> DbResult<()> {
     }
     // LG-69: the local accounts of identity tokens (a new table: older DBs get it empty)
     conn.execute_batch(IDENTITY_LINKS)?;
+    // SES-1: device sessions (a new table: older DBs get it empty)
+    crate::devsession::db::prepare(conn)?;
     // LG-310..LG-312: the NX reward claims (new tables: older DBs get them empty)
     conn.execute_batch(NX_REWARDS)?;
     // MON-2 / MON-3: the operator monitor's tables (new tables: older DBs get them empty)

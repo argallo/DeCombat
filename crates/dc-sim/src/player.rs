@@ -174,6 +174,11 @@ impl Default for TickInput<'_> {
     }
 }
 
+/// How far a wedged body may be moved to free it (SIM-28), in units: about six body radii.
+// DC-DEFAULT: SIM-28 (proposed) 96 units (Gray Hammer case, 2026-11-10: the 26-direction search frees it at 64, the
+// nearest reachable spot on a 4-unit grid is 54.6 away; the margin covers wedges a little deeper than that one)
+pub const UNWEDGE_MAX: u32 = 96;
+
 /// Movement events of one step; they map to the reliable notice `[0x76][1][e]`.
 // SPEC: MOVEMENT_2009.md §12.3 (e = 1 jump take-off, 2 started falling, 3 landed)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -186,6 +191,8 @@ pub struct StepEvents {
     pub landed_from_jump: bool,
     /// The physics step moved the body (displacement above the threshold).
     pub moved: bool,
+    /// The body was wedged inside world geometry and was moved to the nearest spot it fits (SIM-28).
+    pub unwedged: bool,
 }
 
 impl StepEvents {
@@ -400,6 +407,7 @@ impl PlayerState {
             frame_dt
         };
         let clock_before = self.clock;
+        let (pos_before, vel_before) = (self.pos, self.vel);
         self.clock += frame_dt as f64;
         let mut ev = StepEvents::default();
         // step 3: sample commands into the control word (this also sets the gauge mode)
@@ -428,8 +436,51 @@ impl PlayerState {
         }
         // step 8: physics step
         self.phys_step(p, w, dt, &mut ev);
+        self.unwedge(w, input, pos_before, vel_before, clock_before, &mut ev);
         self.update_eye(p, input, clock_before);
         ev
+    }
+
+    /// A body that should move but did not move at all, and is wedged inside world geometry, goes to the nearest
+    /// spot it fits (SIM-28). Only the exact no-movement case is looked at, so a moving body, a body at rest and a
+    /// body against a wall it does not overlap never reach the wedge test: their steps are bit for bit the 2009 ones.
+    // DC-DEFAULT: SIM-28 (proposed) wedge test only when the step left the position exactly unchanged while the body
+    // had velocity or a movement command; escape within UNWEDGE_MAX units, then the body is airborne and falls as usual
+    fn unwedge<W: Collider + ?Sized>(
+        &mut self,
+        w: &W,
+        input: &TickInput<'_>,
+        pos_before: V3,
+        vel_before: V3,
+        clock_before: f64,
+        ev: &mut StepEvents,
+    ) {
+        // a frozen body or one without movement is held where it is on purpose
+        if self.pos != pos_before || !input.movement_allowed || self.freeze.is_some() {
+            return;
+        }
+        let c = &input.commands;
+        if vel_before == V3::ZERO && !(c.forward || c.backward || c.left || c.right || c.jump) {
+            return;
+        }
+        let shape = self.shape();
+        if !crate::motion::wedged(w, &shape, self.pos) {
+            return;
+        }
+        // the search runs when the step's clock crosses a quarter second, not every step: a body wedged where no
+        // escape exists costs the wedge test only (the clock is the same on the server and in prediction)
+        // DC-DEFAULT: SIM-28 (proposed) at most 4 searches per second
+        // (the clock is never negative, so the cast truncates like floor; f64::floor needs std)
+        if (clock_before * 4.0) as i64 == (self.clock * 4.0) as i64 {
+            return;
+        }
+        if let Some(to) = crate::motion::escape_wedge(w, &shape, self.pos, UNWEDGE_MAX) {
+            self.pos = to;
+            self.vel = V3::ZERO;
+            self.contact = None;
+            self.on_ground = false;
+            ev.unwedged = true;
+        }
     }
 
     /// Commands to control word.

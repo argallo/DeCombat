@@ -4,7 +4,7 @@
 use crate::error::{latin1_cstr, Bin, FxError};
 use crate::registry::{name_id, FxType};
 use crate::text::{Line, Lines};
-use dc_rom::sha256_hex;
+use dc_core::sha256_hex;
 use std::collections::BTreeMap;
 
 /// Most properties per key the loader reads. // EVIDENCE: cshell+0x29c4a0 (scratch 0x200)

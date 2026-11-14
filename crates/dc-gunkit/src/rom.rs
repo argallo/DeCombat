@@ -9,6 +9,15 @@ pub fn is_rom(dir: &Path) -> bool {
         && (dir.join("Engine.exe").is_file() || dir.join("Game").join("CShell.dll").is_file())
 }
 
+/// The replacement texture name of the arm placeholders in the user's CShell.dll (by RVA, accepted only when its
+/// name key matches), as the client reads it.
+// DISASM: cshell+0x23b956 (see dc_render::PV_NONE_TEXTURE_RVA)
+pub fn pv_none_texture(rom: &Path) -> Option<String> {
+    let pe = dc_rez::dc_rom::PeFile::from_file(&rom.join("Game").join("CShell.dll")).ok()?;
+    let s = pe.cstr(dc_render::PV_NONE_TEXTURE_RVA).ok()?;
+    (dc_render::name_key(s.as_bytes()) == dc_render::PV_NONE_TEXTURE_KEY).then_some(s)
+}
+
 /// The game folders directly in `dir`, by name.
 fn roms_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(list) = std::fs::read_dir(dir) else {

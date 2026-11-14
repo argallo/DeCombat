@@ -933,6 +933,8 @@ pub struct DeathView {
     /// Players this client saw die and not come back yet: the follow camera skips them (the roster search's dead
     /// flag, cshell+0x29090).
     pub dead: PidSet,
+    /// CLI-1956: the killer's card on a server that offers kill cards (the death camera's kill zoom).
+    pub kill_card: Option<crate::killzoom::Zoomable>,
 }
 
 /// A set of roster ids.
@@ -1348,7 +1350,7 @@ impl RomWorld {
 
     /// Map names of the user's world archive, sorted.
     pub fn map_names(rom: &Path) -> Result<Vec<String>, ClientError> {
-        Ok(dc_render::WorldSource::open(rom)
+        Ok(dc_rez::WorldArchive::open(rom)
             .map_err(|e| ClientError::Rom(e.to_string()))?
             .map_names())
     }
@@ -1382,14 +1384,17 @@ impl WorldSource for RomWorld {
         let t = Instant::now();
         let (stand, crouch) = self.stance_dims()?;
         let worlds =
-            dc_render::WorldSource::open(&self.rom).map_err(|e| ClientError::Rom(e.to_string()))?;
+            dc_rez::WorldArchive::open(&self.rom).map_err(|e| ClientError::Rom(e.to_string()))?;
+        let io = dc_render::perf::span(dc_render::perf::Counter::IoNs);
         let data = worlds
             .read(&self.map)
             .map_err(|e| ClientError::Rom(e.to_string()))?
             .ok_or_else(|| ClientError::NoSuchMap(self.map.clone()))?;
+        drop(io);
+        dc_render::perf::add(dc_render::perf::Counter::IoBytes, data.len() as u64);
         let index = match gpu {
             Some(_) => {
-                TextureIndex::open(&self.rom).map_err(|e| ClientError::Rom(e.to_string()))?
+                dc_rez::RomLayer::indexed(&self.rom).map(TextureIndex::new).map_err(|e| ClientError::Rom(e.to_string()))?
             }
             None => TextureIndex::default(),
         };
@@ -1716,13 +1721,16 @@ impl WorldSource for ModWorld {
             // composed from a copy: on an error the map's own bytes stay, and a later attempt reports the same
             // error instead of an empty file
             self.bytes =
-                dc_world::compose::compose_with_rom(self.bytes.clone(), self.rom.as_deref())
+                dc_world::compose::compose_with_rom(
+                    self.bytes.clone(),
+                    self.rom.as_deref().map(dc_rez::RezVfs::new).as_deref(),
+                )
                     .map_err(|e| ClientError::World(format!("{}: {e}", self.name)))?;
         }
         let (stand, crouch) = self.stance_dims()?;
         let index = match (gpu.as_ref(), &self.rom) {
             (Some(_), Some(rom)) => {
-                TextureIndex::open(rom).map_err(|e| ClientError::Rom(e.to_string()))?
+                dc_rez::RomLayer::indexed(rom).map(TextureIndex::new).map_err(|e| ClientError::Rom(e.to_string()))?
             }
             _ => TextureIndex::default(),
         };

@@ -3,7 +3,6 @@
 //! ROM at run time and printed only.
 //! Usage: `cargo run -p dc-render --example world_models -- <map> [<x> <y> <z> <radius>]`.
 
-use dc_render::WorldSource;
 use dc_world::{FieldValue, World};
 
 fn main() {
@@ -14,7 +13,7 @@ fn main() {
         ([f(1), f(2), f(3)], f(4))
     });
     let rom = dc_rom::resolve_rom().expect("CA_ROM");
-    let src = WorldSource::open(&rom).expect("world archive");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
     let data = src.read(map).expect("read").expect("present");
     let w = World::parse(&data).expect("parse");
     let r = w.render.as_ref().expect("render");

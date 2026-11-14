@@ -259,7 +259,13 @@ fn a_key_enrols_through_the_one_time_link_and_signs_in() {
     assert_eq!(t.enroll_with(&mut k2, &token, "").0, 403);
     // signing in gives a session for the dashboard
     let s = t.login(&mut k);
-    let ops = t.get("/ops", Some(&s));
+    // LG-444: /ops is the app's page; the earlier page, with the key link, is at /ops/classic
+    let app = t.get("/ops", Some(&s));
+    assert_eq!(app.status, 200);
+    assert!(
+        app.body.contains("src=\"/ops/app.js?v=") && inline_script_hashes(&app.body).is_empty()
+    );
+    let ops = t.get("/ops/classic", Some(&s));
     assert_eq!(ops.status, 200);
     assert!(
         ops.body.contains("<title>DeCombat ops</title>") && ops.body.contains("href=\"/keys\"")
@@ -356,7 +362,7 @@ fn pages_carry_a_csp_without_inline_script_except_the_hashed_dashboard_scripts()
     let mut k = SoftKey::new(&t.ca);
     t.enroll(&mut k, "a");
     let s = t.login(&mut k);
-    let ops = t.get("/ops", Some(&s));
+    let ops = t.get("/ops/classic", Some(&s));
     assert_eq!(inline_script_hashes(&ops.body), vec![want[0].clone()]);
     let beta = t.get("/ops/beta", Some(&s));
     assert!(
@@ -508,7 +514,14 @@ fn requests_without_a_session_get_nothing_of_the_dashboard() {
     let t = setup();
     let mut k = SoftKey::new(&t.ca);
     t.enroll(&mut k, "a");
-    for p in ["/ops", "/ops/beta", "/keys"] {
+    for p in [
+        "/ops",
+        "/ops/",
+        "/ops/classic",
+        "/ops/next",
+        "/ops/beta",
+        "/keys",
+    ] {
         let r = t.get(p, None);
         assert_eq!(
             (r.status, r.headers.as_str()),
@@ -1198,7 +1211,11 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
     t.enroll(&mut k, "a");
 
     // no session: the pages go to the sign-in, everything else is 401; nothing reaches the instance
-    for p in ["/i/modded/ops", "/i/modded/ops/beta"] {
+    for p in [
+        "/i/modded/ops",
+        "/i/modded/ops/classic",
+        "/i/modded/ops/beta",
+    ] {
         let r = t.get(p, None);
         assert_eq!(
             (r.status, r.headers.as_str()),
@@ -1224,7 +1241,7 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
         st.beta.csrf(&mut st.keys)
     };
     // the page: the session's token in place of the instance's, the switcher, the lobby named, no Updates tab
-    let page = t.get("/i/modded/ops", Some(&s));
+    let page = t.get("/i/modded/ops/classic", Some(&s));
     assert_eq!(page.status, 200, "{}", page.body);
     assert!(page.ctype.starts_with("text/html"));
     assert!(page
@@ -1241,10 +1258,12 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
         .contains("<select data-inst aria-label=\"Lobby\">"));
     assert!(page
         .body
-        .contains("<option value=\"/ops\">Vanilla lobby</option>"));
+        .contains("<option value=\"/ops/classic\">Vanilla lobby</option>"));
     assert!(page
         .body
-        .contains("<option value=\"/i/modded/ops\" selected>Hacking Mod lobby</option>"));
+        .contains("<option value=\"/i/modded/ops/classic\" selected>Hacking Mod lobby</option>"));
+    // LG-444: the earlier page links the app's page (its script puts the link below the instance's prefix)
+    assert!(page.body.contains("id=\"new-link\">New dashboard</a>"));
     assert!(page.body.contains("<body class=\"other-lobby\">"));
     assert!(!page.body.contains("href=\"#updates\""));
     assert!(page.body.contains("<a href=\"/keys\">Security keys</a>"));
@@ -1263,13 +1282,13 @@ fn a_further_instance_is_served_under_its_prefix_behind_the_same_session() {
         assert!(csp.contains(&h), "{h}");
     }
     // the default lobby's page names itself and keeps its Updates tab
-    let own = t.get("/ops", Some(&s));
+    let own = t.get("/ops/classic", Some(&s));
     assert!(own
         .body
         .contains("<title>Vanilla lobby | DeCombat ops</title>"));
     assert!(own
         .body
-        .contains("<option value=\"/ops\" selected>Vanilla lobby</option>"));
+        .contains("<option value=\"/ops/classic\" selected>Vanilla lobby</option>"));
     assert!(
         own.body.contains("href=\"#updates\"")
             && !own.body.contains("<body class=\"other-lobby\">")
@@ -2214,4 +2233,172 @@ fn a_done_mark_needs_a_session_the_page_token_and_a_stored_report() {
     assert_eq!(lo(post("wrong"), Some("t")), 403, "the port's page token");
     assert_eq!(lo(post(&tok), Some("t")), 200);
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The JSON of a served app page's `data-boot` attribute.
+fn boot_of(page: &str) -> Value {
+    let raw = page
+        .split("data-boot=\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .expect("the page has boot data");
+    let text = raw
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    serde_json::from_str(&text).expect("the boot data is JSON")
+}
+
+// LG-441 / LG-442: the dashboard app's page and its two files on the admin web: behind the session, the session's
+// page token, the lobbies as boot data, a policy that allows the listener's own stylesheet and no inline script
+#[test]
+fn the_app_page_and_its_files_are_served_behind_the_session() {
+    // the instance's port is closed: its app page must not need the instance
+    let closed = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    let t = setup_with(|c| {
+        c.label = "Vanilla <b>".into();
+        c.instances = vec![inst("modded", "Hacking Mod lobby", &closed, "")];
+    });
+    let mut k = SoftKey::new(&t.ca);
+    t.enroll(&mut k, "a");
+
+    // no session: the page goes to the sign-in, the files are refused
+    for p in ["/ops", "/i/modded/ops", "/ops/next", "/i/modded/ops/next"] {
+        let r = t.get(p, None);
+        assert_eq!(
+            (r.status, r.headers.as_str()),
+            (303, "Location: /login\r\n"),
+            "{p}"
+        );
+    }
+    for p in ["/ops/app.js", "/ops/app.css", "/ops/licenses.txt"] {
+        assert_eq!(t.get(p, None).status, 401, "{p}");
+    }
+
+    let s = t.login(&mut k);
+    // LG-444: the app's page is /ops; the address it had as a preview goes there
+    for (from, to) in [
+        ("/ops/next", "Location: /ops\r\n"),
+        ("/ops/next/", "Location: /ops\r\n"),
+        ("/i/modded/ops/next", "Location: /i/modded/ops\r\n"),
+        ("/i/modded", "Location: /i/modded/ops\r\n"),
+    ] {
+        let r = t.get(from, Some(&s));
+        assert_eq!((r.status, r.headers.as_str()), (303, to), "{from}");
+    }
+    let page = t.get("/ops", Some(&s));
+    assert_eq!((page.status, page.ctype), (200, HTML_TYPE));
+    assert_eq!(t.get("/ops/", Some(&s)).body, page.body);
+    assert!(page
+        .body
+        .contains(&format!("<meta name=\"csrf\" content=\"{}\">", s.csrf)));
+    // LG-443: the page names its two files by this build's address
+    let v = crate::opsweb::app_version();
+    assert!(
+        page.body.contains(&format!("href=\"/ops/app.css?v={v}\""))
+            && page.body.contains(&format!("src=\"/ops/app.js?v={v}\""))
+    );
+    assert!(!page.body.contains("<b>"), "a label is escaped");
+    assert!(inline_script_hashes(&page.body).is_empty());
+    assert_eq!(
+        boot_of(&page.body),
+        json!({"web": true, "label": "Vanilla <b>", "current": null,
+               "instances": [{"name": "modded", "label": "Hacking Mod lobby"}]})
+    );
+    let csp = page.csp();
+    assert!(csp.contains("style-src 'self' 'unsafe-inline';"), "{csp}");
+    assert!(csp.contains("script-src 'self' 'sha256-"), "{csp}");
+    assert!(!csp
+        .split(';')
+        .any(|d| d.trim().starts_with("script-src") && d.contains("unsafe-inline")));
+
+    // a further instance's app page: the admin web's own page with that instance marked, its files from the root
+    let other = t.get("/i/modded/ops", Some(&s));
+    assert_eq!((other.status, other.ctype), (200, HTML_TYPE));
+    assert_eq!(t.get("/i/modded/ops/", Some(&s)).body, other.body);
+    assert_eq!(boot_of(&other.body)["current"], json!("modded"));
+    assert!(other.body.contains(&format!("src=\"/ops/app.js?v={v}\"")));
+    assert!(other
+        .body
+        .contains(&format!("<meta name=\"csrf\" content=\"{}\">", s.csrf)));
+    assert_eq!(t.get("/i/nope/ops", Some(&s)).status, 404);
+    assert_eq!(t.get("/i/nope/ops/next", Some(&s)).status, 404);
+    // the earlier page of an instance is the instance's own: with its port closed there is none (the app's page
+    // above needed nothing of it)
+    assert_eq!(t.get("/i/modded/ops/classic", Some(&s)).status, 502);
+    // the earlier page of this lobby: the inline script of the template, allowed by its hash, never by a keyword
+    let classic = t.get("/ops/classic", Some(&s));
+    assert_eq!((classic.status, classic.ctype), (200, HTML_TYPE));
+    let hashes = inline_script_hashes(&classic.body);
+    assert_eq!(hashes.len(), 1);
+    assert!(classic.csp().contains(&hashes[0]));
+    assert!(classic.body.contains("id=\"new-link\">New dashboard</a>"));
+    assert!(classic
+        .body
+        .contains("<option value=\"/i/modded/ops/classic\">Hacking Mod lobby</option>"));
+    // the app's files exist at the root only: below an instance's prefix they are 404 at once (a forward to the
+    // closed port would be a 502)
+    for p in [
+        "/i/modded/ops/app.js",
+        "/i/modded/ops/app.css",
+        "/i/modded/ops/licenses.txt",
+        "/i/modded/ops/app.js/",
+    ] {
+        assert_eq!(t.get(p, Some(&s)).status, 404, "{p}");
+        assert_eq!(t.get(p, None).status, 401, "{p}");
+    }
+
+    // the files: the session only, their own types, nothing may run from them elsewhere
+    for (p, ctype) in [
+        ("/ops/app.js", crate::opsweb::JS),
+        ("/ops/app.css", crate::opsweb::CSS),
+        ("/ops/licenses.txt", crate::opsweb::TEXT),
+    ] {
+        let r = t.get(p, Some(&s));
+        assert_eq!((r.status, r.ctype), (200, ctype), "{p}");
+        assert!(r.body.len() > 1000, "{p}");
+        assert_eq!(r.csp(), "default-src 'none'; frame-ancestors 'none'", "{p}");
+        let head = String::from_utf8_lossy(&r.bytes()[..400]).to_string();
+        assert!(
+            head.contains("Cache-Control: no-store")
+                && head.contains("X-Content-Type-Options: nosniff"),
+            "{p}: {head}"
+        );
+    }
+    assert_eq!(t.get("/ops/app.js.map", Some(&s)).status, 404);
+
+    // LG-443: asked by this build's address, the script and the stylesheet may be kept by the browser alone; the
+    // page, the licence texts, another build's address and every refusal stay no-store
+    let cache_of = |r: &Resp| {
+        let head = String::from_utf8_lossy(&r.bytes()[..300]).to_string();
+        let line = head
+            .lines()
+            .find(|l| l.starts_with("Cache-Control:"))
+            .unwrap()
+            .to_string();
+        assert_eq!(head.matches("Cache-Control:").count(), 1, "{head}");
+        line
+    };
+    let kept = "Cache-Control: private, max-age=31536000, immutable";
+    let not_kept = "Cache-Control: no-store";
+    for p in ["/ops/app.js", "/ops/app.css"] {
+        let r = t.get(&format!("{p}?v={v}"), Some(&s));
+        assert_eq!((r.status, cache_of(&r).as_str()), (200, kept), "{p}");
+        let r = t.get(&format!("{p}?v=0123456789abcdef"), Some(&s));
+        assert_eq!((r.status, cache_of(&r).as_str()), (200, not_kept), "{p}");
+        let r = t.get(&format!("{p}?v={v}"), None);
+        assert_eq!((r.status, cache_of(&r).as_str()), (401, not_kept), "{p}");
+        let r = t.get(&format!("/i/modded{p}?v={v}"), Some(&s));
+        assert_eq!((r.status, cache_of(&r).as_str()), (404, not_kept), "{p}");
+    }
+    for p in ["/ops/classic", "/ops/licenses.txt", "/ops/live", "/ops"] {
+        let r = t.get(&format!("{p}?v={v}"), Some(&s));
+        assert_eq!((r.status, cache_of(&r).as_str()), (200, not_kept), "{p}");
+    }
 }

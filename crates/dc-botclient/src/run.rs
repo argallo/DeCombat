@@ -411,6 +411,9 @@ pub struct BotConfig {
     pub filler: Option<String>,
     /// BOT-102 `--room-title PART`: with `--room any`, only rooms whose title holds this text.
     pub room_title: Option<String>,
+    /// `--game <dir>`: the content profile of this run (`None` without the flag).
+    // DC-DEFAULT: ENG-3 (proposed)
+    pub game: Option<std::sync::Arc<dc_config::game::GameProfile>>,
 }
 
 impl BotConfig {
@@ -456,6 +459,7 @@ impl BotConfig {
             matches: 1,
             filler: None,
             room_title: None,
+            game: None,
         }
     }
 
@@ -475,7 +479,9 @@ impl BotConfig {
         let skill = self.skill.map(crate::skill::Skill::new);
         // the cone's random table: the ROM entry, else its generator (WEAPON_FIRE_2009_addendum_cone.md AC-1)
         let table = Arc::new(dc_cone::ShotTable::open(
-            rom_dir(self.use_rom, self.rom.as_ref()).as_deref(),
+            rom_dir(self.use_rom, self.rom.as_ref())
+                .map(dc_rez::RezVfs::new)
+                .as_deref(),
         ));
         rec.event(
             "shooter",
@@ -486,7 +492,9 @@ impl BotConfig {
                    "skill": skill.map(|s| json!({"level": s.level, "turn_deg_s": s.turn_deg_s,
                        "fire_tolerance_deg": s.fire_tolerance_deg, "reaction_ms": s.reaction_ms,
                        "reacquire_ms": s.reacquire_ms, "aim_sigma_deg": s.aim_sigma_deg,
-                       "burst": [s.burst_min, s.burst_max], "burst_pause_ms": s.burst_pause_ms}))}),
+                       "burst": [s.burst_min, s.burst_max], "burst_pause_ms": s.burst_pause_ms,
+                       "aim_scale": s.aim_scale, "close_burst": s.burst_at(0.0),
+                       "close_pause_ms": s.burst_pause_at(0.0)}))}),
         );
         if skill.is_some() && rom_dir(self.use_rom, self.rom.as_ref()).is_none() {
             // without the ROM the bot has no collision and cannot decode stream positions: it never fires

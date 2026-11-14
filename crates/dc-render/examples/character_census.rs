@@ -6,7 +6,7 @@
 //!
 //! Usage: `CA_ROM=<dir> cargo run -p dc-render --example character_census`.
 
-use dc_bute::ButeDoc;
+use dc_attr::ButeDoc;
 use dc_render::{name_key, ModelFiles, ModelMesh, NameKey, PLAYER_CLIPS};
 use std::collections::BTreeMap;
 

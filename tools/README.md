@@ -42,6 +42,18 @@ Fills the `examples/` folder the GunKit package ships next to its exes (VAR-13; 
 that hashes differently unpacks nothing. The studio reads `DC_GUNKIT_EXAMPLES`, else `examples/` next to the program, else
 (under cargo) the checkout's `examples/mods`; it bakes nothing in any more.
 
+## engine_gate.py
+
+    python tools/engine_gate.py                  # every crate of tools/engine_crates.txt is free of the ROM crates
+    python tools/engine_gate.py --crate dc-sim   # what still pulls a ROM crate into these crates
+    python tools/engine_gate.py selftest
+
+The engine crates build without the crates that read the user's 2009 game files (`dc-rom`, `dc-rez`, `dc-bute`, `dc-ui-data`):
+one `cargo tree -e normal,build --target all` per listed crate (one invocation each, so features do not unify across crates);
+on a hit it prints the `cargo tree -i` path that pulls the ROM crate in. Dev-dependencies are not checked. The list is a
+ratchet: a crate joins in the change that makes it clean. CI's lint job runs it. It needs `cargo` on PATH (or `CARGO` set to it);
+where the toolchain comes from a wrapper, run it through that (`python cargo_env.py python tools/engine_gate.py`).
+
 ## ship_servers.sh
 
 Builds this checkout and deploys it to the VPS and the game host with one command; `--dry-run` shows the plan, `--help` lists
@@ -59,4 +71,5 @@ the scripts behind `.github/workflows/release.yml` and `deploy-servers.yml`. `ho
 pack repository's tagged release into the lobby's mods folder as `<sha256>.zip`, every zip checked against the release's
 `SHA256SUMS` and the hash its `packs.json` row declares; one failure installs nothing, a re-run changes nothing, a branch name
 is refused, `server.toml` is never edited (the rows to paste are printed). docs/PACKS_FROM_REPOSITORIES.md section 2. Tests:
-`bash tools/vps/tests/packs_sync_test.sh` (a fake release folder, no network).
+`bash tools/vps/tests/packs_sync_test.sh` (a fake release folder, no network). Any other host (Windows, no root) uses
+`dc-lobby-server packs sync` with the same checks (HOSTING.md "Packs").

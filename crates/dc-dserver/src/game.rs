@@ -58,6 +58,7 @@ mod warmup;
 pub use warmup::WARMUP_MIN_SECS;
 // the players stop at the round result (DSV-77)
 mod freeze;
+pub mod killcard;
 pub mod place;
 pub mod remotehp;
 pub mod teamping;
@@ -971,6 +972,8 @@ pub struct GameTuning {
     pub possession: bool,
     /// Team pings (`-pings`; DSV-651).
     pub pings: bool,
+    /// Kill zoom and kill card (`-killcard`; DSV-652).
+    pub killcard: bool,
     /// The weapon drop rules (`-drops key=value,...`).
     // DC-DEFAULT: DSV-93..DSV-95 (proposed)
     pub drops: drops::DropTuning,
@@ -1354,6 +1357,7 @@ impl Default for GameTuning {
             warmup_damage: false,
             possession: false,
             pings: false,
+            killcard: false,
             drops: drops::DropTuning::default(),
             destruct: crate::destructibles::DestructTuning::default(),
             // DC-DEFAULT: DSV-80 (proposed)
@@ -3653,7 +3657,7 @@ impl Game {
         };
         let d = self.hit_dims_of(v.pid);
         let head = to[1] >= v.pos[1] + d[1] - 2.0 * d[1] * self.cfg.head_fraction;
-        if self.hit_zone(v.pid, f, head).1 == gs::KILL_ZONE_HEAD {
+        if self.hit_zone(v.pid, f, head, to[1] >= v.pos[1]).1 == gs::KILL_ZONE_HEAD {
             gs::SURFACE_HEAD
         } else {
             gs::SURFACE_BODY
@@ -3744,6 +3748,8 @@ impl Game {
         self.out.push(GameOut::Mark(pid, Milestone::WorldReady));
         // DC-DEFAULT: DSV-651 (proposed) the offer at world entry
         self.team_ping_offer(pid);
+        // DC-DEFAULT: DSV-652 (proposed) the offer at world entry
+        self.kill_card_offer(pid);
         if self.cfg.start_order == StartOrder::Reference {
             self.after_world_ready(pid, now);
             // DC-DEFAULT: DSV-511 (proposed) Quarantine: the running outbreak countdown again once the client is in the
@@ -4000,25 +4006,23 @@ impl Game {
     // `hit_zone` 3); ROM table key MODELBUTES.TXT [Skeleton<s>] Node<k>DamageFactor, Node<k>Location
     // SPEC: UNPROVEN that `extra_kind` is the node index (PLAUSIBLE by the two observations above)
     // DC-DEFAULT: DSV-30 (proposed)
-    pub fn hit_zone(&self, vpid: u8, f: &crate::up::UpFire, head: bool) -> (f32, u8) {
-        let (factor, zone) = self.victim_zone(vpid, f, head);
+    /// `upper`: the hit point lies in the upper half of the victim's box at its latest or a rewound position; a node
+    /// of the head location is taken only then (DSV-656), else the box geometry decides.
+    pub fn hit_zone(&self, vpid: u8, f: &crate::up::UpFire, head: bool, upper: bool) -> (f32, u8) {
+        let (factor, zone) = self.victim_zone(vpid, f, head, upper);
         // DC-DEFAULT: DSV-608 (proposed; OWNER REPORT 2026-11-05) an infected victim's head factor is reduced
         (self.infected_zone_factor(vpid, factor, zone), zone)
     }
 
-    /// [`Game::hit_zone`] before the Quarantine rule: the victim's own node factor or the box factor.
-    fn victim_zone(&self, vpid: u8, f: &crate::up::UpFire, head: bool) -> (f32, u8) {
-        let geometry = if head {
-            (self.cfg.head_factor, gs::KILL_ZONE_HEAD)
-        } else {
-            (self.cfg.body_factor, TODO_KILL_ZONE_BODY)
-        };
-        if !self.cfg.zone_factors_from_rom {
-            return geometry;
-        }
+    /// The victim's ROM skeleton node the client named in `UP_FIRE`'s extra block (its object must be the hit
+    /// object; DSV-130), unchecked against the hit point.
+    pub(crate) fn reported_node(
+        &self,
+        vpid: u8,
+        f: &crate::up::UpFire,
+    ) -> Option<crate::chars::HitNode> {
         let hit_obj = f.hit.and_then(|h| h.1);
-        let node = f
-            .extra
+        f.extra
             .filter(|x| x.obj.is_some() && x.obj == hit_obj)
             .and_then(|x| {
                 self.players
@@ -4029,7 +4033,23 @@ impl Game {
                     .hit_nodes
                     .get(x.kind as usize)
                     .copied()
-            });
+            })
+    }
+
+    /// [`Game::hit_zone`] before the Quarantine rule: the victim's own node factor or the box factor.
+    fn victim_zone(&self, vpid: u8, f: &crate::up::UpFire, head: bool, upper: bool) -> (f32, u8) {
+        let geometry = if head {
+            (self.cfg.head_factor, gs::KILL_ZONE_HEAD)
+        } else {
+            (self.cfg.body_factor, TODO_KILL_ZONE_BODY)
+        };
+        if !self.cfg.zone_factors_from_rom {
+            return geometry;
+        }
+        // DC-DEFAULT: DSV-656 (proposed) a head node with the hit point in the lower half of the box is no head hit
+        let node = self
+            .reported_node(vpid, f)
+            .filter(|n| upper || n.location != gs::KILL_ZONE_HEAD);
         match node {
             Some(n) => (
                 n.factor,
@@ -8360,6 +8380,90 @@ mod tests {
         assert_eq!(INFECTED_HEALTH_SCALE, 2.0);
     }
 
+    /// DSV-656: a head node with the hit point below the victim's box centre is set aside (the box rule decides: a
+    /// body hit); the same node above the centre stays a head hit, and a body node anywhere keeps its factor.
+    #[test]
+    fn a_head_node_below_the_box_centre_is_a_body_hit() {
+        use super::infect::COUNTDOWN_SECS;
+        use crate::chars::HitNode;
+        let mut t = character_tables();
+        t.chars.bodies.get_mut(&0).unwrap().skeleton = Some(1);
+        let node = |factor: f32, location: u8| HitNode { factor, location };
+        t.chars
+            .skeletons
+            .insert(1, vec![node(1.0, 2), node(6.0, 1)]);
+        let mut g = Game::new(
+            GameTuning {
+                move_check: false,
+                trace: false,
+                spawn_shield: false,
+                armor_gear: ArmorGear::Off,
+                ..GameTuning::default()
+            },
+            &world(),
+            t,
+        );
+        g.insert_rig("BODY\\b.ltb", rig());
+        let mut room = RoomSettings::default();
+        room.pairs.insert("type".into(), "11".into());
+        room.pairs.insert("goal".into(), "2".into());
+        g.set_room(&room);
+        for (pid, uid, obj) in [(0u8, 7u32, 1u16), (1, 8, 3), (2, 9, 5)] {
+            let e = entry(uid, 0, "P");
+            g.note_identified(&e);
+            g.add_player(pid, Some(&e), None, obj, [0.0; 3], [0.0; 3], 0);
+            g.on_up(pid, Up::PlayerInfo(Box::default()), 10);
+            g.on_up(pid, Up::WorldReady, 20);
+        }
+        g.tick(100);
+        g.tick(100 + COUNTDOWN_SECS * 1000 + 50);
+        let host = *g.infect().infected.iter().next().expect("outbreak");
+        let humans: Vec<u8> = (0..3u8).filter(|p| *p != host).collect();
+        let (a, b) = (humans[0], humans[1]);
+        let f = hit_report(&g, a, b, -20.0, Some(1));
+        assert_eq!(
+            g.hit_zone(b, &f, false, false),
+            (1.0, 2),
+            "head node, low point"
+        );
+        assert_eq!(
+            g.hit_zone(b, &f, false, true),
+            (6.0, gs::KILL_ZONE_HEAD),
+            "head node, high point"
+        );
+        let f = hit_report(&g, a, b, -20.0, Some(0));
+        assert_eq!(
+            g.hit_zone(b, &f, false, false),
+            (1.0, 2),
+            "body node, low point"
+        );
+        // the fire path (on the infected host, head factor 3 by DSV-608): a head node reported 20 below the centre
+        // costs what a body node does; 10 above, three times as much
+        let mut now = 30_000;
+        let mut loss = |g: &mut Game, up: f32, part: u8| {
+            let before = g.players[&host].health;
+            let f = hit_report(g, a, host, up, Some(part));
+            g.on_up(a, Up::Fire(Box::new(f)), now);
+            now += 500;
+            before - g.players[&host].health
+        };
+        let body = loss(&mut g, -20.0, 0);
+        let low_head = loss(&mut g, -20.0, 1);
+        assert!(body > 0.0, "the body hit is accepted");
+        assert!(
+            (low_head - body).abs() < 1e-3,
+            "low head node {low_head} body {body}"
+        );
+        let high_head = loss(&mut g, 10.0, 1);
+        assert!(
+            high_head > 2.0 * body,
+            "a head node above the centre stays a head hit: {high_head} vs {body}"
+        );
+        assert!(g.out.iter().any(
+            |o| matches!(o, GameOut::Log(l) if l.contains("head node on client") && l.contains("set aside"))
+        ));
+    }
+
     /// DSV-608: in Quarantine a head hit on an infected player takes half the head node's factor (never below 1);
     /// his body hits, a head node of factor 1 and every hit on a human keep their factor; `combat.infected_head_scale
     /// = 1` gives the infected the human factor again. The fire path applies it (health loss = damage x factor with
@@ -8409,6 +8513,7 @@ mod tests {
                 victim,
                 &hit_report(g, shooter, victim, 0.0, Some(part)),
                 false,
+                true,
             )
         };
         assert_eq!(
@@ -8427,7 +8532,7 @@ mod tests {
         // the box geometry (no node named): the infected head takes half the operator's head factor, at least 1
         let f = hit_report(&g, a, host, 0.0, None);
         assert_eq!(
-            g.hit_zone(host, &f, true),
+            g.hit_zone(host, &f, true, true),
             ((g.cfg.head_factor * 0.5).max(1.0), gs::KILL_ZONE_HEAD)
         );
         // the fire path: a body hit, then a head hit on the infected; the head loses three times as much
@@ -11038,6 +11143,77 @@ P0 = \"F\"
         );
         g.cfg.mod_damage = false;
         assert_eq!(g.hit_damage(0, &f), 50.0);
+    }
+
+    // ------------------------------------------------------------------------------------ kill cards (DSV-652)
+
+    fn kill_cards(o: &[GameOut], pid: u8) -> Vec<dc_wire::killcard::Notice> {
+        o.iter()
+            .filter_map(|x| match x {
+                GameOut::To(p, m) if *p == pid => {
+                    let mut r = m.reader();
+                    (r.read_u8() == crate::msg::S2C_SHELL_MSG
+                        && r.read_u8() == dc_wire::killcard::SHELL_ID)
+                        .then(|| dc_wire::killcard::read_notice(&mut r))
+                        .flatten()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The offer at world entry; a kill tells the victim only the killer's health and armour after the kill; a
+    /// death by the own hand or the world tells nothing; without the flag nothing at all.
+    #[test]
+    fn a_kill_card_tells_the_victim_the_killers_health() {
+        use dc_wire::killcard::Notice;
+        let mut g = ping_game_of("1", false);
+        g.take_out();
+        g.kill(1, Some(0), 1, false, 1000);
+        assert!((0..3).all(|p| kill_cards(&g.take_out(), p).is_empty()));
+
+        let mut g = ping_game_of("1", false);
+        g.cfg.killcard = true;
+        g.take_out();
+        g.kill_card_offer(2);
+        assert_eq!(
+            kill_cards(&g.take_out(), 2),
+            vec![Notice::Offer {
+                hold_ms: killcard::HOLD_MS
+            }]
+        );
+        if let Some(p) = g.players.get_mut(&0) {
+            p.health = 36.2;
+            p.armor = 0.0;
+        }
+        g.kill(1, Some(0), 1, false, 1000);
+        let o = g.take_out();
+        let Some(Notice::Card(c)) = kill_cards(&o, 1).first().copied() else {
+            panic!("no card to the victim");
+        };
+        assert_eq!(
+            (c.killer, c.obj, c.health, c.health_max, c.armor),
+            (0, 1, 37, 100, 0)
+        );
+        assert!(c.armor_max >= 1);
+        assert!(kill_cards(&o, 0).is_empty() && kill_cards(&o, 2).is_empty());
+        // the own hand and the world: no card
+        g.kill(2, Some(2), 1, false, 2000);
+        g.kill(0, None, 1, false, 2000);
+        let o = g.take_out();
+        assert!((0..3).all(|p| kill_cards(&o, p).is_empty()));
+    }
+
+    /// DSV-652 (amended): Spy Hunt sends no card (a spy's health and armour are hidden information).
+    #[test]
+    fn spy_hunt_sends_no_kill_card() {
+        let mut g = ping_game_of("9", false);
+        g.cfg.killcard = true;
+        assert!(g.is_spy());
+        g.take_out();
+        g.kill(1, Some(0), 1, false, 1000);
+        let o = g.take_out();
+        assert!((0..3).all(|p| kill_cards(&o, p).is_empty()));
     }
 
     // ------------------------------------------------------------------------------------ team pings (DSV-651)

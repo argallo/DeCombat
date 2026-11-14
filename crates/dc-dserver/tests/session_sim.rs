@@ -527,8 +527,9 @@ fn step_height_variable_precedes_the_world_load() {
 }
 
 #[test]
-fn startup_deadline_drops_a_client_that_never_says_hello() {
-    // a raw link that joins and keeps the link alive but never sends C2S_HELLO
+fn hello_deadline_drops_a_client_that_never_says_hello() {
+    // DSV-657: a raw link that joins and keeps the link alive but never sends C2S_HELLO is gone after 10 s (the
+    // 120 s start-up deadline is for clients past their hello)
     let mut server: Server<u32> = Server::new(ServerTuning::default(), world(), 0);
     let join = OobDatagram::JoinAsk {
         app_id: TODO_GAME_APP_ID_GUID_LAYOUT,
@@ -562,7 +563,90 @@ fn startup_deadline_drops_a_client_that_never_says_hello() {
     }
     let (t, code) = closed.expect("dropped");
     assert_eq!(code, 3);
-    assert!((120_000..=120_200).contains(&t), "dropped at {t}");
+    assert!((10_000..=10_200).contains(&t), "dropped at {t}");
+}
+
+/// A join datagram that never says anything else (a spoofed source).
+fn raw_join(server: &mut Server<u32>, now: u32, from: u32) {
+    let join = OobDatagram::JoinAsk {
+        app_id: TODO_GAME_APP_ID_GUID_LAYOUT,
+        rate_bps: 35_840,
+    }
+    .encode();
+    server.handle_datagram(now, from, &join);
+    let _ = server.poll(now);
+}
+
+#[test]
+fn one_host_holds_at_most_sixteen_links_without_a_hello() {
+    // DSV-653: same host = same hundred
+    let mut server: Server<u32> = Server::new(ServerTuning::default(), world(), 0);
+    server.set_address_moves(|a, b| a / 100 == b / 100);
+    for (i, from) in (101..=118).enumerate() {
+        raw_join(&mut server, i as u32, from);
+    }
+    assert_eq!(
+        server.clients().len(),
+        16,
+        "the 17th and 18th join of host 1xx closed"
+    );
+    raw_join(&mut server, 30, 201);
+    assert_eq!(server.clients().len(), 17, "another host is not affected");
+}
+
+#[test]
+fn a_whole_room_joins_at_once_from_one_host() {
+    // DSV-653: a bot swarm behind one address, 20 seats, every bot joins in the same millisecond
+    let mut net = Net::new(ServerTuning {
+        max_players: Some(20),
+        accept_unlisted: true,
+        ..ServerTuning::default()
+    });
+    net.server.set_address_moves(|a, b| a / 100 == b / 100);
+    for i in 0..20u32 {
+        net.add(
+            101 + i,
+            SynthConfig::named(&format!("Bot{i}")),
+            Faults::clean(2),
+        );
+    }
+    let n = net.peers.len();
+    assert!(net.run_until(30_000, |net| (0..n)
+        .all(|i| net.client(i).state() == ClientState::InWorld)));
+}
+
+#[test]
+fn a_full_server_gives_a_spoofed_links_slot_to_a_real_player() {
+    // DSV-654 / NET-29: one seat, held by a join that never says hello; a real client after the 2 s grace gets in
+    let mut net = Net::new(ServerTuning {
+        max_players: Some(1),
+        ..ServerTuning::default()
+    });
+    raw_join(&mut net.server, 0, 99);
+    assert_eq!(net.server.clients().len(), 1);
+    net.now = 2500;
+    net.add(1, dave(), Faults::clean(2));
+    assert!(net.run_until(25_000, |n| n.client(0).state() == ClientState::InWorld));
+    assert!(
+        !net.server.clients().contains_key(&99),
+        "the spoofed link was evicted"
+    );
+    // the real player's link is proven: a further spoofed join is refused, not given the seat
+    let now = net.now + 5000;
+    raw_join(&mut net.server, now, 98);
+    assert!(net.server.clients().contains_key(&1) && !net.server.clients().contains_key(&98));
+}
+
+#[test]
+fn a_link_without_a_hello_is_no_known_peer() {
+    // DSV-655
+    let mut net = secret_net();
+    raw_join(&mut net.server, 0, 99);
+    assert!(!net.server.knows_peer(&99));
+    net.add(1, named("Dave", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld));
+    assert!(net.server.knows_peer(&1));
+    assert!(!net.server.knows_peer(&99));
 }
 
 #[test]
@@ -1049,6 +1133,339 @@ fn an_unreadable_ticket_seats_nobody() {
     net.add(1, tess(Some(SEAT)), Faults::clean(2));
     assert!(net.run_until(20_000, |n| refused(n.client(0))));
     assert_eq!(joins_of(&net, 9), 0);
+}
+
+// ---- LOC-2: the join secret ----
+
+const SECRET: [u8; 16] = [0x6c; 16];
+
+/// The usual roster (Dave and Big_Erin, no tickets; Tess with her own ticket) with a join secret.
+fn secret_net() -> Net {
+    let cfg = ServerTuning {
+        join_secret: Some(dc_dserver::session::JoinSecret(SECRET)),
+        ..ServerTuning::default()
+    };
+    let mut net = Net::new(cfg);
+    let line = format!(
+        "user 9 5 77 0 0 Tess ticket={}",
+        dc_wire::seatticket::to_hex(&SEAT)
+    );
+    assert!(net.server.handle_line(0, &line));
+    net
+}
+
+fn named(name: &str, ticket: Option<[u8; 16]>) -> SynthConfig {
+    let mut c = SynthConfig::named(name);
+    c.seat_ticket = ticket;
+    c
+}
+
+/// An unlisted name with the secret gets the next user id and the team with fewer players, and `@join`; neither the
+/// log nor a pipe line shows the secret.
+#[test]
+fn the_join_secret_seats_an_unlisted_name_with_a_new_roster_entry() {
+    let mut net = secret_net();
+    net.add(1, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(
+        net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld),
+        "{:?}",
+        net.logs
+    );
+    // LOC-6: teams are balanced over live links only: nobody is in yet, so team 0
+    assert_eq!(net.pipe_lines(), vec!["@join 0 10 0 0 Guest"]);
+    let hex = dc_wire::seatticket::to_hex(&SECRET);
+    assert!(
+        !net.logs
+            .iter()
+            .chain(net.pipe_lines().iter())
+            .any(|l| l.contains(&hex)),
+        "the secret is never logged"
+    );
+    // a second newcomer gets the next number
+    net.add(2, named("Other", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(net.now + 20_000, |n| n.client(1).state()
+        == ClientState::InWorld));
+    assert!(net
+        .pipe_lines()
+        .contains(&"@join 1 11 0 1 Other".to_string()));
+}
+
+/// A wrong secret or none is refused with the bye code of an unlisted name, and nothing reaches the pipe; the secret
+/// opens no seat that has a ticket of its own.
+#[test]
+fn a_wrong_or_missing_join_secret_is_refused() {
+    for t in [Some(WRONG_SEAT), None] {
+        let mut net = secret_net();
+        net.add(1, named("Guest", t), Faults::clean(2));
+        assert!(net.run_until(20_000, |n| refused(n.client(0))));
+        assert_eq!(net.client(0).state(), ClientState::Dropped(6));
+        assert!(net.pipe_lines().is_empty(), "{:?}", net.pipe_lines());
+    }
+    let mut net = secret_net();
+    net.add(1, tess(Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| refused(n.client(0))));
+    assert_eq!(joins_of(&net, 9), 0, "Tess's seat needs Tess's ticket");
+    // a roster name without a ticket of its own needs the secret in such a room
+    let mut net = secret_net();
+    net.add(1, dave(), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| refused(n.client(0))));
+    assert!(net.pipe_lines().is_empty());
+    let mut net = secret_net();
+    net.add(1, named("Dave", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld));
+    assert_eq!(net.pipe_lines(), vec!["@join 0 7 99 0 Dave"]);
+}
+
+/// With a join secret, everyone who knows it shares it, so the secret cannot take a seat from a live link: a second
+/// hello with a seated name is refused and the player keeps the seat (without the flag the second hello replaces the
+/// older link, `reconnect_of_a_connected_player_replaces_the_older_link`). Once that link is gone, the name may come
+/// back with the secret.
+#[test]
+fn the_join_secret_takes_no_seat_from_a_live_link() {
+    let mut net = secret_net();
+    net.add(1, named("Guest", Some(SECRET)), Faults::clean(2));
+    net.add(2, named("Dave", Some(SECRET)), Faults::clean(2));
+    assert!(
+        net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld
+            && n.client(1).state() == ClientState::InWorld)
+    );
+    let at = net.now;
+    net.add(3, named("Guest", Some(SECRET)), Faults::clean(2));
+    net.add(4, named("Dave", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(at + 20_000, |n| refused(n.client(2))
+        && refused(n.client(3))));
+    net.run_until(net.now + 2000, |_| false);
+    assert_eq!(
+        net.client(0).state(),
+        ClientState::InWorld,
+        "{:?}",
+        net.logs
+    );
+    assert_eq!(net.client(1).state(), ClientState::InWorld);
+    assert_eq!(net.client(2).state(), ClientState::Dropped(6));
+    assert_eq!(joins_of(&net, 10), 1);
+    assert_eq!(joins_of(&net, 7), 1);
+    assert!(net
+        .logs
+        .iter()
+        .any(|l| l.contains("refused (in use by a live link,")));
+    assert!(!net
+        .logs
+        .iter()
+        .any(|l| l.contains("reconnected: closing the older link")));
+    // the player leaves; the name comes back with the secret and keeps its number
+    net.peers[0].client.quit();
+    let at = net.now;
+    assert!(net.run_until(at + 30_000, |n| n
+        .pipe_lines()
+        .iter()
+        .any(|l| l == "@leave 0")));
+    net.add(5, named("Guest", Some(SECRET)), Faults::clean(2));
+    let i = net.peers.len() - 1;
+    assert!(net.run_until(net.now + 20_000, |n| n.client(i).state()
+        == ClientState::InWorld));
+    assert_eq!(joins_of(&net, 10), 2);
+}
+
+/// LOC-5: a seat taken with the secret whose link went silent (a crashed client, a NAT that moved it to a new port)
+/// is free for the secret again after `SECRET_REJOIN_SILENCE_MS`, long before the 20 s silent drop; before that the
+/// same hello is refused. The older link is closed as a reconnect and the seat keeps its number.
+#[test]
+fn a_silent_secret_seat_is_free_for_the_secret_after_three_seconds() {
+    use dc_dserver::session::SECRET_REJOIN_SILENCE_MS;
+    let mut net = secret_net();
+    // the rejoin comes from the same IP address (test addresses: the IP in the high 16 bits)
+    net.server.set_address_moves(same_nat);
+    net.add(1, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld));
+    net.peers[0].muted = true;
+    let gone = net.now;
+    // too early: the link still holds the seat
+    net.add(2, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(gone + 20_000, |n| refused(n.client(1))));
+    assert!(
+        net.now < gone + SECRET_REJOIN_SILENCE_MS + 1000,
+        "refused at once, not after the drop"
+    );
+    // after the silence the secret takes the seat back
+    net.run_until(gone + SECRET_REJOIN_SILENCE_MS + 100, |_| false);
+    let at = net.now;
+    net.add(3, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(
+        net.run_until(at + 10_000, |n| n.client(2).state() == ClientState::InWorld),
+        "{:?}",
+        net.logs
+    );
+    assert!(
+        net.now < gone + dc_dserver::session::SILENT_DROP_MS,
+        "back in before the silent drop"
+    );
+    assert_eq!(joins_of(&net, 10), 2, "the same seat");
+    assert!(net
+        .logs
+        .iter()
+        .any(|l| l.contains("reconnected: closing the older link")));
+}
+
+/// LOC-5 (amended): a hello with the secret from ANOTHER IP address does not take a silent seat after 3 s: the seat
+/// stays with its link until the silent drop (20 s) closes it; only then may the other address take the name.
+#[test]
+fn another_address_waits_for_the_silent_drop_before_taking_a_secret_seat() {
+    use dc_dserver::session::{SECRET_REJOIN_SILENCE_MS, SILENT_DROP_MS};
+    let mut net = secret_net();
+    net.server.set_address_moves(same_nat);
+    net.add(0x0001_0001, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld));
+    net.peers[0].muted = true;
+    let gone = net.now;
+    net.run_until(gone + SECRET_REJOIN_SILENCE_MS + 500, |_| false);
+    // another IP after 3.5 s of silence: refused, the seat is still the silent player's
+    net.add(0x0002_0001, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(net.now + 10_000, |n| refused(n.client(1))));
+    assert!(net.now < gone + SILENT_DROP_MS, "refused before the drop");
+    assert_eq!(joins_of(&net, 10), 1);
+    // after the silent drop the name is free for any holder of the secret
+    net.run_until(gone + SILENT_DROP_MS + 1000, |_| false);
+    net.add(0x0002_0002, named("Guest", Some(SECRET)), Faults::clean(2));
+    assert!(
+        net.run_until(net.now + 20_000, |n| n.client(2).state()
+            == ClientState::InWorld),
+        "{:?}",
+        net.logs
+    );
+    assert_eq!(joins_of(&net, 10), 2);
+}
+
+/// LOC-6 (amended): a name with a control character is matched in its stored form, so its rejoin finds its own entry:
+/// a second live hello with that name is refused (not seated as a duplicate), and after the link is gone the name comes
+/// back on the same user id.
+#[test]
+fn a_name_with_a_control_character_rejoins_its_own_entry() {
+    let mut net = secret_net();
+    net.add(1, named("Ev\u{7}e", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(20_000, |n| n.client(0).state() == ClientState::InWorld));
+    let base = net.server.roster().len();
+    net.add(2, named("Ev\u{7}e", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(net.now + 10_000, |n| refused(n.client(1))));
+    assert_eq!(net.server.roster().len(), base, "no duplicate entry");
+    assert_eq!(net.client(0).state(), ClientState::InWorld);
+    net.peers[0].client.quit();
+    assert!(net.run_until(net.now + 5_000, |n| matches!(
+        n.client(0).state(),
+        ClientState::Dropped(_)
+    )));
+    net.run_until(net.now + 600, |_| false);
+    net.add(3, named("Ev\u{7}e", Some(SECRET)), Faults::clean(2));
+    assert!(net.run_until(net.now + 20_000, |n| n.client(2).state()
+        == ClientState::InWorld));
+    assert_eq!(net.server.roster().len(), base);
+    assert_eq!(joins_of(&net, 10), 2, "the same user id");
+}
+
+/// The join secret's refusals share LG-327's log budget: the first 20 are logged one by one, then every hundredth.
+#[test]
+fn the_join_secret_refusals_are_logged_within_the_budget() {
+    let mut net = secret_net();
+    for a in 0..30 {
+        net.add(10 + a, dave(), Faults::clean(2));
+    }
+    assert!(net.run_until(30_000, |n| (0..30).all(|i| refused(n.client(i)))));
+    let logged = net
+        .logs
+        .iter()
+        .filter(|l| l.contains("seat of uid 7 refused"))
+        .count();
+    assert_eq!(logged, 20, "{:?}", net.logs);
+}
+
+/// LOC-6: the join secret makes at most 2 x max players roster entries; past that a new name takes the entry of a
+/// player whose link is gone (the lowest such user id), so a stream of new names cannot grow the roster. Control
+/// characters leave the name.
+#[test]
+fn secret_entries_are_capped_and_reused_once_their_links_are_gone() {
+    let cfg = ServerTuning {
+        join_secret: Some(dc_dserver::session::JoinSecret(SECRET)),
+        max_players: Some(2),
+        ..ServerTuning::default()
+    };
+    let mut net = Net::new(cfg);
+    let base = net.server.roster().len();
+    // four names, one after the other, each leaves
+    for (i, name) in ["Ann", "Bob", "Cy", "Di"].iter().enumerate() {
+        net.add(1 + i as u32, named(name, Some(SECRET)), Faults::clean(2));
+        assert!(net.run_until(net.now + 20_000, |n| n.client(i).state()
+            == ClientState::InWorld));
+        net.peers[i].client.quit();
+        assert!(net.run_until(net.now + 5_000, |n| matches!(
+            n.client(i).state(),
+            ClientState::Dropped(_)
+        )));
+        net.run_until(net.now + 600, |_| false);
+    }
+    assert_eq!(net.server.roster().len(), base + 4);
+    // the fifth name reuses Ann's entry (uid 9), the roster does not grow
+    net.add(10, named("E\u{7}ve", Some(SECRET)), Faults::clean(2));
+    assert!(
+        net.run_until(net.now + 20_000, |n| n.client(4).state()
+            == ClientState::InWorld),
+        "{:?}",
+        net.logs
+    );
+    assert_eq!(net.server.roster().len(), base + 4);
+    assert!(
+        net.pipe_lines()
+            .iter()
+            .any(|l| l.starts_with("@join ") && l.ends_with(" 9 0 0 Eve")),
+        "{:?}",
+        net.pipe_lines()
+    );
+}
+
+/// `-joinsecret` takes 32 hex digits and nothing else; the parsed arguments never print it.
+#[test]
+fn the_join_secret_flag() {
+    let hex = dc_wire::seatticket::to_hex(&SECRET);
+    let p = |s: &str| dc_dserver::cli::parse(s.split_whitespace().map(String::from));
+    let a = p(&format!("-world w -joinsecret {hex}")).unwrap();
+    assert_eq!(
+        a.server.join_secret,
+        Some(dc_dserver::session::JoinSecret(SECRET))
+    );
+    assert!(!format!("{a:?}").contains(&hex));
+    let up = p(&format!("-world w -joinsecret {}", hex.to_uppercase())).unwrap();
+    assert_eq!(up.server.join_secret, a.server.join_secret);
+    assert!(p("-world w -joinsecret abc").is_err());
+    assert!(
+        p(&format!("-world w -joinsecret {}", "0".repeat(32))).is_err(),
+        "LOC-7: all zeros"
+    );
+    assert!(p("-world w -joinsecret").is_err());
+    assert!(p(&format!("-world w -joinsecret {}", "zz".repeat(16))).is_err());
+    assert_eq!(p("-world w").unwrap().server.join_secret, None);
+    // LOC-11: the environment gives it when the flag is absent; the flag wins; a bad value fails without quoting it
+    let pe = |s: &str, v: &str| {
+        dc_dserver::cli::parse_with_env(
+            s.split_whitespace().map(String::from),
+            &[(dc_dserver::cli::JOIN_SECRET_ENV.to_string(), v.to_string())],
+        )
+    };
+    assert_eq!(
+        pe("-world w", &hex).unwrap().server.join_secret,
+        Some(dc_dserver::session::JoinSecret(SECRET))
+    );
+    let other = dc_wire::seatticket::to_hex(&[0x11; 16]);
+    assert_eq!(
+        pe(&format!("-world w -joinsecret {other}"), &hex)
+            .unwrap()
+            .server
+            .join_secret,
+        Some(dc_dserver::session::JoinSecret([0x11; 16])),
+        "the flag wins"
+    );
+    assert_eq!(pe("-world w", "  ").unwrap().server.join_secret, None);
+    let e = pe("-world w", "nothex").unwrap_err();
+    assert!(e.contains("DC_JOIN_SECRET") && !e.contains("nothex"), "{e}");
+    assert!(pe("-world w", &"0".repeat(32)).is_err());
 }
 
 /// A client in the world that goes silent (its process died: no bye, no datagram) is dropped after

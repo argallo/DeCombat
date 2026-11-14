@@ -148,7 +148,7 @@ fn indexed_light_sets_equal_the_reference_without_rom() {
 #[test]
 fn indexed_light_sets_equal_the_reference_on_every_map() {
     let rom = dc_rom::rom_or_skip!();
-    let worlds = dc_render::WorldSource::open(&rom).expect("ROM worlds");
+    let worlds = dc_rez::WorldArchive::open(&rom).expect("ROM worlds");
     let maps = worlds.map_names();
     assert!(!maps.is_empty());
     let mut total = 0usize;

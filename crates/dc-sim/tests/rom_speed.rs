@@ -11,7 +11,6 @@
 // OBSERVED: captures 20261025_000014_tdm1, 20261025_002236_tdm4, 20261025_065016_tdm6,
 // 20261025_095358_rust4, 20261025_125432_rust6 (the real 2009 client; median reported speed of the on-ground,
 // forward, steady updates per held weapon, capanalyze updates.csv; body row 0, the default of both servers)
-#![cfg(feature = "rom")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -29,7 +28,7 @@ fn rom() -> Option<PathBuf> {
 fn table() -> Option<SpeedTable> {
     let rom = rom()?;
     let vfs = dc_rez::RezVfs::new(&rom);
-    Some(SpeedTable::from_vfs(&vfs).expect("speed rows from the ROM"))
+    Some(dc_bute::speed::from_vfs(&vfs).expect("speed rows from the ROM"))
 }
 
 /// The run and sprint caps of `weapon` with body row 0.

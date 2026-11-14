@@ -1,8 +1,5 @@
 //! FIPS 180-4 SHA-256 (public algorithm; no external crate).
-
-use crate::error::RomError;
-use std::fs;
-use std::path::Path;
+// Provenance: ORIGINAL (public algorithm, our own code; no 2009 behaviour)
 
 const SHA256_H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -173,34 +170,6 @@ pub fn sha256_hex(data: &[u8]) -> String {
     let mut s = String::with_capacity(64);
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for &b in &digest {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
-/// Computes the lowercase hex SHA-256 digest of a file on disk (streamed, 1 MiB at a time).
-pub fn sha256_file(path: &Path) -> Result<String, RomError> {
-    use std::io::Read;
-    let mut f = fs::File::open(path).map_err(|e| RomError::io(path, &e))?;
-    crate::trace::note("file", path, "", f.metadata().map(|m| m.len()).unwrap_or(0));
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf).map_err(|e| RomError::io(path, &e))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    Ok(hex(&digest))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
         s.push(HEX[(b >> 4) as usize] as char);
         s.push(HEX[(b & 0x0f) as usize] as char);
     }

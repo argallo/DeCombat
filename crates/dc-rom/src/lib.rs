@@ -6,13 +6,11 @@
 //! place `CA_ROM` is read) or as an explicit argument.
 
 mod error;
-pub mod journal;
 mod pe;
 mod rom;
 pub mod server_rom;
-mod sha256;
+mod sha256_file;
 mod tables;
-pub mod trace;
 
 pub use error::RomError;
 pub use pe::PeFile;
@@ -22,7 +20,10 @@ pub use rom::{
     identify_rom, repo_root, resolve_rom, rom_dir, test_rom, KnownBuild, RomId, KNOWN_BUILDS,
     SENTINEL_FILES,
 };
-pub use sha256::{sha256, sha256_file, sha256_hex, Sha256};
+// SHA-256, the read journal and the read trace live in dc-core (engine layer, no ROM); re-exported so every
+// `dc_rom::` path keeps working.
+pub use dc_core::{journal, sha256, sha256_hex, trace, Sha256};
+pub use sha256_file::sha256_file;
 pub use tables::{
     chatfilter, chatfilter_decode, cmdtab, cmdtab_decode, defbinds, defbinds_decode, defcfg,
     defcfg_decode, enginevars, enginevars_decode, modelnodes, modelnodes_decode, rendervars,

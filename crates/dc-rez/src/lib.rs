@@ -5,9 +5,18 @@
 //! Archive parsing treats the file as hostile: all offsets are overflow-checked against the file length,
 //! recursion depth is capped, and revisited ranges are rejected.
 
+mod anyindex;
 pub mod blowfish_tables;
+mod worlds;
+pub use anyindex::AnyIndex;
+pub use worlds::{WorldArchive, WORLD_ARCHIVE};
 pub mod server_rom;
 pub use dc_rom;
+// dc-vfs: the layered file system this crate's ROM archives plug into (RomLayer, RezVfs); the text helpers live
+// there and stay reachable as dc_rez::is_plain / dc_rez::is_text_name.
+pub use dc_vfs;
+pub use dc_vfs::{is_plain, is_text_name};
+use dc_vfs::{ArchiveLayer, Vfs, VfsError};
 
 use blowfish_tables::{BLOWFISH_P_INIT, BLOWFISH_S_INIT};
 use dc_rom::RomError;
@@ -16,7 +25,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Offset to `FileFormatVersion` in a `.rez` v1 header:
 /// `2 + 60 + 2 + 60 + 3 + 1 + 32 + 1 + 1 + 32 + 1 == 193`.
@@ -244,16 +253,6 @@ pub fn swap_words32(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Returns `true` if `data` looks like unencrypted plain text (first 64 bytes only `\r`, `\n`, `\t` or
-/// printable ASCII).
-pub fn is_plain(data: &[u8]) -> bool {
-    let head = &data[..data.len().min(64)];
-    !head.is_empty()
-        && head
-            .iter()
-            .all(|&c| matches!(c, b'\r' | b'\n' | b'\t' | 32..=126))
-}
-
 /// Decrypts archive bytes with an explicit `key` (`4..=56` bytes).
 pub fn decrypt_with_key(data: &[u8], key: &[u8]) -> Result<Vec<u8>, RezError> {
     Ok(Blowfish::new(key)?.decrypt_bytes(data))
@@ -462,20 +461,6 @@ fn relpath_key(name: &str) -> String {
     name.replace('\\', "/")
         .trim_start_matches('/')
         .to_ascii_uppercase()
-}
-
-/// `true` when `name` has one of the text-table extensions (`.txt`, `.gms`, `.bms`, case-insensitive).
-///
-/// OBSERVED: only the text tables of the ROM archives are Blowfish-encrypted; world, model and texture
-/// entries are stored raw. See the FMT note staged with this change.
-pub fn is_text_name(name: &str) -> bool {
-    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    match base.rsplit_once('.') {
-        Some((_, ext)) => ["txt", "gms", "bms"]
-            .iter()
-            .any(|t| ext.eq_ignore_ascii_case(t)),
-        None => false,
-    }
 }
 
 fn basename_upper(name: &str) -> String {
@@ -760,7 +745,7 @@ impl RezArchive {
 }
 
 // ---------------------------------------------------------------------------
-// Layered Virtual Filesystem
+// Layered Virtual Filesystem: the generic layers are dc-vfs; this crate is its archive layer
 // ---------------------------------------------------------------------------
 
 /// Raw for non-text names; plain-text test then Blowfish for text names.
@@ -774,18 +759,43 @@ fn decode_by_name(name: &str, raw: Vec<u8>, cipher: &Blowfish) -> Vec<u8> {
 
 type ArchiveSlot = Result<Option<Arc<RezArchive>>, RezError>;
 
-/// Layered virtual filesystem over `<rom_dir>/Game/<rez_name>` archives with mod override directories
-/// (`mods/<mod_id>/overrides/...`) shadowing vanilla entries.
+impl From<RezError> for VfsError {
+    fn from(e: RezError) -> Self {
+        VfsError::Layer(Arc::new(e))
+    }
+}
+
+impl From<VfsError> for RezError {
+    /// A layer error comes back as the `RezError` it was; the folder errors map onto their `RezError` twins.
+    fn from(e: VfsError) -> Self {
+        match e {
+            VfsError::Layer(inner) => match inner.downcast_ref::<RezError>() {
+                Some(r) => r.clone(),
+                None => RezError::Malformed(inner.to_string()),
+            },
+            VfsError::BadName(n) => RezError::BadName(n),
+            VfsError::Io { path, message } => RezError::Io { path, message },
+            VfsError::ArchiveNotFound(n) => RezError::ArchiveNotFound(n),
+            // a refused `@mod:` name (only with packs): an entry name the lookup cannot serve
+            VfsError::ModPath(m) => RezError::BadName(m),
+            // not reachable through RezVfs, which always has this crate's archive layer
+            VfsError::NoKey(n) => {
+                RezError::Malformed(format!("{n}: encrypted text and no archive key"))
+            }
+        }
+    }
+}
+
+/// The ROM's archives as a [`dc_vfs::ArchiveLayer`]: `<rom_dir>/Game/<rez_name>` (a `.rez` file, or a server
+/// ROM's folder of the same name), the Blowfish key read from the ROM's own binary on first use, and the archive
+/// cache including negative results (missing file / corrupt archive).
 #[derive(Debug)]
-pub struct RezVfs {
+pub struct RomLayer {
     rom_dir: PathBuf,
-    override_dirs: Vec<PathBuf>,
-    /// Archive cache including negative results (missing file / corrupt archive).
     archives: Mutex<HashMap<String, ArchiveSlot>>,
-    /// Negative entry cache: `(UPPER_REZ, UPPER_NAME)` pairs known to be absent.
-    missing: Mutex<HashSet<(String, String)>>,
-    /// Cipher, built lazily from the ROM key (or supplied up front by [`RezVfs::with_key`]).
     cipher: Mutex<Option<Arc<Blowfish>>>,
+    /// Every entry of every archive by full path ([`ArchiveLayer::find_any`]), built on first use.
+    any: OnceLock<AnyIndex>,
 }
 
 /// The file in `dir` whose name equals `name` ignoring ASCII case (the exact name first), for ROM lookups on a
@@ -802,43 +812,28 @@ pub fn case_fold_lookup(dir: &Path, name: &str) -> Option<PathBuf> {
     })
 }
 
-impl RezVfs {
-    /// Creates a VFS over `rom_dir`. The Blowfish key is read from the ROM's own binary on first use of an
-    /// encrypted entry.
+impl RomLayer {
     pub fn new(rom_dir: impl Into<PathBuf>) -> Self {
         Self {
             rom_dir: rom_dir.into(),
-            override_dirs: Vec::new(),
             archives: Mutex::new(HashMap::new()),
-            missing: Mutex::new(HashSet::new()),
             cipher: Mutex::new(None),
+            any: OnceLock::new(),
         }
     }
 
-    /// Creates a VFS with an explicit key (tests, tools).
-    pub fn with_key(rom_dir: impl Into<PathBuf>, key: &[u8]) -> Result<Self, RezError> {
-        let vfs = Self::new(rom_dir);
-        *vfs.cipher.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(Blowfish::new(key)?));
-        Ok(vfs)
+    /// A layer over the client folder `rom_dir` whose any-archive index is built now, for a texture index (an
+    /// unreadable game folder or archive is the error, not an empty index).
+    pub fn indexed(rom_dir: &Path) -> Result<Arc<dyn ArchiveLayer>, RezError> {
+        let layer = RomLayer::new(rom_dir);
+        let idx = AnyIndex::open(&layer.rom_dir.join("Game"))?;
+        let _ = layer.any.set(idx);
+        Ok(Arc::new(layer))
     }
 
-    /// Creates a VFS over the ROM named by `CA_ROM` (the explicit resolver in `dc-rom`).
-    pub fn from_env() -> Result<Self, RezError> {
-        Ok(Self::new(dc_rom::resolve_rom()?))
-    }
-
-    pub fn rom_dir(&self) -> &Path {
-        &self.rom_dir
-    }
-
-    /// Registers an override directory that takes precedence over vanilla entries and over previously
-    /// registered override directories.
-    pub fn add_override_dir(&mut self, path: impl Into<PathBuf>) {
-        self.override_dirs.push(path.into());
-    }
-
-    pub fn override_dirs(&self) -> &[PathBuf] {
-        &self.override_dirs
+    fn any_index(&self) -> &AnyIndex {
+        self.any
+            .get_or_init(|| AnyIndex::open(&self.rom_dir.join("Game")).unwrap_or_default())
     }
 
     fn cipher(&self) -> Result<Arc<Blowfish>, RezError> {
@@ -884,50 +879,135 @@ impl RezVfs {
         cache.insert(key, slot.clone());
         slot
     }
+}
 
-    fn find_override_raw(&self, rez_name: &str, name: &str) -> Result<Option<Vec<u8>>, RezError> {
-        if self.override_dirs.is_empty() {
-            return Ok(None);
-        }
-        let rel_norm = name.replace('\\', "/");
-        let basename = rel_norm.rsplit('/').next().unwrap_or(&rel_norm);
-        let rez_stem = rez_name
-            .strip_suffix(".rez")
-            .or_else(|| rez_name.strip_suffix(".REZ"))
-            .unwrap_or(rez_name);
+impl ArchiveLayer for RomLayer {
+    fn read(
+        &self,
+        archive: &str,
+        name: &str,
+        by_basename: bool,
+        decode: bool,
+    ) -> Result<Option<Vec<u8>>, VfsError> {
+        let arch = self.archive(archive)?;
+        let found = match &arch {
+            Some(arch) if by_basename => arch.entry_raw_basename(name)?,
+            Some(arch) => arch.entry_raw(name)?,
+            None => None,
+        };
+        let decoded = arch.as_ref().is_some_and(|a| a.is_decoded());
+        Ok(match found {
+            Some(raw) if decode && !decoded => Some(self.decode(name, raw)?),
+            other => other,
+        })
+    }
 
-        // Later override directories have higher priority.
-        for dir in self.override_dirs.iter().rev() {
-            let candidates = [
-                dir.join(rez_name).join(&rel_norm),
-                dir.join(rez_name).join(basename),
-                dir.join(rez_stem).join(&rel_norm),
-                dir.join(rez_stem).join(basename),
-                dir.join(&rel_norm),
-                dir.join(basename),
-            ];
-            for cand in &candidates {
-                if cand.is_file() {
-                    let raw = fs::read(cand).map_err(|e| io_err(cand, &e))?;
-                    dc_rom::journal::note(|| format!("file:{}", cand.display()), &raw);
-                    dc_rom::trace::note("file", cand, "", raw.len() as u64);
-                    return Ok(Some(raw));
-                }
-            }
+    fn head(&self, archive: &str, name: &str, n: usize) -> Result<Option<Vec<u8>>, VfsError> {
+        match self.archive(archive)? {
+            Some(arch) => Ok(arch.entry_head(name, n)?),
+            None => Ok(None),
         }
-        Ok(None)
+    }
+
+    fn list(&self, archive: &str) -> Result<Vec<(String, u64, u32)>, VfsError> {
+        let arch = self
+            .archive(archive)?
+            .ok_or_else(|| RezError::ArchiveNotFound(archive.to_string()))?;
+        Ok(arch.entries().to_vec())
+    }
+
+    fn decrypt_text(&self, _name: &str, raw: &[u8]) -> Result<Vec<u8>, VfsError> {
+        Ok(self.cipher()?.decrypt_bytes(raw))
+    }
+
+    fn root(&self) -> &Path {
+        &self.rom_dir
+    }
+
+    fn find_any(&self, name: &[u8]) -> Result<Option<Vec<u8>>, VfsError> {
+        self.any_index().read(name).map_err(VfsError::from)
+    }
+
+    fn has_any(&self, name: &[u8]) -> bool {
+        self.any_index().locate(name).is_some()
+    }
+
+    fn any_count(&self) -> usize {
+        self.any_index().len()
+    }
+}
+
+/// Layered virtual filesystem over `<rom_dir>/Game/<rez_name>` archives with mod override directories
+/// (`mods/<mod_id>/overrides/...`) shadowing vanilla entries: a [`dc_vfs::Vfs`] whose archive layer is this ROM
+/// ([`RomLayer`]). It dereferences to the `Vfs` (folders: `add_override_dir`, `add_root`; engine readers take
+/// `&Vfs`); its own lookups return [`RezError`], as they always did.
+#[derive(Debug)]
+pub struct RezVfs {
+    vfs: Vfs,
+    rom: Arc<RomLayer>,
+}
+
+impl std::ops::Deref for RezVfs {
+    type Target = Vfs;
+    fn deref(&self) -> &Vfs {
+        &self.vfs
+    }
+}
+
+impl std::ops::DerefMut for RezVfs {
+    fn deref_mut(&mut self) -> &mut Vfs {
+        &mut self.vfs
+    }
+}
+
+impl RezVfs {
+    /// Creates a VFS over `rom_dir`. The Blowfish key is read from the ROM's own binary on first use of an
+    /// encrypted entry.
+    pub fn new(rom_dir: impl Into<PathBuf>) -> Self {
+        let rom = Arc::new(RomLayer::new(rom_dir));
+        Self {
+            vfs: Vfs::with_archive(rom.clone()),
+            rom,
+        }
+    }
+
+    /// The layered file system itself (for engine code that takes a [`Vfs`] by value).
+    pub fn into_vfs(self) -> Vfs {
+        self.vfs
+    }
+
+    /// Creates a VFS with an explicit key (tests, tools).
+    pub fn with_key(rom_dir: impl Into<PathBuf>, key: &[u8]) -> Result<Self, RezError> {
+        let vfs = Self::new(rom_dir);
+        *vfs.rom.cipher.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(Arc::new(Blowfish::new(key)?));
+        Ok(vfs)
+    }
+
+    /// Creates a VFS over the ROM named by `CA_ROM` (the explicit resolver in `dc-rom`).
+    pub fn from_env() -> Result<Self, RezError> {
+        Ok(Self::new(dc_rom::resolve_rom()?))
+    }
+
+    pub fn rom_dir(&self) -> &Path {
+        &self.rom.rom_dir
+    }
+
+    /// The layered file system itself (what `&RezVfs` dereferences to).
+    pub fn vfs(&self) -> &Vfs {
+        &self.vfs
     }
 
     /// Returns the bytes of entry `name` (full relative path) of `<rom_dir>/Game/<rez_name>`, shadowed by
     /// any registered override directory; `Ok(None)` if no layer has it. Text tables (`.txt`, `.gms`,
     /// `.bms`) are decrypted unless already plain; every other entry is returned as stored.
     pub fn entry(&self, rez_name: &str, name: &str) -> Result<Option<Vec<u8>>, RezError> {
-        self.fetch(rez_name, name, false, true)
+        Ok(self.vfs.entry(rez_name, name)?)
     }
 
     /// Stored bytes of entry `name` with no decryption at all (override files are returned as stored).
     pub fn entry_raw(&self, rez_name: &str, name: &str) -> Result<Option<Vec<u8>>, RezError> {
-        self.fetch(rez_name, name, false, false)
+        Ok(self.vfs.entry_raw(rez_name, name)?)
     }
 
     /// The first `n` stored bytes of an entry (a header such as a texture's size), without reading the rest;
@@ -938,16 +1018,7 @@ impl RezVfs {
         name: &str,
         n: usize,
     ) -> Result<Option<Vec<u8>>, RezError> {
-        validate_name(name)?;
-        validate_name(rez_name)?;
-        if let Some(mut raw) = self.find_override_raw(rez_name, name)? {
-            raw.truncate(n);
-            return Ok(Some(raw));
-        }
-        match self.archive(rez_name)? {
-            Some(arch) => arch.entry_head(name, n),
-            None => Ok(None),
-        }
+        Ok(self.vfs.entry_head(rez_name, name, n)?)
     }
 
     /// Explicit basename fallback: like [`RezVfs::entry`] but resolves `name` by basename, succeeding only
@@ -957,59 +1028,7 @@ impl RezVfs {
         rez_name: &str,
         name: &str,
     ) -> Result<Option<Vec<u8>>, RezError> {
-        self.fetch(rez_name, name, true, true)
-    }
-
-    fn fetch(
-        &self,
-        rez_name: &str,
-        name: &str,
-        by_basename: bool,
-        decode: bool,
-    ) -> Result<Option<Vec<u8>>, RezError> {
-        validate_name(name)?;
-        validate_name(rez_name)?;
-        if let Some(raw) = self.find_override_raw(rez_name, name)? {
-            return if decode {
-                self.decode(name, raw).map(Some)
-            } else {
-                Ok(Some(raw))
-            };
-        }
-        let neg_key = (
-            rez_name.to_ascii_uppercase(),
-            format!(
-                "{}{}",
-                if by_basename { "B:" } else { "P:" },
-                relpath_key(name)
-            ),
-        );
-        if self
-            .missing
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains(&neg_key)
-        {
-            return Ok(None);
-        }
-        let arch = self.archive(rez_name)?;
-        let found = match &arch {
-            Some(arch) if by_basename => arch.entry_raw_basename(name)?,
-            Some(arch) => arch.entry_raw(name)?,
-            None => None,
-        };
-        let decoded = arch.as_ref().is_some_and(|a| a.is_decoded());
-        match found {
-            Some(raw) if decode && !decoded => self.decode(name, raw).map(Some),
-            Some(raw) => Ok(Some(raw)),
-            None => {
-                self.missing
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(neg_key);
-                Ok(None)
-            }
-        }
+        Ok(self.vfs.entry_by_basename(rez_name, name)?)
     }
 
     /// Latin-1 text of an entry resolved through the explicit unique-basename fallback.
@@ -1018,17 +1037,12 @@ impl RezVfs {
         rez_name: &str,
         name: &str,
     ) -> Result<Option<String>, RezError> {
-        Ok(self.entry_by_basename(rez_name, name)?.map(|mut bytes| {
-            while bytes.last() == Some(&0) {
-                bytes.pop();
-            }
-            latin1_decode(&bytes)
-        }))
+        Ok(self.vfs.entry_text_by_basename(rez_name, name)?)
     }
 
     /// Text entry (Latin-1, trailing NULs stripped); alias of [`RezVfs::entry_text_latin1`].
     pub fn entry_text(&self, rez_name: &str, name: &str) -> Result<Option<String>, RezError> {
-        self.entry_text_latin1(rez_name, name)
+        Ok(self.vfs.entry_text(rez_name, name)?)
     }
 
     /// Returns the entry decoded as Latin-1 text with trailing NUL bytes stripped.
@@ -1037,36 +1051,12 @@ impl RezVfs {
         rez_name: &str,
         name: &str,
     ) -> Result<Option<String>, RezError> {
-        Ok(self.entry(rez_name, name)?.map(|mut bytes| {
-            while bytes.last() == Some(&0) {
-                bytes.pop();
-            }
-            latin1_decode(&bytes)
-        }))
+        Ok(self.vfs.entry_text_latin1(rez_name, name)?)
     }
 
     /// Lists all `(full_rel_path, offset, size)` entries in `<rom_dir>/Game/<rez_name>`.
     pub fn list_entries(&self, rez_name: &str) -> Result<Vec<(String, u64, u32)>, RezError> {
-        validate_name(rez_name)?;
-        let arch = self
-            .archive(rez_name)?
-            .ok_or_else(|| RezError::ArchiveNotFound(rez_name.to_string()))?;
-        Ok(arch.entries().to_vec())
-    }
-}
-
-/// Rejects empty, absolute, drive-qualified or `..`-containing names (they are joined onto directories).
-fn validate_name(name: &str) -> Result<(), RezError> {
-    let norm = name.replace('\\', "/");
-    let bad = norm.is_empty()
-        || norm.starts_with('/')
-        || norm.contains(':')
-        || norm.contains('\0')
-        || norm.split('/').any(|c| c == "..");
-    if bad {
-        Err(RezError::BadName(name.to_string()))
-    } else {
-        Ok(())
+        Ok(self.vfs.list_entries(rez_name)?)
     }
 }
 

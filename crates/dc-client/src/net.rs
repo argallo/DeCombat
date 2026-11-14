@@ -288,6 +288,65 @@ pub struct NetOptions {
     /// MAP-31: the server's mod set as a recipe (`JoinReport::recipe`, or `--mod-dir` on a direct join): a `@mod:`
     /// world announce resolves through its folders when no mod layer is installed. `None`: vanilla.
     pub mods: Option<crate::mods::HostRecipe>,
+    /// LOC-3: the seat ticket of a direct join (`--ticket`, else `DC_SEAT_TICKET`): it goes into the hello as a
+    /// lobby-pushed ticket does (LG-327). A seat's own ticket or a match's join secret (LOC-2); never printed.
+    pub seat_ticket: Option<dc_wire::seatticket::Hidden>,
+}
+
+/// LOC-3: the environment variable that gives a direct join its seat ticket when `--ticket` is absent.
+// DC-DEFAULT: LOC-3 (proposed)
+pub const SEAT_TICKET_ENV: &str = "DC_SEAT_TICKET";
+
+/// LOC-3: the seat ticket of a direct join from `--ticket` (`flag`) or [`SEAT_TICKET_ENV`] (`env`): the flag wins,
+/// an empty or blank variable counts as unset, each value is 32 hex digits (either case, read by
+/// `dc_wire::seatticket::from_hex` after trimming the variable). Either one needs a direct address (`direct`); the
+/// flag without one, or a value that is not a ticket, is a usage error. The errors never quote the value.
+// DC-DEFAULT: LOC-3 (proposed)
+pub fn direct_ticket(
+    flag: Option<&str>,
+    env: Option<&str>,
+    direct: bool,
+) -> Result<Option<dc_wire::seatticket::Hidden>, String> {
+    if let Some(v) = flag {
+        if !direct {
+            return Err("--ticket needs a direct address (--udp HOST:PORT)".into());
+        }
+        return dc_wire::seatticket::from_hex(v)
+            .map(|t| Some(dc_wire::seatticket::Hidden(t)))
+            .ok_or_else(|| "--ticket: not 32 hex digits".into());
+    }
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) if direct => dc_wire::seatticket::from_hex(v)
+            .map(|t| Some(dc_wire::seatticket::Hidden(t)))
+            .ok_or_else(|| format!("{SEAT_TICKET_ENV}: not 32 hex digits")),
+        _ => Ok(None),
+    }
+}
+
+/// LOC-8: the text of [`SEAT_TICKET_ENV`] as `std::env::var` gave it: unset is `None`; a value that is not Unicode is
+/// a usage error on a direct join (it cannot be a ticket, and silently joining without one would hide the mistake)
+/// and ignored otherwise, as the variable is.
+// DC-DEFAULT: LOC-8 (proposed)
+pub fn env_ticket_text(
+    v: Result<String, std::env::VarError>,
+    direct: bool,
+) -> Result<Option<String>, String> {
+    match v {
+        Ok(s) => Ok(Some(s)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) if direct => {
+            Err(format!("{SEAT_TICKET_ENV}: not 32 hex digits"))
+        }
+        Err(std::env::VarError::NotUnicode(_)) => Ok(None),
+    }
+}
+
+/// The game session settings of a direct join: [`session_config`] with the seat ticket of the options.
+// DC-DEFAULT: LOC-3 (proposed)
+pub fn direct_session_config(opts: &NetOptions, rom: Option<&RomWorlds>) -> GameConfig {
+    let mut gc = session_config(opts, &opts.name, rom, None);
+    gc.seat_ticket = opts.seat_ticket.map(|t| t.0);
+    gc
 }
 
 impl NetOptions {
@@ -319,6 +378,7 @@ impl NetOptions {
             hit_rigs_async: crate::characters::async_loads_from_env(true),
             content: None,
             mods: None,
+            seat_ticket: None,
         }
     }
 
@@ -1364,6 +1424,8 @@ struct Shared {
     sensor: crate::hud::sensor::Sensor,
     /// CLI-1951 / CLI-1952: the team pings of this match (the server's offer, the live tags and markers).
     pings: crate::hud::teamping::TeamPings,
+    /// CLI-1956: the kill cards of this match (the server's offer, the last own death's card).
+    kill_cards: crate::killzoom::KillCards,
     /// The own plant / defuse hold's sounds (CLI-1530): its start (ms), defuse, the bomb row.
     hold_sound: Option<(u32, bool, u16)>,
     /// w2-sprites: the billboard objects and the list of the last poll ([`crate::sprites`]).
@@ -1431,7 +1493,11 @@ impl Shared {
                     // SPEC: GAME_MESSAGES_2009_S2C.md §4.1 (state 2 writes the death time `local_player`+0x440,
                     // state 1 clears it, state 3 leaves it)
                     match st {
-                        1 => self.death_at = None,
+                        1 => {
+                            self.death_at = None;
+                            // CLI-1956: the card of the last death is spent
+                            self.kill_cards.alive();
+                        }
                         2 => self.death_at = Some(now),
                         _ => {}
                     }
@@ -1612,6 +1678,8 @@ impl Shared {
                     self.hud.level_exit = Some((next_world, keep, at_once));
                     // CLI-1952: the next world offers pings again or not
                     self.pings.reset();
+                    // CLI-1956: and kill cards
+                    self.kill_cards.reset();
                 }
                 GameEvent::Mover {
                     freeze, release, ..
@@ -1658,6 +1726,15 @@ impl Shared {
                                     );
                                 }
                                 self.pings.on_notice(n, now);
+                            }
+                        }
+                        // DC-DEFAULT: CLI-1956 (proposed) the kill cards: the offer and the own death's card
+                        dc_wire::killcard::SHELL_ID => {
+                            if let Some(n) = dc_wire::killcard::read_notice(&mut r) {
+                                if let dc_wire::killcard::Notice::Offer { hold_ms } = n {
+                                    eprintln!("dc-client: kill cards: offered by the server (hold {hold_ms} ms)");
+                                }
+                                self.kill_cards.on_notice(n);
                             }
                         }
                         // DC-DEFAULT: CLI-1642 (proposed) a Possession move: no firing, the body glides
@@ -1832,6 +1909,7 @@ impl Shared {
                     file: s.obs.files.get(&st.file).map(|f| f.1.clone()),
                     start: st,
                     at_load: first_group,
+                    impact: false,
                 },
                 SoundNote::Move { track, pos } => SoundCue::Move { track, pos },
                 SoundNote::Stop { track } => SoundCue::Stop { track },
@@ -2615,7 +2693,7 @@ fn net_main(shared: Arc<Mutex<Shared>>, opts: NetOptions) {
         // a direct join knows no room mode: the server's 0x9e (when it sends one) gives the mode class
         Connect::Udp(a) => (
             *a,
-            session_config(&opts, &opts.name, rom.as_ref(), None),
+            direct_session_config(&opts, rom.as_ref()),
             None,
             opts.lobby_slots.clone(),
         ),
@@ -3187,6 +3265,7 @@ impl NetWorld {
             bomb_hold: None,
             sensor: Default::default(),
             pings: Default::default(),
+            kill_cards: Default::default(),
             hold_sound: None,
             billboards: crate::sprites::BillboardTracker::default(),
             billboard_list: Vec::new(),
@@ -3592,6 +3671,7 @@ impl WorldSource for NetWorld {
                     own_team,
                     any_team: crate::deathcam::follows_any_team(class, own_team),
                     dead,
+                    kill_card: g.kill_cards.view(),
                 })
             }
             _ => None,
@@ -4519,6 +4599,78 @@ pub mod meter;
 
 #[cfg(test)]
 mod tests {
+
+    /// LOC-3: `--ticket` / `DC_SEAT_TICKET` on a direct join: the flag wins, a blank variable is unset, both need a
+    /// direct address (the variable is ignored without one), a bad value is an error that does not quote it, and the
+    /// ticket reaches the hello blob after the `DCST` mark as a lobby-pushed one does.
+    #[test]
+    fn a_direct_join_carries_its_ticket_in_the_hello() {
+        use dc_wire::seatticket::{to_hex, Hidden, Ticket};
+        let a: Ticket = [0xab; 16];
+        let ha_: Option<Hidden> = Some(Hidden(a));
+        let hb_: Option<Hidden> = Some(Hidden(core::array::from_fn(|i| i as u8)));
+        let b: Ticket = core::array::from_fn(|i| i as u8);
+        let (ha, hb) = (to_hex(&a), to_hex(&b));
+        assert_eq!(super::direct_ticket(None, None, true), Ok(None));
+        assert_eq!(super::direct_ticket(Some(&ha), None, true), Ok(ha_));
+        assert_eq!(
+            super::direct_ticket(Some(&ha.to_uppercase()), None, true),
+            Ok(ha_)
+        );
+        assert_eq!(
+            super::direct_ticket(Some(&ha), Some(&hb), true),
+            Ok(ha_),
+            "the flag wins"
+        );
+        assert_eq!(
+            super::direct_ticket(None, Some(&format!(" {hb}\n")), true),
+            Ok(hb_)
+        );
+        assert_eq!(super::direct_ticket(None, Some("  "), true), Ok(None));
+        assert_eq!(super::direct_ticket(None, Some(&hb), false), Ok(None));
+        assert!(super::direct_ticket(Some(&ha), None, false).is_err());
+        let bad = "0123456789abcdef0123456789abcdeZ";
+        for e in [
+            super::direct_ticket(Some(bad), None, true).unwrap_err(),
+            super::direct_ticket(Some("abc"), None, true).unwrap_err(),
+            super::direct_ticket(None, Some(bad), true).unwrap_err(),
+        ] {
+            assert!(!e.contains(bad) && !e.contains("abc"), "{e}");
+        }
+
+        let mut o = super::NetOptions::new(
+            super::Connect::Udp("127.0.0.1:27888".parse().unwrap()),
+            "Joiner",
+        );
+        o.seat_ticket = Some(Hidden(a));
+        assert!(
+            !format!("{o:?}").contains(&ha),
+            "LOC-8: options never print it"
+        );
+        let gc = super::direct_session_config(&o, None);
+        let hello = dc_botclient::shell::hello(&gc.nick, &gc.hello_tag, gc.seat_ticket.as_ref());
+        // [id u8][blob length u16][blob]
+        let bytes = hello.as_bytes();
+        let blob = &bytes[3..3 + u16::from_le_bytes([bytes[1], bytes[2]]) as usize];
+        let h = dc_dserver::msg::parse_hello(blob);
+        assert_eq!(h.name(), "Joiner");
+        assert_eq!(h.ticket, Some(a));
+        o.seat_ticket = None;
+        let gc = super::direct_session_config(&o, None);
+        assert_eq!(gc.seat_ticket, None);
+        // LOC-8: a variable that is not Unicode is a usage error on a direct join, else ignored
+        let odd = || std::env::VarError::NotUnicode(std::ffi::OsString::from("x"));
+        assert!(super::env_ticket_text(Err(odd()), true).is_err());
+        assert_eq!(super::env_ticket_text(Err(odd()), false), Ok(None));
+        assert_eq!(
+            super::env_ticket_text(Err(std::env::VarError::NotPresent), true),
+            Ok(None)
+        );
+        assert_eq!(
+            super::env_ticket_text(Ok(ha.clone()), true),
+            Ok(Some(ha.clone()))
+        );
+    }
 
     /// CLI-1857: an AI character (dc-dserver's NPC record: no roster binding, the NPC tail) is drawn with its caption
     /// and team; a player's character is drawn from its roster record only; other blobs are no characters.

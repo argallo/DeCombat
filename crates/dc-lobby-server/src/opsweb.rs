@@ -17,6 +17,115 @@ pub(crate) const PAGE: &str = include_str!("ops_dashboard.html");
 
 pub const HTML: &str = "text/html; charset=utf-8";
 pub const JSON: &str = "application/json; charset=utf-8";
+pub const JS: &str = "text/javascript; charset=utf-8";
+pub const CSS: &str = "text/css; charset=utf-8";
+pub const TEXT: &str = "text/plain; charset=utf-8";
+
+// DC-DEFAULT: LG-441 (proposed) the dashboard's app: a page without inline script and the lobby's own script and
+// stylesheet, built from web/admin and embedded here (the servers build with cargo alone)
+/// The page of the dashboard's app (`GET /ops`, LG-444): no inline script; it loads [`app_file`]'s script and stylesheet.
+pub(crate) const APP_SHELL: &str = include_str!("admin_app/shell.html");
+const APP_JS: &str = include_str!("admin_app/app.js");
+const APP_CSS: &str = include_str!("admin_app/app.css");
+const APP_NOTICES: &str = include_str!("admin_app/THIRD_PARTY_NOTICES.txt");
+
+/// The boot data of the app's page on the loopback admin port: one lobby, no session, no further instance.
+pub const LOOPBACK_BOOT: &str = r#"{"web":false,"label":"","current":null,"instances":[]}"#;
+
+/// The app's page: `csrf` is the page token its writes send, `asset_query` what follows the addresses of its two files
+/// (the loopback port's `?token=...`, else empty), `boot` the JSON the app reads from `<body data-boot>` (who serves
+/// the page, which lobbies there are). Each value is HTML-escaped; the template is read once, so nothing put into the
+/// page is searched for a placeholder again.
+pub fn app_shell(csrf: &str, asset_query: &str, boot: &str) -> String {
+    use crate::clanweb::esc;
+    let fills = [
+        ("__CSRF__", esc(csrf)),
+        ("__ASSETQ__", esc(asset_query)),
+        ("__BOOT__", esc(boot)),
+    ];
+    let mut out = String::with_capacity(APP_SHELL.len() + 512);
+    let mut rest = APP_SHELL;
+    while let Some(i) = rest.find("__") {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        match fills.iter().find(|(name, _)| tail.starts_with(name)) {
+            Some((name, value)) => {
+                out.push_str(value);
+                rest = &tail[name.len()..];
+            }
+            None => {
+                out.push_str("__");
+                rest = &tail[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// True for the request of the app's page (`GET /ops`): its answer carries the page policy without inline script
+/// (admin.rs, LG-442).
+pub fn is_app_page(head: &str) -> bool {
+    parse_request(head)
+        .is_some_and(|r| r.method == "GET" && r.path.trim_end_matches('/') == APP_PAGE_PATH)
+}
+
+// DC-DEFAULT: LG-444 (proposed) /ops is the dashboard app; the earlier page stays at /ops/classic
+/// LG-444: the address of the dashboard app's page.
+pub const APP_PAGE_PATH: &str = "/ops";
+/// LG-444: the address of the earlier dashboard page (inline script and style), kept until every screen has moved
+/// into the app.
+pub const CLASSIC_PAGE_PATH: &str = "/ops/classic";
+
+/// The app's embedded files by their exact path: the script, the stylesheet, and the licence texts of the packages
+/// the build bundled. Nothing is read from disk and no part of the path names a file.
+pub fn app_file(path: &str) -> Option<(&'static str, &'static str)> {
+    match path {
+        "/ops/app.js" => Some((JS, APP_JS)),
+        "/ops/app.css" => Some((CSS, APP_CSS)),
+        "/ops/licenses.txt" => Some((TEXT, APP_NOTICES)),
+        _ => None,
+    }
+}
+
+// DC-DEFAULT: LG-443 (proposed) the admin web lets a browser keep the app's script and stylesheet of one build
+/// The name of this build's script and stylesheet: 16 hex digits of the SHA-256 over both. The admin web's page names
+/// its two files with it (`?v=`), so another build is another address.
+pub fn app_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        let mut all = Vec::with_capacity(APP_JS.len() + APP_CSS.len() + 1);
+        all.extend_from_slice(APP_JS.as_bytes());
+        all.push(0);
+        all.extend_from_slice(APP_CSS.as_bytes());
+        crate::webauthn::hex(&crate::webauthn::sha256(&all))[..16].to_string()
+    })
+}
+
+/// What follows the addresses of the app's two files on the admin web's page (LG-443).
+pub fn app_asset_query() -> String {
+    format!("?v={}", app_version())
+}
+
+/// The `Cache-Control` of every answer but the one [`app_cache_control`] names.
+pub const NO_STORE: &str = "no-store";
+/// LG-443: the browser alone (no shared cache) may keep the answer, and need not ask again.
+pub const APP_FILE_CACHE: &str = "private, max-age=31536000, immutable";
+
+/// LG-443: the `Cache-Control` of the admin web's answer to `req`. Only the app's script and stylesheet, asked by this
+/// build's address and answered with 200, may be kept; a refusal, another build's address, the address without a
+/// version and everything else stay `no-store`.
+pub fn app_cache_control(req: &crate::clanweb::Request, status: u16) -> &'static str {
+    let keeps = status == 200
+        && req.method == "GET"
+        && matches!(req.path.as_str(), "/ops/app.js" | "/ops/app.css")
+        && req.query.get("v").is_some_and(|v| v == app_version());
+    if keeps {
+        APP_FILE_CACHE
+    } else {
+        NO_STORE
+    }
+}
 
 /// The value of header `name` (any case), trimmed and lower case.
 fn header_lower(head: &str, name: &str) -> Option<String> {
@@ -176,18 +285,35 @@ pub fn serve(
         Ok(v) => (200, JSON, v.to_json_string()),
         Err(e) => err(500, &format!("db: {e}")),
     };
+    if let Some((ctype, body)) = app_file(path) {
+        return (200, ctype, body.to_string());
+    }
+    // LG-390: the page carries the token its writes send (the admin web's session token, else the per-process one)
+    let page_token = || match guard {
+        Some(w) => w.csrf.clone(),
+        None => {
+            let mut g = crate::net::lock(shared);
+            let st = &mut *g;
+            st.beta.csrf(&mut st.keys)
+        }
+    };
     match path {
-        // LG-390: the page carries the token its writes send (the admin web's session token, else the per-process one)
-        "/ops" => {
-            let tok = match guard {
-                Some(w) => w.csrf.clone(),
-                None => {
-                    let mut g = crate::net::lock(shared);
-                    let st = &mut *g;
-                    st.beta.csrf(&mut st.keys)
+        // LG-444: the earlier page at its own address
+        CLASSIC_PAGE_PATH => (200, HTML, PAGE.replace("__CSRF__", &page_token())),
+        // LG-441, LG-444: the app's page as the loopback admin port serves it (the admin web fills in its own boot
+        // data, adminweb.rs); the admin token of the page's address goes on to the page's two files
+        APP_PAGE_PATH => {
+            let asset_query = match q.get("token") {
+                Some(t) if guard.is_none() && !t.is_empty() => {
+                    format!("?token={}", crate::clanweb::url_encode(t))
                 }
+                _ => String::new(),
             };
-            (200, HTML, PAGE.replace("__CSRF__", &tok))
+            (
+                200,
+                HTML,
+                app_shell(&page_token(), &asset_query, LOOPBACK_BOOT),
+            )
         }
         // OPS-14: the weapons the loadout lists offer
         "/ops/guns" => {
@@ -325,7 +451,7 @@ mod tests {
             )
             .unwrap()
         };
-        let (st, ct, body) = get("/ops", LO, "127.0.0.1:10090", None, true);
+        let (st, ct, body) = get("/ops/classic", LO, "127.0.0.1:10090", None, true);
         assert_eq!((st, ct), (200, HTML));
         assert!(
             body.contains("<title>") && !body.contains("<script src") && !body.contains("<link")
@@ -381,5 +507,151 @@ mod tests {
         )
         .unwrap();
         assert_eq!(post.0, 405);
+    }
+    // LG-441: the app's page (no inline script, the page token, the admin token passed on to its two files) and the
+    // embedded files, by exact path, behind the same loopback / Host / token checks as the JSON
+    #[test]
+    fn the_app_page_and_its_embedded_files() {
+        let sh = shared();
+        let get = |p: &str, peer, token, ok| {
+            handle(
+                &sh,
+                &format!("GET {p} HTTP/1.1\r\nHost: 127.0.0.1:10090\r\n\r\n"),
+                peer,
+                token,
+                ok,
+            )
+            .unwrap()
+        };
+        // LG-444: /ops is the app's page, with or without the closing slash; /ops/next is gone from this port
+        let (st, ct, page) = get("/ops", LO, None, true);
+        assert_eq!((st, ct), (200, HTML));
+        assert_eq!(get("/ops/", LO, None, true).2, page);
+        assert_eq!(get("/ops/next", LO, None, true).0, 404);
+        for hole in ["__CSRF__", "__ASSETQ__", "__BOOT__"] {
+            assert!(!page.contains(hole), "{hole} was not filled in");
+        }
+        assert!(
+            page.contains("<link rel=\"stylesheet\" href=\"/ops/app.css\">")
+                && page.contains("<script type=\"module\" src=\"/ops/app.js\"></script>")
+        );
+        // no inline script: the one script element names a file
+        assert_eq!(page.matches("<script").count(), 1);
+        assert!(crate::adminweb::inline_script_hashes(&page).is_empty());
+        // the page token sits in the same meta tag as on the earlier page (the instance forwarder reads it there)
+        let tok = |h: &str| {
+            h.split("<meta name=\"csrf\" content=\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .map(str::to_string)
+        };
+        let (st, _, old) = get("/ops/classic", LO, None, true);
+        assert_eq!(st, 200);
+        assert!(tok(&page).is_some_and(|t| t.len() >= 16) && tok(&page) == tok(&old));
+        // the earlier page is the one with the inline script, and it links the app's page
+        assert!(old.contains("<script>") && !old.contains("/ops/app.js"));
+        assert!(old.contains("id=\"new-link\""));
+        assert!(page.contains("data-boot=\"{&quot;web&quot;:false,"));
+
+        // the admin token of the page's address goes on to its files, percent-encoded
+        let (_, _, page) = get("/ops?token=a%20b%22%3E", LO, Some("a b\">"), true);
+        assert!(
+            page.contains("href=\"/ops/app.css?token=a%20b%22%3E\"")
+                && page.contains("src=\"/ops/app.js?token=a%20b%22%3E\""),
+            "{page}"
+        );
+
+        for (p, want) in [
+            ("/ops/app.js", JS),
+            ("/ops/app.css", CSS),
+            ("/ops/licenses.txt", TEXT),
+        ] {
+            let (st, ct, body) = get(p, LO, None, true);
+            assert_eq!((st, ct), (200, want), "{p}");
+            assert!(body.len() > 1000, "{p}");
+            assert!(!body.contains("sourceMappingURL"), "{p}");
+            // a missing or wrong admin token, another machine
+            assert_eq!(get(p, LO, Some("t"), false).0, 401, "{p}");
+            let remote = Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)));
+            assert_eq!(get(p, remote, None, true).0, 403, "{p}");
+        }
+        // exact paths only: no other file of the folder, nothing below or beside a file
+        for p in [
+            "/ops/app.js.map",
+            "/ops/app",
+            "/ops/app.css/x",
+            "/ops/shell.html",
+            "/ops/admin_app/app.js",
+            "/ops/THIRD_PARTY_NOTICES.txt",
+            "/ops/classic/app.js",
+            "/ops/classic/x",
+        ] {
+            assert_eq!(get(p, LO, None, true).0, 404, "{p}");
+        }
+        let post = handle(
+            &sh,
+            "POST /ops/app.js HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            LO,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(post.0, 405);
+    }
+
+    #[test]
+    fn the_apps_files_may_be_kept_by_their_builds_address_only() {
+        let v = app_version();
+        assert!(
+            v.len() == 16 && v.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{v}"
+        );
+        assert_eq!(app_asset_query(), format!("?v={v}"));
+        let cc = |line: &str, status| {
+            let r = parse_request(&format!("{line} HTTP/1.1\r\nHost: h\r\n\r\n")).unwrap();
+            app_cache_control(&r, status)
+        };
+        assert_eq!(cc(&format!("GET /ops/app.js?v={v}"), 200), APP_FILE_CACHE);
+        assert_eq!(cc(&format!("GET /ops/app.css?v={v}"), 200), APP_FILE_CACHE);
+        assert_eq!(
+            cc(&format!("GET /ops/app.css?x=1&v={v}"), 200),
+            APP_FILE_CACHE
+        );
+        // a refusal is never kept, nor another build's address, nor the address without a version
+        assert_eq!(cc(&format!("GET /ops/app.js?v={v}"), 401), NO_STORE);
+        assert_eq!(cc(&format!("GET /ops/app.js?v={v}"), 404), NO_STORE);
+        assert_eq!(cc("GET /ops/app.js?v=0123456789abcdef", 200), NO_STORE);
+        assert_eq!(cc(&format!("GET /ops/app.js?v={v}0"), 200), NO_STORE);
+        assert_eq!(cc("GET /ops/app.js?v=", 200), NO_STORE);
+        assert_eq!(cc("GET /ops/app.js", 200), NO_STORE);
+        // nothing else: not the page, not the licence texts, not JSON, not a write
+        for p in [
+            "/ops/classic",
+            "/ops/licenses.txt",
+            "/ops/live",
+            "/ops",
+            "/ops/app.js/",
+        ] {
+            assert_eq!(cc(&format!("GET {p}?v={v}"), 200), NO_STORE, "{p}");
+        }
+        assert_eq!(cc(&format!("POST /ops/app.js?v={v}"), 200), NO_STORE);
+    }
+
+    // a value that holds a placeholder's name is put in as text, never filled in again; every value is escaped
+    #[test]
+    fn the_app_page_is_filled_in_one_pass() {
+        let page = app_shell(
+            "__BOOT__",
+            "?token=__CSRF__",
+            "{\"label\":\"__ASSETQ__ \\\" <b>\"}",
+        );
+        assert!(page.contains("content=\"__BOOT__\""), "{page}");
+        assert!(page.contains("/ops/app.js?token=__CSRF__\""), "{page}");
+        assert!(
+            page.contains(
+                "data-boot=\"{&quot;label&quot;:&quot;__ASSETQ__ \\&quot; &lt;b&gt;&quot;}\""
+            ),
+            "{page}"
+        );
     }
 }

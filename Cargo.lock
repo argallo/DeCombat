@@ -768,14 +768,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
+name = "dc-attr"
+version = "0.1.0"
+dependencies = [
+ "dc-core",
+ "dc-vfs",
+ "serde_json",
+]
+
+[[package]]
 name = "dc-audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "dc-attr",
  "dc-bute",
+ "dc-core",
  "dc-hangdump",
  "dc-rez",
  "dc-rom",
+ "dc-vfs",
  "hound",
  "symphonia",
 ]
@@ -786,6 +798,7 @@ version = "0.1.0"
 dependencies = [
  "dc-bute",
  "dc-cone",
+ "dc-config",
  "dc-hangdump",
  "dc-model",
  "dc-nav",
@@ -805,7 +818,9 @@ dependencies = [
 name = "dc-bute"
 version = "0.1.0"
 dependencies = [
+ "dc-attr",
  "dc-rez",
+ "dc-sim",
  "serde_json",
 ]
 
@@ -824,6 +839,7 @@ dependencies = [
  "dc-fx-data",
  "dc-hangdump",
  "dc-ios-hid",
+ "dc-localhost",
  "dc-mod-lua",
  "dc-model",
  "dc-modkit",
@@ -834,6 +850,7 @@ dependencies = [
  "dc-sim",
  "dc-tex",
  "dc-ui-data",
+ "dc-vfs",
  "dc-wire",
  "dc-world",
  "flate2",
@@ -848,19 +865,26 @@ dependencies = [
 name = "dc-cone"
 version = "0.1.0"
 dependencies = [
- "dc-bute",
+ "dc-attr",
+ "dc-core",
  "dc-rez",
  "dc-sim",
+ "dc-vfs",
 ]
 
 [[package]]
 name = "dc-config"
 version = "0.1.0"
 dependencies = [
+ "dc-vfs",
  "serde",
  "serde_json",
  "toml",
 ]
+
+[[package]]
+name = "dc-core"
+version = "0.1.0"
 
 [[package]]
 name = "dc-dserver"
@@ -885,6 +909,7 @@ dependencies = [
 name = "dc-fx-data"
 version = "0.1.0"
 dependencies = [
+ "dc-core",
  "dc-rez",
  "dc-rom",
 ]
@@ -960,6 +985,7 @@ dependencies = [
  "dc-net-engine",
  "dc-rez",
  "dc-rom",
+ "dc-session",
  "dc-wire",
  "flate2",
  "lettre",
@@ -973,6 +999,19 @@ dependencies = [
  "toml",
  "windows-sys 0.59.0",
  "x509-parser",
+]
+
+[[package]]
+name = "dc-localhost"
+version = "0.1.0"
+dependencies = [
+ "dc-dserver",
+ "dc-net-engine",
+ "dc-wire",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1006,9 +1045,8 @@ dependencies = [
 name = "dc-mod-lua"
 version = "0.1.0"
 dependencies = [
- "dc-bute",
+ "dc-attr",
  "dc-config",
- "dc-rez",
  "mlua",
 ]
 
@@ -1062,11 +1100,13 @@ name = "dc-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "dc-bute",
+ "dc-attr",
+ "dc-core",
  "dc-model",
  "dc-rez",
  "dc-rom",
  "dc-tex",
+ "dc-vfs",
  "dc-world",
  "glam",
  "image",
@@ -1082,13 +1122,25 @@ name = "dc-rez"
 version = "0.1.0"
 dependencies = [
  "dc-rom",
+ "dc-vfs",
 ]
 
 [[package]]
 name = "dc-rom"
 version = "0.1.0"
 dependencies = [
+ "dc-core",
  "serde_json",
+]
+
+[[package]]
+name = "dc-session"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "serde_json",
+ "windows-sys 0.59.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -1121,6 +1173,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-vfs"
+version = "0.1.0"
+dependencies = [
+ "dc-core",
+]
+
+[[package]]
 name = "dc-wire"
 version = "0.1.0"
 dependencies = [
@@ -1132,8 +1191,10 @@ dependencies = [
 name = "dc-world"
 version = "0.1.0"
 dependencies = [
+ "dc-core",
  "dc-rez",
  "dc-rom",
+ "dc-vfs",
 ]
 
 [[package]]
@@ -1141,9 +1202,11 @@ name = "dc-xtask"
 version = "0.1.0"
 dependencies = [
  "dc-bute",
+ "dc-render",
  "dc-rez",
  "dc-rom",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

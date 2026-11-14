@@ -27,10 +27,12 @@ pub struct PlacePing {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TeamPings {
     offered: bool,
-    /// Pinged enemies: object -> until (source clock, ms).
-    enemies: Vec<(u16, u32)>,
+    /// Pinged enemies: (object, until, pinged at) on the source clock (ms).
+    enemies: Vec<(u16, u32, u32)>,
     places: Vec<PlacePing>,
     last_sent: Option<u32>,
+    /// The enemy and place notices heard since the offer (CLI-1954: one sound each).
+    heard: [u32; 2],
 }
 
 /// What lies under the crosshair at a Ping press.
@@ -48,6 +50,10 @@ pub enum AimHit {
 pub struct PingView {
     pub enemies: Vec<u16>,
     pub places: Vec<PlacePing>,
+    /// CLI-1954: the enemies pinged less than [`FLASH_MS`] ago, with the time since (ms): their tag flashes.
+    pub fresh: Vec<(u16, u32)>,
+    /// CLI-1954: the enemy and place notices heard since the offer (the HUD plays a sound for each new one).
+    pub heard: [u32; 2],
 }
 
 /// `until` lies after `now` on the wrapping clock.
@@ -74,10 +80,12 @@ impl TeamPings {
             }
             Notice::Enemy { obj, ms, .. } => {
                 let until = now.wrapping_add(u32::from(ms));
-                self.enemies.retain(|(o, _)| *o != obj);
-                self.enemies.push((obj, until));
+                self.enemies.retain(|(o, _, _)| *o != obj);
+                self.enemies.push((obj, until, now));
+                self.heard[0] = self.heard[0].wrapping_add(1);
             }
             Notice::Place { from, pos, ms } => {
+                self.heard[1] = self.heard[1].wrapping_add(1);
                 self.places.retain(|p| p.from != from);
                 self.places.push(PlacePing {
                     from,
@@ -95,11 +103,18 @@ impl TeamPings {
 
     /// The pings still shown at `now`; the expired ones are dropped.
     pub fn view(&mut self, now: u32) -> PingView {
-        self.enemies.retain(|(_, u)| running(*u, now));
+        self.enemies.retain(|(_, u, _)| running(*u, now));
         self.places.retain(|p| running(p.until, now));
         PingView {
-            enemies: self.enemies.iter().map(|(o, _)| *o).collect(),
+            enemies: self.enemies.iter().map(|(o, _, _)| *o).collect(),
             places: self.places.clone(),
+            fresh: self
+                .enemies
+                .iter()
+                .map(|(o, _, at)| (*o, now.wrapping_sub(*at)))
+                .filter(|(_, age)| *age < FLASH_MS)
+                .collect(),
+            heard: self.heard,
         }
     }
 
@@ -174,6 +189,115 @@ pub fn aim_hit(
     }
 }
 
+/// CLI-1954: how long a pinged enemy's tag flashes, and one blink of it (the ping colour, then a fade back to the
+/// enemy colour), like the own hit's flash (CLI-594) but in its own colour and three times.
+// DC-DEFAULT: CLI-1954 (proposed) owner request 2026-11-09 "flashes the nametag a different color like when someone
+// is getting shot (use different color though)"
+pub const FLASH_MS: u32 = 600;
+pub const BLINK_MS: u32 = 200;
+/// The ping flash colour: gold, apart from the enemy red, the hit orange and the mate blue.
+// DC-DEFAULT: CLI-1954 (proposed)
+pub const FLASH_COLOUR: [u8; 4] = [255, 214, 40, 255];
+
+/// The colour of a pinged enemy's tag `age` ms after the ping: each blink holds [`FLASH_COLOUR`] for its first half
+/// and fades back to `enemy` over its second; from [`FLASH_MS`] on, `enemy`.
+// DC-DEFAULT: CLI-1954 (proposed)
+pub fn flash_colour(enemy: [u8; 4], age: u32) -> [u8; 4] {
+    if age >= FLASH_MS {
+        return enemy;
+    }
+    let half = BLINK_MS / 2;
+    let t = age % BLINK_MS;
+    if t < half {
+        return FLASH_COLOUR;
+    }
+    let f = (t - half) as f32 / half as f32;
+    let mut c = [0u8; 4];
+    for (i, v) in c.iter_mut().enumerate() {
+        let a = FLASH_COLOUR[i] as f32;
+        let b = enemy[i] as f32;
+        *v = (a + (b - a) * f).round().clamp(0.0, 255.0) as u8;
+    }
+    c
+}
+
+/// One of the user's own game files the pings use (ROM model: no path text in this tree; the archive entry whose
+/// upper-case path has this length and SHA-256 prefix).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilePin {
+    pub what: &'static str,
+    pub sha16: &'static str,
+    pub len: usize,
+}
+
+// DC-DEFAULT: CLI-1954 (proposed, our pick of the game's own files; owner request 2026-11-09 "make it fit the game's
+// ui elements" and "a sound effect ... so you know that it was placed")
+/// The place marker: the game's own waypoint picture of the mission HUD (an orange pointer, its tip at the bottom).
+pub const MARKER_PIN: FilePin = FilePin {
+    what: "ping marker picture",
+    sha16: "14232ae1b2723c53",
+    len: 45,
+};
+/// The place ping's sound: the game's messenger chime.
+pub const PLACE_SOUND_PIN: FilePin = FilePin {
+    what: "place ping sound",
+    sha16: "12087db29cf8add6",
+    len: 28,
+};
+/// The enemy ping's sound: the game's short electronic beep.
+pub const ENEMY_SOUND_PIN: FilePin = FilePin {
+    what: "enemy ping sound",
+    sha16: "eb350a7e4cd9c142",
+    len: 25,
+};
+
+/// The game files of the pings, found once when the HUD loads (all `None` without a ROM: the diamond and silence).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PingArt {
+    /// The marker picture's path and its size in texels.
+    pub marker: Option<(String, [u32; 2])>,
+    pub place_sound: Option<String>,
+    pub enemy_sound: Option<String>,
+}
+
+impl PingArt {
+    /// Looks the three files up in the archives of `<rom>/Game` (the first archive with a match wins); the picture is
+    /// read once for its size.
+    pub fn from_rom(rom: &std::path::Path) -> PingArt {
+        let mut out = PingArt::default();
+        let Ok(rd) = std::fs::read_dir(rom.join("Game")) else {
+            return out;
+        };
+        let mut files: Vec<std::path::PathBuf> = rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rez")))
+            .collect();
+        files.sort();
+        let hit = |p: &str, pin: &FilePin| {
+            dc_ui_data::names::matches_pin(&p.to_ascii_uppercase(), pin.sha16, pin.len)
+        };
+        for f in files {
+            let Ok(a) = dc_rez::RezArchive::open(&f) else {
+                continue;
+            };
+            for (p, off, size) in a.entries() {
+                if out.marker.is_none() && hit(p, &MARKER_PIN) {
+                    out.marker = a
+                        .read_raw(*off, *size)
+                        .ok()
+                        .and_then(|b| super::compose::decode_tex(&b))
+                        .map(|t| (p.clone(), [t.width, t.height]));
+                } else if out.place_sound.is_none() && hit(p, &PLACE_SOUND_PIN) {
+                    out.place_sound = Some(p.clone());
+                } else if out.enemy_sound.is_none() && hit(p, &ENEMY_SOUND_PIN) {
+                    out.enemy_sound = Some(p.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A place marker on the screen this frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PingMark {
@@ -217,44 +341,66 @@ pub fn marker_place(camera: &dc_render::Camera, p: [f32; 3], size: (u32, u32)) -
     ([w * 0.5 + d[0] * t, h * 0.5 + d[1] * t], true)
 }
 
-/// The draw items of the markers: a diamond in `colour` (a dark one behind it), the distance `<n> m` under it and
-/// the pinger's name over it, in font record `font`. No art of ours.
-// DC-DEFAULT: CLI-1952 (proposed)
+/// The styles of the markers' texts: the pinger's name (the nametags' caption, in the mate colour) and the distance
+/// (the flag mode's in-world marker text).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkStyles {
+    pub name: super::layout::TextStyle,
+    pub metres: super::layout::TextStyle,
+}
+
+/// The draw items of the markers. With the game's marker picture ([`PingArt::marker`]): the picture centred across
+/// with its tip (its bottom edge) on the point, `<n> m` under the tip and the pinger's name over the picture, as the
+/// game's own in-world markers carry their texts. Without it: a diamond in the name colour with a dark rim.
+// DC-DEFAULT: CLI-1952 (proposed) the diamond; CLI-1954 (proposed) the game's picture and texts
 pub fn push_items(
     out: &mut Vec<super::items::DrawItem>,
     marks: &[PingMark],
-    colour: [u8; 4],
-    font: i32,
+    art: &PingArt,
+    st: &MarkStyles,
 ) {
     use super::items::DrawItem;
-    use super::layout::TextStyle;
-    let style = |c: [u8; 4], size: i32| TextStyle {
-        font,
-        colour: c,
-        size: Some(size),
-    };
     for m in marks {
         let [x, y] = m.at;
-        for (half, tint) in [(MARK_HALF + 2.0, [0, 0, 0, 200]), (MARK_HALF, colour)] {
-            let side = half * std::f32::consts::SQRT_2;
-            out.push(DrawItem::Image {
-                tex: String::new(),
-                src: [1.0, 1.0],
-                dst: [x - side * 0.5, y - side * 0.5, side, side],
-                tint,
-                turn: Some(([x, y], std::f32::consts::FRAC_PI_4)),
-            });
-        }
+        let (top, bottom) = match &art.marker {
+            Some((tex, [w, h])) => {
+                let (w, h) = (*w as f32, *h as f32);
+                out.push(DrawItem::Image {
+                    tex: tex.clone(),
+                    src: [w, h],
+                    dst: [x - w * 0.5, y - h, w, h],
+                    tint: [255; 4],
+                    turn: None,
+                });
+                (y - h - 2.0, y + 2.0)
+            }
+            None => {
+                for (half, tint) in [
+                    (MARK_HALF + 2.0, [0, 0, 0, 200]),
+                    (MARK_HALF, st.name.colour),
+                ] {
+                    let side = half * std::f32::consts::SQRT_2;
+                    out.push(DrawItem::Image {
+                        tex: String::new(),
+                        src: [1.0, 1.0],
+                        dst: [x - side * 0.5, y - side * 0.5, side, side],
+                        tint,
+                        turn: Some(([x, y], std::f32::consts::FRAC_PI_4)),
+                    });
+                }
+                (y - MARK_HALF - 3.0, y + MARK_HALF + 3.0)
+            }
+        };
         out.push(DrawItem::Label {
-            style: style([255, 255, 255, 255], 0xe),
-            pos: [x, y + MARK_HALF + 3.0],
+            style: st.metres,
+            pos: [x, bottom],
             text: format!("{} m", m.metres),
             anchor: [0.5, 0.0],
         });
         if !m.name.is_empty() {
             out.push(DrawItem::Label {
-                style: style(colour, 0xe),
-                pos: [x, y - MARK_HALF - 3.0],
+                style: st.name,
+                pos: [x, top],
                 text: m.name.clone(),
                 anchor: [0.5, 1.0],
             });
@@ -407,5 +553,124 @@ mod tests {
     #[test]
     fn the_session_hands_the_ping_shell_to_the_client() {
         assert!(dc_botclient::session::RAW_SHELL_EVENTS.contains(&dc_wire::teamping::SHELL_ID));
+    }
+
+    /// CLI-1954: a ping's notice counts once; the enemy's tag flashes in its own colour for 600 ms (three blinks),
+    /// then stays in the enemy colour while it is shown.
+    #[test]
+    fn a_pinged_enemy_flashes_three_blinks_and_each_notice_is_heard_once() {
+        let mut p = TeamPings::default();
+        p.on_notice(
+            Notice::Offer {
+                enemy_ms: 3000,
+                place_ms: 5000,
+            },
+            0,
+        );
+        assert_eq!(p.view(0).heard, [0, 0]);
+        p.on_notice(
+            Notice::Enemy {
+                from: 1,
+                obj: 9,
+                ms: 3000,
+            },
+            1000,
+        );
+        p.on_notice(
+            Notice::Place {
+                from: 1,
+                pos: [0.0; 3],
+                ms: 5000,
+            },
+            1000,
+        );
+        let v = p.view(1250);
+        assert_eq!(v.heard, [1, 1]);
+        assert_eq!(v.fresh, vec![(9, 250)]);
+        assert!(p.view(1600).fresh.is_empty() && p.view(1600).enemies == vec![9]);
+        let red = [150, 0, 0, 255];
+        for b in 0..3 {
+            assert_eq!(flash_colour(red, b * BLINK_MS), FLASH_COLOUR);
+            assert_eq!(
+                flash_colour(red, b * BLINK_MS + BLINK_MS - 1)[1],
+                2,
+                "faded back"
+            );
+        }
+        assert_eq!(flash_colour(red, FLASH_MS), red);
+        assert_ne!(FLASH_COLOUR, [250, 80, 0, 255], "not the hit colour");
+        p.reset();
+        assert_eq!(p.view(2000).heard, [0, 0]);
+    }
+
+    fn styles() -> MarkStyles {
+        let t = |c| super::super::layout::TextStyle {
+            font: 4,
+            colour: c,
+            size: Some(14),
+        };
+        MarkStyles {
+            name: t([1, 2, 3, 255]),
+            metres: t([255; 4]),
+        }
+    }
+
+    /// CLI-1954: with the game's picture the marker is the picture, tip on the point, the distance under the tip and
+    /// the name over the picture; without it the diamond.
+    #[test]
+    fn the_marker_is_the_games_picture_with_its_texts_or_the_diamond() {
+        use super::super::items::DrawItem;
+        let m = PingMark {
+            at: [500.0, 300.0],
+            edge: false,
+            metres: 12,
+            name: "AB".into(),
+        };
+        let art = PingArt {
+            marker: Some(("pic.dtx".into(), [64, 32])),
+            ..PingArt::default()
+        };
+        let mut out = Vec::new();
+        push_items(&mut out, std::slice::from_ref(&m), &art, &styles());
+        assert_eq!(out.len(), 3);
+        match &out[0] {
+            DrawItem::Image { tex, dst, .. } => {
+                assert_eq!(tex, "pic.dtx");
+                assert_eq!(*dst, [468.0, 268.0, 64.0, 32.0]);
+            }
+            o => panic!("{o:?}"),
+        }
+        match (&out[1], &out[2]) {
+            (DrawItem::Label { pos: d, text, .. }, DrawItem::Label { pos: n, style, .. }) => {
+                assert_eq!(text, "12 m");
+                assert!(d[1] > 300.0 && n[1] < 268.0, "{d:?} {n:?}");
+                assert_eq!(style.colour, [1, 2, 3, 255]);
+            }
+            o => panic!("{o:?}"),
+        }
+        let mut out = Vec::new();
+        push_items(&mut out, &[m], &PingArt::default(), &styles());
+        assert!(matches!(&out[0], DrawItem::Image { tex, .. } if tex.is_empty()));
+        assert_eq!(out.len(), 4);
+    }
+
+    /// CLI-1954: the game's own picture and sounds are found by their pins (needs the ROM).
+    #[test]
+    fn rom_has_the_ping_picture_and_sounds() {
+        let Some(rom) = dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let art = PingArt::from_rom(&rom);
+        let (tex, size) = art.marker.clone().expect("marker picture");
+        assert!(size[0] > 0 && size[1] > 0, "{tex} {size:?}");
+        let vfs = dc_rez::RezVfs::new(&rom);
+        for s in [&art.place_sound, &art.enemy_sound] {
+            let s = s.as_deref().expect("sound");
+            assert!(
+                crate::sndcache::decode_path(&vfs, s).is_some(),
+                "{s} decodes"
+            );
+        }
     }
 }

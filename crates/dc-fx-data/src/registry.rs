@@ -5,7 +5,7 @@
 //! are hashed and compared; the match is case-insensitive in the engine, so the lookup tries the plain
 //! case variants (exact, lower, upper, first letter upper, each word capitalised).
 
-use dc_rom::sha256_hex;
+use dc_core::sha256_hex;
 
 /// Our names for the 19 effect types, in registry order. Meanings are descriptive guesses (SPEC §6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

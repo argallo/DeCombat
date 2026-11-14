@@ -6,5 +6,5 @@ license.workspace = true
 description = "Navigation grid for a player-sized body over a dc-sim collision world (lattice probed with the body's cylinder, A*), shared by the bots and the server's co-op AI"
 
 [dependencies]
-# dc-sim: the collision world and the body cylinder every link is probed with.
-dc-sim = { path = "../dc-sim" }
+# dc-sim: the collision world and the body cylinder every link is probed with (no `rom`: dc-nav needs no ROM crate).
+dc-sim = { path = "../dc-sim", default-features = false, features = ["std", "world"] }

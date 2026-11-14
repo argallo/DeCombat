@@ -240,7 +240,8 @@ modes, `--bots` good bots per room, `--parallel` rooms at once. The ROM is `--ro
 `--bin` or `target/release` of this checkout (build `dc-netlab`, `dc-botclient`, `dc-dserver` and `dc-lobby-server`
 in release first). Each room lands in `<dir>/<KEY>_<map index>_<map name>/`; a room that already has `report.json`
 is skipped, so a stopped run continues where it was. `progress.txt` gets a line per room; the folder is scored at
-the end.
+the end. The matrix will gain a skill-band room per mode (`--skills 70-90` and `--skills 5-25`) next to the
+good-bot rooms; the scorer reads each room's own skill levels, so it needs no change for them.
 
 `score` takes one netlab `--out` folder or a folder of them. It reads the bots' event logs, the game server's log
 and `report.json`, and writes `score.md` / `score.json` per room and `summary.md` / `scores.csv` for the folder
@@ -258,17 +259,27 @@ thresholds are constants at the top of the file:
   not count; pogo runs of 4 or more jumps within 96 units with gaps under 6 s, judged for bots with 3 or more alive
   minutes and reported with their positions), and confinement (a bot alive 60 s or more inside a 512-unit box
   while its goal is more than 300 units away, or the nav island count growing by 20 inside one life: none
-  allowed, the box and times are reported);
-- combat (respawn modes): kills per 2 minutes alive, team kill shares, hits per shot for bots with 100 or more
+  allowed, the box and times are reported); a stuck episode that ends in a world death fails on its own; own-grenade
+  deaths are counted apart from the world deaths (1 per bot per 10 minutes); a spawn point where fresh spawns die to
+  the world within 10 s more than once fails; knife runs under 1 s (not ended by a sighting or a hit) at most a tenth
+  of the runs and at most 4 knife draws per bot per alive minute; in the team modes one team's stuck jumps per alive
+  minute may not exceed 2.5 times the other's (when the higher side has 1.5 or more); a creep (5 or more stuck jumps
+  2 to 3.6 s apart, each moving 20 to 90 units) is allowed once per room;
+- combat (respawn modes): kills per 2 minutes alive (the room's lowest-skill bot is exempt), team kill shares, hits per
+  shot (3 to 40 %) and at most 120 shots per kill for bots with 100 or more
   shots (Spy Hunt: hit rate by distance band, and at most a tenth of the hits closer than 20 units), the time from
   seeing an enemy to the first shot (median of at least 20 samples, none instant, a short tail of slow ones) and
   the spread of the bots' planned reaction delays;
-- objectives: Search and Destroy plants, defuses (including whether a defuse starts when a defender could reach
-  the site in 25 s) and round ends; Capture the Flag captures, dropped flags and balance (each team takes the
-  enemy flag, capture margin); Spy Hunt pickups, stage times, stage 2 ending by upload or death rather than the
-  timer, and how many hunters work the agent; Quarantine after the outbreak (length of the phase, how close the
-  humans stay together, how often they hunt instead of grouping, how fast the first claw lands, how much they
-  shoot when they see an infected); Elimination Pro round ends. Win shares (round wins in Search and Destroy and
+- objectives: Search and Destroy plants, whether a defender gets within 400 units (3-D) of the bomb in half of the
+  planted rounds, the attackers' win share (judged with 5 or more planted rounds) and round ends; Capture the Flag
+  captures, dropped flags and balance (each team takes the enemy flag, capture margin) and the guard spots (no spot
+  without sight of the flag held 20 s, no bot parked on a spot longer than twice its dwell); Spy Hunt pickups, stage
+  times, stage 2 ending by upload or death rather than the timer, how many hunters work the agent, no case lying
+  free over 90 s while a player holds 4, and holders of 4 losing their cases at most 5 times per stage; Quarantine
+  after the outbreak (length of the phase, how close the humans stay together, how often they hunt instead of
+  grouping, how fast the first claw lands, how much they shoot when they see an infected, and no living human
+  45 s without an infected within 800 units; a human standing its post may be idle for 90 s; a timer win counts as a
+  human win only when an infected came within 800 units of a survivor in the last minute); Elimination Pro round ends. Win shares (round wins in Search and Destroy and
   Elimination Pro, human wins in Quarantine, agent wins in Spy Hunt) are judged pooled per mode in the "Per mode"
   section of `summary.md`, since a single room has too few rounds. Quarantine human wins with bots are about 5 %
   under the 2009 numbers, and the pooled human-win band is informational by the owner's decision of 2026-11-08

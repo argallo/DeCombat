@@ -232,3 +232,70 @@ fn link_datagram_from_unknown_peer_is_dropped() {
     assert!(host.poll(0).is_empty());
     assert_eq!(host.stats().unknown_peer, 1);
 }
+
+/// NET-29: at the link limit an unproven link at least the grace old gives its slot to the newcomer (closed at once,
+/// cause Local, code 3); a proven link never does, and a younger unproven one does not either.
+#[test]
+fn at_the_limit_an_old_unproven_link_is_evicted_a_proven_one_never() {
+    let mut host: Host<u32> = Host::new(HostConfig {
+        max_links: Some(2),
+        evict_unproven_after_ms: Some(2000),
+        ..HostConfig::default()
+    });
+    let join = OobDatagram::JoinAsk {
+        app_id: TODO_GAME_APP_ID_GUID_LAYOUT,
+        rate_bps: 1,
+    };
+    let opened = |ev: &[HostEvent<u32>], p: u32| {
+        ev.iter()
+            .any(|e| matches!(e, HostEvent::LinkOpened { peer, .. } if *peer == p))
+    };
+    assert!(opened(&ask(&mut host, 0, 1, join.clone()), 1));
+    assert!(opened(&ask(&mut host, 100, 2, join.clone()), 2));
+    host.set_proven(&1);
+    // peer 2 is unproven but younger than the grace: the newcomer is refused as before
+    let ev = ask(&mut host, 1500, 3, join.clone());
+    assert!(!opened(&ev, 3));
+    assert_eq!(
+        replies(&ev),
+        vec![OobDatagram::JoinReply {
+            accepted: false,
+            same_app: true
+        }]
+    );
+    // past the grace: peer 2 (unproven) is evicted, peer 1 (proven) stays
+    let ev = ask(&mut host, 2200, 3, join.clone());
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        HostEvent::LinkClosed {
+            peer: 2,
+            code: 3,
+            cause: CloseCause::Local
+        }
+    )));
+    assert!(opened(&ev, 3));
+    assert!(host.link(&1).is_some() && host.link(&2).is_none());
+    assert_eq!(host.stats().evicted_unproven, 1);
+    // everyone proven: a full host refuses as before
+    host.set_proven(&3);
+    let ev = ask(&mut host, 9000, 4, join);
+    assert!(!opened(&ev, 4));
+    assert_eq!(host.open_links(), 2);
+}
+
+/// Without `evict_unproven_after_ms` (the default) nothing changes: an old unproven link is never evicted.
+#[test]
+fn without_the_setting_a_full_host_still_refuses() {
+    let mut host: Host<u32> = Host::new(HostConfig {
+        max_links: Some(1),
+        ..HostConfig::default()
+    });
+    let join = OobDatagram::JoinAsk {
+        app_id: TODO_GAME_APP_ID_GUID_LAYOUT,
+        rate_bps: 1,
+    };
+    let _ = ask(&mut host, 0, 1, join.clone());
+    let ev = ask(&mut host, 5000, 2, join);
+    assert!(!ev.iter().any(|e| matches!(e, HostEvent::LinkOpened { .. })));
+    assert_eq!(host.stats().evicted_unproven, 0);
+}

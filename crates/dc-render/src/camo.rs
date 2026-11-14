@@ -119,7 +119,7 @@ pub fn parse(name: &str) -> Option<CamoPath<'_>> {
         Some(_) => return None,
         None => (pattern, None),
     };
-    (dc_bute::modpatch::is_cosmetic_key(base_key) && !pattern.is_empty()).then_some(CamoPath {
+    (dc_attr::modpatch::is_cosmetic_key(base_key) && !pattern.is_empty()).then_some(CamoPath {
         mode,
         base_row,
         base_key,

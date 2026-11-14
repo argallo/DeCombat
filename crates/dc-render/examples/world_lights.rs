@@ -5,14 +5,14 @@
 //! Usage: `CA_ROM=<dir> cargo run -p dc-render --example world_lights`.
 
 use dc_render::{
-    light_class, model_visibility, static_light, Falloff, LightShape, ModelVisibility, WorldSource,
+    light_class, model_visibility, static_light, Falloff, LightShape, ModelVisibility,
 };
 use dc_world::{FieldValue, ObjectRole, World};
 use std::collections::BTreeMap;
 
 fn main() {
     let rom = dc_rom::resolve_rom().expect("CA_ROM");
-    let src = WorldSource::open(&rom).expect("world archive");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
     let mut classes: BTreeMap<u8, u64> = BTreeMap::new();
     let mut created = 0u64;
     let mut falloff: BTreeMap<String, u64> = BTreeMap::new();

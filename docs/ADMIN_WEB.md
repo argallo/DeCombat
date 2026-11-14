@@ -140,8 +140,9 @@ Sign-ins, enrolments, key changes and refusals are events of kind `admin_web` in
   embedded Yubico root; the leaf is a version-3 "Authenticator Attestation" certificate, not a CA, of a P-256 key, whose
   AAGUID extension (when present) names the model in the authenticator data.
 - Session: 32 random bytes in `__Host-dcadmin` (Secure, HttpOnly, SameSite=Strict, Path=/), held in the lobby's memory
-  only; answers are `no-store`, `X-Frame-Options: DENY`, a Content-Security-Policy with `frame-ancestors 'none'` and no
-  inline script except the dashboard's and the beta page's own, allowed by the hashes of the static templates (computed once, never from a served page).
+  only; answers are `no-store` (but for the new dashboard's two files, section 8), `X-Frame-Options: DENY`, a Content-Security-Policy with `frame-ancestors 'none'` and no
+  inline script except the dashboard's and the beta page's own, allowed by the hashes of the static templates (computed once, never from a served page). Styles may come
+  from the listener's own stylesheet and inline (`style-src 'self' 'unsafe-inline'`, LG-442).
 
 ## 7. Further lobby instances (the Hacking Mod lobby)
 
@@ -179,7 +180,7 @@ How it works and what is checked:
 - The browser talks only to the admin web. A request under `/i/<name>/` passes the admin web's own checks first (session,
   `Origin`, the session's CSRF token on every POST); then the admin web sends it to `admin` itself, as the SSH tunnel
   would: `Host` and `Origin` the instance's loopback address, its admin token, and on a write the instance's own page
-  token, which it reads from the instance's `/ops` page just before. The pages the browser gets carry the session's
+  token, which it reads from the instance's `/ops` page just before (either dashboard page carries it). The pages the browser gets carry the session's
   token, never the instance's.
 - Only configured names; only `/ops` and `/ops/*`; plain paths (no `..`, no percent escapes in the path). The deploys
   (`/ops/updates*`) are not forwarded and the Updates tab is gone on the other instance's pages: a deploy is for the whole
@@ -192,3 +193,89 @@ How it works and what is checked:
   200)`).
 - Both instances must run the same build (they share `/opt/decombat/bin`): the admin web's Content-Security-Policy allows
   the pages' inline scripts by the hashes of its own templates.
+
+## 8. The new dashboard (`/ops`) and the classic one (`/ops/classic`)
+
+The dashboard is being rebuilt as an app with a side navigation, screens that work on a phone and clearer confirmations
+(rules: DC_DEFAULTS.md LG-441 to LG-449). The app is what `/ops` opens: `https://admin.<your domain>/ops` after the
+sign-in (a further instance: `/i/<name>/ops`), or `http://127.0.0.1:<admin port>/ops` through the SSH tunnel (with
+`?token=` when the port has a token). Its screens arrive one by one.
+
+The dashboard the sections above describe (the tabs Live, Problems, Matches, Players, Alerts, Bots, Updates) is the
+**classic dashboard** and stays whole at `/ops/classic` (`/i/<name>/ops/classic`, and the same path on the admin port)
+until every screen has moved. Nothing of it is gone:
+
+- the app's navigation ends with **Classic dashboard**, and the classic page's bar has **New dashboard**;
+- a screen that has not moved yet says so and opens the matching classic tab with one button (Bots opens
+  `/ops/classic#bots`, Deploy `#updates`, a match `#match=<id>`, a player `#timeline=<name>`);
+- an address saved before the change (`/ops#bots`, `/ops#match=12`) opens the app on the same thing;
+- the beta list (`/ops/beta`) and the key page (`/keys`) are where they were;
+- every JSON address and every write under `/ops` is unchanged, so scripts that read them need no change.
+
+`/ops/next`, the app's address while it was a preview, redirects to `/ops` on the admin web.
+
+The first screen, **Overview**, is in the app (LG-445). Top to bottom:
+
+- the **status headline**: the worst thing that is wrong right now in one sentence, green "All clear." when nothing is;
+- **Needs attention**: one row per thing that is wrong or waiting, the serious ones first, each a link to the screen
+  where it is looked at: an offline game server or one on another build, people with a bad or shaky connection (the
+  link opens their match), failing alert checks, problems logged in the last hour, fewer bots running than wanted, a
+  deploy under way or failed in the last hour, new commits on master, a release ready to tag or failed, open bug
+  reports. What only waits (new commits, a release to tag, open bug reports) is listed but leaves the headline green;
+- four numbers: players online, matches running, rooms open, game servers online;
+- a card per **running match** with each person's round trip and connection (bots are counted, not listed);
+- the **game servers** and the open **rooms**.
+
+It asks the lobby again every 30 seconds while the tab is visible and has a Refresh button; when the lobby does not
+answer it says so and keeps the last answer on the page. It only reads: the same JSON the classic Live tab reads
+(`/ops/live`, `/ops/alerts`, `/ops/events`), and for the list `/ops/bots`, `/ops/updates`, `/ops/updates/release` and
+`/ops/triage` (the last three not on a further instance, where they are for the whole box).
+
+**Health** (LG-446) is the classic tabs Alerts and Problems on one screen: a line that says whether a check fails
+or something went wrong in the last hour, the alert checks with the failing ones first, and the problem log, newest
+first (the newest 50, with a button for all 300 the lobby keeps in the answer). A log row opens the person it is
+about, or its match when it names no person. The classic addresses `/ops#alerts` and `/ops#problems` open it.
+
+**Matches** (LG-447) is the classic tab Matches and its match page. The list shows the newest 100 recorded matches
+(when, how long, room, mode and map, server and build, people and bots), marks one that is running, one that ended
+any other way than with a result, and silent drops. A match opens its page: the facts of the match, a card per person
+with the connection over the whole match (round trip mean, p95 and worst, jitter, input rate, longest gap, resends,
+drops, packets, a small chart of the round trip per 10 s, and how the person left when it was not the match's end),
+the match's events, and behind a button the reports the game server sent every 10 s as a table that scrolls sideways
+on a phone. The classic addresses `/ops#matches` and `/ops#match=<id>` open it.
+
+**Bug reports** (LG-448) is the card of that name from the classic Updates tab as a screen of its own (not on a
+further instance): the poller's state, the open reports first and the done ones below, each with its **Done** tick.
+A tick is saved at once and can be taken back; when the lobby refuses it the screen says why. A long report shows its
+first 600 characters with a button for the rest. A report's text and its author are shown as text; only an attachment
+the lobby accepted as a link is a link, and it opens in a new tab.
+
+**Charts** (LG-449). The screens draw what they read instead of only listing it. The Overview opens with the
+status sentence large on a coloured card, and its numbers each carry a small picture: where the players online are,
+the connections of the people playing, the seats taken, a dot per game server, the bots running. Every person in a
+running match has the classic page's bar again: the round trip on a fixed scale of 0 to 300 ms in the colour of the
+connection, with a tick at the worst of the window, so two people compare by eye. A room shows its seats as a bar.
+Two charts say what happened lately: matches per day over 14 days (the ones that ended another way than with a
+result in red) and problems per hour over 24 hours; Matches and Health show the same two, Health also the problems by
+kind. A match's page draws everybody's round trip over the whole match on one axis (the four highest in a colour of
+their own, the others grey; point at a time to read every value), the score of the two sides as one bar, and the
+fixed-scale bar on each person's card. The navigation has a picture per screen. A chart is never the only place a
+number is: it sits beside the list or the figures it is drawn from. A list the lobby cut at its limit does not reach
+all the way back: the days or hours before its oldest row are hatched as not known, not drawn as nought. The charts
+are drawn by the app itself with plain elements; no chart library is bundled.
+
+Status: the frame, the Overview, Health, Matches, Bug reports and the charts are implemented, unit-tested (the list's rules, the charts' arithmetic) and looked at in a headless browser
+on the admin port at desktop and phone width, with a quiet lobby and with made-up busy answers; not yet tried in a real
+browser behind the tunnel or with real matches.
+
+It is the same lobby, the same JSON and the same guards; only the page is new. The page loads two files of the lobby
+itself, `/ops/app.js` and `/ops/app.css`, embedded in the binary: nothing comes from another site, there is no inline
+script, and the libraries' licences are at `/ops/licenses.txt`. Their sources are in `web/admin` (web/admin/README.md
+says how to change and rebuild them); the servers never need Node.
+
+On the admin web the browser may keep those two files (LG-443): the page names them by the build
+(`/ops/app.js?v=<16 hex digits>`), and asked by that address they answer `Cache-Control: private, max-age=31536000,
+immutable`; everything else, the page included, stays `no-store`. So a phone downloads the app once per server build
+and a new build is picked up on the next visit. `private` means a proxy in front of the lobby must not keep them. The
+loopback admin port does not do this. Status: implemented and unit-tested; not yet watched in a real browser behind the
+tunnel (a second visit should show the two files coming from the browser's cache).

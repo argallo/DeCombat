@@ -1,0 +1,14 @@
+[package]
+name = "dc-attr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Attribute-text (bute) parser and the mod content-patch document, over dc-vfs; no game data"
+
+[dependencies]
+# dc-core: SHA-256 of the canonical content-patch document (its content hash).
+dc-core = { path = "../dc-core" }
+# dc-vfs: ButeDoc::from_vfs reads a table through the layered file system.
+dc-vfs = { path = "../dc-vfs" }
+# serde_json (vetted, CLEANROOM.md 4a): reads the mod content-patch document (modpatch.rs, MOD-21).
+serde_json = "1"

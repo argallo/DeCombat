@@ -179,7 +179,9 @@ fn read_plane_poly(c: &mut Cur<'_>) -> Result<PlanePoly> {
     let n = c.u8()?;
     let raw = c.take_n(n as u32, 12)?;
     let verts = raw
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|r| crate::cursor::le_vec3(r, 0))
         .collect();
     let normal = c.vec3()?;
@@ -251,7 +253,7 @@ fn read_block<'a>(c: &mut Cur<'a>) -> Result<RenderBlock<'a>> {
     let triangle_count = c.u32()?;
     let tri_at = c.pos();
     let triangles = c.take_n(triangle_count, 16)?;
-    for (i, r) in triangles.chunks_exact(16).enumerate() {
+    for (i, r) in triangles.as_chunks::<16>().0.iter().enumerate() {
         for k in 0..3 {
             let v = le_u32(r, 4 * k);
             if v >= vertex_count {

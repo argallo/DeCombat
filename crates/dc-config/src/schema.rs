@@ -493,7 +493,8 @@ impl LobbySection {
 
 /// The values `lobby.servers[].features` takes. DC-DEFAULT: LG-304 (proposed).
 // DC-DEFAULT: LG-437 (proposed) `pings`: team pings in every room of the entry
-pub const SERVER_FEATURES: &[&str] = &["gun_game", "hardcore", "possession", "pings"];
+// DC-DEFAULT: LG-439 (proposed) `killcard`: kill zoom and kill card in every room of the entry
+pub const SERVER_FEATURES: &[&str] = &["gun_game", "hardcore", "possession", "pings", "killcard"];
 
 fn default_server_channels() -> u32 {
     3
@@ -1704,6 +1705,19 @@ pub struct IdentitySection {
     pub token_hours: u32,
     /// DC-DEFAULT: LG-68 (proposed). The issuing key pair (PKCS#8 PEM); empty = `identity_key.pem` next to the DB.
     pub key_file: String,
+    /// DC-DEFAULT: SES-4 (proposed). An issuing lobby offers device sessions (sign in once per device). Off by
+    /// default: turn on when clients that use it are deployed.
+    pub device_sessions: bool,
+    /// DC-DEFAULT: SES-4 (proposed). Lifetime in minutes of a token bought with a device secret (1..1440).
+    pub device_token_minutes: u32,
+    /// DC-DEFAULT: SES-3 (proposed, owner decision). A device expires after this many days without use (1..3650).
+    pub device_idle_days: u32,
+    /// DC-DEFAULT: SES-3 (proposed, owner decision). Live devices per account; a new one evicts the longest idle
+    /// (1..100).
+    pub max_devices: u32,
+    /// DC-DEFAULT: SES-7 (proposed). Passwords of 8..64 characters on the identity endpoints (off = 8..16 as at
+    /// the game login).
+    pub long_passwords: bool,
 }
 
 impl Default for IdentitySection {
@@ -1714,6 +1728,11 @@ impl Default for IdentitySection {
             public_key: String::new(),
             token_hours: 24,
             key_file: String::new(),
+            device_sessions: false,
+            device_token_minutes: 15,
+            device_idle_days: 180,
+            max_devices: 10,
+            long_passwords: false,
         }
     }
 }

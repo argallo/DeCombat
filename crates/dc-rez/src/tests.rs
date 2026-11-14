@@ -194,14 +194,10 @@ fn vfs_negative_lookups_are_cached_and_typed() {
     let (rom, _) = synth_rom();
     let vfs = RezVfs::with_key(&rom, SYNTH_KEY).unwrap();
     assert_eq!(vfs.entry("TEST.rez", "MISSING.TXT").unwrap(), None);
-    assert!(vfs
-        .missing
-        .lock()
-        .unwrap()
-        .contains(&("TEST.REZ".to_string(), "P:MISSING.TXT".to_string())));
+    assert!(vfs.is_cached_missing("TEST.rez", "MISSING.TXT", false));
     assert_eq!(vfs.entry("ABSENT.rez", "X.TXT").unwrap(), None);
     assert!(matches!(
-        vfs.archives.lock().unwrap().get("ABSENT.REZ"),
+        vfs.rom.archives.lock().unwrap().get("ABSENT.REZ"),
         Some(Ok(None))
     ));
     assert!(matches!(

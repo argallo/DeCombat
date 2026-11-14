@@ -114,6 +114,10 @@ pub struct OutputStats {
     /// Output samples at full scale (the mixer clips at [-1, 1]) and the largest absolute sample.
     pub clipped: u64,
     pub peak: f32,
+    /// The output limiter (CLI-1960): switched on, frames it turned down in total, the largest reduction (dB).
+    pub limiter_on: bool,
+    pub limited_frames: u64,
+    pub max_reduction_db: f32,
     /// Stream errors the host reported.
     pub errors: u64,
     pub last_error: Option<String>,
@@ -172,6 +176,26 @@ impl OutputStats {
         }
     }
 
+    /// The limiter's figures after a callback: its switch, its total of limited frames and the last buffer's
+    /// reduction in dB (the largest is kept).
+    pub fn on_limiter(&mut self, on: bool, limited_frames: u64, reduction_db: f32) {
+        self.limiter_on = on;
+        self.limited_frames = limited_frames;
+        if reduction_db > self.max_reduction_db {
+            self.max_reduction_db = reduction_db;
+        }
+    }
+
+    /// The limiter part of the log line.
+    pub fn limiter_part(&self) -> String {
+        format!(
+            "limiter {} limited {} max reduction {:.1} dB",
+            if self.limiter_on { "on" } else { "off" },
+            self.limited_frames,
+            self.max_reduction_db
+        )
+    }
+
     pub fn on_error(&mut self, e: String) {
         self.errors += 1;
         self.last_error = Some(e);
@@ -187,7 +211,7 @@ impl OutputStats {
         let ms = |s: f64| s * 1000.0;
         let period = |f: u32| ms(f64::from(f) / f64::from(self.rate.max(1)));
         format!(
-            "audio out: {label} | callbacks {} audio {:.2} s period {:.1}..{:.1} ms first {} | latency {} (max {:.1} ms) | max gap {:.1} ms late {} | lock wait max {:.2} ms over-1ms {} silent {} | mix peak {:.3} clipped {} | errors {}{}",
+            "audio out: {label} | callbacks {} audio {:.2} s period {:.1}..{:.1} ms first {} | latency {} (max {:.1} ms) | max gap {:.1} ms late {} | lock wait max {:.2} ms over-1ms {} silent {} | mix peak {:.3} clipped {} | {} | errors {}{}",
             self.callbacks,
             self.seconds(),
             period(self.min_frames),
@@ -203,6 +227,7 @@ impl OutputStats {
             self.silent_callbacks,
             self.peak,
             self.clipped,
+            self.limiter_part(),
             self.errors,
             self.last_error
                 .as_deref()
@@ -296,10 +321,17 @@ mod tests {
         assert!((s.max_latency_s - 0.012).abs() < 1e-9);
         s.on_block(&[0.5, -1.0, 1.0, 0.25]);
         assert_eq!((s.clipped, s.peak), (2, 1.0));
+        s.on_limiter(true, 480, 3.24);
+        s.on_limiter(true, 960, 1.0);
+        assert_eq!((s.limited_frames, s.max_reduction_db), (960, 3.24));
         s.on_error("device lost".into());
         let line = s.line("test 48000 Hz 2 ch");
         assert!(line.starts_with("audio out: test 48000 Hz 2 ch | callbacks 11"));
         assert!(line.contains("late 1"));
+        assert!(
+            line.contains("clipped 2 | limiter on limited 960 max reduction 3.2 dB | errors"),
+            "{line}"
+        );
         assert!(line.contains("errors 1 (last: device lost)"));
         assert!((s.seconds() - 11.0 * 0.010).abs() < 1e-9);
     }

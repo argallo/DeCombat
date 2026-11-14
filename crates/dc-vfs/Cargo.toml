@@ -1,0 +1,10 @@
+[package]
+name = "dc-vfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Layered virtual file system: override folders, base content folders and an optional archive layer behind a trait"
+
+[dependencies]
+# dc-core: the read journal and the read trace every file read notes.
+dc-core = { path = "../dc-core" }

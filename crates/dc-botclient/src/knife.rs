@@ -10,6 +10,8 @@
 //! game (the 0xc6 flag events set only the carry flag), so a carrier may knife-run home; the bomb carrier does not.
 //! This module is a child of [`crate::shooter`] (it reads the shooter's own state).
 // DC-DEFAULT: BOT-172 (proposed) start beyond 600 units of way left (skill 100; up to 1000 at skill 0), stop within 400
+// BOT-182 (proposed, amends BOT-172) re-arm 5 s, a run lasts 1500 ms unless an enemy is sighted / targeted / a hit, a goal gone
+// 1500 ms before "goal" ends it, a start needs no enemy within 1500 units (a stop: 1000)
 // of a contested goal, quiet 5 s (no enemy in sight, none streamed within 1000 units, no hit, no team mate killed
 // within 1200 units), 2 s between two runs
 // SPEC: MOVEMENT_2009.md §7 (the held weapon's speed modifier); GAME_MODES_2009.md §5.5 (0xc6 flag events: the carry
@@ -37,7 +39,15 @@ pub const HEAR_RANGE: f32 = 1000.0;
 /// A team mate killed within this distance counts as contact.
 pub const MATE_DOWN_RANGE: f32 = 1200.0;
 /// The least time between the end of one run and the start of the next (no flapping at a threshold).
-pub const REARM_MS: u32 = 2000;
+pub const REARM_MS: u32 = 5000;
+/// BOT-182: a run lasts at least this long unless an enemy comes into sight (or a target, or a hit).
+pub const MIN_RUN_MS: u32 = 1500;
+/// BOT-182: a walk goal that is gone or of a kind no run goes toward ends the run only after this long (a hunt goal
+/// re-picked every 2 s leaves a gap of a tick or two).
+pub const GOAL_GRACE_MS: u32 = 1500;
+/// BOT-182: a run starts only with no enemy streamed within this distance (a stop is at [`HEAR_RANGE`]: a hysteresis,
+/// so an enemy at the edge does not start and stop the run within a tick).
+pub const START_HEAR_RANGE: f32 = 1500.0;
 
 /// Goal kinds a run may go on toward: the uncontested walks (any way left keeps the run) ...
 pub const FREE_KINDS: [&str; 2] = ["roam", "lost"];
@@ -70,6 +80,10 @@ pub struct Situation {
     pub ready: bool,
     /// How long ago the last run ended.
     pub since_stop: Option<u32>,
+    /// BOT-182: how long the run has been on (0 when none).
+    pub run_ms: u32,
+    /// BOT-182: how long the walk has had no goal of a kind a run goes toward (0: it has one now).
+    pub goal_lost_ms: u32,
 }
 
 /// The run's next step.
@@ -103,10 +117,17 @@ pub fn verdict(knifing: bool, s: &Situation) -> Verdict {
     let contested = s.kind.is_some_and(|k| CONTESTED_KINDS.contains(&k));
     if knifing {
         if let Some(why) = unrest(s) {
-            return Verdict::Stop(why);
+            // an enemy in sight (or aimed at), a hit: the gun at once; the rest waits out the minimum run
+            if matches!(why, "sighting" | "target" | "hurt") || s.run_ms >= MIN_RUN_MS {
+                return Verdict::Stop(why);
+            }
+            return Verdict::Stay;
+        }
+        if s.run_ms < MIN_RUN_MS {
+            return Verdict::Stay;
         }
         if !free && !contested {
-            return Verdict::Stop("goal");
+            return if s.goal_lost_ms >= GOAL_GRACE_MS { Verdict::Stop("goal") } else { Verdict::Stay };
         }
         if contested && s.left.is_none_or(|l| l < LEG_STOP) {
             return Verdict::Stop("near_goal");
@@ -134,6 +155,8 @@ pub struct KnifeState {
     pub mate_down: Option<(Millis, [f32; 3])>,
     pub runs: u32,
     pub run_ms: u64,
+    /// BOT-182: since when the walk has had no goal a run goes toward.
+    pub goal_lost: Option<Millis>,
 }
 
 impl Shooter {
@@ -319,7 +342,7 @@ mod tests {
     /// toward, or near a contested goal; an uncontested walk keeps it to the end.
     #[test]
     fn a_run_stops_on_contact_or_near_a_contested_goal() {
-        let stop = |s: Situation| verdict(true, &s);
+        let stop = |s: Situation| verdict(true, &Situation { run_ms: 3000, ..s });
         assert_eq!(stop(quiet("roam", 900.0)), Verdict::Stay);
         assert_eq!(stop(quiet("roam", 100.0)), Verdict::Stay, "free walk: kept");
         assert_eq!(stop(quiet("hunt", 500.0)), Verdict::Stay, "hysteresis 400..600");
@@ -342,8 +365,48 @@ mod tests {
             stop(Situation { barred: Some("bomb_carrier"), ..quiet("roam", 900.0) }),
             Verdict::Stop("bomb_carrier")
         );
-        assert_eq!(stop(quiet("stand", 900.0)), Verdict::Stop("goal"));
-        assert_eq!(stop(Situation { kind: None, ..quiet("roam", 900.0) }), Verdict::Stop("goal"));
+        let old = |s: Situation| Situation { run_ms: 3000, goal_lost_ms: 3000, ..s };
+        assert_eq!(stop(old(quiet("stand", 900.0))), Verdict::Stop("goal"));
+        assert_eq!(stop(old(Situation { kind: None, ..quiet("roam", 900.0) })), Verdict::Stop("goal"));
+    }
+
+    /// BOT-182: a run is steady: re-arm after 5 s, a goal gap shorter than the grace or a minimum run keeps it, and an
+    /// enemy in sight (or a hit) ends it at once whatever its age.
+    #[test]
+    fn a_run_is_steady() {
+        // re-arm: 4 s after a stop no run, 5 s after yes
+        assert_eq!(
+            verdict(false, &Situation { since_stop: Some(4000), ..quiet("roam", 900.0) }),
+            Verdict::Stay
+        );
+        assert_eq!(
+            verdict(false, &Situation { since_stop: Some(5000), ..quiet("roam", 900.0) }),
+            Verdict::Start("long_leg")
+        );
+        // a goal that is gone for 300 ms (a hunt goal re-picked) keeps a run of 3 s; gone for 1.5 s ends it
+        let gap = |ms| Situation { kind: None, run_ms: 3000, goal_lost_ms: ms, ..quiet("roam", 900.0) };
+        assert_eq!(verdict(true, &gap(300)), Verdict::Stay);
+        assert_eq!(verdict(true, &gap(1500)), Verdict::Stop("goal"));
+        // inside the minimum run nothing but sighting / target / hurt ends it
+        let young = |s: Situation| Situation { run_ms: 400, ..s };
+        assert_eq!(verdict(true, &young(Situation { kind: None, goal_lost_ms: 9000, ..quiet("roam", 900.0) })), Verdict::Stay);
+        assert_eq!(verdict(true, &young(quiet("hunt", 300.0))), Verdict::Stay);
+        assert_eq!(
+            verdict(true, &young(Situation { contact: Some(("near", 0)), ..quiet("roam", 900.0) })),
+            Verdict::Stay
+        );
+        assert_eq!(
+            verdict(true, &young(Situation { contact: Some(("sighting", 0)), ..quiet("roam", 900.0) })),
+            Verdict::Stop("sighting")
+        );
+        assert_eq!(
+            verdict(true, &young(Situation { contact: Some(("target", 0)), ..quiet("roam", 900.0) })),
+            Verdict::Stop("target")
+        );
+        assert_eq!(verdict(true, &young(Situation { hurt_ago: Some(0), ..quiet("roam", 900.0) })), Verdict::Stop("hurt"));
+        // an enemy streamed at 1200 does not stop a run but forbids a start (START_HEAR_RANGE 1500 > HEAR_RANGE 1000)
+        let (start, stop) = (START_HEAR_RANGE, HEAR_RANGE);
+        assert!(start.total_cmp(&stop).is_gt());
     }
 
     fn armed_with_knife() -> Shooter {
@@ -424,6 +487,8 @@ mod tests {
         // contact: none far away, a streamed enemy within the hearing range
         assert_eq!(s.contact(1000, &view(vec![enemy([3000.0, 50.0, 0.0])]), HEAR_RANGE), None);
         assert_eq!(s.contact(1000, &view(vec![enemy([800.0, 50.0, 0.0])]), HEAR_RANGE), Some("near"));
+        assert_eq!(s.contact(1000, &view(vec![enemy([1200.0, 50.0, 0.0])]), HEAR_RANGE), None);
+        assert_eq!(s.contact(1000, &view(vec![enemy([1200.0, 50.0, 0.0])]), START_HEAR_RANGE), Some("near"));
         let a = s.end_knife(1500);
         assert!(a.iter().any(|x| matches!(x, Action::Select(c) if c.slot == 0 && c.weapon_id == 5)));
         assert_eq!(s.held().map(|h| (h.weapon, h.clip)), Some((5, 17)));

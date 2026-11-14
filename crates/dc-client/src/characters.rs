@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use dc_render::{
-    pv_none_texture, quat_from_key, resolve_view_skins, CharacterTable, GpuContext, HandModels,
+    quat_from_key, resolve_view_skins, CharacterTable, GpuContext, HandModels,
     LightSet, ModelInstance, TextureIndex, Tracker, ViewModels, WorldRenderer, KEY_ORDER,
 };
 use dc_rez::RezVfs;
@@ -263,7 +263,7 @@ fn key_of(path: &str) -> String {
 impl ModelScene {
     /// Opens the user's ROM (archive VFS, texture index, character table).
     pub fn open(rom: &Path) -> Result<ModelScene, String> {
-        let index = Arc::new(TextureIndex::open(rom).map_err(|e| e.to_string())?);
+        let index = Arc::new(dc_rez::RomLayer::indexed(rom).map(TextureIndex::new).map_err(|e| e.to_string())?);
         let vfs = Arc::new(RezVfs::new(rom));
         let table = CharacterTable::from_vfs(&vfs).ok();
         let hand_table = HandModels::from_vfs(&vfs).ok();
@@ -275,7 +275,7 @@ impl ModelScene {
             table,
             hand_table,
             view_table,
-            none_texture: pv_none_texture(rom),
+            none_texture: crate::romglue::pv_none_texture(rom),
             templates: HashMap::new(),
             files_pending: HashSet::new(),
             async_loads: false,

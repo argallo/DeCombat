@@ -192,7 +192,7 @@ fn one_map(rom: &std::path::Path, ctx: &GpuContext, map: &str, spawn_no: usize) 
     // the former draw: plain style (no render styles), lit at the model origin (the box bottom) without the sun and
     // without the light groups
     let images: Vec<Option<dc_render::TextureImage>> = {
-        let index = dc_render::TextureIndex::open(rom).unwrap();
+        let index = dc_rez::RomLayer::indexed(rom).map(dc_render::TextureIndex::new).unwrap();
         let mut tex = dc_render::RomTextures::new(&index);
         body[0]
             .textures
@@ -249,7 +249,7 @@ fn one_map(rom: &std::path::Path, ctx: &GpuContext, map: &str, spawn_no: usize) 
         "the body row's hand identifier picks the model"
     );
     let tex = models.view_textures().unwrap().to_vec();
-    let index = dc_render::TextureIndex::open(rom).unwrap();
+    let index = dc_rez::RomLayer::indexed(rom).map(dc_render::TextureIndex::new).unwrap();
     let mut rt = dc_render::RomTextures::new(&index);
     assert!(
         !tex[0].is_empty() && rt.image(tex[0].as_bytes()).is_some(),

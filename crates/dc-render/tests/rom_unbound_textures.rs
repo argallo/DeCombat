@@ -17,8 +17,10 @@ struct Unresolved {
 #[test]
 fn rom_unresolved_section_textures_follow_the_null_slot_rules() {
     let rom = dc_rom::rom_or_skip!();
-    let worlds = WorldSource::open(&rom).expect("worlds");
-    let index = TextureIndex::open(&rom).expect("texture index");
+    let worlds = dc_rez::WorldArchive::open(&rom).expect("worlds");
+    let index = dc_rez::RomLayer::indexed(&rom)
+        .map(TextureIndex::new)
+        .expect("texture index");
     let mut maps_with_second = Vec::new();
     let mut total = Unresolved::default();
     for map in worlds.map_names() {
@@ -27,7 +29,7 @@ fn rom_unresolved_section_textures_follow_the_null_slot_rules() {
         let mut tex = RomTextures::new(&index);
         let mesh = SceneMesh::build(&world, SceneOptions::default(), &mut |n| tex.traits(n));
         let resolves =
-            |i: Option<u32>| i.is_none_or(|i| index.locate(&mesh.textures[i as usize]).is_some());
+            |i: Option<u32>| i.is_none_or(|i| index.contains(&mesh.textures[i as usize]));
         let mut here = Unresolved::default();
         let all = mesh
             .batches
@@ -76,7 +78,11 @@ fn rom_unresolved_section_textures_follow_the_null_slot_rules() {
 #[test]
 fn rom_unresolved_blend_texture_draws_no_debug_checker() {
     let rom = dc_rom::rom_or_skip!();
-    let viewer = match RomViewer::open(&rom, AdapterChoice::Auto, RenderSettings::default()) {
+    let viewer = match RomViewer::open(
+        dc_rez::RezVfs::new(&rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => v,
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");

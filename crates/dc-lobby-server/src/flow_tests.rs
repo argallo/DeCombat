@@ -836,6 +836,7 @@ fn leaver_match(pay_leavers: bool) -> (Core, Client, Client, u32, u32, u64) {
             clients: Default::default(),
             left: Default::default(),
             result_done: false,
+            unranked: false,
             entry_keys: Default::default(),
             seat_tickets: Default::default(),
             seat_told: Default::default(),
@@ -1005,6 +1006,7 @@ fn played_clan_room() -> (Core, Client, [u32; 2], [u32; 2], u64, RoomKey) {
             clients: Default::default(),
             left: Default::default(),
             result_done: false,
+            unranked: false,
             entry_keys: Default::default(),
             seat_tickets: Default::default(),
             seat_told: Default::default(),
@@ -1211,6 +1213,51 @@ fn a_leaver_gets_no_experience_stats_or_push() {
     assert_eq!((b2.kills, b2.deaths), (eb.kills, eb.deaths));
     assert_eq!((b2.wins, b2.losses), (eb.wins, eb.losses));
     assert!(!b.has(PROGRESS_PUSH), "no 0x3004 to the leaver");
+}
+
+/// LOC-4: an unranked match logs one `match_log` row marked unranked and changes no account: no exp, GP, kills,
+/// deaths, wins or losses for anyone, no 0x3004; the same lines on a ranked match pay (the tests above).
+#[test]
+fn an_unranked_match_logs_its_result_and_changes_no_account() {
+    let (mut st, mut a, mut b, na, nb, id) = leaver_match(true);
+    st.games.get_mut(&id).unwrap().unranked = true;
+    let rows = |st: &Core| -> i64 {
+        st.db
+            .query_row("SELECT COUNT(*) FROM match_log", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = rows(&st);
+    let (ea, eb) = (
+        crate::db::character(&st.db, na).unwrap().unwrap(),
+        crate::db::character(&st.db, nb).unwrap().unwrap(),
+    );
+    result_line_for(&mut st, id);
+    result_line_for(&mut st, id);
+    for (n, e) in [(na, &ea), (nb, &eb)] {
+        let c = crate::db::character(&st.db, n).unwrap().unwrap();
+        assert_eq!(
+            (c.exp, c.gp, c.kills, c.deaths, c.wins, c.losses),
+            (e.exp, e.gp, e.kills, e.deaths, e.wins, e.losses),
+            "account {n}"
+        );
+    }
+    assert!(!a.has(PROGRESS_PUSH) && !b.has(PROGRESS_PUSH));
+    assert_eq!(
+        rows(&st),
+        before + 1,
+        "one row, a second @result is ignored"
+    );
+    let detail: String = st
+        .db
+        .query_row(
+            "SELECT detail FROM match_log ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(detail.starts_with("unranked "), "{detail}");
+    assert!(detail.contains(&format!("{na}:")), "{detail}");
+    assert!(!detail.contains("exp"), "{detail}");
 }
 
 #[test]
@@ -2651,6 +2698,7 @@ fn bare_game(id: u64, key: RoomKey) -> game::Game {
         clients: Default::default(),
         left: Default::default(),
         result_done: false,
+        unranked: false,
         entry_keys: Default::default(),
         seat_tickets: Default::default(),
         seat_told: Default::default(),
@@ -3563,6 +3611,22 @@ fn pings_reach_every_room_of_a_featured_entry_only() {
     }
     two_entries(&mut st, &["possession"]);
     assert!(game::pings_args(&st, RoomKey { channel: 4, no: 0 }).is_empty());
+}
+
+/// LG-439: an entry with `killcard` gives every room's game server `-killcard`; its sibling entry gets nothing.
+#[test]
+fn kill_cards_reach_every_room_of_a_featured_entry_only() {
+    let mut st = state();
+    two_entries(&mut st, &["killcard"]);
+    for no in [0, 7] {
+        assert_eq!(
+            game::killcard_args(&st, RoomKey { channel: 4, no }),
+            ["-killcard"]
+        );
+        assert!(game::killcard_args(&st, RoomKey { channel: 1, no }).is_empty());
+    }
+    two_entries(&mut st, &["pings"]);
+    assert!(game::killcard_args(&st, RoomKey { channel: 4, no: 0 }).is_empty());
 }
 
 #[test]

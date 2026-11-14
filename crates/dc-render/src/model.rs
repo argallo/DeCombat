@@ -9,7 +9,7 @@
 use crate::anim::AnimSet;
 use bytemuck::{Pod, Zeroable};
 use dc_model::{Mesh, Model, ModelError, SkinTail};
-use dc_rez::{RezError, RezVfs};
+use dc_vfs::{Vfs, VfsError};
 use std::fmt;
 
 /// Most bones a model may use: one bone per node, and the palette uniform holds 256 matrices.
@@ -22,7 +22,7 @@ pub enum ModelLoadError {
     BadPath(String),
     /// The entry is not in the user's ROM.
     Missing(String),
-    Rez(RezError),
+    Rez(VfsError),
     Parse(String, ModelError),
     /// More nodes than the bone palette holds.
     TooManyNodes(usize),
@@ -44,8 +44,8 @@ impl fmt::Display for ModelLoadError {
 
 impl std::error::Error for ModelLoadError {}
 
-impl From<RezError> for ModelLoadError {
-    fn from(e: RezError) -> Self {
+impl From<VfsError> for ModelLoadError {
+    fn from(e: VfsError) -> Self {
         ModelLoadError::Rez(e)
     }
 }
@@ -65,7 +65,7 @@ pub fn rez_entry_of(path: &str) -> Option<(String, String)> {
 }
 
 /// Bytes of a ROM resource by its path (model entries are stored plain; the VFS returns them as stored).
-pub fn read_rom_entry(vfs: &RezVfs, path: &str) -> Result<Vec<u8>, ModelLoadError> {
+pub fn read_rom_entry(vfs: &Vfs, path: &str) -> Result<Vec<u8>, ModelLoadError> {
     let (rez, entry) =
         rez_entry_of(path).ok_or_else(|| ModelLoadError::BadPath(path.to_string()))?;
     let _io = crate::perf::span(crate::perf::Counter::IoNs);
@@ -102,7 +102,7 @@ pub fn child_path(parent: &str, child: &str) -> String {
 
 impl ModelFiles {
     /// Reads `path` and every child model from the ROM.
-    pub fn load(vfs: &RezVfs, path: &str) -> Result<ModelFiles, ModelLoadError> {
+    pub fn load(vfs: &Vfs, path: &str) -> Result<ModelFiles, ModelLoadError> {
         let bytes = read_rom_entry(vfs, path)?;
         let parse = crate::perf::span(crate::perf::Counter::ParseNs);
         let body = Model::parse(&bytes).map_err(|e| ModelLoadError::Parse(path.to_string(), e))?;

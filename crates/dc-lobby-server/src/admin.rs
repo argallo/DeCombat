@@ -48,7 +48,24 @@ pub fn resolve(spec: &str, public: bool, token: Option<&str>) -> Result<SocketAd
     Ok(a)
 }
 
+/// MON-4: the policy of the two earlier pages (the dashboard and the beta list, whose script and style are inline):
+/// they load nothing from elsewhere and never send their address (with the token) on.
+const PAGE_POLICY: &str =
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
+     connect-src 'self'; img-src data:";
+// DC-DEFAULT: LG-442 (proposed) the app's page gets a policy of its own on this port, without inline script
+/// LG-442: the policy of the dashboard app's page (`/ops`, LG-444): its script and stylesheet are this port's own files
+/// and it has no inline script, so `script-src` is `'self'` alone; inline style stays for the design library, which
+/// adds style elements at run time.
+pub(crate) const APP_PAGE_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+     connect-src 'self'; img-src data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
 fn reply(status: u16, ctype: &str, body: &str) -> Vec<u8> {
+    reply_with(status, ctype, body, PAGE_POLICY)
+}
+
+/// [`reply`] with the content security policy an HTML answer carries.
+fn reply_with(status: u16, ctype: &str, body: &str, page_policy: &str) -> Vec<u8> {
     let text = match status {
         200 => "OK",
         202 => "Accepted",
@@ -64,12 +81,12 @@ fn reply(status: u16, ctype: &str, body: &str) -> Vec<u8> {
         503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
-    // MON-4: the dashboard page loads nothing from elsewhere and never sends its address (with the token) on
     let extra = if ctype == crate::opsweb::HTML {
-        "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
-         connect-src 'self'; img-src data:\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n"
+        format!(
+            "Content-Security-Policy: {page_policy}\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n"
+        )
     } else {
-        ""
+        String::new()
     };
     let mut v = format!(
         "HTTP/1.1 {status} {text}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
@@ -259,7 +276,12 @@ fn serve(shared: Shared, token: Option<String>, mut s: TcpStream) {
             (status, crate::opsweb::JSON, body)
         }
     };
-    let _ = s.write_all(&reply(status, ctype, &body));
+    let policy = if crate::opsweb::is_app_page(&head) {
+        APP_PAGE_POLICY
+    } else {
+        PAGE_POLICY
+    };
+    let _ = s.write_all(&reply_with(status, ctype, &body, policy));
     let _ = s.flush();
     let _ = s.shutdown(std::net::Shutdown::Both);
 }
@@ -294,6 +316,60 @@ mod tests {
     }
 
     const LO: Option<IpAddr> = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+    // LG-442: the app's page has no inline script and gets a policy without 'unsafe-inline' for scripts; the two
+    // earlier pages keep the policy they had; an answer that is not a page carries none
+    #[test]
+    fn the_app_page_gets_a_script_policy_without_inline() {
+        let head = |b: Vec<u8>| {
+            let t = String::from_utf8(b).unwrap();
+            t.split("\r\n\r\n").next().unwrap().to_string()
+        };
+        let directive = |h: &str, name: &str| {
+            h.lines()
+                .find(|l| l.starts_with("Content-Security-Policy:"))
+                .and_then(|l| {
+                    l.split([':', ';'])
+                        .map(str::trim)
+                        .find(|d| d.starts_with(name))
+                        .map(str::to_string)
+                })
+        };
+        let app = head(reply_with(200, crate::opsweb::HTML, "x", APP_PAGE_POLICY));
+        assert_eq!(
+            directive(&app, "script-src").as_deref(),
+            Some("script-src 'self'")
+        );
+        assert_eq!(
+            directive(&app, "style-src").as_deref(),
+            Some("style-src 'self' 'unsafe-inline'")
+        );
+        assert!(app.contains("frame-ancestors 'none'") && app.contains("X-Frame-Options: DENY"));
+        let old = head(reply(200, crate::opsweb::HTML, "x"));
+        assert_eq!(
+            directive(&old, "script-src").as_deref(),
+            Some("script-src 'unsafe-inline'")
+        );
+        assert_eq!(
+            directive(&old, "style-src").as_deref(),
+            Some("style-src 'unsafe-inline'")
+        );
+        let json = head(reply_with(200, crate::opsweb::JSON, "{}", APP_PAGE_POLICY));
+        assert!(!json.contains("Content-Security-Policy"));
+        // which request is the app's page
+        let is = |line: &str| {
+            crate::opsweb::is_app_page(&format!("{line} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
+        };
+        assert!(is("GET /ops") && is("GET /ops/") && is("GET /ops?token=t"));
+        // LG-444: the earlier page keeps the policy with inline script at its own address
+        assert!(
+            !is("GET /ops/classic")
+                && !is("GET /ops/beta")
+                && !is("GET /ops/next")
+                && !is("GET /ops/x")
+                && !is("POST /ops")
+        );
+    }
 
     #[test]
     fn addresses_default_to_loopback_and_public_needs_flag_and_token() {

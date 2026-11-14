@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Parsers for sprite (.spr), texture-script (.tfs/.tfg) and effect (.fxf/.fcf) data, written from rust/specs/FMT_SPR_LTC_FX.md"
 
-# dc-rom is used only for its SHA-256 (effect type names are stored and compared by sha-id, never as text).
+# dc-core for its SHA-256 only (effect type names are stored and compared by sha-id, never as text).
 [dependencies]
-dc-rom = { path = "../dc-rom" }
+dc-core = { path = "../dc-core" }
 
-# dc-rez reads archive entries raw in the ROM-gated census tests only.
+# dc-rez reads archive entries raw and dc-rom finds the ROM (`rom_or_skip!`) in the ROM-gated census tests only.
 [dev-dependencies]
 dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }

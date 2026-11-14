@@ -160,7 +160,7 @@ impl BgmPlayer {
         let fade_ms = fade_ms.max(0) as u32;
         if self.is_playing() {
             if let Some(p) = &self.path {
-                if dc_bute::eq_fold(p, key) {
+                if dc_attr::eq_fold(p, key) {
                     return PlayOutcome::Ignored;
                 }
             }

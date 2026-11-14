@@ -232,7 +232,7 @@ fn rom_world_and_model_lighting_follow_the_2009_rules() {
     let _ = std::fs::create_dir_all(&out);
     println!(
         "gamma of the profile: {:?} (used: {})",
-        dc_render::profile_gamma(&rom),
+        dc_client::romglue::profile_gamma(&rom),
         dc_client::display::client_gamma(Some(&rom))
     );
     let mut done = 0;

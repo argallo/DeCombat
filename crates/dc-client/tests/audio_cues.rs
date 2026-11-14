@@ -141,7 +141,12 @@ fn flyby_and_team_callout_in_a_scripted_match() {
             "-loadout",
             "145,164,83,7",
             "-combat",
-            "start_health=100000,max_health=100000",
+            // spawn_note_ms: a 10 min spawn window (default 1750 ms, DSV-63), longer than the match. The client learns
+            // of its spawn with the first server state, and its frames after that stall on a busy machine (2026-11-10:
+            // first tick at 2.1 s wall, second at 3.6 s, so the 2.5 s run fell after the default 2.1..3.5 s window;
+            // with every core busy a 6 s window opened and closed in one sound frame). The client never fires (a first
+            // shot ends the window early, DSV-477), so its window is open for the whole run however slow the frames.
+            "start_health=100000,max_health=100000,spawn_note_ms=600000",
             "-nomovecheck",
             "-verbose",
         ],
@@ -287,21 +292,26 @@ fn flyby_and_team_callout_in_a_scripted_match() {
         .map(|e| e.t_ms)
         .collect();
     println!(
-        "  own steps {} spawn notes {:?}",
+        "  own steps {} at {:?} spawn notes {:?}",
         steps.len(),
+        steps,
         r.sound_spawn_log
     );
-    // CLI-680: the spawn window (0x1f .. 0x25) does not mute the steps: the run starts inside it and steps
+    // CLI-680: the spawn window (0x1f .. 0x25) does not mute the steps: the run starts inside it and steps. A window
+    // still open at the end of the log (the client's own, which never fires) counts as open to the end.
     let mut open: std::collections::BTreeMap<u16, u32> = std::collections::BTreeMap::new();
     let mut windows = 0;
     let mut inside = 0;
     for &(t, obj, on) in &r.sound_spawn_log {
         if on {
+            windows += 1;
             open.insert(obj, t);
         } else if let Some(a) = open.remove(&obj) {
-            windows += 1;
             inside += steps.iter().filter(|s| **s >= a && **s < t).count();
         }
+    }
+    for a in open.values() {
+        inside += steps.iter().filter(|s| **s >= *a).count();
     }
     assert!(
         windows >= 2,

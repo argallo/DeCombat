@@ -3,9 +3,9 @@
 //! first fog-carrying object is not its world-settings object still gets its fog, and Junk Flea's world fog is the
 //! one it had. Skipped when CA_ROM is unset.
 
-use dc_render::{world_fog, Fog, WorldSource};
+use dc_render::{world_fog, Fog};
 
-fn fog_of(src: &WorldSource, map: &str) -> (Option<Fog>, Option<Fog>) {
+fn fog_of(src: &dc_rez::WorldArchive, map: &str) -> (Option<Fog>, Option<Fog>) {
     let bytes = src.read(map).expect("read").expect("world present");
     let w = dc_world::World::parse(&bytes).expect("parse");
     world_fog(&w)
@@ -14,7 +14,7 @@ fn fog_of(src: &WorldSource, map: &str) -> (Option<Fog>, Option<Fog>) {
 #[test]
 fn rom_worlds_take_the_fog_of_their_world_settings_object() {
     let rom = dc_rom::rom_or_skip!();
-    let src = WorldSource::open(&rom).expect("worlds");
+    let src = dc_rez::WorldArchive::open(&rom).expect("worlds");
     // Snow Valley: the sky pass is fogged (its own enable is off in the file) with the world's colour
     let (world, sky) = fog_of(&src, "SNOWVALLEY");
     let world = world.expect("Snow Valley world fog");

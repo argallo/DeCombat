@@ -26,6 +26,7 @@
 // DISASM: cshell+0x60ac0..0x60d6b (observer modes), cshell+0x27930e..0x2795e1 (camera mode 7), cshell+0x2795e4..
 // 0x279c18 (camera mode 4), cshell+0x276a60 (placement: anchor ray, 10 % pull), cshell+0x278292..0x278385 (defaults)
 
+use crate::killzoom::{self, Zoomable};
 use crate::look::ViewAngles;
 use crate::world::{DeathView, RemoteBody};
 use dc_sim::{CollisionWorld, V3};
@@ -87,6 +88,8 @@ pub fn follows_any_team(mode_class: Option<u8>, own_team: Option<u8>) -> bool {
 /// Which observer camera runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeathCamMode {
+    /// CLI-1956: the kill zoom on this killer (before the follow camera; [`crate::killzoom`]).
+    KillZoom(u8),
     /// Mode 4 (camera mode 7): from above the own body back toward the player who killed the local player.
     Killer(u8),
     /// Mode 2 (camera mode 4): orbiting a player (the killer after the killer camera, else a living team mate), or
@@ -125,6 +128,22 @@ struct Active {
     view: ViewAngles,
     /// The follow camera's wheel zoom (units along its offset, within [`zoom_range`]).
     zoom: f32,
+    /// CLI-1956: the kill zoom's shot while it runs.
+    shot: Option<ZoomShot>,
+}
+
+/// CLI-1956: one kill zoom: from the start point to the end in front of the frozen killer, then the hold.
+#[derive(Debug, Clone)]
+struct ZoomShot {
+    /// The death time it started at (ms since the death).
+    at: u32,
+    from: V3,
+    aim: V3,
+    end: V3,
+    hold_ms: u32,
+    /// The killer as he was at the start, drawn so for the whole shot.
+    body: RemoteBody,
+    zoomable: Zoomable,
 }
 
 /// The view angles that look from `from` to `to` (yaw 0 along +Z, positive toward +X; positive pitch down).
@@ -214,6 +233,26 @@ pub fn in_world(world: Option<&CollisionWorld>, p: V3) -> bool {
 pub const IN_WORLD_FLOOR: f32 = 1.0;
 
 impl DeathCam {
+    /// CLI-1956: the killer as the kill zoom froze him, while it runs (the frame loop draws him so in place of the
+    /// live body).
+    pub fn frozen_killer(&self) -> Option<&RemoteBody> {
+        self.active
+            .as_ref()
+            .filter(|a| matches!(a.mode, DeathCamMode::KillZoom(_)))
+            .and_then(|a| a.shot.as_ref())
+            .map(|s| &s.body)
+    }
+
+    /// CLI-1957: the killer's card while the kill zoom shows it (from half of the flight to the end of the hold)
+    /// and the killer's name.
+    pub fn shown_card(&self) -> Option<(Zoomable, &str)> {
+        let a = self.active.as_ref()?;
+        let s = a.shot.as_ref()?;
+        (matches!(a.mode, DeathCamMode::KillZoom(_))
+            && a.since.saturating_sub(s.at) >= killzoom::ZOOM_MS / 2)
+            .then_some((s.zoomable, s.body.name.as_str()))
+    }
+
     /// The mode in use (`None`: the own view).
     pub fn mode(&self) -> Option<DeathCamMode> {
         self.active.as_ref().map(|a| a.mode)
@@ -286,6 +325,7 @@ impl DeathCam {
                 blocked: false,
                 view: *view,
                 zoom: 0.0,
+                shot: None,
             });
             self.deaths += 1;
             self.step = 0;
@@ -299,11 +339,49 @@ impl DeathCam {
         // DC-DEFAULT: CLI-1193 (proposed, playtest report "no delay of the death before switching to a teammate pov"):
         // a button during the dying time is dropped; the killer camera always runs its 3500 ms (the 2009 observer
         // state machine leaves mode 4 only by the time, cshell+0x60c0f..0x60c5b)
-        let step = if matches!(a.mode, DeathCamMode::Killer(_)) && d.since_ms < DYING_TIME_MS {
+        let step = if matches!(a.mode, DeathCamMode::Killer(_) | DeathCamMode::KillZoom(_))
+            && d.since_ms < DYING_TIME_MS
+        {
             0
         } else {
             step
         };
+        // CLI-1956: the kill zoom starts at a fresh death by the card's killer when he is drawn in the world; it
+        // ends after its flight and hold, and the follow camera takes over as after the 2009 killer camera
+        if let DeathCamMode::Killer(k) = a.mode {
+            if killzoom::starts(d.kill_card.as_ref(), Some(k), d.since_ms) {
+                let body = remotes
+                    .iter()
+                    .find(|r| r.pid == k)
+                    .filter(|r| body_pos(r).is_some_and(|p| in_world(world, p)));
+                if let (Some(b), Some(z)) = (body, d.kill_card) {
+                    let aim = killzoom::aim_point(body_pos(b).unwrap_or(a.anchor), b.half[1]);
+                    let free = world.and_then(|w| {
+                        let len = (a.anchor - aim).len();
+                        w.ray(aim, a.anchor)
+                            .map(|h| (h.t * len - WALL_MARGIN).max(0.0))
+                    });
+                    if let Some(end) = killzoom::end_point(a.anchor, aim, free) {
+                        a.shot = Some(ZoomShot {
+                            at: d.since_ms,
+                            from: a.anchor,
+                            aim,
+                            end,
+                            hold_ms: u32::from(z.hold_ms),
+                            body: b.clone(),
+                            zoomable: z,
+                        });
+                        a.mode = DeathCamMode::KillZoom(k);
+                    }
+                }
+            }
+        }
+        if let (DeathCamMode::KillZoom(k), Some(s)) = (a.mode, a.shot.as_ref()) {
+            if d.since_ms.saturating_sub(s.at) >= killzoom::ZOOM_MS + s.hold_ms {
+                a.mode = DeathCamMode::Follow(d.any_team.then_some(k));
+                a.shot = None;
+            }
+        }
         if let DeathCamMode::Killer(k) = a.mode {
             if d.since_ms >= DYING_TIME_MS {
                 a.mode = DeathCamMode::Follow(d.any_team.then_some(k));
@@ -317,6 +395,15 @@ impl DeathCam {
                 .filter(|p| in_world(world, *p))
         };
         match a.mode {
+            DeathCamMode::KillZoom(_) => {
+                let s = a.shot.as_ref()?;
+                let f = killzoom::ease(d.since_ms.saturating_sub(s.at));
+                let cam = s.from + (s.end - s.from) * f;
+                if let Some(v) = look_at(cam, s.aim) {
+                    a.view = v;
+                }
+                Some((cam, a.view))
+            }
             DeathCamMode::Killer(k) => {
                 let dir = back_along(d.shot_dir).or_else(|| {
                     // no damage direction (none received): toward the killer's body when it is drawn
@@ -882,5 +969,94 @@ mod tests {
         );
         assert_eq!(cam.mode(), Some(DeathCamMode::Follow(Some(4))));
         assert_eq!(cam.zoom(), 0.0);
+    }
+
+    /// CLI-1956: with a card the death starts the kill zoom: the camera flies to the killer's head and holds there,
+    /// the killer stays as he was at the kill, the card shows from half the flight; after the hold the follow camera
+    /// takes over. A card of another killer, or none, keeps the 2009 killer camera.
+    #[test]
+    fn a_kill_card_flies_to_the_frozen_killer_holds_and_hands_over() {
+        use crate::killzoom::{Zoomable, ZOOM_MS};
+        let card = |killer| Zoomable {
+            card: dc_wire::killcard::Card {
+                killer,
+                obj: 101,
+                health: 37,
+                health_max: 100,
+                armor: 0,
+                armor_max: 100,
+            },
+            hold_ms: 1000,
+        };
+        let death = |t, k| DeathView {
+            any_team: true,
+            kill_card: Some(card(k)),
+            ..death(Some(1), t, Some([-1.0, 0.0, 0.0]))
+        };
+        let body = V3::new(0.0, 40.0, 0.0);
+        let killer = remote(1, 2, [1000.0, 40.0, 0.0]);
+        let v0 = ViewAngles::default();
+        let mut cam = DeathCam::default();
+        let ks = std::slice::from_ref(&killer);
+        let (p0, _) = cam
+            .frame(Some(&death(0, 1)), ks, body, body, &v0, None, DT)
+            .unwrap();
+        assert_eq!(cam.mode(), Some(DeathCamMode::KillZoom(1)));
+        assert!(p0.x.abs() < 1e-3, "starts at the own body: {p0:?}");
+        assert!(cam.shown_card().is_none(), "no card at the start");
+        // the killer moves on: the frozen body stays where he was
+        let moved = remote(1, 2, [1500.0, 40.0, 300.0]);
+        let ms = std::slice::from_ref(&moved);
+        let (p1, _) = cam
+            .frame(Some(&death(ZOOM_MS / 2, 1)), ms, body, body, &v0, None, DT)
+            .unwrap();
+        assert!(p1.x > 500.0, "most of the way at half the flight: {p1:?}");
+        assert_eq!(cam.frozen_killer().map(|b| b.pos), Some(killer.pos));
+        assert_eq!(
+            cam.shown_card().map(|(z, n)| (z.card.health, n)),
+            Some((37, "p1"))
+        );
+        let (p2, v2) = cam
+            .frame(
+                Some(&death(ZOOM_MS + 500, 1)),
+                ms,
+                body,
+                body,
+                &v0,
+                None,
+                DT,
+            )
+            .unwrap();
+        assert!(
+            (p2.x - (1000.0 - crate::killzoom::STANDOFF)).abs() < 1.0,
+            "{p2:?}"
+        );
+        assert!(
+            (v2.yaw - std::f32::consts::FRAC_PI_2).abs() < 0.05,
+            "faces the killer: {v2:?}"
+        );
+        cam.frame(
+            Some(&death(ZOOM_MS + 1000, 1)),
+            ms,
+            body,
+            body,
+            &v0,
+            None,
+            DT,
+        );
+        assert_eq!(cam.mode(), Some(DeathCamMode::Follow(Some(1))));
+        assert!(cam.frozen_killer().is_none() && cam.shown_card().is_none());
+        // another killer's card, or a card too late: the 2009 killer camera
+        let mut cam = DeathCam::default();
+        cam.frame(Some(&death(0, 5)), ks, body, body, &v0, None, DT);
+        assert_eq!(cam.mode(), Some(DeathCamMode::Killer(1)));
+        let mut cam = DeathCam::default();
+        let plain = |t| DeathView {
+            kill_card: None,
+            ..death(t, 1)
+        };
+        cam.frame(Some(&plain(0)), ks, body, body, &v0, None, DT);
+        cam.frame(Some(&death(1000, 1)), ks, body, body, &v0, None, DT);
+        assert_eq!(cam.mode(), Some(DeathCamMode::Killer(1)));
     }
 }

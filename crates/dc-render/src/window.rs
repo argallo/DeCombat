@@ -6,7 +6,6 @@ use crate::bucket::RenderSettings;
 use crate::gpu::{FrameTarget, GpuContext, RenderError};
 use crate::msaa::MsaaTargets;
 use crate::viewer::{PreparedView, RomViewer, ViewError, ViewReport, ViewRequest};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -37,7 +36,8 @@ struct Live {
 }
 
 struct App {
-    rom: PathBuf,
+    /// The viewer's file system until the window opens.
+    vfs: Option<dc_vfs::Vfs>,
     req: ViewRequest,
     settings: RenderSettings,
     opts: WindowOptions,
@@ -123,7 +123,11 @@ impl App {
         };
         surface.configure(&ctx.device, &config);
         let depth = depth_view(&ctx.device, w, h);
-        let viewer = RomViewer::with_context(&self.rom, ctx, format, self.settings)?;
+        let vfs = self
+            .vfs
+            .take()
+            .ok_or_else(|| ViewError::Rom("the viewer is already open".to_string()))?;
+        let viewer = RomViewer::with_context(vfs, ctx, format, self.settings)?;
         let msaa = MsaaTargets::new(&viewer.ctx, format, (w, h), viewer.renderer.msaa());
         let view = viewer.prepare(&self.req)?;
         window.request_redraw();
@@ -239,7 +243,7 @@ impl ApplicationHandler for App {
 
 /// Opens the window, draws `req` until the deadline and returns the view report.
 pub fn run_window(
-    rom: &Path,
+    vfs: dc_vfs::Vfs,
     req: &ViewRequest,
     settings: RenderSettings,
     opts: WindowOptions,
@@ -247,7 +251,7 @@ pub fn run_window(
     let el = EventLoop::new().map_err(|e| ViewError::Gpu(RenderError::Device(e.to_string())))?;
     el.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        rom: rom.to_path_buf(),
+        vfs: Some(vfs),
         req: req.clone(),
         settings,
         opts,

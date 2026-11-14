@@ -70,6 +70,46 @@ Router: forward each port of the table to this machine's LAN address (same port 
 - No port forwarding on their side: the game server answers each client at its observed UDP source address and
   the client sends at least every 200 ms once joined (keep-alive), so their router's mapping never expires.
 
+## Packs (camos, maps and other mods)
+
+Packs are not part of the server download. They come from pack repositories (ours: `argallo/DeCombat-mods`,
+`argallo/DeCombat-maps`; anyone can make one with `tools/modrepo.py init`) as tagged GitHub releases, and a lobby
+serves a pack only as `<mods dir>/<sha256>.zip` named by a row in `server.toml`
+(docs/PACKS_FROM_REPOSITORIES.md). Getting them onto your own server, on Windows, Linux or macOS:
+
+1. In `server.toml`, set the folder and name the releases you take packs from:
+
+   ```toml
+   [paths]
+   mods_dir = "data/mods"
+
+   [[packs.sources]]
+   repo = "argallo/DeCombat-mods"
+   tag = "v1"            # a release tag, never a branch: a pack is its hash
+   ```
+
+2. Fetch and check them (the lobby may be running; nothing it serves changes until step 3):
+
+   ```
+   dc-lobby-server packs sync --config server.toml                      # every source of server.toml
+   dc-lobby-server packs sync argallo/DeCombat-mods v1 --mods-dir data/mods --only case_reel --format set
+   ```
+
+   Every zip is checked against the release's `SHA256SUMS` and the hash its `packs.json` row declares, all of them
+   before any is installed: one failure installs nothing. A zip already there is left alone, so running it again is
+   safe. The hashes prove the files agree with each other and with what the release lists, not who made them: there
+   is no signature, so take packs only from repositories you trust, and pin a tag you have looked at. Downloads use the system's `curl` (Windows 10 and later, macOS and Linux include it); a machine without
+   internet access can take a folder holding the release's files with `--base-url <folder>`. `--dry-run` shows what
+   it would fetch.
+
+3. Paste the rows it prints into `server.toml`: `[[mods.set]]` rows (`--format set`) for a modded lobby, or the
+   `mods = [...]` rows of a `[[lobby.servers]]` entry (the default), then restart the lobby. The command never edits
+   `server.toml`; a new release changes nothing on your server until you sync it and paste its rows.
+
+`dc-config check --fs server.toml` names the sync command for any declared zip that is missing. Players need nothing
+extra: their client downloads each pack from your lobby by its hash when they join. On the project's VPS the
+dashboard's Sync packs button and `tools/vps/packs_sync.sh` do the same as root (docs/OPS.md section 4a).
+
 ## Playing alone with bots
 
 See [docs/BOTS.md](docs/BOTS.md).

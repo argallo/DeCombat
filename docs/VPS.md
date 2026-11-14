@@ -295,6 +295,9 @@ then one bot by hand: `dc-botclient.exe --lobby <VPS_IP>:10000 --name PcBot1 --l
   shows what listens. Login works but the match never loads: UDP 27015-27100 is closed somewhere, or the advertised
   address is wrong (`GET /status` `address`).
 - `rom_check.sh` fails: the upload is incomplete or changed; push the ROM again (`push.ps1 -Rom ...`).
+- Never put `DC_JOIN_SECRET` into a live server's environment (`decombat.env`, the service unit, a host agent's
+  environment): `dc-dserver` reads it as a join secret when `-joinsecret` is absent (it then seats any name that
+  sends it), and a malformed value stops every game server at start with exit code 64 (DC_DEFAULTS.md LOC-11).
 
 ## Several instances on one box
 

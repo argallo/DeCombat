@@ -1337,7 +1337,7 @@ pub fn load_from_file_with_rom(
     // a map built from pieces of the ROM's worlds is composed from this server's own ROM before anything reads it,
     // the same step every client runs on the same bytes (MAP-116)
     // DC-DEFAULT: MAP-116
-    let data = dc_world::compose::compose_with_rom(data, rom)
+    let data = dc_world::compose::compose_with_rom(data, rom.map(dc_rez::RezVfs::new).as_deref())
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let display = path
         .file_stem()

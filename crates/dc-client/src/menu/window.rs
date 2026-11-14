@@ -91,6 +91,7 @@ pub fn apply_to_director(s: &crate::settings::Settings, d: &mut SoundDirector) -
 pub fn apply_to_options(s: &crate::settings::Settings, o: &mut WindowOptions) {
     o.audio.effects_volume = s.effective_effects();
     o.audio.music_volume = s.effective_music();
+    o.audio.mix = s.sound_mix;
     o.look.sensitivity = s.sensitivity as f32;
     o.look.invert_y = s.invert_y;
     // CLI-1280: the resolution setting is the windowed look's size (full screen stays the monitor's rectangle);

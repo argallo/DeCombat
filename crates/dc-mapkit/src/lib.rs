@@ -51,6 +51,7 @@ pub mod render_sw;
 pub mod romlist;
 pub mod schema;
 pub mod script;
+pub mod sight;
 pub mod template;
 pub mod thumbs;
 pub mod validate;

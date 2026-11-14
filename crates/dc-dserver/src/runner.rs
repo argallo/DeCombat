@@ -154,6 +154,54 @@ pub fn content_line(c: &WeaponContent) -> String {
     )
 }
 
+/// Most datagrams one turn reads into its batch in a match with a join secret (LOC-12); the rest wait in the socket
+/// reader for the next turn, after the timers ran.
+// DC-DEFAULT: LOC-12 (proposed) 512
+pub const BATCH_MAX: usize = 512;
+
+/// One turn's datagrams. Without a join secret (`batched` false) each is handled as it is read, until none is
+/// waiting: the order and the loop are as they always were. With one, at most [`BATCH_MAX`] are read first and then
+/// handled with those of known senders first ([`known_first`]), so memory stays bounded under a flood and the caller
+/// runs its timers between batches. Returns how many were handled.
+// DC-DEFAULT: LOC-12 (proposed)
+pub fn receive_turn<S, D, A>(
+    s: &mut S,
+    mut next: impl FnMut() -> Option<(D, A)>,
+    batched: bool,
+    knows: impl Fn(&S, &A) -> bool,
+    mut handle: impl FnMut(&mut S, D, A),
+) -> usize {
+    let mut n = 0;
+    if !batched {
+        while let Some((d, a)) = next() {
+            handle(s, d, a);
+            n += 1;
+        }
+        return n;
+    }
+    let mut batch = Vec::new();
+    while batch.len() < BATCH_MAX {
+        match next() {
+            Some(x) => batch.push(x),
+            None => break,
+        }
+    }
+    let batch = known_first(batch, |a| knows(s, a));
+    for (d, a) in batch {
+        handle(s, d, a);
+        n += 1;
+    }
+    n
+}
+
+/// A batch of datagrams with those of known senders first, each sender's datagrams in their order (LOC-12).
+// DC-DEFAULT: LOC-12 (proposed)
+pub fn known_first<D, A>(batch: Vec<(D, A)>, mut knows: impl FnMut(&A) -> bool) -> Vec<(D, A)> {
+    let (mut known, unknown): (Vec<_>, Vec<_>) = batch.into_iter().partition(|(_, a)| knows(a));
+    known.extend(unknown);
+    known
+}
+
 /// Runs the server until `quit`, stdin EOF, the idle limit, the end of the match or a broken stdout. Returns the
 /// exit code.
 // SPEC: DSERVER_PIPE.md §1 (process model), §4 (events), §7 (exit on stdin EOF; error line then @end)
@@ -190,6 +238,10 @@ pub fn run(args: Args) -> i32 {
     }
     for n in &args.config_notes {
         sink.log(&format!("dc-dserver: config: {n}"));
+    }
+    // ENG-3: the content profile named by -game (none: nothing logged, nothing changed)
+    if let Some(g) = &args.game {
+        sink.log(&format!("dc-dserver: {}", g.summary()));
     }
     let world = match load_world(&args) {
         Ok(w) => w,
@@ -300,7 +352,7 @@ pub fn run(args: Args) -> i32 {
         }
         let after_lines = now();
         let mut waiting = true;
-        loop {
+        let next = || {
             let got = if waiting {
                 waiting = false;
                 reader.next_within(Duration::from_millis(POLL_WAIT_MS))
@@ -311,7 +363,7 @@ pub fn run(args: Args) -> i32 {
                 Some(Ok((data, from))) => {
                     received += 1;
                     count_peer(&mut per_peer, from, 0);
-                    server.handle_datagram(now(), from, &data)
+                    Some((data, from))
                 }
                 // an oversized datagram fails recvfrom and is dropped (spec §4); anything else: logged (the first few)
                 // SPEC: UDP_TRANSPORT_2009.md §4 (WSAECONNRESET is ignored; the reader thread skips it)
@@ -320,11 +372,19 @@ pub fn run(args: Args) -> i32 {
                     if recv_errors <= 5 {
                         sink.log(&format!("dc-dserver: receive error ignored: {e}"));
                     }
-                    break;
+                    None
                 }
-                None => break,
+                None => None,
             }
-        }
+        };
+        let batched = server.join_secret_set();
+        receive_turn(
+            &mut server,
+            next,
+            batched,
+            |s, a| s.knows_peer(a),
+            |s, data: Vec<u8>, from| s.handle_datagram(now(), from, &data),
+        );
         // the timers run on a clock read after the datagrams (never behind a datagram's own time)
         let t = now();
         let datagrams_ms = since(t, after_lines);
@@ -398,5 +458,68 @@ mod per_peer_tests {
         let known = SocketAddr::from(([10, 0, 0, 0], 5000));
         count_peer(&mut m, known, 1);
         assert_eq!(m[&known], [1, 1, 0], "a known address is still counted");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// LOC-12: known senders first, each sender's datagrams in their order.
+    /// LOC-12: with a join secret a flood is read in batches of at most BATCH_MAX (the caller's timers run between
+    /// them), known senders first in each; without one every datagram is handled as it is read, in its order.
+    #[test]
+    fn a_flood_is_handled_in_bounded_batches_and_the_plain_path_keeps_its_order() {
+        use super::{receive_turn, BATCH_MAX};
+        let flood: Vec<(usize, char)> = (0..1300)
+            .map(|i| (i, if i % 3 == 0 { 'k' } else { 'n' }))
+            .collect();
+        // with a join secret: turns of at most BATCH_MAX, a timer mark between them
+        let mut src = flood.clone().into_iter();
+        let mut log: Vec<Option<(usize, char)>> = Vec::new();
+        let mut sizes = Vec::new();
+        loop {
+            let n = receive_turn(
+                &mut log,
+                || src.next(),
+                true,
+                |_, a| *a == 'k',
+                |l, d, a| l.push(Some((d, a))),
+            );
+            log.push(None); // the timers of the turn
+            if n == 0 {
+                break;
+            }
+            sizes.push(n);
+        }
+        assert_eq!(sizes, vec![BATCH_MAX, BATCH_MAX, 1300 - 2 * BATCH_MAX]);
+        let first: Vec<_> = log.iter().take(BATCH_MAX).flatten().collect();
+        assert!(
+            first[..171].iter().all(|x| x.1 == 'k'),
+            "known senders first"
+        );
+        assert!(
+            first
+                .windows(2)
+                .all(|w| w[0].1 != w[1].1 || w[0].0 < w[1].0),
+            "each sender in order"
+        );
+        // without: one turn, the order as read
+        let mut src = flood.clone().into_iter();
+        let mut plain = Vec::new();
+        let n = receive_turn(
+            &mut plain,
+            || src.next(),
+            false,
+            |_, a| *a == 'k',
+            |l, d, a| l.push((d, a)),
+        );
+        assert_eq!(n, 1300);
+        assert_eq!(plain, flood);
+    }
+
+    #[test]
+    fn known_links_are_handled_before_newcomers() {
+        let batch = vec![(1, 'n'), (2, 'k'), (3, 'n'), (4, 'k'), (5, 'j')];
+        let out = super::known_first(batch, |a| *a == 'k');
+        assert_eq!(out, vec![(2, 'k'), (4, 'k'), (1, 'n'), (3, 'n'), (5, 'j')]);
     }
 }

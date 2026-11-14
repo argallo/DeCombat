@@ -35,6 +35,8 @@ CONF=$D/deploy.conf
 # the seams tools/vps/tests/deploy_test.sh replaces
 GIT=${DC_DEPLOY_GIT:-git}
 PGREP=${DC_DEPLOY_PGREP:-pgrep}
+READLINK=${DC_DEPLOY_READLINK:-readlink}
+PROC=${DC_DEPLOY_PROC:-/proc}
 SETTLE=${DC_DEPLOY_SETTLE:-1}
 MATCH_POLL=${DC_DEPLOY_MATCH_POLL:-30}
 NAME_RE='^[0-9]{1,12}-[0-9a-f]{8}\.json$'
@@ -220,7 +222,22 @@ print("by=" + by)
 ' "$1"
 }
 
-matches_running() { "$PGREP" -x dc-dserver >/dev/null 2>&1; }
+# A match of OUR lobbies = a dc-dserver whose executable is $DC_ROOT/bin/dc-dserver (every instance's lobby starts that
+# one; " (deleted)" when an install replaced the file under a match still running). Any other dc-dserver on the box, such
+# as a playtest under a home folder, is not ours and never holds a deploy back. A process that still exists but whose
+# executable cannot be read counts (the safe side: at worst one more poll).
+matches_running() {
+    local pid exe
+    for pid in $("$PGREP" -x dc-dserver 2>/dev/null); do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        if exe=$("$READLINK" "$PROC/$pid/exe" 2>/dev/null); then
+            case "$exe" in "$DC_ROOT/bin/dc-dserver"|"$DC_ROOT/bin/dc-dserver (deleted)") return 0 ;; esac
+        elif [ -e "$PROC/$pid" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 cmd_run() {
     need_root

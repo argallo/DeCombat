@@ -64,7 +64,7 @@
 //! coefficients / exponents / kind, hidden / start-hidden) keep their hash-only match; the read order of each reader
 //! is unchanged (`static_light`: colour then inner colour; `global_light`: inner colour then colour). A community
 //! map's light grid is one cell of its baked ambient colour, which [`AmbientGrid::sample`] returns everywhere (MAP-28). The finished frame (world, models, HUD) goes through the 2009 gamma ramp ([`ramp_for_gamma`],
-//! value from [`profile_gamma`], default [`PROFILE_GAMMA_DEFAULT`]): on screen the caller draws into
+//! value from the user's profile through [`gamma_of_profile_text`], default [`PROFILE_GAMMA_DEFAULT`]): on screen the caller draws into
 //! [`GammaStage::view`] and records [`GammaStage::encode`] as the last pass into the screen view (with gamma 1
 //! [`GammaStage::active`] is false and the frame goes straight to the screen); offscreen read-backs apply
 //! [`apply_ramp`] on the CPU.
@@ -87,8 +87,8 @@
 //! **Lighting** (`lights`): [`world_lights`] / [`AmbientGrid`] read once per map; [`LightSet::build`] picks the
 //! [`MAX_MODEL_LIGHTS`] strongest lights for one model and folds the rest into its ambient term.
 //!
-//! **Textures and sources** (`texture`, `source`): [`WorldSource`] / [`TextureIndex`] look entries up in the
-//! user's ROM archives at run time; [`decode_dtx`] / [`RomTextures`] decode DTX to RGBA8 mip chains.
+//! **Textures and sources** (`texture`, `source`): [`TextureIndex`] looks entries up through the caller's
+//! archive layer (the user's ROM archives) at run time; [`decode_dtx`] / [`RomTextures`] decode DTX to RGBA8 mip chains.
 //!
 //! **Camera and sky** (`camera`, `sky`): [`Camera`] (left-handed view, D3D-style projection, near
 //! [`NEAR_Z`]), [`PlayerViewSettings`] for eye-attached models, [`SkySettings`] / [`sky_camera`] /
@@ -181,10 +181,10 @@ pub use camera::{
     FULL_WINDOW, NEAR_Z, PLAYER_VIEW_DEFAULT, PLAYER_VIEW_DEPTH_RANGE, WORLD_DEPTH_RANGE,
 };
 pub use character::{
-    fill_decimal, grip_socket, name_key, pv_none_texture, resolve_view_skins, BodyRow,
-    CharacterTable, HandModel, HandModels, NameKey, ViewChoices, ViewModel, ViewModels,
-    CLIP_LOWER_STAND, CLIP_LOWER_WALK, CLIP_UPPER_STAND, CLIP_UPPER_WALK, MARK_REPEAT,
-    PLAYER_CLIPS, WEAPON_SOCKET_INDEX, WEAPON_SOCKET_KEY,
+    fill_decimal, grip_socket, name_key, resolve_view_skins, BodyRow, CharacterTable, HandModel,
+    HandModels, NameKey, ViewChoices, ViewModel, ViewModels, CLIP_LOWER_STAND, CLIP_LOWER_WALK,
+    CLIP_UPPER_STAND, CLIP_UPPER_WALK, MARK_REPEAT, PLAYER_CLIPS, PV_NONE_TEXTURE_KEY,
+    PV_NONE_TEXTURE_RVA, WEAPON_SOCKET_INDEX, WEAPON_SOCKET_KEY,
 };
 pub use determinism::{
     hex, journal_enable, journal_snapshot, mutation, pipeline_settings, render_pipeline, sampler,
@@ -192,8 +192,8 @@ pub use determinism::{
 };
 pub use fog::{world_far_z, world_fog, Fog, WORLD_FAR_Z_MIN};
 pub use gamma::{
-    apply_ramp, gamma_of_profile_text, profile_gamma, profile_key, ramp_for_gamma, GammaStage,
-    PROFILE_GAMMA_DEFAULT,
+    apply_ramp, gamma_of_profile_text, ramp_for_gamma, GammaStage, PROFILE_FILE,
+    PROFILE_GAMMA_DEFAULT, PROFILE_KEY_RVA, PROFILE_KEY_SHA256,
 };
 pub mod macwin;
 pub mod perf;
@@ -227,7 +227,7 @@ pub use sky::{
     portal_screen_rect, sky_camera, sky_eye, SkyBlock, SkySettings, SkyView, SKY_FAR_Z,
     SKY_MIN_EXTENT, SKY_NEAR, SKY_SCALE,
 };
-pub use source::{TextureIndex, WorldSource};
+pub use source::TextureIndex;
 pub use style::{
     address, alpha_op, blend_factors, colour_op, compare, cull, depth_mode, describe, filter,
     stage_arg, stage_texture, style_for_slot, style_key, uv_source, Address, BlendFactor, Compare,

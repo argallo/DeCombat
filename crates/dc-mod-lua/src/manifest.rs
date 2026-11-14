@@ -860,8 +860,8 @@ pub fn curated_refusal(m: &ModManifest) -> Option<String> {
 
 /// LG-314: why a pack's weapon content may not load on a curated entry: a new weapon row outside the reserved numbers.
 // DC-DEFAULT: LG-314 (proposed)
-pub fn curated_content_refusal(c: &dc_bute::modpatch::WeaponContent) -> Option<String> {
-    use dc_bute::modpatch::{
+pub fn curated_content_refusal(c: &dc_attr::modpatch::WeaponContent) -> Option<String> {
+    use dc_attr::modpatch::{
         is_pack_item, is_variant_item, PatchOp, KEY_VARIANT_OF, PACK_ITEM_FIRST, PACK_ITEM_LAST,
         VARIANT_ITEM_FIRST, VARIANT_ITEM_LAST,
     };

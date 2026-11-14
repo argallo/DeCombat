@@ -3,8 +3,8 @@
 //! server streams for a player. Nothing here is ROM data: table names and keys are cited, clips are found by
 //! the SHA-256 key of their names.
 
-use dc_bute::ButeDoc;
-use dc_rez::RezVfs;
+use dc_attr::ButeDoc;
+use dc_vfs::Vfs;
 use std::collections::BTreeMap;
 
 /// Archive of the attribute tables.
@@ -83,7 +83,7 @@ pub const MARK_REPEAT: usize = 3;
 pub type NameKey = ([u8; 8], usize);
 
 pub fn name_key(name: &[u8]) -> NameKey {
-    let h = dc_rom::sha256(name);
+    let h = dc_core::sha256(name);
     let mut k = [0u8; 8];
     k.copy_from_slice(&h[..8]);
     (k, name.len())
@@ -134,7 +134,7 @@ pub struct CharacterTable {
 }
 
 /// Numbered values `<key>0`, `<key>1`, ... of a row up to the first missing or empty one.
-fn numbered(sec: &dc_bute::SectionMap, key: &str, max: u32) -> Vec<String> {
+fn numbered(sec: &dc_attr::SectionMap, key: &str, max: u32) -> Vec<String> {
     (0..max)
         .map_while(|k| sec.get(&format!("{key}{k}")).map(|v| unquote(v)))
         .take_while(|v| !v.is_empty())
@@ -208,7 +208,7 @@ impl CharacterTable {
         t
     }
 
-    pub fn from_vfs(vfs: &RezVfs) -> Result<CharacterTable, String> {
+    pub fn from_vfs(vfs: &Vfs) -> Result<CharacterTable, String> {
         let models = match ButeDoc::try_from_vfs(vfs, TABLE_REZ, MODEL_TABLE) {
             Ok(Some(d)) => d,
             Ok(None) => return Err("model table missing".into()),
@@ -344,14 +344,6 @@ pub const PV_NONE_TEXTURE_KEY: NameKey = ([0xaf, 0xe7, 0x8f, 0x58, 0x20, 0x5e, 0
 // EVIDENCE: cshell+0x1e4760 (three reads of the key with one default literal)
 pub const PV_DEFAULT_IDENT_KEY: NameKey = ([0x7f, 0x13, 0xc1, 0xfc, 0xbd, 0xba, 0xe1, 0x62], 8);
 
-/// The replacement texture name of the arm placeholders, read from the user's CShell.dll by RVA and accepted only
-/// when its name key matches (nothing of the ROM in the tree).
-pub fn pv_none_texture(rom: &std::path::Path) -> Option<String> {
-    let pe = dc_rom::PeFile::from_file(&rom.join("Game").join("CShell.dll")).ok()?;
-    let s = pe.cstr(PV_NONE_TEXTURE_RVA).ok()?;
-    (name_key(s.as_bytes()) == PV_NONE_TEXTURE_KEY).then_some(s)
-}
-
 /// The first-person skin list as the 2009 client resolves it: skin 0 equal to the hands placeholder becomes `hands`
 /// (empty when the character has none), then every skin equal to an arm placeholder becomes `none_texture`
 /// (empty when not known).
@@ -420,7 +412,7 @@ impl HandModels {
         HandModels { rows }
     }
 
-    pub fn from_vfs(vfs: &RezVfs) -> Result<HandModels, String> {
+    pub fn from_vfs(vfs: &Vfs) -> Result<HandModels, String> {
         match ButeDoc::try_from_vfs(vfs, TABLE_REZ, WEAPON_TABLE) {
             Ok(Some(d)) => Ok(HandModels::from_doc(&d)),
             Ok(None) => Err("weapon table missing".into()),
@@ -560,7 +552,7 @@ impl ViewModels {
         })
     }
 
-    pub fn from_vfs(vfs: &RezVfs) -> Result<ViewModels, String> {
+    pub fn from_vfs(vfs: &Vfs) -> Result<ViewModels, String> {
         match ButeDoc::try_from_vfs(vfs, TABLE_REZ, WEAPON_TABLE) {
             Ok(Some(d)) => Ok(ViewModels::from_doc(&d)),
             Ok(None) => Err("weapon table missing".into()),

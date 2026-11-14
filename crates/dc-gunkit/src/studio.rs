@@ -289,7 +289,9 @@ impl Studio {
     /// Opens a game folder on a device the caller shares.
     pub fn with_context(rom: &Path, ctx: GpuContext) -> Result<Studio, String> {
         let guns = read_guns(rom)?;
-        let textures = TextureIndex::open(rom).map_err(|e| format!("game textures: {e}"))?;
+        let textures = dc_rez::RomLayer::indexed(rom)
+            .map(TextureIndex::new)
+            .map_err(|e| format!("game textures: {e}"))?;
         let renderer = WorldRenderer::new(&ctx, OFFSCREEN_FORMAT, RenderSettings::default());
         let scene = renderer.upload(&ctx, &SceneMesh::default(), &mut |_| None);
         let vfs = RezVfs::new(rom);
@@ -309,7 +311,7 @@ impl Studio {
             textures,
             styles: StyleLibrary::new(),
             hands_skin,
-            arm_skin: dc_render::pv_none_texture(rom),
+            arm_skin: crate::rom::pv_none_texture(rom),
             guns,
             design: Design::default(),
             orbit: Orbit::default(),

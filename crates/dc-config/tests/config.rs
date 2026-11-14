@@ -539,7 +539,7 @@ tag = "2026.11"
         .map(|x| x.message.clone())
         .unwrap_or_default();
     assert!(
-        m.contains("tools/vps/packs_sync.sh argallo/DeCombat-mods v1") && !m.contains("a/b"),
+        m.contains("dc-lobby-server packs sync argallo/DeCombat-mods v1") && !m.contains("a/b"),
         "{m}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1326,6 +1326,84 @@ fn check_identity_section() {
         &run(&|c| c.identity.issuer = "bad|id".into()),
         "identity.issuer"
     ));
+}
+
+/// SES-3 / SES-4 / SES-7: the device-session keys, their documented defaults, ranges and env overrides.
+// DC-DEFAULT: SES-3, SES-4, SES-7 (proposed)
+#[test]
+fn device_session_keys_default_validate_and_override() {
+    let d = IdentitySection::default();
+    assert!(
+        !d.device_sessions,
+        "off by default: no client uses the endpoints yet"
+    );
+    assert_eq!(
+        (d.device_token_minutes, d.device_idle_days, d.max_devices),
+        (15, 180, 10)
+    );
+    assert!(!d.long_passwords);
+    let run = |f: &dyn Fn(&mut Config)| {
+        let mut c = Config::default();
+        f(&mut c);
+        check(&c, CheckOptions::default())
+    };
+    for (key, bad, good) in [
+        ("identity.device_token_minutes", [0u32, 1441], [1u32, 1440]),
+        ("identity.device_idle_days", [0, 3651], [1, 3650]),
+        ("identity.max_devices", [0, 101], [1, 100]),
+    ] {
+        let set = |c: &mut Config, v: u32| match key {
+            "identity.device_token_minutes" => c.identity.device_token_minutes = v,
+            "identity.device_idle_days" => c.identity.device_idle_days = v,
+            _ => c.identity.max_devices = v,
+        };
+        for v in bad {
+            assert!(has_err(&run(&|c| set(c, v)), key), "{key} = {v}");
+        }
+        for v in good {
+            assert!(!has_err(&run(&|c| set(c, v)), "identity."), "{key} = {v}");
+        }
+    }
+    let c = parse_toml(
+        "[identity]\ndevice_sessions = true\ndevice_token_minutes = 5\ndevice_idle_days = 30\nmax_devices = 3\n\
+         long_passwords = true\n",
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            c.identity.device_sessions,
+            c.identity.device_token_minutes,
+            c.identity.device_idle_days,
+            c.identity.max_devices,
+            c.identity.long_passwords
+        ),
+        (true, 5, 30, 3, true)
+    );
+    assert_eq!(parse_toml(&c.to_toml()).unwrap(), c);
+    let c = apply_env(
+        &Config::default(),
+        env(&[
+            ("DC_IDENTITY__DEVICE_IDLE_DAYS", "90"),
+            ("DC_IDENTITY__MAX_DEVICES", "4"),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        (c.identity.device_idle_days, c.identity.max_devices),
+        (90, 4)
+    );
+    // the DC_DEFAULTS rows name the keys with these defaults
+    let text = read("DC_DEFAULTS.md");
+    let row = |id: &str| {
+        text.lines()
+            .find(|l| l.starts_with(&format!("| {id} ")))
+            .unwrap_or_else(|| panic!("no DC_DEFAULTS row {id}"))
+            .to_string()
+    };
+    assert!(row("SES-3").contains("`identity.device_idle_days` = 180"));
+    assert!(row("SES-3").contains("`identity.max_devices` = 10"));
+    assert!(row("SES-4").contains("`identity.device_token_minutes` = 15"));
+    assert!(row("SES-7").contains("`identity.long_passwords` = false"));
 }
 
 #[test]

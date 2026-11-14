@@ -317,7 +317,7 @@ pub fn piece(cuts: Vec<Aabb>) -> Piece {
     Piece {
         name: "piece_1".into(),
         world: WORLD.into(),
-        sha256: dc_rom::sha256_hex(&rom_world()),
+        sha256: dc_core::sha256_hex(&rom_world()),
         offset: OFFSET,
         region: region(),
         cuts,

@@ -726,3 +726,50 @@ fn the_renderer_row_saves_the_pick_for_the_next_start() {
     assert_eq!(doc.own_get(OWN_RENDERER), Some("vulkan"));
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
 }
+
+/// CLI-1955 (owner request 2026-11-09: "break down sound effects master volume into a bunch of its various parts"):
+/// the Sound tab's Sound Mixer page moves one group's volume, heard at once; Cancel restores it, OK keeps it in the
+/// settings and the profile.
+#[test]
+fn the_sound_mixer_turns_one_kind_of_sound_down_and_ok_keeps_it() {
+    use dc_client::menu::modsettings::{CMD_PAGE_BACK, CMD_PAGE_NUDGE_BASE};
+    use dc_client::menu::soundmixer::CMD_SOUND_MIXER;
+    use dc_client::soundmix::{SoundGroup, GROUPS};
+    let (mut m, file) = menu();
+    let mut d = dc_client::sound::SoundDirector::open(None);
+    m.sound_frame(Some(&mut d));
+    let hit = SoundGroup::HitMarker;
+    let row = GROUPS.iter().position(|g| *g == hit).unwrap() as i32;
+    let level = |d: &dc_client::sound::SoundDirector| d.mixer().group_volume(hit.id());
+    assert_eq!(level(&d), 100);
+    let open_and_lower = |m: &mut Menu| {
+        press(m, CMD_BAR_PREFS);
+        m.input(MenuInput::Command(CMD_TABS[1]));
+        m.input(MenuInput::Command(CMD_SOUND_MIXER));
+        for _ in 0..2 {
+            m.input(MenuInput::Command(CMD_PAGE_NUDGE_BASE + 2 * row));
+        }
+    };
+    open_and_lower(&mut m);
+    m.sound_frame(Some(&mut d));
+    assert_eq!(level(&d), 90, "two steps of 5, heard before OK");
+    assert_eq!(
+        d.mixer().group_volume(SoundGroup::OwnFire.id()),
+        100,
+        "the other groups stay"
+    );
+    m.input(MenuInput::Command(CMD_PAGE_BACK));
+    press(&mut m, CMD_CANCEL);
+    m.sound_frame(Some(&mut d));
+    assert_eq!(level(&d), 100, "Cancel restores the volume in effect");
+    assert_eq!(m.data.settings.sound_mix[hit.index()], 100);
+    open_and_lower(&mut m);
+    m.input(MenuInput::Command(CMD_PAGE_BACK));
+    press(&mut m, CMD_OK);
+    m.sound_frame(Some(&mut d));
+    assert_eq!(level(&d), 90);
+    assert_eq!(m.data.settings.sound_mix[hit.index()], 90, "OK keeps it");
+    let saved = std::fs::read_to_string(&file).unwrap_or_default();
+    assert!(saved.contains("sound_mix.hit_marker"), "{saved}");
+    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+}

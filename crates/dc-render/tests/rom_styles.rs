@@ -27,7 +27,11 @@ const WORLDS: usize = 21;
 const WORLDS_WITH_GLOBAL_LIGHT: usize = 19;
 
 fn viewer(rom: &std::path::Path) -> Option<RomViewer> {
-    match RomViewer::open(rom, AdapterChoice::Auto, RenderSettings::default()) {
+    match RomViewer::open(
+        dc_rez::RezVfs::new(rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => Some(v),
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");
@@ -138,7 +142,7 @@ fn rom_style_census_counts() {
 #[test]
 fn rom_global_light_and_light_group_grids() {
     let rom = dc_rom::rom_or_skip!();
-    let src = WorldSource::open(&rom).expect("worlds");
+    let src = dc_rez::WorldArchive::open(&rom).expect("worlds");
     let maps = src.map_names();
     assert_eq!(maps.len(), WORLDS);
     let (mut with_light, mut grids, mut lit_cells) = (0usize, 0usize, 0usize);
@@ -306,7 +310,7 @@ fn rom_world_sun_on_an_outdoor_map() {
     };
     let table = CharacterTable::from_vfs(v.vfs()).expect("character table");
     // the outdoor map: the world whose global light is brightest (largest scaled colour channel)
-    let src = WorldSource::open(&rom).expect("worlds");
+    let src = dc_rez::WorldArchive::open(&rom).expect("worlds");
     let mut best: Option<(String, f32)> = None;
     for map in src.map_names() {
         let data = src.read(&map).unwrap().unwrap();

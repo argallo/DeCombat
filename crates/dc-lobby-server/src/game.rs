@@ -348,6 +348,10 @@ pub struct Game {
     /// Accounts whose client sent `@leave` and has not joined again: they were gone before the round end.
     pub left: std::collections::BTreeSet<u32>,
     pub result_done: bool,
+    /// An unranked match: its result is logged and changes no account (no rewards, statistics or rank-ups), and its
+    /// HiSec case and camo crate pickups are ignored. Nothing sets it yet but tests.
+    // DC-DEFAULT: LOC-4 (proposed)
+    pub unranked: bool,
     pub entry_keys: BTreeMap<u32, u32>,
     /// LG-327: the seat ticket per account: made at its first `user` line, kept for a rejoin, gone with this match.
     pub seat_tickets: BTreeMap<u32, dc_wire::seatticket::Ticket>,
@@ -593,6 +597,16 @@ pub fn pings_args(st: &Core, key: RoomKey) -> Vec<String> {
     }
 }
 
+/// LG-439 / DSV-652: the game server's flag of every room on an entry with the `killcard` feature (no room setting).
+// DC-DEFAULT: LG-439 (proposed, owner request 2026-11-10) kill zoom and kill card on a featured entry
+pub fn killcard_args(st: &Core, key: RoomKey) -> Vec<String> {
+    if crate::servers::channel_has_feature(st, key.channel, dc_wire::killcard::FEATURE) {
+        vec!["-killcard".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// LG-306 / DSV-482: the game server's flag of a Hardcore room (after the operator's flags, so it wins); never for a
 /// room of an entry without the feature.
 pub fn hardcore_args(st: &Core, key: RoomKey) -> Vec<String> {
@@ -822,6 +836,9 @@ pub(crate) fn spawn(st: &mut Core, key: RoomKey) -> Result<u64, String> {
     for a in pings_args(st, key) {
         cmd.arg(a);
     }
+    for a in killcard_args(st, key) {
+        cmd.arg(a);
+    }
     for a in hisec_args(st) {
         cmd.arg(a);
     }
@@ -894,6 +911,7 @@ pub(crate) fn spawn(st: &mut Core, key: RoomKey) -> Result<u64, String> {
         clients: BTreeMap::new(),
         left: Default::default(),
         result_done: false,
+        unranked: false,
         entry_keys: BTreeMap::new(),
         seat_tickets: BTreeMap::new(),
         seat_told: Default::default(),
@@ -1138,6 +1156,7 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
     args.extend(hardcore_args(st, key));
     args.extend(possession_args(st, key));
     args.extend(pings_args(st, key));
+    args.extend(killcard_args(st, key));
     args.extend(hisec_args(st));
     let json = start_json(
         &world,
@@ -1251,6 +1270,7 @@ fn spawn_remote(st: &mut Core, key: RoomKey, host: &str) -> Result<u64, String> 
         clients: BTreeMap::new(),
         left: Default::default(),
         result_done: false,
+        unranked: false,
         entry_keys: BTreeMap::new(),
         seat_tickets: BTreeMap::new(),
         seat_told: Default::default(),
@@ -2105,6 +2125,12 @@ pub fn on_line(st: &mut Core, game: u64, line: &str) -> HResult {
             st.note(&format!("game {}: @crash {}", game, text));
             close_game(st, game, true);
         }
+        // DC-DEFAULT: LOC-4 (proposed) an unranked match grants no items
+        Event::Hisec(_) | Event::Crate(_) if st.games.get(&game).is_some_and(|g| g.unranked) => {
+            st.note(&format!(
+                "game {game}: case or crate pickup of an unranked match: ignored"
+            ));
+        }
         // DC-DEFAULT: HS-6 (proposed) delivery of a picked-up HiSec case
         Event::Hisec(p) => crate::hisec::on_pickup(st, game, &p)?,
         Event::Crate(p) => crate::camo_crate::on_pickup(st, game, &p)?,
@@ -2184,7 +2210,7 @@ pub fn close_game(st: &mut Core, game: u64, crashed: bool) {
 // SPEC: DSERVER_PIPE.md §4.5 (lobby effect, exactly-once); rewards: DC-DEFAULT: CD-03 / CD-04 via the hook
 fn finish(st: &mut Core, game: u64, r: &MatchResult) -> HResult {
     let pay_leavers = st.rules.pay_leavers;
-    let (players, leavers, room, map, mode) = match st.games.get_mut(&game) {
+    let (players, leavers, room, map, mode, unranked) = match st.games.get_mut(&game) {
         Some(g) if !g.result_done => {
             g.result_done = true;
             g.over = true;
@@ -2193,7 +2219,7 @@ fn finish(st: &mut Core, game: u64, r: &MatchResult) -> HResult {
                 .iter()
                 .cloned()
                 .partition(|p| pay_leavers || !g.left.contains(&p.uid));
-            (stay, gone, g.room, g.map, g.mode)
+            (stay, gone, g.room, g.map, g.mode, g.unranked)
         }
         _ => return Ok(()),
     };
@@ -2204,6 +2230,40 @@ fn finish(st: &mut Core, game: u64, r: &MatchResult) -> HResult {
     } else {
         r.mode.clone()
     };
+    if unranked {
+        let detail = unranked_detail(&players, &leavers);
+        db::log_match(
+            &st.db,
+            &db::MatchRow {
+                ended: crate::clock::unix_now(),
+                channel: room.channel,
+                room: room.no,
+                map,
+                mode,
+                mode_key: &mode_key,
+                winner: r.winner,
+                alpha: r.alpha,
+                bravo: r.bravo,
+                players: (players.len() + leavers.len()) as i64,
+                detail: &detail,
+            },
+        )?;
+        if st.rules.send_gain_lines {
+            if let Some(g) = st.games.get_mut(&game) {
+                for p in &players {
+                    g.write_line(&gain_line(p.uid, 0, 0, (0, 0)));
+                }
+            }
+        }
+        st.note(&format!(
+            "game {}: unranked result logged ({} player(s), win {}), no account changed: {}",
+            game,
+            players.len(),
+            r.winner,
+            detail
+        ));
+        return Ok(());
+    }
     let unpaid = rewards::unpaid_bots(st, &players, &leavers);
     let mut detail = Vec::new();
     let mut pushes = Vec::new();
@@ -2337,6 +2397,24 @@ fn finish(st: &mut Core, game: u64, r: &MatchResult) -> HResult {
         detail.join(" ")
     ));
     Ok(())
+}
+
+/// The `match_log` detail of an unranked match ([`finish`]): `unranked`, then each player
+/// `uid:team:kills/deaths:unranked` and each leaver `uid:team:left`. Such a match changes no account: no reward, pass
+/// count-down, statistics, rank-up, clan or NX result and no 0x3004; the gain lines say 0.
+// DC-DEFAULT: LOC-4 (proposed) the same as a pool seat (LG-320), for every seat of the match
+fn unranked_detail(players: &[PlayerResult], leavers: &[PlayerResult]) -> String {
+    let mut d = vec!["unranked".to_string()];
+    for p in players {
+        d.push(format!(
+            "{}:{}:{}/{}:unranked",
+            p.uid, p.team, p.kills, p.deaths
+        ));
+    }
+    for p in leavers {
+        d.push(format!("{}:{}:left", p.uid, p.team));
+    }
+    d.join(" ")
 }
 
 /// The `gain` control line for one account, `gain <uid> <exp> <gp> <exp_bonus> <gp_bonus>`; a negative value is

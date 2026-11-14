@@ -1278,7 +1278,7 @@ impl std::fmt::Debug for TextureStore {
 impl TextureStore {
     pub fn open(rom: Option<&Path>) -> TextureStore {
         TextureStore {
-            index: rom.and_then(|r| dc_render::TextureIndex::open(r).ok()),
+            index: rom.and_then(|r| dc_rez::RomLayer::indexed(r).map(dc_render::TextureIndex::new).ok()),
             ..TextureStore::default()
         }
     }
@@ -2225,7 +2225,13 @@ impl FxRunner {
             row.sound.clone()
         };
         if let Some(f) = file {
-            cues.push(impact_cue(f, pos, row.sound_radius));
+            // a flown round's impact is its blast (an explosion: the world group); every other one a bullet's
+            cues.push(impact_cue(
+                f,
+                pos,
+                row.sound_radius,
+                !flown_ammo(fx.ammo_type),
+            ));
             self.stats.sounds += 1;
         }
     }
@@ -2552,8 +2558,9 @@ impl FxRunner {
     }
 }
 
-/// A one-shot positional sound at `pos` with outer radius `radius`, in the sound director's server-sound form.
-pub fn impact_cue(file: String, pos: Vec3, radius: f32) -> crate::sound::SoundCue {
+/// A one-shot positional sound at `pos` with outer radius `radius`, in the sound director's server-sound form;
+/// `bullet`: a bullet's impact (its own voice group, CLI-1961), not a blast.
+pub fn impact_cue(file: String, pos: Vec3, radius: f32, bullet: bool) -> crate::sound::SoundCue {
     crate::sound::SoundCue::Server {
         start: dc_botclient::objects::SoundStart {
             track: None,
@@ -2570,6 +2577,7 @@ pub fn impact_cue(file: String, pos: Vec3, radius: f32) -> crate::sound::SoundCu
         },
         file: Some(file),
         at_load: false,
+        impact: bullet,
     }
 }
 
@@ -3561,6 +3569,7 @@ pub fn key_sound_cue(k: &crate::fxkeys::SoundKey, pos: Vec3) -> crate::sound::So
         },
         file: Some(k.file.clone()),
         at_load: false,
+        impact: false,
     }
 }
 

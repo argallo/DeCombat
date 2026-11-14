@@ -27,6 +27,7 @@ pub mod exitbox;
 pub mod fallborder;
 pub mod feedmarks;
 pub mod items;
+pub mod killcard;
 pub mod layout;
 pub mod letterbox;
 pub mod marks;
@@ -268,6 +269,7 @@ impl Hud {
         kill_banners.load_voices(rom);
         layout.low_health.beat_file = vitals::load_beat_file(rom);
         layout.board_sound_file = vitals::load_board_sound(rom);
+        layout.ping_art = teamping::PingArt::from_rom(rom);
         layout.rank_icons = rank::RankIcons::from_rom(rom);
         // client-scoreboard: the board's place / level / header columns (own pinned keys, same CShell and table)
         layout.board_columns =
@@ -799,6 +801,12 @@ impl HudDriver {
         self.state.aim_cross_hidden = fs.aim_cross_hidden;
         self.state.aim_picture = fs.aim_picture.clone();
         self.state.sensor = fs.sensor;
+        // CLI-1954: a new enemy or place notice plays its sound once (a reset to the next offer plays nothing)
+        for (i, n) in fs.pings.heard.iter().enumerate() {
+            if *n > self.state.pings.heard[i] {
+                self.state.ping_sounds[i] = true;
+            }
+        }
         self.state.pings.clone_from(&fs.pings);
         self.state.flash_decl = fs.flash_decl;
         self.state.crouched = crouched;
@@ -854,6 +862,14 @@ impl HudDriver {
     /// CLI-1596: the "Show FPS" line (`None`: off); a changed text redraws the HUD.
     /// The player the death camera follows and his object (`None`: the own view or the own body): the death
     /// panel shows his record and health (CLI-128).
+    /// CLI-1957: the kill card the kill zoom shows this frame (`None`: none).
+    pub fn set_kill_card(&mut self, card: Option<killcard::KillCardShown>) {
+        if card != self.state.kill_card {
+            self.state.kill_card = card;
+            self.dirty = true;
+        }
+    }
+
     pub fn set_observed(&mut self, target: Option<(u8, u16)>) {
         if target != self.state.observed {
             self.state.observed = target;
@@ -1109,7 +1125,12 @@ impl HudDriver {
             self.dirty = true;
         }
         self.state.npc_bars = bars;
-        let flashing = !self.state.mark_hits.is_empty();
+        // CLI-1954: a pinged enemy's tag blinks; one more compose when the blinks end
+        let blinking = !self.state.pings.fresh.is_empty();
+        let flashing = !self.state.mark_hits.is_empty()
+            || blinking
+            || std::mem::take(&mut self.state.ping_blinked);
+        self.state.ping_blinked = blinking;
         if marks::step_hits(&mut self.state, target, now, &self.hud.layout.marks) || flashing {
             self.dirty = true;
         }
@@ -1345,6 +1366,24 @@ impl HudDriver {
                 cues.push(crate::sound::SoundCue::Interface {
                     file: beat.clone(),
                     what: "heartbeat",
+                });
+            }
+        }
+        // CLI-1954: the team pings' sounds (silent when the ROM has no such file)
+        let art = &self.hud.layout.ping_art;
+        for (i, (file, what)) in [
+            (&art.enemy_sound, "ping_enemy"),
+            (&art.place_sound, "ping_place"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if std::mem::take(&mut self.state.ping_sounds[i])
+                && (!self.hud.layout.from_rom || file.is_some())
+            {
+                cues.push(crate::sound::SoundCue::Interface {
+                    file: file.clone(),
+                    what,
                 });
             }
         }
@@ -1970,5 +2009,73 @@ mod ping_tests {
         d.set_marks(&remotes, &camera, None);
         assert_eq!(tags(&d), [(12, MarkState::Mate)]);
         assert!(d.state.ping_marks.is_empty());
+    }
+
+    /// CLI-1954 (needs the ROM): the place marker is the game's picture with its texts, a fresh enemy ping blinks the
+    /// tag gold, and each kind of notice plays the game's sound once. The composed HUD is saved as
+    /// `<render out>/dc-client/pings_rom.png` to look at.
+    #[test]
+    fn rom_pings_look_and_sound_like_the_game() {
+        let Some(rom) = dc_rom::test_rom() else {
+            println!("skipped: CA_ROM unset");
+            return;
+        };
+        let mut d = HudDriver::new(Hud::from_rom(&rom, 1024, 768, None).expect("ROM HUD"));
+        d.state.own_pid = Some(5);
+        for (pid, team) in [(5u8, 2u8), (11, 1), (12, 2)] {
+            d.state.roster.insert(
+                pid,
+                super::state::BoardRow {
+                    pid,
+                    name: format!("p{pid}"),
+                    team,
+                    ..Default::default()
+                },
+            );
+        }
+        let remotes = [body(11, 1, 150.0), body(12, 2, -150.0)];
+        let camera = dc_render::Camera::looking(glam::Vec3::ZERO, 0.0, 0.0, 1.5, 1.2);
+        d.state.pings.enemies = vec![11];
+        d.state.pings.fresh = vec![(11, 10)];
+        d.state.pings.places = vec![super::teamping::PlacePing {
+            from: 12,
+            pos: [0.0, 0.0, 800.0],
+            until: 0,
+        }];
+        d.set_marks(&remotes, &camera, None);
+        let items = super::items::build(&d.hud.layout, &d.state, &|_, _| 0.0, &|_| None);
+        let (tex, _) = d
+            .hud
+            .layout
+            .ping_art
+            .marker
+            .clone()
+            .expect("the game's marker");
+        assert!(items.iter().any(|i| matches!(i,
+            super::items::DrawItem::Image { tex: t, .. } if *t == tex)));
+        assert!(items.iter().any(|i| matches!(i,
+            super::items::DrawItem::Label { text, style, .. }
+                if text == "p11" && style.colour == super::teamping::FLASH_COLOUR)));
+        if let Some(img) = d.image(true) {
+            let out = dc_render::default_out_dir().join("dc-client");
+            let _ = std::fs::create_dir_all(&out);
+            if let Some(png) = image::RgbaImage::from_raw(img.width, img.height, img.rgba) {
+                let _ = png.save(out.join("pings_rom.png"));
+            }
+        }
+        d.state.ping_sounds = [true, true];
+        let whats: Vec<&str> = d
+            .take_sound_cues()
+            .iter()
+            .filter_map(|c| match c {
+                crate::sound::SoundCue::Interface { what, file } => {
+                    assert!(file.is_some(), "{what}");
+                    Some(*what)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(whats, ["ping_enemy", "ping_place"]);
+        assert!(d.take_sound_cues().is_empty(), "once");
     }
 }

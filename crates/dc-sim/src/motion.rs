@@ -309,6 +309,97 @@ pub fn drop_to_floor<W: Collider + ?Sized>(
     }
 }
 
+/// Whether a body at `at` is wedged: it overlaps solid geometry and a 1-unit move is blocked at once along all six
+/// axes. Under the 2009 face rules (front sides only, MOVEMENT_2009.md §9.8 / §9.9) a body that overlaps the world
+/// can usually still move away; a wedged one cannot, and nothing in the 2009 rules ever frees it.
+// DC-DEFAULT: SIM-28 (proposed) the wedge test and its escape
+pub fn wedged<W: Collider + ?Sized>(w: &W, shape: &Cylinder, at: V3) -> bool {
+    if !w.overlaps_world(shape, at) {
+        return false;
+    }
+    const AXES: [V3; 6] = [
+        V3::new(1.0, 0.0, 0.0),
+        V3::new(-1.0, 0.0, 0.0),
+        V3::new(0.0, 1.0, 0.0),
+        V3::new(0.0, -1.0, 0.0),
+        V3::new(0.0, 0.0, 1.0),
+        V3::new(0.0, 0.0, -1.0),
+    ];
+    AXES.iter().all(|d| {
+        w.sweep_world(shape, at, at + *d)
+            .is_some_and(|h| h.t == 0.0)
+    })
+}
+
+/// The escape spot of a wedged body: along 26 fixed directions (the 6 axes, then the 12 edge diagonals, then the 8
+/// corner diagonals, each list in a fixed order), at whole-unit distances from 1 to `max` (nearest distance first),
+/// the first spot where the body fits and a 1-unit probe swept from the body's centre to it meets no solid face from
+/// its front side. So the body never goes through a wall (a wall's front side stops the probe); it may leave the brush
+/// it is in, whose faces it only meets from behind. The probe has a size because a zero-size line slips through the
+/// seam where two walls meet (a closed room's corner, unit test `wedge_in_a_closed_room_stays_put`). `None` when no
+/// such spot is within `max` (the body stays). The spot must also have a floor below it within [`ESCAPE_FLOOR`] (a
+/// ray straight down meets a solid face from its front side), so a body is not freed into the void outside the map
+/// or under a one-sided floor. World geometry only: other players' bodies are not looked at.
+// DC-DEFAULT: SIM-28 (proposed) 26 directions, 1-unit distance steps, a 1-unit probe free of front faces, a floor
+// below within ESCAPE_FLOOR
+/// How far below an escape spot a floor must be (SIM-28), in units.
+// DC-DEFAULT: SIM-28 (proposed) 2048 units (deeper than any drop to a floor on the 21 ROM worlds' playable areas is
+// not needed: the check only tells a floor from the void)
+pub const ESCAPE_FLOOR: f32 = 2048.0;
+
+pub fn escape_wedge<W: Collider + ?Sized>(w: &W, shape: &Cylinder, at: V3, max: u32) -> Option<V3> {
+    const A: f32 = 0.707_106_77; // 1/sqrt(2)
+    const B: f32 = 0.577_350_26; // 1/sqrt(3)
+    const DIRS: [V3; 26] = [
+        V3::new(1.0, 0.0, 0.0),
+        V3::new(-1.0, 0.0, 0.0),
+        V3::new(0.0, 1.0, 0.0),
+        V3::new(0.0, -1.0, 0.0),
+        V3::new(0.0, 0.0, 1.0),
+        V3::new(0.0, 0.0, -1.0),
+        V3::new(A, A, 0.0),
+        V3::new(A, -A, 0.0),
+        V3::new(-A, A, 0.0),
+        V3::new(-A, -A, 0.0),
+        V3::new(A, 0.0, A),
+        V3::new(A, 0.0, -A),
+        V3::new(-A, 0.0, A),
+        V3::new(-A, 0.0, -A),
+        V3::new(0.0, A, A),
+        V3::new(0.0, A, -A),
+        V3::new(0.0, -A, A),
+        V3::new(0.0, -A, -A),
+        V3::new(B, B, B),
+        V3::new(B, B, -B),
+        V3::new(B, -B, B),
+        V3::new(B, -B, -B),
+        V3::new(-B, B, B),
+        V3::new(-B, B, -B),
+        V3::new(-B, -B, B),
+        V3::new(-B, -B, -B),
+    ];
+    // a cylinder 1 unit across and 1 unit high (bound = sqrt(0.5^2 + 0.5^2))
+    const PROBE: Cylinder = Cylinder {
+        radius: 0.5,
+        half_height: 0.5,
+        bound: 0.707_106_77,
+    };
+    for dist in 1..=max {
+        let k = dist as f32;
+        for d in &DIRS {
+            let c = at + *d * k;
+            if !w.overlaps_world(shape, c)
+                && w.sweep_world(&PROBE, at, c).is_none()
+                && w.sweep_world(&Cylinder::POINT, c, c - V3::new(0.0, ESCAPE_FLOOR, 0.0))
+                    .is_some()
+            {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +432,153 @@ mod tests {
 
     fn world(p: &[ConvexPoly]) -> CollisionWorld {
         CollisionWorld::from_parts(vec![CollModel::from_polys(p)], &[])
+    }
+
+    /// A quad whose front faces `toward` (the corner order is flipped when needed).
+    fn facing(c: [V3; 4], toward: V3) -> ConvexPoly {
+        let q = quad(c);
+        if q.normal.dot(toward) > 0.0 {
+            q
+        } else {
+            quad([c[3], c[2], c[1], c[0]])
+        }
+    }
+
+    /// The six faces of the box `lo..hi`, every front side facing into the box (a closed room).
+    fn room(lo: V3, hi: V3) -> Vec<ConvexPoly> {
+        let (a, b) = (lo, hi);
+        vec![
+            facing(
+                [
+                    V3::new(a.x, a.y, a.z),
+                    V3::new(a.x, b.y, a.z),
+                    V3::new(a.x, b.y, b.z),
+                    V3::new(a.x, a.y, b.z),
+                ],
+                V3::new(1.0, 0.0, 0.0),
+            ),
+            facing(
+                [
+                    V3::new(b.x, a.y, a.z),
+                    V3::new(b.x, b.y, a.z),
+                    V3::new(b.x, b.y, b.z),
+                    V3::new(b.x, a.y, b.z),
+                ],
+                V3::new(-1.0, 0.0, 0.0),
+            ),
+            facing(
+                [
+                    V3::new(a.x, a.y, a.z),
+                    V3::new(b.x, a.y, a.z),
+                    V3::new(b.x, a.y, b.z),
+                    V3::new(a.x, a.y, b.z),
+                ],
+                V3::new(0.0, 1.0, 0.0),
+            ),
+            facing(
+                [
+                    V3::new(a.x, b.y, a.z),
+                    V3::new(b.x, b.y, a.z),
+                    V3::new(b.x, b.y, b.z),
+                    V3::new(a.x, b.y, b.z),
+                ],
+                V3::new(0.0, -1.0, 0.0),
+            ),
+            facing(
+                [
+                    V3::new(a.x, a.y, a.z),
+                    V3::new(b.x, a.y, a.z),
+                    V3::new(b.x, b.y, a.z),
+                    V3::new(a.x, b.y, a.z),
+                ],
+                V3::new(0.0, 0.0, 1.0),
+            ),
+            facing(
+                [
+                    V3::new(a.x, a.y, b.z),
+                    V3::new(b.x, a.y, b.z),
+                    V3::new(b.x, b.y, b.z),
+                    V3::new(a.x, b.y, b.z),
+                ],
+                V3::new(0.0, 0.0, -1.0),
+            ),
+        ]
+    }
+
+    /// SIM-28: a body in a closed room smaller than itself is wedged; every way out crosses a wall's front side, so
+    /// the escape finds nothing and the body stays (never through a wall).
+    #[test]
+    fn wedge_in_a_closed_room_stays_put() {
+        let w = world(&room(
+            V3::new(-10.0, -10.0, -10.0),
+            V3::new(10.0, 10.0, 10.0),
+        ));
+        assert!(w.overlaps(&SHAPE, V3::ZERO));
+        assert!(wedged(&w, &SHAPE, V3::ZERO));
+        assert_eq!(escape_wedge(&w, &SHAPE, V3::ZERO, 96), None);
+    }
+
+    /// SIM-28: no geometry, or a wall the body overlaps but can back away from, is no wedge.
+    #[test]
+    fn wedge_needs_every_axis_blocked() {
+        assert!(!wedged(&world(&[]), &SHAPE, V3::ZERO));
+        // a wall at z = 5 facing -z: the body (radius 16) overlaps it, but can still move away along -z
+        let w = world(&[wall_neg_z(-100.0, 100.0, -100.0, 100.0, 5.0)]);
+        assert!(w.overlaps(&SHAPE, V3::ZERO));
+        assert!(!wedged(&w, &SHAPE, V3::ZERO));
+    }
+
+    /// SIM-28: the escape takes the nearest fitting spot, in the fixed direction order, along a clear centre line.
+    #[test]
+    fn wedge_escape_takes_the_nearest_clear_spot() {
+        // the room's +x wall is missing: the body walks out of the open side, 30 units along +x is the first fit; a
+        // floor far below outside makes the exit a real place, not the void
+        let mut faces = room(V3::new(-10.0, -10.0, -10.0), V3::new(10.0, 10.0, 10.0));
+        faces.remove(1);
+        faces.push(box_top(-500.0, 500.0, -500.0, 500.0, -300.0));
+        let w = world(&faces);
+        let to = escape_wedge(&w, &SHAPE, V3::ZERO, 96).expect("out of the open side");
+        assert!(!w.overlaps(&SHAPE, to));
+        assert!(w.sweep(&Cylinder::POINT, V3::ZERO, to).is_none());
+        // and the same open room is no wedge for a body that can walk out of it
+        assert!(!wedged(&w, &SHAPE, V3::ZERO));
+        assert_eq!(
+            (to.y, to.z),
+            (0.0, 0.0),
+            "straight out along the first free axis: {to:?}"
+        );
+        assert!(to.x > 0.0 && to.x <= 30.0, "{to:?}");
+    }
+
+    /// SIM-28: the same open side with nothing below it is the void: no escape there, the body stays.
+    #[test]
+    fn wedge_escape_needs_a_floor_below() {
+        let mut faces = room(V3::new(-10.0, -10.0, -10.0), V3::new(10.0, 10.0, 10.0));
+        faces.remove(1);
+        let w = world(&faces);
+        assert_eq!(escape_wedge(&w, &SHAPE, V3::ZERO, 96), None);
+    }
+
+    /// SIM-28: another player's body is not world geometry: overlapping it is never a wedge.
+    #[test]
+    fn wedge_ignores_other_players() {
+        use crate::collide::{Body, BodySet, WithBodies};
+        let empty = world(&[]);
+        let mut bodies = BodySet::default();
+        assert!(bodies.push(Body {
+            id: 7,
+            centre: V3::ZERO,
+            half: V3::new(16.0, 40.0, 16.0),
+        }));
+        let w = WithBodies {
+            world: &empty,
+            bodies: &bodies,
+        };
+        assert!(
+            w.overlaps(&SHAPE, V3::ZERO),
+            "the body is in the other player's box"
+        );
+        assert!(!wedged(&w, &SHAPE, V3::ZERO));
     }
 
     const STANDABLE: f32 = crate::params::MovementParams::DEFAULT.standable_cos;

@@ -25,20 +25,21 @@ use dc_mod_lua::{LuaValue, ModHost};
 use dc_rez::RezVfs;
 
 /// The scheme of a mod asset path.
-pub const MOD_SCHEME: &str = "@mod:";
+pub const MOD_SCHEME: &str = dc_vfs::MOD_SCHEME;
 
 /// The loaded mods' folders, in load order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModAssets {
-    /// `(mod id, unpacked folder)` in load order.
-    mods: Vec<(String, PathBuf)>,
+    /// `(mod id, unpacked folder)` in load order; the `@mod:` rule is the layered file system's
+    /// ([`dc_vfs::PackTable`]), so this wrapper and a [`dc_vfs::Vfs`] with the same packs answer alike.
+    packs: dc_vfs::PackTable,
 }
 
 impl ModAssets {
     /// The set of `mods` (`(id, unpacked folder)`, in load order).
     pub fn new(mods: impl IntoIterator<Item = (String, PathBuf)>) -> ModAssets {
         ModAssets {
-            mods: mods.into_iter().collect(),
+            packs: dc_vfs::PackTable::new(mods.into_iter().map(dc_vfs::Pack::from)),
         }
     }
 
@@ -59,21 +60,17 @@ impl ModAssets {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.mods.is_empty()
+        self.packs.is_empty()
     }
 
     /// The id of the first mod of the set (the folder a preview treats as every `@mod:` id, MAP-33).
     pub fn first_id(&self) -> Option<&str> {
-        self.mods.first().map(|(id, _)| id.as_str())
+        self.packs.packs().first().map(|p| p.id.as_str())
     }
 
     /// The `overrides/` folders that exist, in load order (the last one shadows the others).
     pub fn override_dirs(&self) -> Vec<PathBuf> {
-        self.mods
-            .iter()
-            .map(|(_, r)| r.join("overrides"))
-            .filter(|d| d.is_dir())
-            .collect()
+        self.packs.override_dirs()
     }
 
     /// Adds every `overrides/` folder to `vfs` in load order: [`RezVfs`] gives a later folder the higher priority, so
@@ -86,35 +83,14 @@ impl ModAssets {
 
     /// The file `@mod:<id>/assets/<rel>` names. Refused: another scheme, an id not in the set, a path outside
     /// `assets/`, `..`, absolute paths and drive letters, a file that resolves outside the mod's folder.
+    /// ([`dc_vfs::PackTable::resolve`], the same rule a layered file system applies.)
     pub fn resolve(&self, uri: &str) -> Result<PathBuf, String> {
-        let rest = uri
-            .strip_prefix(MOD_SCHEME)
-            .ok_or_else(|| format!("'{uri}' is not a {MOD_SCHEME}<id>/assets/<file> path"))?;
-        let (id, rel) = rest
-            .split_once('/')
-            .ok_or_else(|| format!("'{uri}' names no file after the mod id"))?;
-        let root = self
-            .mods
-            .iter()
-            .find(|(m, _)| m == id)
-            .map(|(_, r)| r)
-            .ok_or_else(|| {
-                format!("'{uri}' names mod '{id}', which is not in the loaded mod set")
-            })?;
-        let clean = dc_mod_lua::validate_asset_rel_path(rel)?;
-        if !clean.starts_with("assets/") || clean.len() == "assets/".len() {
-            return Err(format!(
-                "'{uri}': a mod asset lives under assets/ (mod.assets:path(\"assets/<file>\"))"
-            ));
-        }
-        let path = root.join(&clean);
-        // a link inside the folder must not lead out of it
-        if let (Ok(real), Ok(base)) = (path.canonicalize(), root.canonicalize()) {
-            if !real.starts_with(&base) {
-                return Err(format!("'{uri}' resolves outside the folder of mod '{id}'"));
-            }
-        }
-        Ok(path)
+        self.packs.resolve(uri)
+    }
+
+    /// The same set as the layered file system's pack table.
+    pub fn pack_table(&self) -> &dc_vfs::PackTable {
+        &self.packs
     }
 
     /// The override file of ROM path `path` (`a\b\c.dtx`, any case), the last mod's first.
@@ -561,6 +537,73 @@ mod tests {
             .read("@mod:other/assets/crosshair.dtx")
             .unwrap()
             .is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The wrapper and the layered file system with the same packs give the same answers for `@mod:` names, and the
+    /// file system's path rule is the mod runtime's.
+    #[test]
+    fn the_wrapper_and_the_layered_file_system_resolve_alike() {
+        let base = temp("alike");
+        let (a, b) = (base.join("green"), base.join("blue"));
+        put(&a.join("assets/crosshair.dtx"), b"green tex");
+        put(&a.join("assets/sub/deep.dat"), b"deep");
+        put(&a.join("main.lua"), b"--");
+        put(&b.join("assets/crosshair.dtx"), b"blue tex");
+        let mods = [("green".to_string(), a.clone()), ("blue".to_string(), b)];
+        let set = ModAssets::new(mods.clone());
+        let mut vfs = dc_vfs::Vfs::new();
+        for m in mods {
+            vfs.add_pack(dc_vfs::Pack::from(m));
+        }
+        assert_eq!(set.pack_table(), vfs.packs());
+        for uri in [
+            "@mod:green/assets/crosshair.dtx",
+            "@mod:blue/assets/crosshair.dtx",
+            "@mod:green/assets\\sub\\deep.dat",
+            "@mod:green/./assets/sub/./deep.dat",
+            " @mod:green/assets/crosshair.dtx",
+            "@mod:green/assets/missing.dtx",
+            "@mod:other/assets/crosshair.dtx",
+            "@mod:green/assets/../main.lua",
+            "@mod:green/../green/assets/crosshair.dtx",
+            "@mod:green//etc/passwd",
+            "@mod:green/C:/Windows/x.dtx",
+            "@mod:green/main.lua",
+            "@mod:green/assets/",
+            "@mod:green",
+            "@mod:",
+        ] {
+            let ours = set.resolve(uri);
+            let theirs = vfs.resolve_mod(uri).map_err(|e| e.to_string());
+            assert_eq!(ours, theirs, "{uri}");
+            if uri.starts_with(MOD_SCHEME) {
+                let read = set.read(uri).unwrap().ok();
+                let entry = vfs.entry("any.rez", uri).ok().flatten();
+                assert_eq!(read, entry, "{uri}");
+            }
+        }
+        for rel in [
+            "assets/a.dtx",
+            " assets\\a/./b.dtx ",
+            "",
+            "  ",
+            "../x",
+            "a/../b",
+            "/x",
+            "\\x",
+            "C:/x",
+            "a\0b",
+            ".",
+            "./assets",
+            "assets//x",
+        ] {
+            assert_eq!(
+                dc_mod_lua::validate_asset_rel_path(rel),
+                dc_vfs::clean_asset_path(rel),
+                "{rel:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

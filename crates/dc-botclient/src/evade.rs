@@ -381,6 +381,52 @@ pub fn escape_move(
     part: &[[f32; 3]],
     max_drop: f32,
 ) -> Option<Escape> {
+    escape_move_known(body, world, kill, part, max_drop, &|_| false)
+}
+
+/// BOT-181: the half size of the body's core that an escape run of a body touching a kill volume is tested with.
+// DC-DEFAULT: BOT-181 (proposed) 4 units
+pub const ESCAPE_CORE: f32 = 4.0;
+
+/// BOT-181: [`escape_move`] where a run also leaves the island when its end stands at a known place of the grid off
+/// the island (`known(end)`), a level walk included: Two Towers' corner under the bridge by the pool (a dead end the
+/// greedy way-finder walked into along a strip the grid keeps out of, the kill volume's margin) has no drop or bar
+/// to leave by, only the walk back along the strip; before, no run counted and the bot stood there 20..110 s. A
+/// body that touches a kill volume where it stands tests the run's places with its core ([`ESCAPE_CORE`]): there
+/// every place of the strip touched the volume with the body's box.
+// DC-DEFAULT: BOT-181 (proposed)
+pub fn escape_move_known(
+    body: &crate::motion::Body,
+    world: &dc_sim::CollisionWorld,
+    kill: &[dc_sim::ConvexVolume],
+    part: &[[f32; 3]],
+    max_drop: f32,
+    known: &dyn Fn([f32; 3]) -> bool,
+) -> Option<Escape> {
+    escape_move_open(body, world, kill, part, max_drop, known, &|_| false)
+}
+
+/// BOT-189: how many of the runs off an island (least fall first) are tested for a dead end at their end
+/// (`NavGrid::dead_end`, some milliseconds each) before the way off is given up for this look.
+// DC-DEFAULT: BOT-189 (proposed) 4 runs
+pub const ESCAPE_DEAD_END_TESTS: usize = 4;
+
+/// BOT-189: [`escape_move_known`] where a run whose end is a dead end (`dead_end(end)`: `NavGrid::dead_end`, a place
+/// no way of the grid leads on from) does not count: of the runs that count, least fall first, the first whose end is
+/// no dead end wins, at most [`ESCAPE_DEAD_END_TESTS`] tested. Two Towers (`out_boteval/matrix6`, Spy Hunt): a bot
+/// confined to the ledge at (2552..2768, -702, 1079) took a 322-unit fall onto the beams round the pool below (a ring
+/// one body wide that the grid keeps out of) and walked the ring for 130 s, its "way off" each time a level walk to
+/// another piece of the same ring (a known node off the island, BOT-181).
+// DC-DEFAULT: BOT-189 (proposed)
+pub fn escape_move_open(
+    body: &crate::motion::Body,
+    world: &dc_sim::CollisionWorld,
+    kill: &[dc_sim::ConvexVolume],
+    part: &[[f32; 3]],
+    max_drop: f32,
+    known: &dyn Fn([f32; 3]) -> bool,
+    dead_end: &dyn Fn([f32; 3]) -> bool,
+) -> Option<Escape> {
     use dc_sim::Collider;
     let start = body.pos();
     let dims = body.dims();
@@ -391,7 +437,12 @@ pub fn escape_move(
             .sweep(&shape, v(p), v([p[0], p[1] - 4.0, p[2]]))
             .is_some_and(|h| h.t < 1.0)
     };
-    let mut best: Option<Escape> = None;
+    // BOT-181: a body that touches a kill volume where it stands (the server kills by the body's position, not its
+    // box) judges the run's places by its core alone: the walk out along the volume's edge it stands at
+    let core = dc_sim::Cylinder::from_dims(dc_sim::V3::new(ESCAPE_CORE, ESCAPE_CORE, ESCAPE_CORE));
+    let touching = kill.iter().any(|k| k.touches(&shape, v(start)));
+    let tested = if touching { &core } else { &shape };
+    let mut runs: Vec<Escape> = Vec::new();
     for i in 0..ESCAPE_HEADINGS {
         let yaw = i as f32 * std::f32::consts::TAU / ESCAPE_HEADINGS as f32;
         for jump in [EscapeJump::No, EscapeJump::Start, EscapeJump::Blocked] {
@@ -411,18 +462,18 @@ pub fn escape_move(
             let left = start[1] - end[1] > crate::nav::STEP_DOWN
                 || path
                     .iter()
-                    .any(|p| p[1] > start[1] + crate::nav::STEP_UP && stands(*p));
+                    .any(|p| p[1] > start[1] + crate::nav::STEP_UP && stands(*p))
+                || known(end);
             if !landed
                 || !out
                 || !left
                 || fall > max_drop
-                || best.is_some_and(|b| b.fall <= fall)
-                || path.iter().any(|p| kill.iter().any(|k| k.touches(&shape, v(*p))))
+                || path.iter().any(|p| kill.iter().any(|k| k.touches(tested, v(*p))))
                 || crate::nav::in_danger(world, kill, dims, end)
             {
                 continue;
             }
-            best = Some(Escape {
+            runs.push(Escape {
                 yaw,
                 jump,
                 fall,
@@ -430,7 +481,68 @@ pub fn escape_move(
             });
         }
     }
-    best
+    // the least fall first (then the first heading, walks before jumps: the sort is stable)
+    runs.sort_by(|a, b| a.fall.total_cmp(&b.fall));
+    runs.into_iter()
+        .take(ESCAPE_DEAD_END_TESTS)
+        .find(|e| !dead_end(e.end))
+}
+
+/// BOT-181: the walk guard's danger test (BOT-150): the body at `p` is in or above a kill volume, above the void or
+/// above a drop of more than [`crate::nav::DEADLY_DROP`], the body's own shape swept down (`nav::in_danger` without
+/// its crack test: on a floor of planks or a grating the centre lies over a gap at every other step, which made
+/// every place of Two Towers' walk by the bridge "in danger", so the guard never held a walk there).
+// DC-DEFAULT: BOT-181 (proposed)
+pub fn walk_danger(
+    world: &dc_sim::CollisionWorld,
+    kill: &[dc_sim::ConvexVolume],
+    dims: [f32; 3],
+    p: [f32; 3],
+) -> bool {
+    use dc_sim::Collider;
+    let shape = dc_sim::Cylinder::from_dims(dc_sim::V3::new(dims[0], dims[1], dims[2]));
+    let at = dc_sim::V3::new(p[0], p[1], p[2]);
+    let low = dc_sim::V3::new(p[0], p[1] - 4000.0, p[2]);
+    let Some(h) = world.sweep(&shape, at, low) else {
+        return true;
+    };
+    let landing = at + (low - at) * h.t;
+    at.y - landing.y > crate::nav::DEADLY_DROP
+        || kill
+            .iter()
+            .any(|k| k.touches(&shape, at) || k.touches(&shape, landing))
+}
+
+/// BOT-189: the floor the body lands on below the first of `places` whose floor lies more than
+/// [`crate::nav::FALL_DROP`] (the deepest walk off an edge the grid links, BOT-119) below `from_y` (the body's own
+/// height): a walk that leads off an edge no link of the grid takes. `None` when every place's floor is nearer.
+// DC-DEFAULT: BOT-189 (proposed)
+pub fn deep_landing(
+    world: &dc_sim::CollisionWorld,
+    dims: [f32; 3],
+    from_y: f32,
+    places: impl IntoIterator<Item = [f32; 3]>,
+) -> Option<[f32; 3]> {
+    use dc_sim::Collider;
+    let shape = dc_sim::Cylinder::from_dims(dc_sim::V3::new(dims[0], dims[1], dims[2]));
+    places.into_iter().find_map(|p| {
+        let at = dc_sim::V3::new(p[0], p[1], p[2]);
+        let low = dc_sim::V3::new(p[0], p[1] - 4000.0, p[2]);
+        let h = world.sweep(&shape, at, low)?;
+        let l = at + (low - at) * h.t;
+        (from_y - l.y > crate::nav::FALL_DROP).then_some([l.x, l.y, l.z])
+    })
+}
+
+/// BOT-181: whether `p` stands at a known node of `nav` that is not of the island `part`: a node with links within
+/// [`ESCAPE_CLEAR`] (flat) and [`ESCAPE_CLEAR_Y`] in height, off the island.
+// DC-DEFAULT: BOT-181 (proposed)
+pub fn known_off_island(nav: Option<&crate::nav::NavGrid>, part: &[[f32; 3]], p: [f32; 3]) -> bool {
+    nav.is_some_and(|n| {
+        n.links_near(p, ESCAPE_CLEAR).iter().any(|(q, to)| {
+            !to.is_empty() && (q[1] - p[1]).abs() <= ESCAPE_CLEAR_Y && !part.contains(q)
+        })
+    })
 }
 
 /// BOT-134: the evasive move of this tick made safe by `s`: a strafe toward an unsafe side turns to the other side
@@ -895,5 +1007,23 @@ mod tests {
             dc_sim::V3::new(4000.0, -200.0, 4000.0),
         );
         assert_eq!(escape_move(&b, &w, &[kill], &part, 400.0), None);
+    }
+
+    /// BOT-189: a way off whose end is a dead end does not count (the next least fall wins, none when every end is
+    /// one); a walk off the deck's edge lands deeper than the grid's walk off, a walk on the deck does not.
+    #[test]
+    fn a_way_off_that_ends_in_a_dead_end_does_not_count() {
+        let (b, w, part) = on_a_deck(330.0);
+        let first = escape_move(&b, &w, &[], &part, 400.0).expect("a way off");
+        let same = escape_move_open(&b, &w, &[], &part, 400.0, &|_| false, &|_| false);
+        assert_eq!(same, Some(first));
+        let east = first.end[0] > 0.0;
+        let other = escape_move_open(&b, &w, &[], &part, 400.0, &|_| false, &|p| (p[0] > 0.0) == east)
+            .expect("another way off");
+        assert_ne!(other.end[0] > 0.0, east, "{other:?}");
+        assert_eq!(escape_move_open(&b, &w, &[], &part, 400.0, &|_| false, &|_| true), None);
+        let off = deep_landing(&w, b.dims(), 50.0, [[0.0, 50.0, 0.0], [200.0, 50.0, 0.0]]).expect("off the edge");
+        assert!((off[1] - (-330.0 + 50.0)).abs() < 2.0, "{off:?}");
+        assert_eq!(deep_landing(&w, b.dims(), 50.0, [[0.0, 50.0, 0.0], [40.0, 50.0, 0.0]]), None);
     }
 }

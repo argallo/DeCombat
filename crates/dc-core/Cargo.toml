@@ -1,0 +1,9 @@
+[package]
+name = "dc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Engine-layer basics with no game data: SHA-256, the read journal (render determinism manifest) and the read trace (server content measurement)"
+
+[dependencies]
+# none: std only (SHA-256 is the public FIPS 180-4 algorithm, implemented in sha256.rs)

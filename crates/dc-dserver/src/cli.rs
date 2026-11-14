@@ -3,6 +3,7 @@
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::gs::BodySpec;
 use crate::objects::PosForm;
@@ -31,6 +32,10 @@ pub struct Args {
     /// `-content`: the mod set's weapon content document (MOD-21), applied to the weapon table at start.
     // DC-DEFAULT: DSV-478 (proposed)
     pub content: Option<PathBuf>,
+    /// `-game <dir>`: the content profile of this run (a folder holding `game.json`), loaded and checked while the
+    /// arguments are parsed; `None` without the flag.
+    // DC-DEFAULT: ENG-3 (proposed)
+    pub game: Option<Arc<dc_config::game::GameProfile>>,
     pub log: Option<PathBuf>,
     /// `-config` / `--config`: a `server.toml` for stand-alone runs (also `DC_CONFIG`).
     pub config: Option<PathBuf>,
@@ -52,6 +57,7 @@ impl Default for Args {
             world_form: TODO_WORLD_NAME_FORM,
             rom: None,
             content: None,
+            game: None,
             log: None,
             config: None,
             server: ServerTuning::default(),
@@ -64,8 +70,8 @@ impl Default for Args {
 /// Usage text.
 pub const USAGE: &str = "usage: dc-dserver -port <udp> -world <Worlds\\name> [-guid ca] [-idle <secs>] [-log <file>]
        [-config <server.toml>] [-bindip <ipv4>] [-maxplayers <n>] [-name <text>] [-rom <dir>] [-worldfile <path>]
-       [-content <file>] [-announce <path>] [-startorder reference|spec] [-character <model>,<skin>,<face>] [-streamown [on|off]]
-       [-worldform listed|noext|arg] [-tick 10|20|30|60] [-switchstate <n>] [-skytable|-noskytable] [-preloadsounds|-nopreloadsounds] [-compactpos] [-open]
+       [-content <file>] [-game <dir>] [-announce <path>] [-startorder reference|spec] [-character <model>,<skin>,<face>] [-streamown [on|off]]
+       [-worldform listed|noext|arg] [-tick 10|20|30|60] [-switchstate <n>] [-skytable|-noskytable] [-preloadsounds|-nopreloadsounds] [-compactpos] [-open] [-joinsecret <hex>]
        [-roundsecs <s>] [-goal <n>] [-loadout <w,w,..>] [-bodymodel <file>] [-bodyskin <file>] [-playerbox <x,y,z>]
        [-damage <n>] [-holds <first_ms>,<second_ms>] [-timeout-hold <ms>] [-roundfreeze on|off] [-linger <secs>] [-teamempty <secs>]
        [-roundloop on|off] [-between <ms>] [-maxrounds <n>] [-intro|-nointro] [-rawspawn] [-nomovecheck]
@@ -79,7 +85,7 @@ pub const USAGE: &str = "usage: dc-dserver -port <udp> -world <Worlds\\name> [-g
        [-visibility on|off] [-visibility-window <ms>] [-visibility-radius <units>]
        [-coop <key>=<value>,...] [-directionalanims on|off] [-worldsounds on|off]
        [-stepheight <units>|off] [-worldnorth <radians>|off] [-hisec <key>=<value>,...]
-       [-drops <key>=<value>,...] [-destruct <key>=<value>,...] [-gungame <seed>:<weapon>,...] [-possession] [-pings]";
+       [-drops <key>=<value>,...] [-destruct <key>=<value>,...] [-gungame <seed>:<weapon>,...] [-possession] [-pings] [-killcard]";
 
 /// World tick rates offered by `-tick` (any 1..=240 is accepted, the range `dc-config` validates for
 /// `dserver.tick_hz`; these are the documented choices).
@@ -91,6 +97,10 @@ pub const TICK_MAX: u32 = 240;
 pub const CONFIG_ENV: &str = "DC_CONFIG";
 /// Environment variable naming the ROM folder; it wins over `paths.rom` of the file (same as the lobby).
 pub const ROM_ENV: &str = "CA_ROM";
+/// LOC-11: the environment variable the join secret is read from when `-joinsecret` is absent. A supervisor passes
+/// it this way: a command line is visible to every local user in the process list, a process's environment is not.
+// DC-DEFAULT: LOC-11 (proposed)
+pub const JOIN_SECRET_ENV: &str = "DC_JOIN_SECRET";
 /// Log file name inside `paths.log_dir` when the config names a log folder and `-log` is absent.
 pub const CONFIG_LOG_FILE: &str = "dc-dserver.log";
 
@@ -133,6 +143,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
             }
             "rom" => a.rom = Some(PathBuf::from(value().ok_or("-rom needs a value")?)),
             "content" => a.content = Some(PathBuf::from(value().ok_or("-content needs a value")?)),
+            // DC-DEFAULT: ENG-3 (proposed) a content profile; the name was an ignored host option before
+            "game" => {
+                let dir = PathBuf::from(value().ok_or("-game needs a profile folder")?);
+                a.game = Some(Arc::new(dc_config::game::GameProfile::load(&dir)?));
+            }
             "log" => a.log = Some(PathBuf::from(value().ok_or("-log needs a value")?)),
             "bindip" => a.bind = num("-bindip", value())?,
             "idle" => {
@@ -305,6 +320,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
             "possession" => a.server.game.possession = true,
             // DC-DEFAULT: DSV-651 (proposed)
             "pings" => a.server.game.pings = true,
+            // DC-DEFAULT: DSV-652 (proposed)
+            "killcard" => a.server.game.killcard = true,
             "hisec" => {
                 // DC-DEFAULT: HS-1..HS-5 (proposed; HS-1 project decision) the case rules are operator keys
                 let v = value().ok_or("-hisec needs key=value[,key=value]")?;
@@ -549,7 +566,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
             "nopreloadsounds" => a.server.preload_sounds = false,
             "compactpos" => a.server.player_pos_form = PosForm::Compact,
             "open" => a.server.accept_unlisted = true,
-            "game" | "fps" | "netfmt" => {
+            // DC-DEFAULT: LOC-2 (proposed) the join secret of a match others may join
+            // (the value is visible to other local users in the process list: a supervisor uses JOIN_SECRET_ENV)
+            "joinsecret" => {
+                let v = value().ok_or("-joinsecret needs 32 hex digits")?;
+                a.server.join_secret = Some(join_secret_of("-joinsecret", &v)?);
+            }
+            "fps" | "netfmt" => {
                 let v = value().unwrap_or_default();
                 a.ignored.push(format!("-{f} {v}"));
             }
@@ -572,6 +595,17 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     Ok(a)
 }
 
+/// A join secret given as 32 hex digits (either case); all zeros is refused (LOC-7: an unset buffer, not 128 random
+/// bits). `what` names the flag or variable in the error, which never quotes the value.
+// DC-DEFAULT: LOC-2, LOC-7 (proposed)
+fn join_secret_of(what: &str, v: &str) -> Result<crate::session::JoinSecret, String> {
+    let t = dc_wire::seatticket::from_hex(v.trim()).ok_or(format!("{what}: not 32 hex digits"))?;
+    if t == [0; dc_wire::seatticket::LEN] {
+        return Err(format!("{what}: all zeros is no secret"));
+    }
+    Ok(crate::session::JoinSecret(t))
+}
+
 /// Flags present on the command line (lower case, without dashes), for the "flag wins" rule of the config layer.
 fn given_flags(argv: &[String]) -> Vec<String> {
     argv.iter()
@@ -592,6 +626,16 @@ pub fn parse_with_env<I: IntoIterator<Item = String>>(
 ) -> Result<Args, String> {
     let argv: Vec<String> = args.into_iter().collect();
     let mut a = parse(argv.iter().cloned())?;
+    // DC-DEFAULT: LOC-11 (proposed) the join secret from the environment when the flag is absent (an empty value is
+    // unset)
+    if a.server.join_secret.is_none() {
+        if let Some((_, v)) = env
+            .iter()
+            .find(|(k, v)| k == JOIN_SECRET_ENV && !v.trim().is_empty())
+        {
+            a.server.join_secret = Some(join_secret_of(JOIN_SECRET_ENV, v)?);
+        }
+    }
     let env_get = |k: &str| {
         env.iter()
             .find(|(n, _)| n == k)
@@ -1520,5 +1564,56 @@ zone_factors = \"sideways\"
         assert_eq!(a.server.zone_class, crate::worldobj::ZoneClass::Room);
         assert!(!a.server.game.send_9d);
         assert!(p("-world w -worldobjects some").is_err());
+    }
+
+    /// ENG-3: `-game <dir>` loads the content profile into `Args::game`; without it nothing changes.
+    #[test]
+    fn game_flag_loads_a_content_profile() {
+        let d = std::env::temp_dir().join(format!("dc-dserver-cli-{}-game", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("base")).unwrap();
+        std::fs::create_dir_all(d.join("packs/arena/assets/maps")).unwrap();
+        std::fs::write(d.join("packs/arena/manifest.json"), br#"{"id":"arena"}"#).unwrap();
+        std::fs::write(d.join("packs/arena/assets/maps/arena.dat"), b"world").unwrap();
+        std::fs::write(
+            d.join("game.json"),
+            br#"{"format":1,"id":"own","roots":["base"],"packs":["packs/arena"]}"#,
+        )
+        .unwrap();
+        let dir = d.display().to_string();
+        // the folder may hold spaces: one argument each
+        let argv = |flag: &str, dir: &str| ["-worldfile", "w.dat", flag, dir].map(String::from);
+        let a = parse(argv("-game", &dir)).unwrap();
+        let g = a.game.as_ref().expect("profile loaded");
+        assert_eq!(g.summary(), "game: own, 1 roots, 1 packs");
+        assert!(a.ignored.is_empty(), "{:?}", a.ignored);
+        // what a later layered file system reads: the pack's map, no archive
+        let v = g.vfs(None);
+        assert_eq!(
+            v.entry("any.rez", "@mod:arena/assets/maps/arena.dat")
+                .unwrap(),
+            Some(b"world".to_vec())
+        );
+        // the double-dash spelling, and through the env layer
+        assert_eq!(parse(argv("--game", &dir)).unwrap(), a);
+        assert_eq!(parse_with_env(argv("-game", &dir), &[]).unwrap(), a);
+        // a bad or missing profile fails the launch
+        assert!(p("-worldfile w.dat -game").is_err());
+        assert!(parse(argv("-game", &format!("{dir}/nowhere"))).is_err());
+        std::fs::write(d.join("game.json"), br#"{"format":1,"id":"own","x":1}"#).unwrap();
+        assert!(parse(argv("-game", &dir))
+            .unwrap_err()
+            .contains("unknown field"));
+        // without the flag: no profile and the arguments of today
+        let plain = p("-worldfile w.dat").unwrap();
+        assert!(plain.game.is_none());
+        assert_eq!(
+            plain,
+            Args {
+                world_file: Some(PathBuf::from("w.dat")),
+                ..Args::default()
+            }
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

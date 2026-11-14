@@ -11,9 +11,9 @@
 //!
 //! Usage: `CA_ROM=<dir> cargo run -p dc-render --example style_census [-- --lods]`.
 
-use dc_bute::ButeDoc;
+use dc_attr::ButeDoc;
 use dc_model::{Model, StyleFile};
-use dc_render::{style_key, CharacterTable, HandModels, RenderStyle, WorldSource};
+use dc_render::{style_key, CharacterTable, HandModels, RenderStyle};
 use dc_world::{FieldValue, World};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -266,7 +266,7 @@ fn main() {
     }
 
     // ---- 3. world objects naming a style ----
-    let src = WorldSource::open(&rom).expect("world archive");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
     let mut world_uses: BTreeMap<String, u64> = BTreeMap::new();
     for map in src.map_names() {
         let data = src.read(&map).expect("read").expect("present");

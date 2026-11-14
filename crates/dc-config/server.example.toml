@@ -309,6 +309,11 @@ issuer = ""                     # own issuer id when issuing, else the trusted o
 public_key = ""                 # the trusted issuer's public key (base64, from `dc-lobby-server identity`)
 token_hours = 24                # lifetime of an issued token
 key_file = ""                   # issuing key pair; empty = identity_key.pem next to the DB
+device_sessions = false         # SES-4: device sign-in and silent refresh; turn on when clients that use it are deployed
+device_token_minutes = 15       # SES-4: lifetime of a token bought with a device secret (1..1440)
+device_idle_days = 180          # SES-3: a device expires after this many days without use (1..3650)
+max_devices = 10                # SES-3: live devices per account; a new one evicts the longest idle (1..100)
+long_passwords = false          # SES-7: true = passwords of 8..64 characters on the identity endpoints
 
 [hosts]                         # CD-88 (proposed): remote game hosts (dc-host, specs/HOST_AGENT.md); no agent = no host port
 port = 0                        # TLS port the agents dial; 0 = auth_port + 5

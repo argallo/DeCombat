@@ -1,0 +1,22 @@
+[package]
+name = "dc-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeCombat device sessions, client side: the per-device credential, its store and the refresh / rotation flow"
+
+[dependencies]
+# CLEANROOM.md 4a: the OS random source (`ring::rand::SystemRandom`) for device secrets and SHA-256 for the hash the
+# client proposes; already in the lock through rustls and dc-lobby-server; Apache-2.0 AND ISC.
+ring = "0.17"
+# CLEANROOM.md 4a: secrets and tokens live in buffers wiped on drop; already in the lock (1.9) through the rustls
+# stack; MIT OR Apache-2.0.
+zeroize = "1"
+# CLEANROOM.md 4a: the store file and the authority's JSON bodies; already in the lock; MIT OR Apache-2.0.
+serde_json = "1"
+
+# CLEANROOM.md 4a: the Windows Credential Manager store (src/win.rs: CredReadW / CredWriteW / CredDeleteW / CredFree)
+# through windows-sys 0.59, already in the lock (dc-hangdump, dc-lobby-server, the wgpu / winit stack); MIT OR
+# Apache-2.0. Only the two features it needs.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

@@ -663,6 +663,8 @@ pub const DELETED_ROWS: &[&str] = &[
     "DELETE FROM nx_clan_wins WHERE user_no = ?1",
     "DELETE FROM nx_events WHERE user_no = ?1",
     "DELETE FROM identity_links WHERE user_no = ?1",
+    // SES-5: the account's device sessions go with it (a deleted account's device can never refresh)
+    "DELETE FROM device_sessions WHERE user_no = ?1",
     "DELETE FROM recovery_codes WHERE user_no = ?1",
     "UPDATE beta_signups SET user_no = 0 WHERE user_no = ?1",
     "DELETE FROM characters WHERE user_no = ?1",

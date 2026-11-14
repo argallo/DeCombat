@@ -16,7 +16,7 @@
 //! Names are ours.
 
 use dc_model::{StyleFile, StyleMaterial, StylePass, StyleStage};
-use dc_rez::RezVfs;
+use dc_vfs::Vfs;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -618,7 +618,7 @@ impl StyleLibrary {
 
     /// The style a ROM path names, read once; `None` when the entry is missing or does not load (the caller
     /// then uses [`RenderStyle::engine_default`], as the engine does).
-    pub fn get(&mut self, vfs: &RezVfs, path: &str) -> Option<Arc<RenderStyle>> {
+    pub fn get(&mut self, vfs: &Vfs, path: &str) -> Option<Arc<RenderStyle>> {
         let key = style_key(path);
         if key.is_empty() {
             return None;
@@ -637,7 +637,7 @@ impl StyleLibrary {
 
     /// The style list of a model entry from its table names (at most 8, as the object's model block carries).
     // SPEC: UDP_SESSION_2009_B.md §3.4 (style_count <= 8); EVIDENCE: engine+0x6bd20 (style slot < 8, model < 32)
-    pub fn list(&mut self, vfs: &RezVfs, paths: &[String]) -> Vec<Option<Arc<RenderStyle>>> {
+    pub fn list(&mut self, vfs: &Vfs, paths: &[String]) -> Vec<Option<Arc<RenderStyle>>> {
         paths
             .iter()
             .take(MAX_STYLE_SLOTS)

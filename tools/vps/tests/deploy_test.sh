@@ -71,9 +71,21 @@ for b in dc-lobby-server dc-dserver dc-server-rom dc-config dc-botclient dc-host
 done
 echo "    Finished release"
 S
+# pgrep lists the pids of the dc-dservers on the box: 4242 is a match of our lobby, 4243 one whose binary an install
+# replaced, 5151 a foreign one (a playtest under a home folder); readlink reads $T/proc/<pid>/exe as a text file
 cat > "$T/stubs/pgrep" <<'S'
 #!/usr/bin/env bash
-[ -n "${STUB_MATCHES:-}" ]
+out=
+[ -z "${STUB_MATCHES:-}" ] || out="$out 4242"
+[ -z "${STUB_OLD_MATCH:-}" ] || out="$out 4243"
+[ -z "${STUB_FOREIGN:-}" ] || out="$out 5151"
+[ -n "$out" ] || exit 1
+printf '%s
+' $out
+S
+cat > "$T/stubs/readlink" <<'S'
+#!/usr/bin/env bash
+[ -f "$1" ] && cat "$1"
 S
 cat > "$T/stubs/remote" <<'S'
 #!/usr/bin/env bash
@@ -87,6 +99,11 @@ echo "systemctl $*" >> "$STUB_LOG"
 S
 chmod +x "$T/stubs/"*
 export DC_DEPLOY_PGREP="$T/stubs/pgrep" DC_DEPLOY_REMOTE="$T/stubs/remote" DC_DEPLOY_SYSTEMCTL="$T/stubs/systemctl"
+export DC_DEPLOY_READLINK="$T/stubs/readlink" DC_DEPLOY_PROC="$T/proc"
+mkdir -p "$T/proc/4242" "$T/proc/4243" "$T/proc/5151"
+printf '%s' "$DC_ROOT/bin/dc-dserver" > "$T/proc/4242/exe"
+printf '%s' "$DC_ROOT/bin/dc-dserver (deleted)" > "$T/proc/4243/exe"
+printf '%s' "/home/decombat/playtest/dc-dserver" > "$T/proc/5151/exe"
 
 # ---- deploy_setup.sh
 mkdir -p "$DC_ROOT/bin" "$DC_ROOT/tools" "$DC_SYSTEMD_DIR"
@@ -236,6 +253,14 @@ expect "after the build, before any install" lacks "$STUB_LOG" "REMOTE"
 request 1700000006-00000010 "{\"sha\":\"$B\",\"targets\":[\"vps\"],\"end_matches\":true}"
 STUB_MATCHES=1 run
 expect "end_matches deploys during a match" phase_is done
+expect "and installs" has "$STUB_LOG" "REMOTE install"
+# a foreign dc-dserver (another path) never holds a deploy back; ours under a replaced binary does
+request 1700000006-00000011 "{\"sha\":\"${C:0:8}\",\"targets\":[\"vps\"]}"
+STUB_OLD_MATCH=1 run
+expect "a match under a replaced binary stops a deploy" has "$ST" "matches were still running"
+request 1700000006-00000012 "{\"sha\":\"${C:0:8}\",\"targets\":[\"vps\"]}"
+STUB_FOREIGN=1 run
+expect "a foreign dc-dserver (another path) does not stop a deploy" phase_is done
 expect "and installs" has "$STUB_LOG" "REMOTE install"
 expect "vps alone does not move the hosts' build" has "$D/host/desired.txt" "commit=$C"
 

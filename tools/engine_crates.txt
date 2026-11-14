@@ -1,0 +1,24 @@
+# Engine crates (the layer that needs no 2009 game files): none of them may depend, by normal or build dependency on any target,
+# on an emulator crate (dc-rom, dc-rez, dc-bute, dc-ui-data). Checked by tools/engine_gate.py in ci.yml's lint job.
+# A ratchet: a crate joins in the change that makes it clean and never leaves. Dev-dependencies (ROM-gated tests) are
+# allowed. One crate per line.
+dc-config
+dc-hangdump
+dc-ios-hid
+dc-model
+dc-tex
+dc-wire
+dc-net-engine
+dc-core
+dc-fx-data
+dc-vfs
+dc-world
+dc-sim
+dc-nav
+dc-attr
+dc-mod-lua
+dc-audio
+dc-session
+dc-localhost
+dc-render
+dc-cone

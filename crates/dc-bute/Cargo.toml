@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 dc-rez = { path = "../dc-rez" }
+# dc-attr: the attribute-text parser and the content-patch types (moved out of this crate; re-exported).
+dc-attr = { path = "../dc-attr" }
+# dc-sim (no default features: the speed-table record only): speed.rs fills its SpeedTable from the ROM rows.
+dc-sim = { path = "../dc-sim", default-features = false }
 # serde_json (vetted, CLEANROOM.md §4a; already in the lock through dc-rom): reads the mod content-patch document
 # (modpatch.rs, MOD-21). The writer is our own canonical form.
 serde_json = "1"

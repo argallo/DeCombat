@@ -1040,7 +1040,10 @@ fn serve(
             // LG-241: the recovery forms share the registration page's body cap, JSON switch and rate limit
             let recover = crate::recover::handles(&req.path);
             // LG-68: the identity token endpoint (JSON in, JSON out)
-            let ident = crate::identity::handles(&req.path);
+            // SES-1: the device-session endpoints, JSON as the token endpoint; the sign-in checks a password as it does
+            let dev = crate::devsession::web::handles(&req.path);
+            let dev_sign_in = crate::devsession::web::is_sign_in(&req.path);
+            let ident = crate::identity::handles(&req.path) || dev;
             let form = register || recover;
             let body = if (form || ident) && req.method == "POST" {
                 match read_body(
@@ -1086,11 +1089,33 @@ fn serve(
             let mut res = (500, String::new());
             // LG-68: the token endpoint hashes outside the lock: look up under it, verify without it, lock to issue
             let mut ident_done = false;
-            if ident {
+            if dev && !dev_sign_in {
+                // refresh and sign-out: no password, one transaction (an error rolls everything back: 500)
+                let now = std::time::Instant::now();
+                let r = g.scope(|st| {
+                    res = crate::devsession::web::route(
+                        st,
+                        &req.path,
+                        &req.method,
+                        &body,
+                        &peer,
+                        now,
+                    )?;
+                    Ok(())
+                });
+                if r.is_err() {
+                    res = (500, String::new());
+                }
+                ident_done = true;
+            } else if ident {
                 let now = std::time::Instant::now();
                 let mut step = None;
                 let r1 = g.scope(|st| {
-                    step = Some(crate::identity::begin(st, &req.method, &body, &peer, now)?);
+                    step = Some(if dev_sign_in {
+                        crate::devsession::web::begin_sign_in(st, &req.method, &body, &peer, now)?
+                    } else {
+                        crate::identity::begin(st, &req.method, &body, &peer, now)?
+                    });
                     Ok(())
                 });
                 match (r1, step) {
@@ -1102,7 +1127,12 @@ fn serve(
                         // DC-DEFAULT: LG-328 (proposed, project decision) on the password pool, its place counted
                         let keys = p.keys().clone();
                         if !g.limits.login.begin_attempt(&keys, now) {
-                            res = (401, crate::identity::MSG_REFUSED.into());
+                            // SES-6: a device sign-in answers a full lockout with 429
+                            res = if dev_sign_in {
+                                (429, crate::devsession::web::MSG_LIMITED.into())
+                            } else {
+                                (401, crate::identity::MSG_REFUSED.into())
+                            };
                         } else {
                             drop(g);
                             let out = crate::pwpool::global().run(move || {
@@ -1113,6 +1143,9 @@ fn serve(
                             g.limits.login.end_attempt(&keys);
                             let r2 = g.scope(|st| {
                                 res = match out {
+                                    Ok((p, check)) if dev_sign_in => {
+                                        crate::devsession::web::finish_sign_in(st, p, check, now)?
+                                    }
                                     Ok((p, check)) => crate::identity::finish(st, p, check, now)?,
                                     Err(_) => (503, "{\"error\":\"the server is busy\"}".into()),
                                 };

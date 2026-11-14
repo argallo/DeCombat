@@ -23,6 +23,7 @@ pub mod entrymods;
 pub mod filetime;
 pub mod flagrefusal;
 pub mod gungame;
+pub mod killcard;
 pub mod linkmove;
 pub mod loginmods;
 pub mod moddedlist;

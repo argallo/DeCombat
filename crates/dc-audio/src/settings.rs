@@ -5,7 +5,7 @@
 // reader, while the options page defaults to 100. `AudioSettings::default()` follows the options page
 // (console defaults); `AudioSettings::from_profile` follows the profile reader.
 
-use dc_bute::{ButeDoc, SectionMap};
+use dc_attr::{ButeDoc, SectionMap};
 
 use crate::mixer::Mixer;
 use crate::KeyId;

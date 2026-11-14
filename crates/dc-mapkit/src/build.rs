@@ -518,8 +518,9 @@ pub fn build_with(
     settings: &BuildSettings,
     rom: Option<&Path>,
 ) -> Result<Built, Diagnostics> {
-    let mut read = rom.map(dc_world::compose::rom_reader);
-    let mut size = rom.map(dc_world::compose::rom_texture_size);
+    let vfs = rom.map(dc_rez::RezVfs::new);
+    let mut read = vfs.as_deref().map(dc_world::compose::rom_reader);
+    let mut size = vfs.as_deref().map(dc_world::compose::rom_texture_size);
     build_with_sources(
         p,
         h,
@@ -795,7 +796,7 @@ pub fn build_with_sources(
             stats.sections += counts.sections;
             render.models.push((b.name.as_bytes().to_vec(), w));
         }
-        objects.push(worldgen::brush_object(b));
+        objects.push(worldgen::brush_object(b, p.settings.sky_inner));
     }
 
     // the generated settings objects at the centre of the geometry box

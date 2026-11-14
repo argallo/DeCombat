@@ -9,7 +9,7 @@
 
 use crate::error::RomError;
 use crate::pe::PeFile;
-use crate::sha256::sha256_hex;
+use crate::sha256_hex;
 use std::collections::HashMap;
 
 type S<T> = Result<T, String>;

@@ -35,6 +35,8 @@ SYSTEMD_DIR=${DC_SYSTEMD_DIR:-/etc/systemd/system}
 CURL=${DC_UPDATE_CURL:-curl}
 SYSTEMCTL=${DC_UPDATE_SYSTEMCTL:-systemctl}
 PGREP=${DC_UPDATE_PGREP:-pgrep}
+READLINK=${DC_UPDATE_READLINK:-readlink}
+PROC=${DC_UPDATE_PROC:-/proc}
 SETTLE=${DC_UPDATE_SETTLE:-8}
 ELF_CHECK=${DC_UPDATE_ELF_CHECK:-1}
 CONF=$ROOT/config/update.conf
@@ -65,7 +67,21 @@ report() {
 }
 # a by-hand build records a short id, a CI build the full one
 same_commit() { [ "${#1}" -ge 7 ] && case "$2" in "$1"*) return 0 ;; *) return 1 ;; esac; }
-matches_running() { "$PGREP" -x dc-dserver >/dev/null 2>&1; }
+# A match of THIS host = a dc-dserver whose executable is $ROOT/bin/dc-dserver (" (deleted)" when an update replaced
+# the file under a match still running). Any other dc-dserver on the machine, such as the owner's own playtest, never
+# holds an update back. A process that still exists but whose executable cannot be read counts (the safe side).
+matches_running() {
+  local pid exe
+  for pid in $("$PGREP" -x dc-dserver 2>/dev/null); do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    if exe=$("$READLINK" "$PROC/$pid/exe" 2>/dev/null); then
+      case "$exe" in "$ROOT/bin/dc-dserver"|"$ROOT/bin/dc-dserver (deleted)") return 0 ;; esac
+    elif [ -e "$PROC/$pid" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 is_elf() { [ "$ELF_CHECK" = 0 ] || [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; }
 # conf_get FILE KEY: read as data, never sourced
 conf_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | tr -d '\r' | head -n 1; }

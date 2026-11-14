@@ -52,7 +52,8 @@ pub use driver::{replay, FixedStep, Simulation, DEFAULT_TICK_HZ};
 pub use integrate::{integrate, Branch, IntegrateEnv, Integrated};
 pub use loadout::{BodySpeed, FigureSpeed, GearSpeed, Loadout, SpeedTable};
 pub use motion::{
-    drop_to_floor, ground_probe, slide_move, stair_move, sweep_move, Contact, MoveOut,
+    drop_to_floor, escape_wedge, ground_probe, slide_move, stair_move, sweep_move, wedged, Contact,
+    MoveOut,
 };
 pub use params::{MovementParams, ParamError, SpeedMods};
 pub use player::{

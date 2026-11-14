@@ -164,6 +164,17 @@ mod tests {
         // late by 10 ms: the next deadline is now, not a burst of catch-up frames
         let late = t0 + Duration::from_millis(11);
         assert_eq!(next_deadline(t0, iv, late), late);
+        // on time, the deadlines chain from the previous deadline, not from the wake-up: 200 frames at a 2 ms cap
+        // end exactly 400 ms after the first, however long each wake-up took within its interval (the pacer adds no
+        // drift of its own; what `cap_holds_over_a_loop` once bounded by wall clock)
+        let iv = interval(500).unwrap();
+        let mut d = t0;
+        for i in 0..200u32 {
+            let woke = d + iv * 3 / 4; // woke inside the interval
+            d = next_deadline(d, iv, woke);
+            assert_eq!(d, t0 + iv * (i + 1));
+        }
+        assert_eq!(d - t0, Duration::from_millis(400));
     }
 
     #[test]
@@ -174,13 +185,15 @@ mod tests {
             p.wait(500);
         }
         let el = t.elapsed();
-        // 200 intervals of 2 ms: never faster than the cap
+        // 200 intervals of 2 ms: never faster than the cap. No upper wall-clock bound: a busy machine wakes the
+        // thread late (830 ms measured in a loaded gate, 2026-11-10); that the pacer itself adds no drift is checked
+        // exactly in `interval_and_deadline_arithmetic`.
         assert!(el >= Duration::from_millis(399), "{el:?}");
-        assert!(el < Duration::from_millis(700), "{el:?}");
-        let t = Instant::now();
+        assert!(p.next.is_some(), "a capped wait keeps the next deadline");
+        // uncapped: the deadline is dropped, so no later call can sleep (checked on the state, not the clock)
         for _ in 0..1000 {
             p.wait(0);
+            assert!(p.next.is_none());
         }
-        assert!(t.elapsed() < Duration::from_millis(50));
     }
 }

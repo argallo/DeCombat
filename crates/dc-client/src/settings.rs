@@ -814,6 +814,8 @@ pub struct Settings {
     /// CLI-1599: the Sound tab's "BGM Music" row: [`BGM_2009`] (the attribute file's tracks) or [`BGM_CLASSIC`]
     /// (the UI loop in the front end, the waiting-room loop in a room), our own section.
     pub bgm: u32,
+    /// CLI-1955: the Sound Mixer page's group volumes (0..=100, [`crate::soundmix::GROUPS`] order), our own section.
+    pub sound_mix: crate::soundmix::Mix,
     /// CLI-1617: the local mods (manifest ids) enabled on the Mods screen (a mod not listed stays off), our own
     /// section.
     pub mods_local_enabled: Vec<String>,
@@ -1028,6 +1030,7 @@ impl Default for Settings {
             renderer: RENDERER_DEFAULT,
             fov: FOV_DEFAULT,
             bgm: BGM_DEFAULT,
+            sound_mix: crate::soundmix::DEFAULT_MIX,
             mods_local_enabled: Vec::new(),
             mods_settings: Default::default(),
             mods_accepted: Vec::new(),
@@ -1202,6 +1205,12 @@ impl Settings {
                 .find(|&c| i64::from(c) == v)
                 .unwrap_or(BGM_DEFAULT);
         }
+        // CLI-1955: a missing or unreadable group volume is the default, a number out of range is clamped
+        for g in crate::soundmix::GROUPS {
+            if let Some(v) = own_int(&format!("{OWN_SOUND_MIX_PREFIX}{}", g.key())) {
+                s.sound_mix[g.index()] = v.clamp(0, 100) as u8;
+            }
+        }
         // CLI-1617 / CLI-1618: comma-separated lists
         let list = |key: &str| -> Vec<String> {
             doc.own_get(key)
@@ -1360,6 +1369,12 @@ impl Settings {
         doc.own_set(OWN_RENDERER, self.renderer.name());
         doc.own_set(OWN_FOV, &self.fov.to_string());
         doc.own_set(OWN_BGM, &self.bgm.to_string());
+        for g in crate::soundmix::GROUPS {
+            doc.own_set(
+                &format!("{OWN_SOUND_MIX_PREFIX}{}", g.key()),
+                &self.sound_mix[g.index()].to_string(),
+            );
+        }
         doc.own_set(OWN_MODS_LOCAL_ENABLED, &self.mods_local_enabled.join(","));
         for (id, values) in &self.mods_settings {
             for (key, v) in values {
@@ -1453,7 +1468,7 @@ impl ProfileStore {
         ProfileStore {
             read,
             write: own,
-            key: rom.and_then(dc_render::profile_key),
+            key: rom.and_then(crate::romglue::profile_key),
         }
     }
 
@@ -1591,6 +1606,9 @@ pub const OWN_ANTIALIAS: &str = "antialias";
 pub const OWN_FPS_CAP: &str = "fps_cap";
 pub const OWN_SHOW_FPS: &str = "show_fps";
 pub const OWN_BGM: &str = "bgm";
+/// CLI-1955: our own section's keys of the Sound Mixer page: this prefix and the group's key.
+// DC-DEFAULT: CLI-1955 (proposed)
+pub const OWN_SOUND_MIX_PREFIX: &str = "sound_mix.";
 /// CLI-1852: our own section's key of the Renderer row (`vulkan` / `dx12`).
 // DC-DEFAULT: CLI-1852 (proposed)
 pub const OWN_RENDERER: &str = "renderer";
@@ -1875,6 +1893,7 @@ mod tests {
         t.show_fps = true;
         t.renderer = Renderer::Vulkan;
         t.bgm = BGM_2009;
+        t.sound_mix[crate::soundmix::SoundGroup::HitMarker.index()] = 35;
         let mut d2 = doc.clone();
         t.to_doc(&mut d2, &table(), &names);
         let text = d2.text();
@@ -1902,6 +1921,15 @@ mod tests {
         assert_eq!(s.renderer, Renderer::Dx12, "CLI-1852: DirectX 12 without a key");
         assert_eq!(back.bgm, BGM_2009, "CLI-1599 kept in our own section");
         assert_eq!(s.bgm, BGM_CLASSIC, "CLI-1599: Classic without a key");
+        assert_eq!(
+            back.sound_mix, t.sound_mix,
+            "CLI-1955 kept in our own section"
+        );
+        assert_eq!(
+            s.sound_mix,
+            crate::soundmix::DEFAULT_MIX,
+            "CLI-1955: every group at 100 without a key"
+        );
         assert_eq!(back.effective_music(), 0);
     }
 

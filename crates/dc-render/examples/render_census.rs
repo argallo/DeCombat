@@ -3,7 +3,7 @@
 //! ranges per kind, nested render models against their BSP boxes, texture resolution.
 //! Usage: `CA_ROM=<client dir> cargo run -p dc-render --example render_census`.
 
-use dc_render::{decode_lightmap, RenderVertex, TextureIndex, WorldSource};
+use dc_render::{decode_lightmap, RenderVertex, TextureIndex};
 use dc_world::{ObjectRole, RenderBlock, World};
 use std::collections::{BTreeMap, HashSet};
 
@@ -59,8 +59,10 @@ fn vertical_hit(p: [f32; 3], v: &[[f32; 3]]) -> Option<f32> {
 
 fn main() {
     let rom = dc_rom::resolve_rom().expect("CA_ROM");
-    let src = WorldSource::open(&rom).expect("world archive");
-    let tex = TextureIndex::open(&rom).expect("texture index");
+    let src = dc_rez::WorldArchive::open(&rom).expect("world archive");
+    let tex = dc_rez::RomLayer::indexed(&rom)
+        .map(TextureIndex::new)
+        .expect("texture index");
     let mut all_tex_names: HashSet<Vec<u8>> = HashSet::new();
     for name in src.map_names() {
         let data = src.read(&name).expect("read").expect("present");
@@ -223,7 +225,7 @@ fn main() {
         while let Some(rw) = walk.pop() {
             for b in &rw.blocks {
                 for s in &b.sections {
-                    if !s.textures[0].is_empty() && tex.locate(s.textures[0]).is_none() {
+                    if !s.textures[0].is_empty() && !tex.contains(s.textures[0]) {
                         let key = (
                             dc_rom::sha256_hex(&s.textures[0].to_ascii_uppercase())[..8]
                                 .to_string(),
@@ -261,7 +263,7 @@ fn main() {
                     e.1 += s.triangles as u64;
                     if s.shader_kind != 2
                         && !s.textures[0].is_empty()
-                        && tex.locate(s.textures[0]).is_none()
+                        && !tex.contains(s.textures[0])
                     {
                         unres = true;
                     }
@@ -276,7 +278,7 @@ fn main() {
     let mut miss = 0;
     let mut errors: BTreeMap<String, u64> = BTreeMap::new();
     for n in &all_tex_names {
-        if tex.locate(n).is_some() {
+        if tex.contains(n) {
             hit += 1;
             match tex.read(n) {
                 Ok(Some(b)) => {

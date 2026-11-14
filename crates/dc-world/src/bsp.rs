@@ -308,7 +308,9 @@ pub(crate) fn read_bsp_body<'a>(c: &mut Cur<'a>, model: u32) -> Result<BspModel<
     // SPEC: FMT_DAT85.md §5.2 item 21 (single read engine+0x33443)
     let raw = c.take_n(n_planes, 16)?;
     let planes: Vec<Plane> = raw
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .map(|r| Plane {
             normal: le_vec3(r, 0),
             dist: crate::cursor::le_f32(r, 12),
@@ -317,7 +319,9 @@ pub(crate) fn read_bsp_body<'a>(c: &mut Cur<'a>, model: u32) -> Result<BspModel<
     // SPEC: FMT_DAT85.md §5.2 item 22
     let raw = c.take_n(n_surfaces, 8)?;
     let surfaces: Vec<Surface> = raw
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|r| Surface {
             flags: le_u32(r, 0),
             texture: u16::from_le_bytes([r[4], r[5]]),
@@ -373,7 +377,12 @@ pub(crate) fn read_bsp_body<'a>(c: &mut Cur<'a>, model: u32) -> Result<BspModel<
     }
     // SPEC: FMT_DAT85.md §5.2 item 25 (single read engine+0x33646)
     let raw = c.take_n(n_points, 12)?;
-    let points: Vec<Vec3> = raw.chunks_exact(12).map(|r| le_vec3(r, 0)).collect();
+    let points: Vec<Vec3> = raw
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|r| le_vec3(r, 0))
+        .collect();
     // SPEC: FMT_DAT85.md §5.2 items 26-27
     let root_raw = c.i32()?;
     let root = NodeRef::decode(root_raw, n_nodes, c, "root_node")?;

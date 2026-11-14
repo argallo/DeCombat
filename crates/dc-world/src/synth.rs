@@ -157,6 +157,15 @@ pub struct SynthSection {
     pub lightmap: Vec<u8>,
 }
 
+/// A plane polygon: (verts, normal, dist).
+pub type SynthPlanePoly = (Vec<Vec3>, Vec3, f32);
+/// A light patch: (words, data).
+pub type SynthPatch = ([u32; 4], Vec<u8>);
+/// A light group: (name, colour, data, slots of patches).
+pub type SynthLightGroup = (Vec<u8>, Vec3, Vec<u8>, Vec<Vec<SynthPatch>>);
+/// A named grid: (name, colour, offset, dims, data).
+pub type SynthGrid = (Vec<u8>, Vec3, [i32; 3], [u32; 3], Vec<u8>);
+
 // SPEC: FMT_DAT85.md §10.2
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SynthBlock {
@@ -167,10 +176,10 @@ pub struct SynthBlock {
     pub vertices: Vec<[u8; 68]>,
     pub triangles: Vec<[u32; 4]>,
     /// (verts, normal, dist)
-    pub sky_portals: Vec<(Vec<Vec3>, Vec3, f32)>,
-    pub occluders: Vec<((Vec<Vec3>, Vec3, f32), u32)>,
+    pub sky_portals: Vec<SynthPlanePoly>,
+    pub occluders: Vec<(SynthPlanePoly, u32)>,
     /// (name, colour, data, slots of patches (words, data))
-    pub light_groups: Vec<(Vec<u8>, Vec3, Vec<u8>, Vec<Vec<([u32; 4], Vec<u8>)>>)>,
+    pub light_groups: Vec<SynthLightGroup>,
     pub child_mask: u8,
     pub children: [u32; 2],
 }
@@ -204,12 +213,12 @@ pub struct SynthWorld {
     pub particle_blockers: Vec<(Vec3, f32, Vec<Vec3>)>,
     pub render: SynthRenderWorld,
     /// (name, colour, offset, dims, data)
-    pub grids: Vec<(Vec<u8>, Vec3, [i32; 3], [u32; 3], Vec<u8>)>,
+    pub grids: Vec<SynthGrid>,
 }
 
 /// Run-length packs RGB samples in the format of FMT_DAT85.md §8 (runs of equal samples, else literals).
 pub fn pack_light_grid(rgb: &[u8]) -> Vec<u8> {
-    let samples: Vec<&[u8]> = rgb.chunks_exact(3).collect();
+    let samples: &[[u8; 3]] = rgb.as_chunks::<3>().0;
     let mut out = Vec::new();
     let mut i = 0;
     while i < samples.len() {
@@ -219,7 +228,7 @@ pub fn pack_light_grid(rgb: &[u8]) -> Vec<u8> {
         }
         if run >= 2 {
             out.push(0x80 | (run - 1) as u8);
-            out.extend_from_slice(samples[i]);
+            out.extend_from_slice(&samples[i]);
             i += run;
         } else {
             let mut lit = 1;

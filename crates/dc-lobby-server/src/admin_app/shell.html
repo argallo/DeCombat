@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- The page of the operator dashboard's app (opsweb.rs, LG-441): no inline script. The script and the stylesheet are
+     this lobby's own files, built from web/admin and embedded in the binary; nothing is loaded from elsewhere. The
+     server fills in the page token, the query of the two file addresses and the boot data. Provenance: ORIGINAL -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="csrf" content="__CSRF__">
+<title>DeCombat ops</title>
+<link rel="stylesheet" href="/ops/app.css__ASSETQ__">
+</head>
+<body data-boot="__BOOT__">
+<div id="app"></div>
+<noscript><p>The dashboard needs JavaScript.</p></noscript>
+<script type="module" src="/ops/app.js__ASSETQ__"></script>
+</body>
+</html>

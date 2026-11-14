@@ -315,6 +315,10 @@ pub struct Limits {
     pub conns: ConnCap,
     /// LG-326: [`PRE_LOGIN_TIMEOUT`].
     pub pre_login: Duration,
+    /// SES-6: device refreshes per device in an hour.
+    pub refresh_device: Window,
+    /// SES-6: device refreshes and sign-outs per address in [`WINDOW`].
+    pub refresh_addr: Window,
 }
 
 impl Default for Limits {
@@ -326,6 +330,8 @@ impl Default for Limits {
             id_mail: Window::new(Duration::from_secs(3600)),
             conns: ConnCap::new(MAX_CONNS_PER_ADDR, MAX_CONNS_TOTAL),
             pre_login: PRE_LOGIN_TIMEOUT,
+            refresh_device: Window::new(Duration::from_secs(3600)),
+            refresh_addr: Window::new(WINDOW),
         }
     }
 }

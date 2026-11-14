@@ -30,6 +30,8 @@ dc-bute = { path = "../dc-bute" }
 dc-cone = { path = "../dc-cone" }
 # dc-hangdump (ours): lock-free breadcrumbs at the blocking points, read by the hang gate (T1).
 dc-hangdump = { path = "../dc-hangdump" }
+# dc-config (ours): the content profile document `--game <dir>` names (game.rs).
+dc-config = { path = "../dc-config" }
 # serde_json (vetted, CLEANROOM.md §4a): JSONL event log and captap-format capture lines.
 serde_json = "1"
 # CLEANROOM.md 4a: the TLS client of the auth and web connections (CLI-1470..1475, our own deviation from 2009):

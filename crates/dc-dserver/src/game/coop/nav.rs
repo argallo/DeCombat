@@ -278,7 +278,8 @@ impl Game {
                 Some(w) => {
                     let grid = NavGrid::new(w, dims)
                         .with_kill_volumes(self.coop_nav.kill.clone())
-                        .without_pits();
+                        .without_pits()
+                        .without_corner_rule();
                     self.coop_nav.nav = Some(CoopNav {
                         grid,
                         routes: Vec::new(),

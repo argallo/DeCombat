@@ -49,6 +49,15 @@ pub trait Collider {
     fn sweep(&self, shape: &Cylinder, from: V3, to: V3) -> Option<Hit>;
     /// Whether `shape` placed at `at` intersects solid geometry (the "box must fit" test).
     fn overlaps(&self, shape: &Cylinder, at: V3) -> bool;
+    /// [`Collider::sweep`] against the world geometry only, without other players' bodies (SIM-28: a body is never
+    /// judged wedged by another player, and the server and the client's prediction see different bodies).
+    fn sweep_world(&self, shape: &Cylinder, from: V3, to: V3) -> Option<Hit> {
+        self.sweep(shape, from, to)
+    }
+    /// [`Collider::overlaps`] against the world geometry only (see [`Collider::sweep_world`]).
+    fn overlaps_world(&self, shape: &Cylinder, at: V3) -> bool {
+        self.overlaps(shape, at)
+    }
 }
 
 /// A collider with no geometry (free space).
@@ -1706,6 +1715,12 @@ impl<W: Collider + ?Sized> Collider for WithBodies<'_, W> {
                 .as_slice()
                 .iter()
                 .any(|b| body_overlap(b, shape, at))
+    }
+    fn sweep_world(&self, shape: &Cylinder, p: V3, e: V3) -> Option<Hit> {
+        self.world.sweep_world(shape, p, e)
+    }
+    fn overlaps_world(&self, shape: &Cylinder, at: V3) -> bool {
+        self.world.overlaps_world(shape, at)
     }
 }
 

@@ -60,7 +60,9 @@ pub const AIM_HEIGHT_FRACTION: f32 = 0.0;
 pub const SIGHT_HEIGHT_FRACTION: f32 = 0.5;
 /// BOT-23: the per-shot aim error of a non-scoped, non-melee weapon (the skill's error, at least BOT-135's floor) is
 /// widened by this factor, so that skilled bots (30..65) hit about one shot in seven at the usual ranges, an average
-/// player's rate. A scoped sniper rifle (BOT-114 / BOT-123), melee and throws keep their error.
+/// player's rate. A scoped sniper rifle (BOT-114 / BOT-123), melee and throws keep their error. BOT-178: this is the
+/// factor up to level 50; it fades above (`skill::anchors::AIM_SCALE`) and is not applied near the target
+/// (`Skill::aim_error_scale`).
 // DC-DEFAULT: BOT-23 (proposed; amended 2026-11-08, coordinator decision "an average player hits with roughly one
 // shot in seven at 300-400 u") 1.7
 pub const AIM_ERROR_SCALE: f32 = 1.7;
@@ -213,9 +215,14 @@ pub const FIRE_CONTROL_BIT: u32 = 0x400;
 // OBSERVED: tdm4 / tdm6 (the reference stack granted the grenade in slot 3: 0xb2 [7][9][1.0] slot 3) and rust4 (item 143 in
 // slot 3)
 pub const THROW_SLOT: u8 = 3;
-/// Pitch of a test throw (negative = up): about 20 degrees above the horizon along the bot's facing.
+/// Pitch of a test throw (negative = up): about 20 degrees above the horizon along the bot's facing (BOT-195: only
+/// when the bot has no world to plan the throw in).
 // DC-DEFAULT: BOT-26 (proposed) a test-tool choice, not client behaviour
 pub const THROW_PITCH: f32 = -0.35;
+/// BOT-195: the distances (flat, units) straight ahead a scripted throw is planned at without a target in range,
+/// the farthest first.
+// DC-DEFAULT: BOT-195 (proposed) 600, 450, 300, 200 units (BOT-147's range is 300..900)
+pub const SCRIPT_AHEAD: [f32; 4] = [600.0, 450.0, 300.0, 200.0];
 
 /// BOT-114: the per-shot aim error of a scoped shot, as a share of the skill's (BOT-23).
 // DC-DEFAULT: BOT-114 (proposed) 0.4
@@ -829,6 +836,8 @@ pub struct Shooter {
     no_respawn: bool,
     /// The next test throw (`--throw-every`).
     next_throw: Option<Millis>,
+    /// BOT-195: the scripted throw under way (`--throw-every`, a timeline `throw`).
+    script: Option<ScriptThrow>,
     /// BOT-147: the grenade throw under way; thrown this life; the last release (and its weapon, for the kills it
     /// earns); the sighting weighed last (pid, start) and its verdict; the next plan attempt; the target's last
     /// place in clear sight (pid, feet, time); the throw error's random stream.
@@ -880,6 +889,7 @@ impl Shooter {
             given_up: BTreeMap::new(),
             no_respawn: false,
             next_throw: None,
+            script: None,
             nade: None,
             nade_spent: false,
             nade_last: None,
@@ -928,8 +938,8 @@ impl Shooter {
         let g = self.target.and(self.goal).or(self.patrol);
         // BOT-147: no hunting walk while the grenade is drawn and thrown (the throw is planned from where the bot
         // stands)
-        // DC-DEFAULT: BOT-147 (proposed)
-        if self.nade.is_some() {
+        // DC-DEFAULT: BOT-147 (proposed); BOT-195 (proposed) a scripted throw too
+        if self.nade.is_some() || self.script.is_some() {
             return None;
         }
         g
@@ -1076,6 +1086,7 @@ impl Shooter {
         }
         if !alive {
             self.nade = None;
+            self.script = None;
             self.look = None;
             self.target = None;
             self.patrol = None;
@@ -2052,7 +2063,9 @@ impl Shooter {
             } else if self.is_sniper(h.weapon) {
                 1
             } else {
-                self.aim_rng.range(sk.burst_min.max(1), sk.burst_max.max(1))
+                // BOT-178: near the target a burst is longer (a good player holds the trigger)
+                let (lo, hi) = sk.burst_at(far);
+                self.aim_rng.range(lo, hi)
             };
             self.burst_fired = 0;
             self.stats.bursts += 1;
@@ -2084,9 +2097,13 @@ impl Shooter {
                 }
             });
             let floor = sk.close_floor_deg(far, moving, crossing, self.burst_fired);
-            // BOT-23: the rifle error widened by AIM_ERROR_SCALE (after the floor; skill scaling unchanged); a
-            // Quarantine rusher (BOT-161) keeps its error
-            let scale = if self.rush.is_some() { 1.0 } else { AIM_ERROR_SCALE };
+            // BOT-23: the rifle error widened (after the floor); BOT-178: by the level's scale, fading from 1.7 at
+            // 50 to 1.0 at 100, and none near the target; a Quarantine rusher (BOT-161) keeps its error
+            let scale = if self.rush.is_some() {
+                1.0
+            } else {
+                sk.aim_error_scale(far)
+            };
             sk_shot.aim_sigma_deg = sk_shot.aim_sigma_deg.max(floor) * scale;
         }
         let (reports, hits) = self.skill_shot(view, &target, &h, &world, aim, &sk_shot, f);
@@ -2099,8 +2116,9 @@ impl Shooter {
         self.burst_left -= 1;
         self.burst_fired += 1;
         let gap = if self.burst_left == 0 && self.rush.is_none() {
-            // DC-DEFAULT: BOT-24 (proposed) the pause varies by +-25 % (BOT-161: none at a rusher)
-            (sk.burst_pause_ms as f32 * (0.75 + 0.5 * self.aim_rng.unit())) as u32
+            // DC-DEFAULT: BOT-24 (proposed) the pause varies by +-25 % (BOT-161: none at a rusher); BOT-178: shorter
+            // near the target
+            (sk.burst_pause_at(far) as f32 * (0.75 + 0.5 * self.aim_rng.unit())) as u32
         } else {
             self.cfg.shot_period_ms
         }
@@ -2185,45 +2203,167 @@ impl Shooter {
         }
     }
 
-    /// A test throw when one is due (`--throw-every`): the [`THROW_SLOT`] grant's ids, from the eye point along the
-    /// facing, [`THROW_PITCH`] up; no hit, no extra block, `last` 1. Nothing without that grant.
-    // SPEC: GAME_MESSAGES_2009_C2S.md §4.6 (the release: the throwable's ids, `origin` = the eye point, `dir` = the
-    // throw direction, no extra block, no hit, `last` 1)
-    // DC-DEFAULT: BOT-26 (proposed)
-    fn throw_due(&mut self, now: Millis, view: &View) -> Option<FireReport> {
-        let every = self.cfg.throw_every_ms?;
-        if later(self.next_throw?, now) {
-            return None;
+    /// A test throw when one is due (`--throw-every`): begins the scripted throw ([`Shooter::begin_script_throw`]).
+    // DC-DEFAULT: BOT-26 (proposed, amended by BOT-195)
+    fn throw_due(&mut self, now: Millis, view: &View, out: &mut Vec<Action>) {
+        let Some(every) = self.cfg.throw_every_ms else {
+            return;
+        };
+        if self.next_throw.is_none_or(|t| later(t, now)) {
+            return;
         }
         self.next_throw = Some(now.wrapping_add(every.max(1)));
-        let g = *self.grants.get(&THROW_SLOT)?;
-        let origin = [
-            view.own_pos[0],
-            view.own_pos[1] + EYE_FRACTION * view.own_dims[1],
-            view.own_pos[2],
-        ];
+        self.begin_script_throw(now, view, out);
+    }
+
+    /// BOT-195: where a scripted throw goes, `(yaw, pitch, mark, predicted blast)`. With the world and the grenade's
+    /// flight (its ROM row, else the server's fallbacks) the throw is planned like a BOT-147 throw: at the engaged
+    /// target's feet when it is 300..900 units away, else at a point on the bot's floor straight ahead along its
+    /// facing, the farthest of [`SCRIPT_AHEAD`] whose predicted blast lands near it, else the one whose blast lands
+    /// farthest ahead (a wall close in front would throw a fixed lob back past the bot). Without the world: along the
+    /// facing, [`THROW_PITCH`] up.
+    // DC-DEFAULT: BOT-195 (proposed)
+    fn script_aim(
+        &self,
+        view: &View,
+        weapon: u16,
+    ) -> (f32, f32, Option<[f32; 3]>, Option<[f32; 3]>) {
+        use crate::grenade as gr;
         let yaw = view.facing.map_or(0.0, |f| f.0);
+        let Some(world) = view.world.as_deref() else {
+            return (yaw, THROW_PITCH, None, None);
+        };
+        let row = self
+            .cfg
+            .rom
+            .as_ref()
+            .and_then(|r| r.lobs.get(&weapon))
+            .copied()
+            .unwrap_or_default();
+        let eye = Self::eye(view);
+        let floor = view.own_pos[1] - view.own_dims[1];
+        let flat = |p: [f32; 3]| (p[0] - eye[0]).hypot(p[2] - eye[2]);
+        let target = self.target.and_then(|pid| {
+            let t = view.players.iter().find(|p| p.pid == pid)?;
+            let p = t.pos?;
+            let half = t.dims.unwrap_or(view.own_dims);
+            let feet = [p[0], p[1] - half[1], p[2]];
+            (gr::MIN_RANGE..=gr::MAX_RANGE)
+                .contains(&flat(feet))
+                .then_some(feet)
+        });
+        if let Some(mark) = target {
+            let p = gr::plan(world, eye, mark, &row);
+            return (p.yaw, p.pitch, Some(mark), Some(p.blast));
+        }
+        let (sx, cz) = (yaw.sin(), yaw.cos());
+        let ahead = |b: [f32; 3]| (b[0] - eye[0]) * sx + (b[2] - eye[2]) * cz;
+        let mut best: Option<(gr::Plan, [f32; 3])> = None;
+        for d in SCRIPT_AHEAD {
+            let mark = [eye[0] + sx * d, floor, eye[2] + cz * d];
+            let p = gr::plan(world, eye, mark, &row);
+            if p.miss <= gr::MISS_SHARE * row.radius {
+                best = Some((p, mark));
+                break;
+            }
+            if best.is_none_or(|(b, _)| ahead(p.blast) > ahead(b.blast)) {
+                best = Some((p, mark));
+            }
+        }
+        match best {
+            Some((p, mark)) => (p.yaw, p.pitch, Some(mark), Some(p.blast)),
+            None => (yaw, THROW_PITCH, None, None),
+        }
+    }
+
+    /// BOT-195: begins a scripted throw (`--throw-every`, a timeline `throw`) the way a person throws: the select of
+    /// the [`THROW_SLOT`] grant now, then the draw, the wind-up and the hold passes of a BOT-147 throw (the other
+    /// players see the grenade drawn and wound up), the release at its time ([`Shooter::script_step`]). `false`
+    /// without that grant or while another throw is under way.
+    // SPEC: GAME_MESSAGES_2009_C2S.md §4.4, §4.5 (the select pair for the grenade's slot)
+    // DC-DEFAULT: BOT-195 (proposed)
+    fn begin_script_throw(&mut self, now: Millis, view: &View, out: &mut Vec<Action>) -> bool {
+        if self.script.is_some() || self.nade.is_some() {
+            return false;
+        }
+        let Some(g) = self.grants.get(&THROW_SLOT).copied() else {
+            return false;
+        };
+        let (yaw, pitch, mark, blast) = self.script_aim(view, g.weapon);
+        self.script = Some(ScriptThrow {
+            start: now,
+            grant: g,
+            yaw,
+            pitch,
+            mark,
+            blast,
+            holds: 0,
+        });
+        self.burst_left = 0;
+        out.push(Action::Event(
+            "throw",
+            json!({"phase": "begin", "weapon": g.weapon, "ammo": g.ammo_kind, "yaw": yaw, "pitch": pitch,
+                   "mark": mark, "pred_blast": blast}),
+        ));
+        out.push(Action::Select(WeaponChange {
+            slot: THROW_SLOT,
+            weapon_id: g.weapon,
+            aux: g.ammo_kind,
+        }));
+        true
+    }
+
+    /// BOT-195: one poll of a scripted throw: the bot faces the planned direction; the hold passes' 0x4d at the end
+    /// of the draw and the wind-up, the release (the grant's ids from the eye point along the direction planned again
+    /// through the throwable row's cone, no hit, no extra block, `last` 1) at its time into the release clip, then
+    /// the gun is drawn again.
+    // SPEC: CLI-29 (draw, wind-up, hold pass, release timings); GAME_MESSAGES_2009_C2S.md §4.6 (the release: the
+    // throwable's ids, `origin` = the eye point, `dir` = the throw direction, no extra block, no hit, `last` 1)
+    // DC-DEFAULT: BOT-195 (proposed)
+    fn script_step(&mut self, now: Millis, view: &View, out: &mut Vec<Action>) {
+        use crate::grenade as gr;
+        let Some(mut r) = self.script else {
+            return;
+        };
+        self.look = Some((r.yaw, r.pitch));
+        let hold0 = r.start.wrapping_add(gr::DRAW_MS + gr::WINDUP_MS);
+        while r.holds < gr::HOLD_PASSES
+            && !later(hold0.wrapping_add(r.holds * gr::HOLD_PASS_MS), now)
+        {
+            r.holds += 1;
+            out.push(Action::Hold);
+        }
+        let release = hold0.wrapping_add(gr::HOLD_PASSES * gr::HOLD_PASS_MS + gr::RELEASE_AT_MS);
+        if r.holds < gr::HOLD_PASSES || later(release, now) {
+            self.script = Some(r);
+            return;
+        }
+        self.script = None;
+        let g = r.grant;
+        // planned again from where the bot stands now (a timeline walk may have carried it on)
+        (r.yaw, r.pitch, r.mark, r.blast) = self.script_aim(view, g.weapon);
+        let origin = Self::eye(view);
         // the release goes through the fire routine's cone like a pellet (CLI-124), with the throwable's row
         let row = self
             .cfg
             .rom
             .as_ref()
-            .and_then(|r| r.get(g.weapon))
-            .map_or_else(ConeRow::default, |r| r.cone);
-        let aim = aim_quat(yaw, THROW_PITCH);
+            .and_then(|x| x.get(g.weapon))
+            .map_or_else(ConeRow::default, |x| x.cone);
+        let aim = aim_quat(r.yaw, r.pitch);
         let c = Self::cone_inputs(&row, aim, 0, view, false);
         let dir = self.pellet(&row, &c);
         self.stats.throws += 1;
         self.stats.fire_msgs += 1;
         let seed = self.seed_byte();
-        Some(FireReport {
+        let f = FireReport {
             wkind: 0,
             weapon_id: g.weapon,
             ammo_id: g.ammo_kind,
             weapon_pos: origin,
             origin,
             aim,
-            yaw,
+            yaw: r.yaw,
             dir,
             seed,
             moving: false,
@@ -2237,7 +2377,23 @@ impl Shooter {
             last: true,
             hit: None,
             stat: self.counter.value,
-        })
+        };
+        out.push(Action::Event(
+            "throw",
+            json!({"phase": "release", "weapon": f.weapon_id, "ammo": f.ammo_id, "origin": f.origin, "dir": f.dir,
+                   "yaw": r.yaw, "pitch": r.pitch, "mark": r.mark, "pred_blast": r.blast,
+                   "n": self.stats.throws}),
+        ));
+        out.push(Action::Release(f));
+        self.look = None;
+        if let Some(h) = self.held {
+            out.push(Action::Select(WeaponChange {
+                slot: h.slot,
+                weapon_id: h.weapon,
+                aux: h.ammo,
+            }));
+            self.next_fire = now.wrapping_add(SWITCH_DRAW_MS);
+        }
     }
 
     /// Runs the shooter at `now`.
@@ -2293,13 +2449,14 @@ impl Shooter {
                 }
             }
         }
-        if let Some(f) = self.throw_due(now, view) {
-            out.push(Action::Event(
-                "throw",
-                json!({"weapon": f.weapon_id, "ammo": f.ammo_id, "origin": f.origin, "dir": f.dir,
-                       "n": self.stats.throws}),
-            ));
-            out.push(Action::Throw(f));
+        // BOT-195: a scripted throw under way holds the gun until its release
+        if self.script.is_some() {
+            self.script_step(now, view, &mut out);
+            return out;
+        }
+        self.throw_due(now, view, &mut out);
+        if self.script.is_some() {
+            return out;
         }
         if self.held.is_none() {
             return out;
@@ -2414,18 +2571,14 @@ impl Shooter {
 
 impl Shooter {
     /// One throw of the slot-3 grant now, whatever `--throw-every` says (a timeline `throw` step); the periodic
-    /// schedule is kept. `None` while dead or without the grant.
-    pub fn throw_now(&mut self, now: Millis, view: &View) -> Option<FireReport> {
+    /// schedule is kept. BOT-195: the throw begins now (the select of the grenade; [`Shooter::poll`] winds up and
+    /// releases it); its actions, or `None` while dead, without the grant or while another throw is under way.
+    pub fn throw_now(&mut self, now: Millis, view: &View) -> Option<Vec<Action>> {
         if !self.alive {
             return None;
         }
-        let keep = (self.cfg.throw_every_ms, self.next_throw);
-        self.cfg.throw_every_ms = Some(keep.0.unwrap_or(1));
-        self.next_throw = Some(now);
-        let f = self.throw_due(now, view);
-        self.cfg.throw_every_ms = keep.0;
-        self.next_throw = keep.1;
-        f
+        let mut out = Vec::new();
+        self.begin_script_throw(now, view, &mut out).then_some(out)
     }
 }
 
@@ -2441,6 +2594,20 @@ struct NadeRun {
     mark: [f32; 3],
     dist: f32,
     from_sight: bool,
+    holds: u32,
+}
+
+/// BOT-195: a scripted throw under way: begun at `start` with the select of the [`THROW_SLOT`] grant, released along
+/// (`yaw`, `pitch`) after the BOT-147 draw, wind-up and hold passes; the planned mark and predicted blast (none
+/// without a world).
+#[derive(Debug, Clone, Copy)]
+struct ScriptThrow {
+    start: Millis,
+    grant: WeaponGrant,
+    yaw: f32,
+    pitch: f32,
+    mark: Option<[f32; 3]>,
+    blast: Option<[f32; 3]>,
     holds: u32,
 }
 
@@ -3012,30 +3179,139 @@ mod tests {
         s.on_life(0, 1);
         s.on_grant(grant(0, 5, 6, 30.0));
         s.on_grant(grant(THROW_SLOT, 40, 41, 2.0));
-        let throws = |a: &[Action]| -> Vec<FireReport> {
-            a.iter()
-                .filter_map(|x| match x {
-                    Action::Throw(f) => Some(*f),
-                    _ => None,
-                })
-                .collect()
-        };
+        let v = view(Vec::new());
+        assert!(!drew_grenade(&s.poll(500, &v)), "not yet");
+        // BOT-195: the grenade is drawn first, released after the draw, the wind-up and the hold passes
+        let a = s.poll(1000, &v);
+        assert!(drew_grenade(&a) && releases(&a).is_empty(), "{a:?}");
+        let (t, f, holds, after) = run_script(&mut s, 1000, &v);
         assert!(
-            throws(&s.poll(500, &view(Vec::new()))).is_empty(),
-            "not yet"
+            t >= 1000 + script_release_ms(),
+            "released at {t} ms, before its wind-up"
         );
-        let t = throws(&s.poll(1000, &view(Vec::new())));
-        assert_eq!(t.len(), 1);
-        assert_eq!((t[0].weapon_id, t[0].ammo_id), (40, 41));
-        assert!(t[0].hit.is_none() && t[0].extra.is_none() && t[0].last);
-        assert!(t[0].dir[1] > 0.0, "thrown upward: {:?}", t[0].dir);
-        assert!(throws(&s.poll(1500, &view(Vec::new()))).is_empty());
-        assert_eq!(throws(&s.poll(2000, &view(Vec::new()))).len(), 1);
+        assert_eq!(holds, crate::grenade::HOLD_PASSES);
+        assert_eq!((f.weapon_id, f.ammo_id), (40, 41));
+        assert!(f.hit.is_none() && f.extra.is_none() && f.last);
+        assert!(f.dir[1] > 0.0, "thrown upward: {:?}", f.dir);
+        assert!(
+            after
+                .iter()
+                .any(|x| matches!(x, Action::Select(c) if c.slot == 0)),
+            "the gun drawn again: {after:?}"
+        );
+        assert_eq!(s.stats.throws, 1);
+        // the next one is due one interval after the last began
+        let a = s.poll(t + 10, &v);
+        assert!(drew_grenade(&a), "{a:?}");
+        run_script(&mut s, t + 10, &v);
         assert_eq!(s.stats.throws, 2);
         // without the option: never
         let mut q = armed();
         q.on_grant(grant(THROW_SLOT, 40, 41, 2.0));
-        assert!(throws(&q.poll(5000, &view(Vec::new()))).is_empty());
+        assert!(!drew_grenade(&q.poll(5000, &v)));
+    }
+
+    /// The releases among `a`.
+    fn releases(a: &[Action]) -> Vec<FireReport> {
+        a.iter()
+            .filter_map(|x| match x {
+                Action::Release(f) | Action::Throw(f) => Some(*f),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether `a` draws the grenade (the select of [`THROW_SLOT`]).
+    fn drew_grenade(a: &[Action]) -> bool {
+        a.iter()
+            .any(|x| matches!(x, Action::Select(c) if c.slot == THROW_SLOT))
+    }
+
+    /// BOT-195: from a scripted throw's select to its release.
+    fn script_release_ms() -> u32 {
+        use crate::grenade as gr;
+        gr::DRAW_MS + gr::WINDUP_MS + gr::HOLD_PASSES * gr::HOLD_PASS_MS + gr::RELEASE_AT_MS
+    }
+
+    /// Polls `s` every 10 ms after `from` until a scripted throw's release: (its time, the release, the hold passes
+    /// sent, the release poll's actions).
+    fn run_script(s: &mut Shooter, from: u32, v: &View) -> (u32, FireReport, u32, Vec<Action>) {
+        let mut holds = 0;
+        for t in (from + 10..from + 5000).step_by(10) {
+            let a = s.poll(t, v);
+            holds += a.iter().filter(|x| matches!(x, Action::Hold)).count() as u32;
+            if let Some(f) = releases(&a).first() {
+                return (t, *f, holds, a);
+            }
+        }
+        panic!("no release within 5 s");
+    }
+
+    /// A flat floor at y = 0, and with `wall` a wall across +x from x = `wall` (300 units high).
+    fn throw_world(wall: Option<f32>) -> Arc<dc_sim::CollisionWorld> {
+        let mut solids = vec![dc_nav::testworld::solid_box(
+            [-5000.0, -64.0, -5000.0],
+            [5000.0, 0.0, 5000.0],
+        )];
+        if let Some(x) = wall {
+            solids.push(dc_nav::testworld::solid_box(
+                [x, 0.0, -5000.0],
+                [x + 64.0, 300.0, 5000.0],
+            ));
+        }
+        Arc::new(dc_sim::CollisionWorld::from_parts(solids, &[]))
+    }
+
+    /// BOT-195 (the lab's "a bot's throw ends behind it"): a scripted throw of a bot facing +x lands at +x; in front
+    /// of a near wall the old fixed lob (BOT-26: 20 degrees up at full speed) comes back off the wall and blows up
+    /// behind the bot, the planned throw lands in front of it.
+    #[test]
+    fn a_scripted_throw_lands_in_front_of_the_bot() {
+        use crate::grenade as gr;
+        let row = gr::LobRow::default();
+        for (wall, label) in [(None, "open floor"), (Some(250.0), "wall 250 ahead")] {
+            let mut s = Shooter::new(ShooterConfig {
+                loadout: vec![5, 8, -1],
+                rom: Some(rom()),
+                ..ShooterConfig::default()
+            });
+            s.on_life(0, 1);
+            s.on_grant(grant(0, 5, 6, 30.0));
+            s.on_grant(grant(THROW_SLOT, 40, 41, 2.0));
+            let mut v = view(Vec::new());
+            v.world = Some(throw_world(wall));
+            v.facing = Some((std::f32::consts::FRAC_PI_2, 0.0));
+            s.poll(0, &v);
+            let a = s.throw_now(100, &v).expect("a throw begins");
+            assert!(drew_grenade(&a), "{a:?}");
+            let (_, f, _, _) = run_script(&mut s, 100, &v);
+            let w = v.world.as_deref().unwrap();
+            let eye = f.origin;
+            let blast = gr::blast_point(w, eye, f.dir, &row);
+            let old = gr::blast_point(w, eye, forward(std::f32::consts::FRAC_PI_2, THROW_PITCH), &row);
+            eprintln!("{label}: dir {:?} blast {blast:?}, fixed lob {old:?}", f.dir);
+            assert!(f.dir[0] > 0.0, "{label}: thrown along +x: {:?}", f.dir);
+            assert!(blast[0] - eye[0] > 100.0, "{label}: lands in front: {blast:?}");
+            assert!(blast[2].abs() < 50.0, "{label}: on the line: {blast:?}");
+            if wall.is_some() {
+                assert!(old[0] < eye[0], "the fixed lob comes back past the bot: {old:?}");
+                assert!(blast[0] < 250.0, "short of the wall: {blast:?}");
+            }
+        }
+        // an engaged target 500 units away along +z (the bot still facing +x): the throw goes to its feet
+        let mut s = armed();
+        s.on_grant(grant(THROW_SLOT, 40, 41, 2.0));
+        let mut v = view(vec![enemy(1, 40, [0.0, 50.0, 500.0])]);
+        v.world = Some(throw_world(None));
+        v.facing = Some((std::f32::consts::FRAC_PI_2, 0.0));
+        s.target = Some(1);
+        s.throw_now(100, &v).expect("a throw begins");
+        let (_, f, _, _) = run_script(&mut s, 100, &v);
+        let blast = gr::blast_point(v.world.as_deref().unwrap(), f.origin, f.dir, &row);
+        assert!(
+            (blast[0].abs() < 60.0) && (blast[2] - 500.0).abs() < 0.45 * row.radius,
+            "at the target: {blast:?}"
+        );
     }
 
     #[test]
@@ -4269,6 +4545,45 @@ mod tests {
         assert_eq!(s.stats.bursts as usize, pauses + 1);
     }
 
+    /// BOT-178: at 200 u a skill-80 bot holds the trigger (long bursts, pauses near 200 ms) where at 500 u it bursts
+    /// as BOT-24; a skill-30 bot at 200 u keeps its short bursts but pauses less than at 500 u.
+    #[test]
+    fn close_range_bursts_follow_the_skill() {
+        let run = |level: u8, dist: f32| {
+            let mut s = skilled(level);
+            let mut v = walled_view(vec![enemy(1, 40, [0.0, 50.0, dist])], (0.0, 0.0));
+            let mut times = Vec::new();
+            for t in (0..20_000).step_by(10) {
+                if !fires(&s.poll(t, &v)).is_empty() {
+                    times.push(t);
+                }
+                v.facing = s.look();
+            }
+            let gaps: Vec<u32> = times.windows(2).map(|w| w[1] - w[0]).collect();
+            // a pause: a gap longer than two shot periods (a reload is longer than any pause and left out)
+            let pauses: Vec<u32> = gaps
+                .iter()
+                .copied()
+                .filter(|g| *g > 2 * DEFAULT_FIRE_INTERVAL_MS && *g < 1500)
+                .collect();
+            let per_burst = times.len() as f32 / (s.stats.bursts.max(1)) as f32;
+            let mean = pauses.iter().sum::<u32>() as f32 / pauses.len().max(1) as f32;
+            (per_burst, mean, pauses.len())
+        };
+        let (near80, near80_pause, _) = run(80, 200.0);
+        let (far80, far80_pause, _) = run(80, 500.0);
+        let (near30, near30_pause, n30) = run(30, 200.0);
+        let (far30, far30_pause, _) = run(30, 500.0);
+        eprintln!(
+            "shots per burst / mean pause ms: 80 near {near80:.1}/{near80_pause:.0} far {far80:.1}/{far80_pause:.0}, 30 near {near30:.1}/{near30_pause:.0} far {far30:.1}/{far30_pause:.0}"
+        );
+        assert!(near80 > 1.8 * far80, "80: {near80} vs {far80}");
+        assert!(near80_pause < 0.8 * far80_pause, "80: {near80_pause} vs {far80_pause}");
+        assert!((near30 - far30).abs() < 1.0, "30: {near30} vs {far30}");
+        assert!(near30 < 7.0 && n30 >= 5, "30 keeps tapping: {near30}, {n30} pauses");
+        assert!(near30_pause < 0.8 * far30_pause, "30: {near30_pause} vs {far30_pause}");
+    }
+
     /// BOT-161: at a rusher within range the bot holds the trigger (no burst pause: every gap is the shot cycle) and,
     /// the rusher coming head-on, aims at the head band, so more of its hits name the head node (BOT-165); at anyone
     /// else it bursts at the body.
@@ -4333,6 +4648,9 @@ mod tests {
             aim_lift: 0.0,
             weak_ratio: 1.0,
             keep_sight: false,
+            aim_scale: AIM_ERROR_SCALE,
+            close_burst_mult: 1.0,
+            close_pause_share: 1.0,
             ..Skill::new(l)
         };
         let rate = |sk: Skill| {
@@ -4367,6 +4685,8 @@ mod tests {
         let get = |l: u8| rows.iter().find(|r| r.0 == l).unwrap();
         assert!((get(50).1 - get(50).2).abs() < 0.02, "the average band as before: {rows:?}");
         assert!(get(85).2 > get(85).1 * 1.3, "{rows:?}");
+        // BOT-178: with the widening fading above 50 a skill-80 bot lands in BOT-170's good-player band (30..50 %)
+        assert!((0.30..=0.50).contains(&get(80).2), "{rows:?}");
         assert!(get(20).2 < get(50).2 && get(50).2 < get(80).2 && get(80).2 <= get(85).2 + 0.02);
     }
 
@@ -4375,10 +4695,12 @@ mod tests {
     #[test]
     fn the_aim_point_puts_a_player_like_share_of_hits_in_the_head() {
         let (mut head, mut hits, mut shots) = (0usize, 0usize, 0usize);
+        let (mut far_hits, mut far_shots) = (0usize, 0usize);
         let mut by_level = Vec::new();
         for level in (30..=65).step_by(5) {
             let (h0, s0) = (hits, shots);
             for d in [138.0f32, 237.0, 397.0, 639.0, 996.0] {
+                let (fh0, fs0) = (hits, shots);
                 let mut s = skilled(level);
                 s.cfg.zone_nodes = Some(TEST_ZONES);
                 let mut v = walled_view(vec![enemy(1, 40, [d, 50.0, 0.0])], (1.0, 0.0));
@@ -4392,15 +4714,25 @@ mod tests {
                     }
                     v.facing = s.look();
                 }
+                if level <= 50 && d >= skill::FULL_WIDEN_U {
+                    far_hits += hits - fh0;
+                    far_shots += shots - fs0;
+                }
             }
             by_level.push((hits - h0) as f32 / (shots - s0).max(1) as f32);
         }
         let share = head as f32 / hits.max(1) as f32;
         let rate = hits as f32 / shots.max(1) as f32;
-        eprintln!("head {head} of {hits} hits, {shots} shots, by level {by_level:?}");
+        let far_rate = far_hits as f32 / far_shots.max(1) as f32;
+        eprintln!(
+            "head {head} of {hits} hits, {shots} shots ({far_hits} of {far_shots} at 30..50 from 300 u), by level {by_level:?}"
+        );
         assert!(hits > 300 && (0.10..=0.22).contains(&share), "{head} of {hits}");
-        // BOT-23: about one shot in seven hits (12..18 %), a skill-65 bot more often than a skill-30 one
-        assert!((0.12..=0.18).contains(&rate), "{hits} of {shots}");
+        // BOT-23: the average player (30..50) from 300 u on as before BOT-178 (6..12 %, 8.6 % when written); all
+        // ranges and 30..65 together about one in five (16..26 %; BOT-178: no widening within 150 u, less above
+        // 50, was 12..18 %), a skill-65 bot more often than a skill-30 one
+        assert!((0.06..=0.12).contains(&far_rate), "{far_hits} of {far_shots}");
+        assert!((0.16..=0.26).contains(&rate), "{hits} of {shots}");
         assert!(by_level[0] < by_level[by_level.len() - 1], "{by_level:?}");
     }
 
@@ -4616,14 +4948,8 @@ mod tests {
         let mut v = view(Vec::new());
         v.facing = Some((0.4, 0.0));
         s.poll(0, &v);
-        let a = s.poll(1000, &v);
-        let f = a
-            .iter()
-            .find_map(|x| match x {
-                Action::Throw(f) => Some(*f),
-                _ => None,
-            })
-            .expect("a throw");
+        assert!(drew_grenade(&s.poll(1000, &v)));
+        let (_, f, _, _) = run_script(&mut s, 1000, &v);
         assert_eq!(f.stat, 2);
         assert_eq!(
             dc_cone::replay(s.shot_table(), f.aim, f.dir, f.stat),
@@ -4639,14 +4965,16 @@ mod tests {
             "no slot-3 grant yet"
         );
         s.on_grant(grant(THROW_SLOT, 40, 41, 2.0));
-        let f = s.throw_now(200, &view(Vec::new())).expect("a throw");
+        let v = view(Vec::new());
+        let a = s.throw_now(200, &v).expect("a throw");
+        assert!(drew_grenade(&a) && releases(&a).is_empty(), "{a:?}");
+        assert!(s.throw_now(250, &v).is_none(), "one throw at a time");
+        let (_, f, _, _) = run_script(&mut s, 200, &v);
         assert_eq!((f.weapon_id, f.ammo_id), (40, 41));
         assert_eq!(s.stats.throws, 1);
         // the periodic option stays off: no throw on later polls
-        assert!(!s
-            .poll(5000, &view(Vec::new()))
-            .iter()
-            .any(|a| matches!(a, Action::Throw(_))));
+        let a = s.poll(5000, &v);
+        assert!(!drew_grenade(&a) && releases(&a).is_empty());
         s.on_life(6000, 3);
         assert!(
             s.throw_now(6100, &view(Vec::new())).is_none(),
@@ -4974,7 +5302,8 @@ mod tests {
 
     /// BOT-135: near the target a rifle bot's error has a floor in units, so close shots are no longer near-certain
     /// (stationary bot and target at 150..300 units, with BOT-23's 1.7 error scale: skill 30 14..26 %, skill 50
-    /// 24..36 % of the shots, before that scale 30..45 % and 42..60 %; a live match,
+    /// 24..36 % of the shots, before that scale 30..45 % and 42..60 %; BOT-178, no widening at 150 u, full at 300 u:
+    /// 26..40 % and 38..52 %; a live match,
     /// where both sides move, lands about half of that), the bot's motion, a strafing target and the spray of a
     /// burst cost more, skill 65 stays clearly better than 30, and beyond
     /// from skill::FLOOR_RANGE on the engagements are nearly what they were. Prints the table (`--nocapture`).
@@ -5024,8 +5353,8 @@ mod tests {
         for (ok, what) in checks {
             assert!(ok, "{what}");
         }
-        assert!((14.0..=26.0).contains(&m30), "skill 30 close {m30}");
-        assert!((24.0..=36.0).contains(&m50), "skill 50 close {m50}");
+        assert!((26.0..=40.0).contains(&m30), "skill 30 close {m30}");
+        assert!((38.0..=52.0).contains(&m50), "skill 50 close {m50}");
         assert!(m65 > m30 + 15.0, "skill 65 {m65} vs 30 {m30}");
     }
 }

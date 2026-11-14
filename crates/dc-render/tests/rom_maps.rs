@@ -11,7 +11,11 @@ const ROM_WORLDS: usize = 21;
 #[test]
 fn every_rom_world_renders_from_its_first_spawn() {
     let rom = dc_rom::rom_or_skip!();
-    let viewer = match RomViewer::open(&rom, AdapterChoice::Auto, RenderSettings::default()) {
+    let viewer = match RomViewer::open(
+        dc_rez::RezVfs::new(&rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => v,
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");

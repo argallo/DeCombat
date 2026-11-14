@@ -1612,6 +1612,7 @@ fn a_camo_crate_drops_into_the_inbox_and_opens_into_the_entrys_camos() {
             clients: [("0".to_string(), account)].into_iter().collect(),
             left: Default::default(),
             result_done: false,
+            unranked: false,
             entry_keys: Default::default(),
             seat_tickets: Default::default(),
             seat_told: Default::default(),

@@ -174,6 +174,25 @@ pub const PUSH_STAND: f32 = 48.0;
 /// on the way to the place nearest it died in the blast twice).
 // DC-DEFAULT: BOT-142 (proposed) 4 s
 pub const LEAVE_SWITCH_MS: u32 = 4000;
+/// BOT-166 (bot evaluation round 2, 2026-11-08, "Snow Valley: the defenders never reach the bomb"): after the plant a
+/// defender gives the defuse up only when it cannot get there and finish before the blast by its own estimate: the
+/// way left to the defuse point (its planned way, else the straight distance) at [`RUN_SPEED`], plus the defuse
+/// ([`DEFUSE_MS`]) and its margin ([`FLEE_MARGIN_MS`]). Before, every defender gave up at a fixed 8 s of fuse left,
+/// near the bomb or not (a defender 340 units from it gave up there). One that cannot make it and stands out of the
+/// blast ([`BLAST_CLEAR`]) walks toward the nearest attacker it knows of outside the blast (it fights for the round's
+/// elimination); within the blast, or with none known, it leaves for the blast ring (BOT-136).
+// DC-DEFAULT: BOT-166 (proposed) the bots' run speed with the rifle in hand (219 units/s, BOT-149)
+pub const RUN_SPEED: f32 = 219.0;
+/// BOT-167 (bot evaluation round 2, 2026-11-08, "Rattlesnake: the rotations are too slow", sites 3000 units apart:
+/// 4 of 6 bombs planted with a defender alive 10 s later, 1 defuse try): before the plant a site counts as hit when
+/// every holder of it has fallen this round, or when the team saw an attacker within [`THREAT_NEAR`] (flat) of it in
+/// the last [`CONTACT_MS`] (a living defender with a clear line to him). While one site is hit and the bot's own
+/// site is not, the holders of the own site but the first living one (the anchor stays) and the rotator hold the hit
+/// site's posts. Before, the defenders moved only after the plant.
+// DC-DEFAULT: BOT-167 (proposed) 1024 units, 20 s, a seen attacker within 2400 units of the defender
+pub const THREAT_NEAR: f32 = 1024.0;
+pub const CONTACT_MS: u32 = 20_000;
+pub const CONTACT_SEE: f32 = 2400.0;
 
 /// A well-mixed 64-bit number from `x` (SplitMix64), for the per-bot timings.
 fn mix(mut x: u64) -> u64 {
@@ -517,6 +536,12 @@ pub struct Team {
     /// and the place of a defender seen at the bomb (see [`DEFUSER_NEAR`]).
     pub guard_ring: Vec<[f32; 3]>,
     pub defuser: Option<[f32; 3]>,
+    /// BOT-166: after the plant, the bot's way left to the bomb's defuse point along its planned way (`None`: no whole
+    /// way known, the straight distance counts), and the places of the living enemies the bot knows.
+    pub bomb_way: Option<f32>,
+    pub enemies: Vec<[f32; 3]>,
+    /// BOT-167: per site (index as `sites`), whether the team saw attackers there lately (see [`THREAT_NEAR`]).
+    pub contact: Vec<bool>,
 }
 
 impl Team {
@@ -587,14 +612,87 @@ impl Team {
         near.into_iter().take(n).map(|n| n.1).collect()
     }
 
-    /// BOT-136: whether a defender runs from the blast: less fuse is left than a defuse and the margin take, and
-    /// no own hold ends in time.
+    /// BOT-136: whether a defender gives the defuse up: no own hold ends in time and, BOT-166, less fuse is left than
+    /// its way to the defuse point (see [`Self::reach_ms`]), a defuse and the margin take.
     fn flee(&self) -> bool {
         self.planted
             && !self.hold_in_time
             && self
                 .fuse_left
-                .is_some_and(|f| f < DEFUSE_MS + FLEE_MARGIN_MS)
+                .is_some_and(|f| f < self.reach_ms() + DEFUSE_MS + FLEE_MARGIN_MS)
+    }
+
+    /// BOT-166: the bot's time to the planted bomb's defuse point: its way left there (else the straight distance) at
+    /// [`RUN_SPEED`] (ms; 0 without a known bomb).
+    // DC-DEFAULT: BOT-166 (proposed)
+    fn reach_ms(&self) -> u32 {
+        let Some(b) = self.bomb_pos else {
+            return 0;
+        };
+        let p = self.own_pos;
+        let d = self.bomb_way.unwrap_or_else(|| {
+            ((p[0] - b[0]).powi(2) + (p[1] - b[1]).powi(2) + (p[2] - b[2]).powi(2)).sqrt()
+        });
+        (d.max(0.0) / RUN_SPEED * 1000.0) as u32
+    }
+
+    /// BOT-166: a defender that gives the defuse up and stands out of the blast walks toward the nearest attacker
+    /// it knows of outside the blast (`None`: within the blast itself, or none known).
+    fn fight_toward(&self, bomb: [f32; 3]) -> Option<[f32; 3]> {
+        if flat(self.own_pos, bomb) <= BLAST_CLEAR {
+            return None;
+        }
+        self.enemies
+            .iter()
+            .filter(|e| flat(**e, bomb) > BLAST_CLEAR)
+            .min_by(|a, b| flat(**a, self.own_pos).total_cmp(&flat(**b, self.own_pos)))
+            .copied()
+    }
+
+    /// BOT-167: whether site `s` is hit before the plant: every holder of it fell this round (one at least), or the
+    /// team saw an attacker near it lately.
+    // DC-DEFAULT: BOT-167 (proposed)
+    fn hit(&self, s: usize) -> bool {
+        if self.contact.get(s).copied().unwrap_or(false) {
+            return true;
+        }
+        let holders: Vec<&Mate> = (0..self.mates.len())
+            .filter(|&i| self.job(i) == Some(Job::Hold(s as u8)))
+            .map(|i| &self.mates[i])
+            .collect();
+        !holders.is_empty()
+            && holders
+                .iter()
+                .all(|m| !m.alive && m.pid != self.own_pid)
+    }
+
+    /// BOT-167: the site a defender at `index` with `job` holds before the plant, `s` its own: while another site is
+    /// hit and `s` is not, the rotator and every holder of `s` but the first living one in job order hold the hit
+    /// site.
+    // DC-DEFAULT: BOT-167 (proposed)
+    fn rotation(&self, index: usize, job: Job, s: usize) -> usize {
+        let n = self.sites.len();
+        if n < 2 || self.hit(s) {
+            return s;
+        }
+        let Some(o) = (1..n).map(|k| (s + k) % n).find(|&o| self.hit(o)) else {
+            return s;
+        };
+        match job {
+            Job::Rotate => o,
+            Job::Hold(_) => {
+                let anchor = (0..self.mates.len()).find(|&i| {
+                    self.job(i) == Some(job)
+                        && (self.mates[i].alive || self.mates[i].pid == self.own_pid)
+                });
+                if anchor == Some(index) {
+                    s
+                } else {
+                    o
+                }
+            }
+            _ => s,
+        }
     }
 
     /// BOT-136: whether the member at `index` is the one of site `s`'s holders who looks at the other site in a
@@ -664,6 +762,9 @@ pub struct Squad {
     check_done: Option<u32>,
     /// BOT-136: the posts not reached in [`POST_REACH_MS`] this round (left out from then on).
     failed: Vec<[f32; 3]>,
+    /// BOT-166: the bot gave the defuse up this round (it does not take it up again: its way estimate may change from
+    /// tick to tick).
+    gave_up: bool,
 }
 
 impl Squad {
@@ -739,6 +840,8 @@ impl Squad {
         let at = |goal: [f32; 3], stand_within: f32| Some(Objective { goal, stand_within });
         let mut posted: Option<(PostStep, &'static str)> = None;
         let mut push = false;
+        let mut fight = false;
+        let mut rotating = false;
         order.goal = match (t.attacking, t.planted) {
             // BOT-142: the guards hold places 250..500 units out that see the bomb, leave for the blast ring late in
             // the fuse and contest a defuse (the nearest pushes); else BOT-136's posts round the bomb's site
@@ -769,8 +872,15 @@ impl Squad {
             }
             // BOT-124: the nearest defenders defuse, the rest cover them at the bomb
             (false, true) => t.bomb_pos.and_then(|b| {
-                // BOT-136: too late to defuse: every defender runs from the blast
-                if t.flee() {
+                // BOT-136: too late to defuse: every defender runs from the blast; BOT-166: by its own time to the
+                // bomb, and one out of the blast fights toward the attackers
+                self.gave_up |= t.flee();
+                if self.gave_up {
+                    if let Some(e) = t.fight_toward(b) {
+                        self.post = None;
+                        fight = true;
+                        return at(e, 0.0);
+                    }
                     posted = self.ring_post(now, t, b, FLEE_KEY, snap);
                     if let Some(p) = &mut posted {
                         p.1 = "flee";
@@ -817,10 +927,13 @@ impl Squad {
             },
             // BOT-136: a holder holds an area: posts round its site in turn, a look at the other site when quiet
             (false, false) => {
-                let s = match job {
+                let own = match job {
                     Job::Hold(s) => usize::from(s) % t.sites.len(),
                     _ => self.rotate_index(t, elapsed),
                 };
+                // BOT-167: to the site that is hit
+                let s = t.rotation(index, job, own);
+                rotating = s != own;
                 posted = self.hold_post(now, t, index, job, s, snap);
                 posted
                     .as_ref()
@@ -831,18 +944,24 @@ impl Squad {
         if let Some((p, kind)) = &posted {
             order.crouch = p.crouch;
             order.watch = p.watch;
-            order.post = kind;
+            order.post = if rotating && *kind == "post" {
+                "rotate"
+            } else {
+                kind
+            };
         } else {
             self.post = None;
             if push {
                 order.post = "push";
+            } else if fight {
+                order.post = "fight";
             }
         }
         // a defuser never waits for the teammate ahead (BOT-124): the spacing let every defender stand behind another;
         // BOT-129: nor does the lead on its way to plant (it is the one the others space behind); BOT-136: nor does a
         // bot walking between the posts of its area (the posts are apart by themselves)
         let lead_run = job == Job::Lead && t.attacking && !t.planted;
-        if !order.wait && !order.defuse && !lead_run && !push {
+        if !order.wait && !order.defuse && !lead_run && !push && !fight {
             if let Some(shared) = order.goal.map(|g| match job {
                 // the escort and the flanker keep the spacing on the way to their site, not to their waypoint
                 Job::Escort(_) | Job::Flank(_) if !t.planted => site,
@@ -1411,6 +1530,9 @@ mod tests {
             hold_in_time: false,
             guard_ring: Vec::new(),
             defuser: None,
+            bomb_way: None,
+            enemies: Vec::new(),
+            contact: Vec::new(),
         }
     }
 
@@ -2068,6 +2190,123 @@ mod tests {
         let o = step(&mut Squad::default(), &t, 0, 500);
         assert!(o.defuse);
         assert_eq!(o.goal.unwrap().goal, bomb);
+    }
+
+    /// BOT-166: a defender gives the defuse up only when its own way to the bomb, a defuse and the margin take longer
+    /// than the fuse left; then one out of the blast walks toward the nearest attacker it knows of outside the blast,
+    /// one within the blast (or knowing of none) leaves for the blast ring.
+    #[test]
+    fn a_defender_gives_the_defuse_up_by_its_own_time_to_the_bomb() {
+        let bomb = [3000.0, 0.0, 0.0];
+        let ring = vec![[3800.0, 0.0, 0.0], [2200.0, 0.0, 0.0], [3000.0, 0.0, 800.0]];
+        let mk = |pos: [f32; 3], way: Option<f32>, fuse: u32| {
+            let mut t = team(2, 0, false);
+            t.planted = true;
+            t.bomb_pos = Some(bomb);
+            t.blast_ring = ring.clone();
+            t.fuse_left = Some(fuse);
+            t.mates[0].pos = Some(pos);
+            t.mates[1].alive = false;
+            t.own_pos = pos;
+            t.bomb_way = way;
+            t
+        };
+        // 340 units out (Snow Valley's defender at 8 s left): 1.55 s of way, 7 s defuse, 1 s margin
+        let near = [3340.0, 0.0, 0.0];
+        let o = step(&mut Squad::default(), &mk(near, None, 9600), 0, 500);
+        assert!(o.defuse, "9.6 s left: it still makes it");
+        let o = step(&mut Squad::default(), &mk(near, None, 9500), 0, 500);
+        assert!(!o.defuse && o.post == "flee", "9.5 s left: within the blast it leaves");
+        // at the bomb the old limit holds (a defuse and its margin)
+        let o = step(&mut Squad::default(), &mk(bomb, None, DEFUSE_MS + FLEE_MARGIN_MS), 0, 500);
+        assert!(o.defuse);
+        let o = step(&mut Squad::default(), &mk(bomb, None, DEFUSE_MS + FLEE_MARGIN_MS - 10), 0, 500);
+        assert!(!o.defuse);
+        // 3000 units of way (Rattlesnake's other site): 13.7 s of way; it gives up at 21.7 s, not at 8 s
+        let far = [1000.0, 0.0, 1000.0];
+        let o = step(&mut Squad::default(), &mk(far, Some(3000.0), 22_000), 0, 500);
+        assert!(o.defuse, "22 s left: it runs to the bomb");
+        let mut t = mk(far, Some(3000.0), 21_000);
+        let o = step(&mut Squad::default(), &t, 0, 500);
+        assert!(!o.defuse && o.post == "flee", "no attacker known: the ring");
+        // given up, it stays given up this round when its way estimate shrinks again
+        let mut sq = Squad::default();
+        step(&mut sq, &t, 0, 500);
+        t.bomb_way = Some(100.0);
+        assert!(!step(&mut sq, &t, 600, 1000).defuse);
+        assert!(step(&mut Squad::default(), &t, 0, 500).defuse);
+        t.bomb_way = Some(3000.0);
+        // it knows of attackers: one in the blast is passed over, it walks toward the nearest one outside it
+        t.enemies = vec![[3100.0, 0.0, 0.0], [2000.0, 0.0, 1500.0], [1300.0, 0.0, 2500.0]];
+        let o = step(&mut Squad::default(), &t, 0, 500);
+        assert!(!o.defuse && !o.wait);
+        assert_eq!((o.post, o.goal.unwrap().goal), ("fight", [2000.0, 0.0, 1500.0]));
+        // within the blast it leaves for the ring all the same
+        let mut t = mk(near, None, 9000);
+        t.enemies = vec![[2000.0, 0.0, 1500.0]];
+        let o = step(&mut Squad::default(), &t, 0, 500);
+        assert_eq!(o.post, "flee");
+    }
+
+    /// BOT-167: before the plant, a site whose holders all fell or near which the team saw attackers draws the
+    /// holders of the other site but the anchor (the first living one), and the rotator; with both sites hit, or the
+    /// own one, nobody moves.
+    #[test]
+    fn a_hit_site_draws_the_other_holders_but_the_anchor() {
+        let goal_of = |t: &Team| step(&mut Squad::default(), t, 0, 30_000).goal.unwrap().goal;
+        let site_of = |t: &Team, i: usize| match t.job(i) {
+            Some(Job::Hold(s)) => usize::from(s),
+            j => panic!("{j:?}"),
+        };
+        let base = |own: usize| {
+            let mut t = team(4, own, false);
+            t.round = 1;
+            t
+        };
+        // quiet: every holder at its own site
+        for own in 0..4 {
+            let t = base(own);
+            assert_eq!(goal_of(&t), t.sites[site_of(&t, own)], "member {own}");
+        }
+        // attackers seen at site 1: the anchor of site 0 stays, the other holder of site 0 goes, site 1 stays
+        let t0 = base(0);
+        let holders0: Vec<usize> = (0..4).filter(|&i| site_of(&t0, i) == 0).collect();
+        assert_eq!(holders0.len(), 2);
+        for own in 0..4 {
+            let mut t = base(own);
+            t.contact = vec![false, true];
+            let want = if own == holders0[1] { 1 } else { site_of(&t, own) };
+            assert_eq!(goal_of(&t), t.sites[want], "member {own}");
+        }
+        // site 1's holders fell: the same, without a contact
+        for own in holders0.iter().copied() {
+            let mut t = base(own);
+            let fallen: Vec<usize> = (0..4).filter(|&i| site_of(&t, i) == 1).collect();
+            for i in fallen {
+                t.mates[i].alive = false;
+            }
+            let want = if own == holders0[1] { 1 } else { 0 };
+            assert_eq!(goal_of(&t), t.sites[want], "member {own}");
+        }
+        // the anchor fell: the other holder becomes the anchor and stays
+        let mut t = base(holders0[1]);
+        t.contact = vec![false, true];
+        t.mates[holders0[0]].alive = false;
+        assert_eq!(goal_of(&t), t.sites[0]);
+        // both sites hit: nobody moves
+        let mut t = base(holders0[1]);
+        t.contact = vec![true, true];
+        assert_eq!(goal_of(&t), t.sites[0]);
+        // the rotator of an odd team goes to the hit site
+        let n = 5;
+        let rot = (0..n)
+            .find(|&i| team(n, 0, false).job(i) == Some(Job::Rotate))
+            .unwrap();
+        for hit in 0..2 {
+            let mut t = team(n, rot, false);
+            t.contact = vec![hit == 0, hit == 1];
+            assert_eq!(goal_of(&t), t.sites[hit], "hit {hit}");
+        }
     }
 
     /// BOT-142: the guard places lie 250..500 units from the bomb, see it (no blind place), two or three, 256 apart.

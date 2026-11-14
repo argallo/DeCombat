@@ -349,6 +349,16 @@ pub enum Op {
         /// World units a lightmap texel covers; above 0 turns on lightmaps and the lamps (MAP-108).
         #[serde(default)]
         bake_lightmap: Option<f32>,
+        /// The bake's weights (`build.bake`, MAP-126b): ambient floor, sun, sky-up / ground-down hemisphere, ambient
+        /// occlusion; each 0 .. 2.
+        #[serde(default)]
+        bake_ambient: Option<f32>,
+        #[serde(default)]
+        bake_sun: Option<f32>,
+        #[serde(default)]
+        bake_hemisphere: Option<f32>,
+        #[serde(default)]
+        bake_ao: Option<f32>,
         #[serde(default)]
         fog_enable: Option<bool>,
         #[serde(default)]
@@ -374,6 +384,10 @@ pub enum Op {
         /// Both faces of the level and its opaque world models drawn; a map with ROM pieces turns it on (MAP-118).
         #[serde(default)]
         two_sided: Option<bool>,
+        /// How far the sky eye moves inside the sky box as the player crosses the map, 0 .. 1 of its half size (the
+        /// sky model's `sky_inner`, MAP-126c): 0 keeps the sky at infinity.
+        #[serde(default)]
+        sky_inner: Option<f32>,
     },
     /// The map's label and the mod metadata `export` writes (every field optional). `name` is the project's
     /// label; the mod id stays what `new` derived.
@@ -707,6 +721,10 @@ pub fn example_ops() -> Vec<Op> {
         Op::SettingsSet {
             bake_shadow: None,
             bake_lightmap: None,
+            bake_ambient: None,
+            bake_sun: None,
+            bake_hemisphere: None,
+            bake_ao: None,
             fog_enable: Some(true),
             fog_near: Some(400.0),
             fog_far: Some(6000.0),
@@ -719,6 +737,7 @@ pub fn example_ops() -> Vec<Op> {
             sky_size: Some([1024.0; 3]),
             sky_material: Some("ground".into()),
             two_sided: Some(true),
+            sky_inner: None,
         },
         Op::MetaSet {
             name: Some("My Map".into()),
@@ -1570,6 +1589,10 @@ fn apply_one(
         Op::SettingsSet {
             bake_shadow,
             bake_lightmap,
+            bake_ambient,
+            bake_sun,
+            bake_hemisphere,
+            bake_ao,
             fog_enable,
             fog_near,
             fog_far,
@@ -1582,6 +1605,7 @@ fn apply_one(
             sky_size,
             sky_material,
             two_sided,
+            sky_inner,
         } => {
             let finite = |path: &str, x: Option<f32>| -> Result<(), Diagnostic> {
                 match x {
@@ -1600,6 +1624,24 @@ fn apply_one(
                         "bake_lightmap",
                         "bake_lightmap must be 0 (off) or 2 .. 64 units a texel",
                     ));
+                }
+            }
+            // DC-DEFAULT: MAP-126b (the bake's weights as an op, not a hand edit of map.json)
+            for (path, v) in [
+                ("bake_ambient", bake_ambient),
+                ("bake_sun", bake_sun),
+                ("bake_hemisphere", bake_hemisphere),
+                ("bake_ao", bake_ao),
+            ] {
+                if let Some(v) = v {
+                    if !(0.0..=2.0).contains(v) {
+                        return Err(invalid(path, format!("{path} must be 0 .. 2")));
+                    }
+                }
+            }
+            if let Some(v) = sky_inner {
+                if !(0.0..=1.0).contains(v) {
+                    return Err(invalid("sky_inner", "sky_inner must be 0 .. 1"));
                 }
             }
             finite("fog_near", *fog_near)?;
@@ -1642,6 +1684,18 @@ fn apply_one(
             if let Some(v) = bake_lightmap {
                 p.build.bake.lightmap = *v;
             }
+            if let Some(v) = bake_ambient {
+                p.build.bake.ambient = *v;
+            }
+            if let Some(v) = bake_sun {
+                p.build.bake.sun = *v;
+            }
+            if let Some(v) = bake_hemisphere {
+                p.build.bake.hemisphere = *v;
+            }
+            if let Some(v) = bake_ao {
+                p.build.bake.ao = *v;
+            }
             if let Some(x) = fog_enable {
                 s.fog_enable = *x;
             }
@@ -1676,6 +1730,9 @@ fn apply_one(
                 s.sky_material = x.clone();
             }
             // DC-DEFAULT: MAP-118
+            if let Some(x) = sky_inner {
+                s.sky_inner = Some(*x);
+            }
             if let Some(x) = two_sided {
                 s.two_sided = *x;
             }
@@ -2274,6 +2331,90 @@ mod tests {
             "region": {"min": [-500.0, -100.0, -500.0], "max": [500.0, 400.0, 500.0]}
         }))
         .unwrap()
+    }
+
+    /// The bake's weights are an op (MAP-126b): set, left alone when not given, refused out of 0 .. 2.
+    #[test]
+    fn settings_set_changes_the_bake_weights() {
+        let (mut p, mut h) = base_project();
+        let op = |v: serde_json::Value| -> Op { serde_json::from_value(v).unwrap() };
+        apply(
+            &mut p,
+            &mut h,
+            &[op(serde_json::json!({"op": "settings.set", "bake_ambient": 0.42, "bake_hemisphere": 0.22, "bake_ao": 0.7}))],
+        )
+        .unwrap();
+        let b = &p.build.bake;
+        assert_eq!(
+            (b.ambient, b.sun, b.hemisphere, b.ao),
+            (0.42, 0.65, 0.22, 0.7)
+        );
+        apply(
+            &mut p,
+            &mut h,
+            &[op(
+                serde_json::json!({"op": "settings.set", "bake_sun": 0.9}),
+            )],
+        )
+        .unwrap();
+        assert_eq!((p.build.bake.ambient, p.build.bake.sun), (0.42, 0.9));
+        let e = apply(
+            &mut p,
+            &mut h,
+            &[op(
+                serde_json::json!({"op": "settings.set", "bake_ao": 3.0}),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(e.items[0].code, Code::OpInvalid);
+        assert_eq!(p.build.bake.ao, 0.7, "a refused batch changes nothing");
+    }
+
+    /// The sky model's inner fraction is a setting (MAP-126c): unset keeps the old 0.9, 0 .. 1 is taken, more refused.
+    #[test]
+    fn settings_set_takes_the_sky_inner_fraction() {
+        let (mut p, mut h) = base_project();
+        assert_eq!(p.settings.sky_inner, None);
+        let op = |v: serde_json::Value| -> Op { serde_json::from_value(v).unwrap() };
+        apply(
+            &mut p,
+            &mut h,
+            &[op(
+                serde_json::json!({"op": "settings.set", "sky_inner": 0.0}),
+            )],
+        )
+        .unwrap();
+        assert_eq!(p.settings.sky_inner, Some(0.0));
+        let e = apply(
+            &mut p,
+            &mut h,
+            &[op(
+                serde_json::json!({"op": "settings.set", "sky_inner": 1.5}),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(e.items[0].code, Code::OpInvalid);
+        let b = crate::geom::Brush {
+            name: "solid_1".into(),
+            role: crate::project::BrushRole::Sky,
+            origin: crate::geom::V3::ZERO,
+            polys: Vec::new(),
+        };
+        let inner = |v: Option<f32>| {
+            let o = crate::worldgen::brush_object(&b, v);
+            o.props
+                .iter()
+                .find(|q| q.name == b"sky_inner")
+                .map(|q| q.value.clone())
+        };
+        assert_eq!(
+            inner(Some(0.0)),
+            Some(dc_world::synth::SynthValue::Vec3([0.0; 3]))
+        );
+        assert_eq!(
+            inner(None),
+            Some(dc_world::synth::SynthValue::Vec3([0.9; 3]))
+        );
     }
 
     /// Pieces (MAP-116): stored with defaults, refused when they overlap, when two give the sky, when the path is

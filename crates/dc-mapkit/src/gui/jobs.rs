@@ -184,7 +184,8 @@ impl Jobs {
     pub fn open_index(&self, rom: PathBuf) {
         self.run(move || {
             Done::Index(
-                dc_render::TextureIndex::open(&rom)
+                dc_rez::RomLayer::indexed(&rom)
+                    .map(dc_render::TextureIndex::new)
                     .map(Arc::new)
                     .map_err(|e| e.to_string()),
             )

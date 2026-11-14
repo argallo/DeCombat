@@ -204,14 +204,19 @@ fn rom_camo_crate_spins_over_the_loaded_camos_and_opens_with_its_own_title() {
         !rom_cue(&cues, "start_count") && rom_cue(&cues, "match_won"),
         "{cues:?}"
     );
-    // CRATE-8: the won gun's own model is drawn, from its own view
-    let shown = m.items();
-    assert!(
-        shown.iter().any(
-            |i| matches!(i, DrawItem::Image { tex, .. } if tex.starts_with("#case-showcase/"))
-        ),
-        "the showcase render is on the screen"
-    );
+    // CRATE-8: the won gun's own model is drawn, from its own view. The window path only polls the view's worker, so
+    // a busy machine may not have the render yet: look again until it is there (the image path's own wait is
+    // MODEL_VIEW_WAIT; this deadline is far above it)
+    let showcase = |m: &mut Menu| {
+        m.items()
+            .iter()
+            .any(|i| matches!(i, DrawItem::Image { tex, .. } if tex.starts_with("#case-showcase/")))
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !showcase(&mut m) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(showcase(&mut m), "the showcase render is on the screen");
     shot(&mut m, "crate_reel_show2");
     at(&mut m, reel::HUSH_MS + 190 + 2_400, "crate_reel_turned");
     // after the hold the window opens at once with its parts, titled with the crate's name

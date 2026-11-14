@@ -257,7 +257,7 @@ impl LocalPlayer {
         let Some(rom) = rom else {
             return;
         };
-        match dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(rom)) {
+        match dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(rom)) {
             Ok(t) => {
                 self.speed_rows = Some(std::sync::Arc::new(t));
                 self.loadout.body = Some(0);

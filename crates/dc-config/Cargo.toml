@@ -20,3 +20,5 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 # serde_json: the community directory document (shared with the landing page and the in-client browser).
 serde_json = "1"
+# dc-vfs: a content profile resolves to the layered file system's plain data (game.rs: packs, base folders).
+dc-vfs = { path = "../dc-vfs" }

@@ -34,6 +34,8 @@ dc-model = { path = "../dc-model" }
 # dc-config: the community directory document type (CLI-1615).
 dc-config = { path = "../dc-config" }
 dc-rez = { path = "../dc-rez" }
+# dc-vfs: the layered file system's pack table (`@mod:` names, modassets.rs) and content profiles (gameprofile.rs).
+dc-vfs = { path = "../dc-vfs" }
 dc-rom = { path = "../dc-rom" }
 # The ROM weapon table (WEAPONS.TXT rows read at run time for the weapons: pellets, clip, spread, models).
 dc-bute = { path = "../dc-bute" }
@@ -56,6 +58,8 @@ dc-botclient = { path = "../dc-botclient" }
 # Our own transport crate: the network lab's impairment shim around the match socket (`--netlab`, docs/NETLAB.md).
 dc-net-engine = { path = "../dc-net-engine" }
 dc-wire = { path = "../dc-wire" }
+# Our own local match crate: the match description and the supervisor of `--local-match` (server and bots as children).
+dc-localhost = { path = "../dc-localhost" }
 # Our own sound core (AUDIO_2009 mixer, distance law, WAV decoding); its device output is the `audio` feature.
 dc-audio = { path = "../dc-audio" }
 # serde_json (vetted, CLEANROOM.md §4a; already in the lock through dc-botclient): the client's own events in the

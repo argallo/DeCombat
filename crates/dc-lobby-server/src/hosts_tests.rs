@@ -601,6 +601,7 @@ fn remote_record(id: u64, agent: &str, over: bool) -> game::Game {
         clients: Default::default(),
         left: Default::default(),
         result_done: false,
+        unranked: false,
         entry_keys: Default::default(),
         seat_tickets: Default::default(),
         seat_told: Default::default(),

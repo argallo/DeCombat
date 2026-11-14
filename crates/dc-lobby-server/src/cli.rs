@@ -128,6 +128,17 @@ pub struct Options {
     pub identity_token_hours: u32,
     /// `--identity-key-file` / `identity.key_file`: the issuing key pair; None = `identity_key.pem` by the DB.
     pub identity_key_file: Option<PathBuf>,
+    /// `identity.device_sessions` (SES-4): an issuing lobby offers device sessions.
+    pub identity_device_sessions: bool,
+    /// `identity.device_token_minutes` (SES-4): lifetime of a token bought with a device secret.
+    pub identity_device_token_minutes: u32,
+    /// `identity.device_idle_days` (SES-3): a device expires after this many days without use.
+    pub identity_device_idle_days: u32,
+    /// `identity.max_devices` (SES-3): live devices per account.
+    pub identity_max_devices: u32,
+    /// `identity.long_passwords` (SES-7): read here, honoured by the long-password change (not yet).
+    #[allow(dead_code)]
+    pub identity_long_passwords: bool,
 }
 
 /// The DB path without `--db`: `<exe dir>/data/ca.db`.
@@ -431,6 +442,7 @@ pub fn resolve_with(m: &ArgMatches, conf: Option<&ServerConf>) -> Options {
             cv(conf, path, f).unwrap_or_default()
         }
     };
+    let id_def = dc_config::IdentitySection::default();
     let identity_key_file = nonempty_path(&id_s("identity-key-file", "identity.key_file", |c| {
         c.identity.key_file.clone()
     }));
@@ -485,6 +497,24 @@ pub fn resolve_with(m: &ArgMatches, conf: Option<&ServerConf>) -> Options {
             .or_else(|| cv(conf, "identity.token_hours", |c| c.identity.token_hours))
             .unwrap_or(crate::identity::DEFAULT_TOKEN_HOURS),
         identity_key_file,
+        identity_device_sessions: cv(conf, "identity.device_sessions", |c| {
+            c.identity.device_sessions
+        })
+        .unwrap_or(id_def.device_sessions),
+        identity_device_token_minutes: cv(conf, "identity.device_token_minutes", |c| {
+            c.identity.device_token_minutes
+        })
+        .unwrap_or(id_def.device_token_minutes),
+        identity_device_idle_days: cv(conf, "identity.device_idle_days", |c| {
+            c.identity.device_idle_days
+        })
+        .unwrap_or(id_def.device_idle_days),
+        identity_max_devices: cv(conf, "identity.max_devices", |c| c.identity.max_devices)
+            .unwrap_or(id_def.max_devices),
+        identity_long_passwords: cv(conf, "identity.long_passwords", |c| {
+            c.identity.long_passwords
+        })
+        .unwrap_or(id_def.long_passwords),
         server_name,
         clan_name,
         servers,
@@ -988,6 +1018,45 @@ mod tests {
             .try_get_matches_from(std::iter::once("x").chain(args.iter().copied()))
             .unwrap();
         resolve_with(&m, c)
+    }
+
+    /// SES-3 / SES-4 / SES-7: the device-session keys reach the options from the file and the environment, and
+    /// default to the schema's defaults.
+    #[test]
+    fn device_session_keys_reach_the_options() {
+        let o = with(&[], None);
+        assert_eq!(
+            (
+                o.identity_device_sessions,
+                o.identity_device_token_minutes,
+                o.identity_device_idle_days,
+                o.identity_max_devices,
+                o.identity_long_passwords
+            ),
+            (false, 15, 180, 10, false)
+        );
+        // the default configuration leaves the device endpoints off
+        assert!(!crate::devsession::web::DeviceRules::from_options(&o).enabled);
+        let c = conf(
+            "[identity]\ndevice_sessions = true\ndevice_token_minutes = 5\nmax_devices = 3\nlong_passwords = true\n",
+            &[("DC_IDENTITY__DEVICE_IDLE_DAYS", "30")],
+        );
+        let o = with(&[], c.as_ref());
+        assert_eq!(
+            (
+                o.identity_device_sessions,
+                o.identity_device_token_minutes,
+                o.identity_device_idle_days,
+                o.identity_max_devices,
+                o.identity_long_passwords
+            ),
+            (true, 5, 30, 3, true)
+        );
+        let r = crate::devsession::web::DeviceRules::from_options(&o);
+        assert_eq!(
+            (r.enabled, r.token_minutes, r.idle_days, r.max_devices),
+            (true, 5, 30, 3)
+        );
     }
 
     #[test]

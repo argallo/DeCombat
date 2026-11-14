@@ -201,7 +201,7 @@ p.say { margin: 0 0 12px; }
 <div class="top">
   <div class="mark">DeCombat <span>operations</span></div>
   <nav id="nav">
-    <a href="#live">Live</a><a href="#problems">Problems</a><a href="#matches">Matches</a><a href="#timeline">Players</a><a href="#alerts">Alerts</a><a href="#bots">Bots</a><a href="#updates">Updates</a><a href="/ops/beta" id="beta-link">Beta list</a>
+    <a href="#live">Live</a><a href="#problems">Problems</a><a href="#matches">Matches</a><a href="#timeline">Players</a><a href="#alerts">Alerts</a><a href="#bots">Bots</a><a href="#updates">Updates</a><a href="/ops/beta" id="beta-link">Beta list</a><a href="/ops" id="new-link">New dashboard</a>
   </nav>
   <div class="tools">
     <span id="facts"></span>
@@ -217,6 +217,8 @@ const TOKEN = new URLSearchParams(location.search).get("token") || "";
 // goes below the same base (empty on the loopback admin port and for the admin web's own lobby)
 const BASE = (location.pathname.match(/^\/i\/[a-z0-9][a-z0-9-]*(?=\/ops(\/|$))/) || [""])[0];
 document.getElementById("beta-link").href = BASE + "/ops/beta" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+// LG-444: this is the earlier page (at /ops/classic); the dashboard app is at /ops
+document.getElementById("new-link").href = BASE + "/ops" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
 // the instance switcher (adminweb.rs adds it) keeps the open tab
 document.addEventListener("change", e => {
   if (!e.target.matches || !e.target.matches("select[data-inst]")) return;

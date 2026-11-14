@@ -102,7 +102,7 @@ is `{applied: [{op, ids}], changed: [...], dry_run}`: `ids` echoes the new ids, 
 | `material.set` | `id` + any of `texture` (`{"own": "assets/x.png"}` or `{"rom": "<path>"}`), `tile`, `surface_id`, `flags` (`{solid, no_step, sky, hidden}`), `fit?` (`[u0, v0, u1, v1]`) |
 | `import.add` | `file` (OBJ), `pos`, `material`, `rot_y_deg?`, `scale?`, `collision?`, `ground?` |
 | `prefab.add` | `prefab`, `pos`, `rot_y_deg?`, `scale?`, `ground?` (the prefab library comes with the build slice) |
-| `settings.set` | any of `fog_enable`, `fog_near`, `fog_far`, `fog_color` (rgb), `far_z` (> 0), `sun_dir` (vec3, not zero), `sun_color`, `sun_bright`, `ambient`, `sky_size`, `sky_material` (must exist), `two_sided` (bool: the client draws both faces of the level and its opaque world models; turn it on for a map with ROM pieces, section 19): the world settings the build turns into `dc.world_settings`, `dc.global_light` and the sky model; only the given fields change |
+| `settings.set` | any of `bake_lightmap`, `bake_shadow`, `bake_ambient`, `bake_sun`, `bake_hemisphere`, `bake_ao` (the bake's weights in `build.bake`, 0 .. 2, MAP-126b), `sky_inner` (0 .. 1: how far the sky eye moves inside the sky box as the player crosses the map; unset is 0.9, which makes a single painted sky box swim and stretch near its faces on a big map: give 0 for a sky at infinity, MAP-126c), `fog_enable`, `fog_near`, `fog_far`, `fog_color` (rgb), `far_z` (> 0), `sun_dir` (vec3, not zero), `sun_color`, `sun_bright`, `ambient`, `sky_size`, `sky_material` (must exist), `two_sided` (bool: the client draws both faces of the level and its opaque world models; turn it on for a map with ROM pieces, section 19): the world settings the build turns into `dc.world_settings`, `dc.global_light` and the sky model; only the given fields change |
 | `meta.set` | any of `name` (the map's label), `version`, `author`, `description`, `tags`, `homepage` (`""` clears), `modes` (DeCombat mode names, upper-cased), `goals` (`{mode: int}`), `round_seconds` (0 clears), `players` (`{min, max}`): the mod metadata `export` writes |
 
 Property values: text, number, bool, `[x, y, z]` or `{"rgb": [r, g, b]}`. `ground: true` snaps y to the floor
@@ -748,6 +748,16 @@ the game server tests them: the body centre inside the volume's closed model, th
   islands grey, floors inside kill volumes faint orange, entry moves yellow, regions blue. Measured on the 18-piece
   atlas (34,250 x 31,000 units; 525,000 nodes and 3.1 M moves at step 48, three in four of them flat walks) on 14
   cores: 56 s at step 48, 41 s at step 64.
+- **Sight (MAP-126):** `walk <dir> --sight [--box ..] [--step 96] [--range 4000] [--own-radius 700] [--upper 150]
+  [-o sight.png] --json` checks the team spawns. A spawn sees an enemy spawn when nothing collides between the two eyes
+  (80 over the feet); a position sees a spawn when nothing collides between its eye and the spawn's eye or chest (50).
+  The positions are the reach analysis's main component at `--step` (floors players get to and back from), within
+  `--range` of the spawn and farther than `--own-radius` across from every spawn of the spawn's own team (its base:
+  give the size of your spawn rooms). Answer: per spawn `enemy_spawns_seen`, `seen_from`, `seen_from_upper` (floors
+  `--upper` or more over the spawn's), `nearest` and `nearest_upper` (`at`, `dist`); `summary` counts them; a warning
+  `walk.sight` per spawn that sees or is seen (20 at most). The picture: positions that see a spawn red, a magenta line
+  between spawns that see each other, a yellow line from each spawn to its nearest watcher. Doors and windows count as
+  open holes; cut-out cards and paint never block (they are not solid).
 - **What it is not:** the body is a bot that steers straight; it does not find a way round a wall (give `via`
   points). The reach analysis tries no strafing, crouch jump or second player, and a floor narrower than its step
   can fall between columns (take `--step 24` over a doorway). The loadout's speed penalties, other players, doors opening and the server's corrections are left

@@ -610,6 +610,10 @@ pub struct WorldSettings {
     /// file.
     #[serde(skip_serializing_if = "is_false")]
     pub two_sided: bool,
+    /// The sky model's `sky_inner` (MAP-126c): how far the sky eye moves inside the sky box as the player crosses the
+    /// map, as a fraction of its half size; `None` is the old default 0.9 and is left out of the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sky_inner: Option<f32>,
 }
 
 impl Default for WorldSettings {
@@ -627,6 +631,7 @@ impl Default for WorldSettings {
             sky_size: [1024.0, 1024.0, 1024.0],
             sky_material: "sky".into(),
             two_sided: false,
+            sky_inner: None,
         }
     }
 }

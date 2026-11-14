@@ -313,6 +313,23 @@ pub fn forward(
     exchange(addr, &h, body)
 }
 
+/// LG-441: the boot data of the dashboard app's page on the admin web (`current`: the instance the page is for,
+/// `None` the lobby that serves it): the lobby's label and the further instances, which the app draws as the switcher.
+pub fn boot(cfg: &AdminWebSection, current: Option<&AdminWebInstance>) -> String {
+    let instances: Vec<serde_json::Value> = cfg
+        .instances
+        .iter()
+        .map(|i| serde_json::json!({"name": i.name, "label": i.label}))
+        .collect();
+    serde_json::json!({
+        "web": true,
+        "label": cfg.label,
+        "current": current.map(|i| i.name.as_str()),
+        "instances": instances,
+    })
+    .to_string()
+}
+
 /// A dashboard or beta page as the admin web serves it (`current`: the instance, `None` the default lobby): the page
 /// token is the session's; with instances configured, the top bar names the lobby and switches between them; on a
 /// further instance the Updates tab is gone; the dashboard links the key page.
@@ -338,7 +355,12 @@ pub fn dress(
         return out;
     }
     let label = current.map_or(cfg.label.as_str(), |i| i.label.as_str());
-    let page = if beta { "/ops/beta" } else { "/ops" };
+    // LG-444: the earlier dashboard page's switcher stays on the earlier page of the other lobby
+    let page = if beta {
+        "/ops/beta"
+    } else {
+        crate::opsweb::CLASSIC_PAGE_PATH
+    };
     let link = |href: String, text: &str, on: bool| {
         format!(
             "<option value=\"{href}\"{}>{}</option>",
@@ -494,10 +516,10 @@ mod tests {
         assert!(
             other.contains("DeCombat <span>operations</span>")
                 && other.contains(
-                    "<option value=\"/i/modded/ops\" selected>Hacking &amp; Mod</option>"
+                    "<option value=\"/i/modded/ops/classic\" selected>Hacking &amp; Mod</option>"
                 )
         );
-        assert!(other.contains("<option value=\"/ops\">Vanilla &lt;b&gt;</option>"));
+        assert!(other.contains("<option value=\"/ops/classic\">Vanilla &lt;b&gt;</option>"));
         assert!(other.contains("<title>Hacking &amp; Mod | DeCombat ops</title>"));
         assert!(other.contains("<body class=\"other-lobby\">") && !other.contains("#updates"));
         let beta = dress(page, &cfg, None, "new", true);

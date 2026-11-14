@@ -524,6 +524,8 @@ pub struct Resp {
     pub ctype: &'static str,
     /// Extra header lines, each ending in CRLF.
     pub headers: String,
+    /// The `Cache-Control` value: `no-store` but for the app's two files asked by their build's address (LG-443).
+    pub cache: &'static str,
     pub body: String,
 }
 
@@ -592,8 +594,15 @@ impl Resp {
             status,
             ctype,
             headers: String::new(),
+            cache: crate::opsweb::NO_STORE,
             body,
         }
+    }
+
+    /// LG-443: this answer with another `Cache-Control` value.
+    fn cached(mut self, value: &'static str) -> Resp {
+        self.cache = value;
+        self
     }
 
     fn json(status: u16, v: Value) -> Resp {
@@ -621,8 +630,9 @@ impl Resp {
     pub fn csp(&self) -> String {
         if self.ctype.starts_with("text/html") {
             format!(
-                "default-src 'none'; script-src {}; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; \
-                 base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+                // LG-442: style-src 'self' is for the app's stylesheet, a file of this listener
+                "default-src 'none'; script-src {}; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
+                 img-src data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
                 template_script_sources()
             )
         } else {
@@ -633,7 +643,7 @@ impl Resp {
     /// The HTTP bytes, with the security headers every answer of this listener carries (LG-387).
     pub fn bytes(&self) -> Vec<u8> {
         let mut v = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\n\
              X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\n\
              Cross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Resource-Policy: same-origin\r\n\
              Strict-Transport-Security: max-age=31536000\r\nX-Robots-Tag: noindex\r\n\
@@ -642,6 +652,7 @@ impl Resp {
             status_text(self.status),
             self.ctype,
             self.body.len(),
+            self.cache,
             self.csp(),
             self.headers,
         )
@@ -1145,7 +1156,11 @@ pub fn handle(
     // LG-399: a further instance's pages sit under /i/<name>; the checks below see the path the instance serves
     let inner = crate::adminfwd::split(path).map_or(path, |(_, p)| p);
     let Some((sid, s)) = sess else {
-        return if method == "GET" && matches!(inner, "/ops" | "/ops/beta" | "/keys") {
+        return if method == "GET"
+            && matches!(
+                inner.trim_end_matches('/'),
+                "/ops" | "/ops/classic" | "/ops/next" | "/ops/beta" | "/keys"
+            ) {
             Resp::redirect("/login")
         } else {
             Resp::err(401, "sign in first")
@@ -1230,6 +1245,20 @@ pub fn handle(
             event(shared, false, &format!("signed out from {}", c.ip));
             Resp::json(200, json!({"ok": true, "redirect": "/login"})).with(&session_cookie("", 0))
         }
+        // LG-441, LG-444: the app's page, with the session's page token and the lobbies this admin web serves
+        ("GET", p) if p.trim_end_matches('/') == crate::opsweb::APP_PAGE_PATH => Resp::new(
+            200,
+            HTML_TYPE,
+            crate::opsweb::app_shell(
+                &s.csrf,
+                &crate::opsweb::app_asset_query(),
+                &crate::adminfwd::boot(&c.cfg, None),
+            ),
+        ),
+        // LG-444: the address the app's page had while it was a preview
+        ("GET", p) if p.trim_end_matches('/') == "/ops/next" => {
+            Resp::redirect(crate::opsweb::APP_PAGE_PATH)
+        }
         (_, p) if p == "/ops" || p.starts_with("/ops/") => {
             // LG-387: the loopback port's dashboard and beta list, behind this session and its write guard
             let guard = WriteGuard {
@@ -1281,10 +1310,15 @@ pub fn handle(
                     ),
                 );
             }
-            if matches!(p, "/ops" | "/ops/beta") && status == 200 && ctype == crate::opsweb::HTML {
-                out = crate::adminfwd::dress(&out, &c.cfg, None, &s.csrf, p == "/ops/beta");
+            let page = p.trim_end_matches('/');
+            if matches!(page, "/ops/classic" | "/ops/beta")
+                && status == 200
+                && ctype == crate::opsweb::HTML
+            {
+                out = crate::adminfwd::dress(&out, &c.cfg, None, &s.csrf, page == "/ops/beta");
             }
-            Resp::new(status, ctype, out)
+            // LG-443: the app's two files, asked by this build's address, may be kept by the browser
+            Resp::new(status, ctype, out).cached(crate::opsweb::app_cache_control(&req, status))
         }
         (_, p) if p.starts_with(crate::adminfwd::PREFIX) => instance(&c, &s, method, head, p, body),
         _ => Resp::err(404, "not found"),
@@ -1302,6 +1336,33 @@ fn instance(c: &Ctx, s: &Session, method: &str, head: &str, path: &str, body: &[
     };
     if inner.is_empty() && method == "GET" {
         return Resp::redirect(&format!("{}{name}/ops", crate::adminfwd::PREFIX));
+    }
+    // LG-444: the address the app's page had while it was a preview
+    if method == "GET" && inner.trim_end_matches('/') == "/ops/next" {
+        return Resp::redirect(&format!(
+            "{}{name}{}",
+            crate::adminfwd::PREFIX,
+            crate::opsweb::APP_PAGE_PATH
+        ));
+    }
+    // LG-441, LG-444: the app's page for this instance is the admin web's own (the same build); only the boot data
+    // differs, and its script and stylesheet are the admin web's own files under /ops. Nothing is asked of the
+    // instance.
+    if method == "GET" && inner.trim_end_matches('/') == crate::opsweb::APP_PAGE_PATH {
+        return Resp::new(
+            200,
+            HTML_TYPE,
+            crate::opsweb::app_shell(
+                &s.csrf,
+                &crate::opsweb::app_asset_query(),
+                &crate::adminfwd::boot(&c.cfg, Some(inst)),
+            ),
+        );
+    }
+    // the app's script, stylesheet and licence texts are served from the root paths only: below an instance's
+    // prefix they do not exist, and nothing is asked of the instance
+    if crate::opsweb::app_file(inner.trim_end_matches('/')).is_some() {
+        return Resp::err(404, "not found");
     }
     if crate::deploy::handles(inner) {
         return Resp::err(
@@ -1345,7 +1406,7 @@ fn instance(c: &Ctx, s: &Session, method: &str, head: &str, path: &str, body: &[
     match res {
         Ok(a) => {
             let page = inner.trim_end_matches('/');
-            if a.html && a.status == 200 && matches!(page, "/ops" | "/ops/beta") {
+            if a.html && a.status == 200 && matches!(page, "/ops/classic" | "/ops/beta") {
                 let out = crate::adminfwd::dress(
                     &a.body,
                     &c.cfg,

@@ -783,6 +783,10 @@ mod tests {
         let g = Gesture::Settings(Box::new(Op::SettingsSet {
             bake_shadow: None,
             bake_lightmap: None,
+            bake_ambient: None,
+            bake_sun: None,
+            bake_hemisphere: None,
+            bake_ao: None,
             fog_enable: Some(false),
             fog_near: None,
             fog_far: None,
@@ -795,6 +799,7 @@ mod tests {
             sky_size: None,
             sky_material: None,
             two_sided: Some(true),
+            sky_inner: None,
         }));
         let ops = ops_of(&g, &p);
         let a = apply(&mut p, &mut h, &ops).unwrap();
@@ -845,6 +850,10 @@ mod tests {
         let bad = Op::SettingsSet {
             bake_shadow: None,
             bake_lightmap: None,
+            bake_ambient: None,
+            bake_sun: None,
+            bake_hemisphere: None,
+            bake_ao: None,
             fog_enable: None,
             fog_near: None,
             fog_far: None,
@@ -857,11 +866,16 @@ mod tests {
             sky_size: None,
             sky_material: None,
             two_sided: None,
+            sky_inner: None,
         };
         assert!(apply(&mut p, &mut h, &[bad]).is_err());
         let bad = Op::SettingsSet {
             bake_shadow: None,
             bake_lightmap: None,
+            bake_ambient: None,
+            bake_sun: None,
+            bake_hemisphere: None,
+            bake_ao: None,
             fog_enable: None,
             fog_near: None,
             fog_far: None,
@@ -874,6 +888,7 @@ mod tests {
             sky_size: None,
             sky_material: Some("nope".into()),
             two_sided: None,
+            sky_inner: None,
         };
         assert_eq!(
             apply(&mut p, &mut h, &[bad]).unwrap_err().items[0].code,

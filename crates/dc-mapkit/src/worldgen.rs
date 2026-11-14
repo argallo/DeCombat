@@ -632,7 +632,7 @@ pub fn brush_half(b: &Brush) -> V3 {
 /// rot 0 (MAP-3), the role's props (DC-DEFAULT: MAP-46): world models and breakables `visible` / `solid` /
 /// `rayhit` true (breakables `hit_points` 100), the sky model `sky_index` 0, `sky_dims` = half its box and
 /// `sky_inner` 0.9, kill volumes and ladders nothing (the kill is immediate, the ladder needs no property).
-pub fn brush_object(b: &Brush) -> SynthObject {
+pub fn brush_object(b: &Brush, sky_inner: Option<f32>) -> SynthObject {
     let shown = [
         (PROP_VISIBLE, SynthValue::Bool(true)),
         (PROP_SOLID, SynthValue::Bool(true)),
@@ -650,7 +650,10 @@ pub fn brush_object(b: &Brush) -> SynthObject {
         BrushRole::Sky => vec![
             (PROP_SKY_INDEX, SynthValue::Int(0.0)),
             (PROP_SKY_DIMS, SynthValue::Vec3(brush_half(b).to_array())),
-            (PROP_SKY_INNER, SynthValue::Vec3([SKY_INNER; 3])),
+            (
+                PROP_SKY_INNER,
+                SynthValue::Vec3([sky_inner.unwrap_or(SKY_INNER); 3]),
+            ),
         ],
     };
     SynthObject::dc(
@@ -1039,7 +1042,7 @@ mod tests {
             })
             .unwrap(),
         };
-        let so = brush_object(&b);
+        let so = brush_object(&b, None);
         assert_eq!(so.class, b"dc.sky_model");
         assert_eq!(so.props[0].value, SynthValue::Text(b"solid_9".to_vec()));
         assert_eq!(so.props[1].value, SynthValue::Vec3([10.0, 0.0, 0.0]));

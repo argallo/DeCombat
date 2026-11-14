@@ -233,7 +233,7 @@ fn a_hostile_record_is_refused_before_anything_is_allocated() {
     let mut p = fixture::piece(Vec::new());
     p.offset = [2.0e6, 0.0, 0.0];
     refused(&p, "from the origin");
-    let mut p = fixture::piece(vec![Aabb::new(
+    let p = fixture::piece(vec![Aabb::new(
         [1.0e7, 0.0, 0.0],
         [1.0e7 + 10.0, 10.0, 10.0],
     )]);

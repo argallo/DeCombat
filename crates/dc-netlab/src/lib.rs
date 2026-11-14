@@ -72,7 +72,11 @@ pub fn balanced_levels(seed: u64, n: usize, lo: u8, hi: u8) -> Vec<u8> {
     for (rank, level) in sorted.into_iter().enumerate() {
         // ranks 0,3,4,7,.. go to even slots, 1,2,5,6,.. to odd slots: the snake
         let pair = rank / 2;
-        let slot = if (rank % 4 == 0) || (rank % 4 == 3) { pair * 2 } else { pair * 2 + 1 };
+        let slot = if (rank % 4 == 0) || (rank % 4 == 3) {
+            pair * 2
+        } else {
+            pair * 2 + 1
+        };
         if slot < n {
             out[slot] = level;
         }
@@ -82,7 +86,11 @@ pub fn balanced_levels(seed: u64, n: usize, lo: u8, hi: u8) -> Vec<u8> {
 
 /// `--skills`: `n` levels in join order from `list`, repeated (`85,30` over 8 bots: 85, 30, 85, 30, ...).
 pub fn listed_levels(list: &[u8], n: usize) -> Vec<u8> {
-    list.iter().copied().cycle().take(if list.is_empty() { 0 } else { n }).collect()
+    list.iter()
+        .copied()
+        .cycle()
+        .take(if list.is_empty() { 0 } else { n })
+        .collect()
 }
 
 /// `--skills <a,b,...>`: levels 0..=100.
@@ -228,7 +236,12 @@ fn run_scenario(ctx: &Ctx<'_>, idx: usize, sc: &Scenario) -> Value {
     // so team 1 was always the stronger side (45/37/51/55 against 48/42/31/46) and won 13 of 14 round matches.
     let levels = (ctx.cfg.rom.is_some() && ctx.lobby.is_some()).then(|| {
         if ctx.cfg.skills.is_empty() {
-            balanced_levels(ctx.cfg.seed ^ (idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15), roster.len(), 30, 65)
+            balanced_levels(
+                ctx.cfg.seed ^ (idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
+                roster.len(),
+                30,
+                65,
+            )
         } else {
             listed_levels(&ctx.cfg.skills, roster.len())
         }
@@ -605,7 +618,10 @@ mod level_tests {
             let odd: u32 = l.iter().skip(1).step_by(2).map(|&x| x as u32).sum();
             assert!(even.abs_diff(odd) <= 35, "seed {seed}: {l:?}");
         }
-        assert_ne!(super::balanced_levels(1, 8, 30, 65), super::balanced_levels(2, 8, 30, 65));
+        assert_ne!(
+            super::balanced_levels(1, 8, 30, 65),
+            super::balanced_levels(2, 8, 30, 65)
+        );
     }
 
     // --skills: the list in join order, repeated; the alternate deal puts one level on each team

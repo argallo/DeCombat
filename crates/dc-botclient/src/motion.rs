@@ -36,6 +36,11 @@ pub const LADDER_LEVEL_BAND: f32 = 40.0;
 /// "Standing on nothing" value of the trailer's standing ids (-1 / -1).
 // SPEC: MOVEMENT_2009.md §12.2 ([standing:u64] the standing ids or -1 / -1)
 pub const STANDING_NONE: u64 = u64::MAX;
+/// Trailer `surface` of a body on a ladder (0 otherwise: the bot names no ground material). The game server restarts
+/// a fall at every ladder trailer, so a body that climbs down a long ladder lands with no fall behind it.
+// SPEC: MOVEMENT_2009.md §10.2 (on a ladder the surface type is forced to 200), §12.2 (`surface` 200 on the ladder)
+// DC-DEFAULT: BOT-181 (proposed)
+pub const LADDER_SURFACE: u8 = 200;
 
 /// BOT-149: the equipment slots and item number bases of the worn gear whose speed rows count (head gear `Hair<n>`,
 /// goggles `Goggle<n>`, backpack `Backpack<n>`; the row is the item number less the base), as the client reads its
@@ -363,6 +368,17 @@ impl Body {
         self.state.on_ground
     }
 
+    /// BOT-196: whether a jump pressed now leaves the ground: on its feet (not on a ladder, not in a jump's flight),
+    /// standing tall and with no crouch eye offset left (the movement drops the jump key otherwise).
+    pub fn can_jump(&self) -> bool {
+        let s = &self.state;
+        s.on_ground
+            && !s.on_ladder
+            && !s.jump_flag
+            && s.eye_dip == 0.0
+            && s.stand_dims.y - self.params.jump_box_margin <= s.dims.y
+    }
+
     /// BOT-143: the sprint gauge as (value, full) (`None`: no gauge rule) and what it did last step.
     pub fn gauge(&self) -> (Option<(f32, i32)>, GaugeMode) {
         let rates = self.mods.stamina;
@@ -426,6 +442,22 @@ impl Body {
         secs: f32,
         samples: usize,
     ) -> Vec<[f32; 3]> {
+        self.probe_path_ladder(steer, evade, secs, samples)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    }
+
+    /// BOT-181: [`Self::probe_path`] with, at each place, whether the copy is on a ladder there or touches one (a body
+    /// climbing down a ladder hangs over its drop without danger).
+    // DC-DEFAULT: BOT-181 (proposed)
+    pub fn probe_path_ladder(
+        &self,
+        steer: Option<f32>,
+        evade: Option<crate::evade::Move>,
+        secs: f32,
+        samples: usize,
+    ) -> Vec<([f32; 3], bool)> {
         let mut b = self.clone();
         b.kind = MotionKind::Hunt;
         b.frozen = false;
@@ -441,7 +473,8 @@ impl Body {
                 e.jump = false;
             }
             if (i + 1) % every == 0 || i + 1 == n {
-                out.push(b.pos());
+                // (touching a ladder volume counts: the step off the top onto the rungs)
+                out.push((b.pos(), b.on_ladder() || !b.touched.is_empty()));
             }
         }
         out
@@ -570,7 +603,13 @@ impl Body {
                 vel: self.vel(),
                 time,
                 on_ground: self.state.on_ground as u8,
-                surface: 0,
+                // BOT-181: 200 on a ladder (before, always 0: a Waverider bot climbing down its spawn ladder took the
+                // 813-unit descent as one fall and died at the foot)
+                surface: if self.state.on_ladder {
+                    LADDER_SURFACE
+                } else {
+                    0
+                },
                 standing: STANDING_NONE,
             },
         }
@@ -611,6 +650,39 @@ mod tests {
         assert_eq!(b.update(0.0).control & bits::FWD, 0);
         b.frozen = false;
         assert!(b.update(0.0).control & bits::FWD != 0);
+    }
+
+    /// BOT-181: a body on a ladder names the ladder surface in its trailer, so the game server starts no fall on
+    /// its way down; off the ladder it names none.
+    #[test]
+    fn a_body_on_a_ladder_sends_the_ladder_surface() {
+        let ladder = dc_sim::ConvexVolume::from_box(V3::new(-20.0, -10.0, 10.0), V3::new(20.0, 900.0, 30.0));
+        let mut b = Body::new(
+            [0.0, 840.0, 0.0],
+            BOT_STAND_DIMS,
+            0.0,
+            MotionKind::Hunt,
+            60,
+            None,
+        );
+        assert_eq!(b.update(0.0).trailer.surface, 0, "off the ladder");
+        b.ladders = Some(Arc::new(ContainerVolumes {
+            volumes: vec![(ladder, Container::ladder())],
+        }));
+        b.goal_y = Some(0.0);
+        b.steer = Some(0.0);
+        let mut seen = false;
+        for _ in 0..120 {
+            b.advance(1_000_000 / 60);
+            let t = b.update(0.0).trailer;
+            if b.on_ladder() {
+                seen = true;
+                assert_eq!(t.surface, LADDER_SURFACE);
+            } else {
+                assert_eq!(t.surface, 0);
+            }
+        }
+        assert!(seen, "the body touched the ladder: {:?}", b.pos());
     }
 
     /// BOT-128: a body backing along its walk moves the walk's way with the back key (and not faster than a
@@ -774,7 +846,7 @@ mod tests {
     #[test]
     fn rom_the_light_vest_body_runs_faster() {
         let rom = dc_rez::dc_rom::rom_or_skip!();
-        let rows = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
+        let rows = dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
         let eq = [20, 1, 0, 7, -1, -1, -1, 2000, -1, 7001, -1, -1, -1, -1, -1];
         let gear = gear_rows(&eq);
         // the fastest of the default body's neighbours stands for a light vest's body (the row is not named here)
@@ -795,7 +867,7 @@ mod tests {
     #[test]
     fn rom_a_rifle_bot_walks_slower_than_with_its_pistol_or_knife() {
         let rom = dc_rez::dc_rom::rom_or_skip!();
-        let rows = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
+        let rows = dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
         let eq = [20, 1, 0, 7, -1, -1, -1, 2000, -1, 7001, -1, -1, -1, -1, -1];
         let gear = gear_rows(&eq);
         let neutral = walk_speed(SpeedMods::default());

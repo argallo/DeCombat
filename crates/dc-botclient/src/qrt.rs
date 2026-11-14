@@ -189,13 +189,15 @@ pub fn spot_for_round(ranked: &[[f32; 3]], round: u8) -> Option<[f32; 3]> {
 
 /// BOT-160: before the outbreak a human waits at a place [`PRE_POST_MIN`]..[`PRE_POST_MAX`] from the stand (spread:
 /// the host is one of them); after it, within [`POST_RADIUS`] of it. Reached at [`POST_REACHED`].
-// DC-DEFAULT: BOT-160 (proposed) 300..700 units before, 300 units after, 48 units
+// DC-DEFAULT: BOT-160 (proposed) 300..700 units before, 48 units; BOT-183 (proposed) 250 units after
 pub const PRE_POST_MIN: f32 = 300.0;
 pub const PRE_POST_MAX: f32 = 700.0;
-pub const POST_RADIUS: f32 = 300.0;
+pub const POST_RADIUS: f32 = 250.0;
 /// BOT-160: whether the humans gather within [`POST_RADIUS`] of the stand after the outbreak (else they keep their
-/// spread places round it).
-pub const GATHER: bool = false;
+/// spread places round it). BOT-183: on again at 250 units (2026-11-09 runs: post-outbreak phases no shorter than
+/// without it, Junk Flea humans within 400 units of each other 12 % -> 43 %).
+// DC-DEFAULT: BOT-183 (proposed)
+pub const GATHER: bool = true;
 pub const POST_REACHED: f32 = 48.0;
 
 /// BOT-160: before the outbreak a place this near another human counts against it (the host is one of them: it
@@ -258,6 +260,24 @@ pub fn posts(
 pub const POST_WALK: f32 = 3300.0;
 pub const POST_TRIES: usize = 6;
 pub const POST_GIVE_UP_MS: u32 = 15_000;
+
+/// BOT-161: whether the post picked `elapsed` ms ago (by BOT-194, or last left for a fall-back or a hold) and now
+/// `d` units (flat) away is given up for the round.
+pub fn post_given_up(elapsed: u32, d: f32) -> bool {
+    elapsed >= POST_GIVE_UP_MS && d > POST_REACHED
+}
+
+/// BOT-194 (amends BOT-161): the give-up clock of a human's post runs only while the post plan walks the bot to it.
+/// A fall-back or a hold pulls the bot off its post; each of their ticks starts the clock again, so the walk back
+/// gets its whole [`POST_GIVE_UP_MS`]. Before, a post the bot had stood at was given up the moment it came back
+/// from a fall-back longer than that, and with the stand itself given up the bot stood where it was for the rest of
+/// the round (Warhead, skill 70..90: 100 s still with no goal).
+// DC-DEFAULT: BOT-194 (proposed)
+pub fn post_clock_restart<T>(guard: &mut Option<([f32; 3], bool, T)>, now: T) {
+    if let Some(g) = guard.as_mut() {
+        g.2 = now;
+    }
+}
 
 /// BOT-161: whether a way `path` from `at` (as `NavGrid::path` gives it) reaches `goal` within [`POST_WALK`].
 pub fn way_reaches(at: [f32; 3], path: &[[f32; 3]], goal: [f32; 3]) -> bool {
@@ -325,6 +345,13 @@ pub struct Round {
     pub dropped: Vec<(u8, u32)>,
     /// BOT-161: places given up this round (not reached in time).
     pub bad: Vec<[f32; 3]>,
+    /// BOT-183: the last place each human was seen at this round (pid, place, when).
+    pub humans_seen: Vec<(u8, [f32; 3], u32)>,
+    /// BOT-183: the grid cells ([`SEARCH_CELL`]) walked as an infected this round.
+    pub visited: std::collections::BTreeSet<(i32, i32)>,
+    /// BOT-183: the search places done this round (reached or given up), and the one walked to (since when).
+    pub searched: Vec<[f32; 3]>,
+    pub search: Option<([f32; 3], u32)>,
 }
 
 impl Round {
@@ -339,11 +366,58 @@ impl Round {
         self.chase = None;
         self.dropped.clear();
         self.bad.clear();
+        self.humans_seen.clear();
+        self.visited.clear();
+        self.searched.clear();
+        self.search = None;
+    }
+
+    /// BOT-183: notes where the humans `humans` (pid, place) are seen now (an infected pid is skipped).
+    pub fn note_humans(&mut self, now: u32, humans: &[(u8, [f32; 3])]) {
+        for (pid, p) in humans {
+            if self.infected.contains(pid) {
+                continue;
+            }
+            if let Some(h) = self.humans_seen.iter_mut().find(|h| h.0 == *pid) {
+                *h = (*pid, *p, now);
+            } else {
+                self.humans_seen.push((*pid, *p, now));
+            }
+        }
+    }
+
+    /// BOT-183: the places humans were last seen at within [`HUMAN_SEEN_KEEP_MS`], newest first.
+    pub fn humans_seen_places(&self, now: u32) -> Vec<[f32; 3]> {
+        let mut v: Vec<&(u8, [f32; 3], u32)> = self
+            .humans_seen
+            .iter()
+            .filter(|h| now.wrapping_sub(h.2) < HUMAN_SEEN_KEEP_MS)
+            .collect();
+        v.sort_by(|a, b| now.wrapping_sub(a.2).cmp(&now.wrapping_sub(b.2)).then(a.0.cmp(&b.0)));
+        v.into_iter().map(|h| h.1).collect()
+    }
+
+    /// BOT-183: an infected at `at` walked its cell.
+    pub fn note_walk(&mut self, at: [f32; 3]) {
+        self.visited.insert(cell(at));
+    }
+
+    /// BOT-183: the search place walked to, kept until it is reached ([`SEARCH_REACHED`]) or [`SEARCH_GIVE_UP_MS`]
+    /// passed; then it is done and `None` asks for the next.
+    pub fn search_keep(&mut self, now: u32, at: [f32; 3]) -> Option<[f32; 3]> {
+        let (g, since) = self.search?;
+        if reached(at, g) || now.wrapping_sub(since) >= SEARCH_GIVE_UP_MS {
+            self.searched.push(g);
+            self.search = None;
+            return None;
+        }
+        Some(g)
     }
 
     /// 0xd3 sub 0: `pid` is now of `team`.
     pub fn on_team(&mut self, pid: u8, team: u8) {
         if team == INFECTED {
+            self.humans_seen.retain(|h| h.0 != pid);
             self.infected.insert(pid);
         } else {
             self.infected.remove(&pid);
@@ -410,6 +484,151 @@ impl Round {
         self.chase = pick.map(|h| (h.0, now, flat(h.1, at)));
         (pick, gave_up)
     }
+}
+
+/// BOT-183: an infected that knows of no living human searches: first the places humans were last seen at (newest
+/// first, kept [`HUMAN_SEEN_KEEP_MS`]), then the round's stand, the places round it at [`SEARCH_RING`] (the humans'
+/// posts lie 300..700 from it) and the other ranked stands; the infected share these places out by their rank among
+/// the infected (the k-th of n takes places k, k+n, k+2n, ...). With its share done it sweeps: the grid node, at
+/// least [`SEARCH_MIN`] away, in a [`SEARCH_CELL`] cell it has not walked this round, nearest first with its bearing
+/// held to its own sector (1 radian off costs 1000 units). A place counts as searched when reached within
+/// [`SEARCH_REACHED`] flat ([`SEARCH_HEIGHT`] up or down) or after [`SEARCH_GIVE_UP_MS`]. Before, it roamed to a
+/// random far node of its own grid, so it searched only where it had walked (Warhead: a survivor 1240 units from
+/// the nearest of 7 infected for 140 s).
+// DC-DEFAULT: BOT-183 (proposed) 160 / 320 units, 30 s, 400-unit cells, 500 units, ring of 8 at 500, 90 s
+pub const SEARCH_REACHED: f32 = 160.0;
+pub const SEARCH_HEIGHT: f32 = 320.0;
+pub const SEARCH_GIVE_UP_MS: u32 = 30_000;
+pub const SEARCH_CELL: f32 = 400.0;
+pub const SEARCH_MIN: f32 = 500.0;
+pub const SEARCH_RING: f32 = 500.0;
+pub const SEARCH_RING_N: usize = 8;
+pub const HUMAN_SEEN_KEEP_MS: u32 = 90_000;
+
+/// BOT-183: the [`SEARCH_CELL`] cell of a place.
+pub fn cell(p: [f32; 3]) -> (i32, i32) {
+    (
+        (p[0] / SEARCH_CELL).floor() as i32,
+        (p[2] / SEARCH_CELL).floor() as i32,
+    )
+}
+
+fn reached(at: [f32; 3], g: [f32; 3]) -> bool {
+    flat(at, g) <= SEARCH_REACHED && (at[1] - g[1]).abs() <= SEARCH_HEIGHT
+}
+
+/// BOT-183: the places round the stand `spot` the search looks at ([`SEARCH_RING_N`] bearings at [`SEARCH_RING`];
+/// the caller moves each onto a safe grid place near it or drops it).
+pub fn ring(spot: [f32; 3]) -> Vec<[f32; 3]> {
+    (0..SEARCH_RING_N)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / SEARCH_RING_N as f32;
+            [
+                spot[0] + SEARCH_RING * a.sin(),
+                spot[1],
+                spot[2] + SEARCH_RING * a.cos(),
+            ]
+        })
+        .collect()
+}
+
+/// BOT-183: the search's fixed places in order (see [`SEARCH_REACHED`]'s rule): last seen, the stand, its ring, the
+/// other stands; a place within [`SEARCH_REACHED`] of an earlier one drops out.
+pub fn search_places(
+    seen: &[[f32; 3]],
+    stand: Option<[f32; 3]>,
+    ring: &[[f32; 3]],
+    stands: &[[f32; 3]],
+) -> Vec<[f32; 3]> {
+    let mut out: Vec<[f32; 3]> = Vec::new();
+    for p in seen
+        .iter()
+        .chain(stand.iter())
+        .chain(ring.iter())
+        .chain(stands.iter())
+    {
+        if out.iter().all(|o| !reached(*o, *p)) {
+            out.push(*p);
+        }
+    }
+    out
+}
+
+/// BOT-183: the next search place of the infected ranked `slot` of `n` at `at`: its share of `fixed` not yet
+/// `searched`, else the sweep over the grid places `nodes` not in a `visited` cell. `None` when nothing is left.
+pub fn search_pick(
+    at: [f32; 3],
+    slot: usize,
+    n: usize,
+    fixed: &[[f32; 3]],
+    nodes: &[[f32; 3]],
+    visited: &std::collections::BTreeSet<(i32, i32)>,
+    searched: &[[f32; 3]],
+) -> Option<[f32; 3]> {
+    let n = n.max(1);
+    let slot = slot % n;
+    let done = |p: [f32; 3]| searched.iter().any(|s| reached(*s, p));
+    if let Some(p) = fixed.iter().skip(slot).step_by(n).copied().find(|p| !done(*p)) {
+        return Some(p);
+    }
+    let want = slot as f32 * std::f32::consts::TAU / n as f32;
+    nodes
+        .iter()
+        .copied()
+        .filter(|p| flat(*p, at) >= SEARCH_MIN && !visited.contains(&cell(*p)) && !done(*p))
+        .map(|p| {
+            let off = if n > 1 {
+                let a = (p[0] - at[0]).atan2(p[2] - at[2]).rem_euclid(std::f32::consts::TAU);
+                let o = (a - want).abs();
+                o.min(std::f32::consts::TAU - o)
+            } else {
+                0.0
+            };
+            (flat(p, at) + 1000.0 * off, p)
+        })
+        .min_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then(a.1[0].total_cmp(&b.1[0]))
+                .then(a.1[2].total_cmp(&b.1[2]))
+        })
+        .map(|x| x.1)
+}
+
+/// BOT-183: the bot's rank among the infected (`infected` and itself, `own`) and their number.
+pub fn infected_slot(own: Option<u8>, infected: &std::collections::BTreeSet<u8>) -> (usize, usize) {
+    let mut all: Vec<u8> = infected.iter().copied().collect();
+    if let Some(o) = own {
+        if !all.contains(&o) {
+            all.push(o);
+            all.sort_unstable();
+        }
+    }
+    let slot = own.and_then(|o| all.iter().position(|p| *p == o)).unwrap_or(0);
+    (slot, all.len().max(1))
+}
+
+/// BOT-183: a human's post more than [`POST_REACHED`] beyond `max` from the stand `spot` (the young grid's frontier
+/// on the way, BOT-161's fallback) is short of the stand: every [`POST_FAR_REPICK_MS`] the grid grows between the
+/// bot and the stand and the post is picked again ([`post_repick`]); with no better one, a bot standing at the short
+/// post walks on toward the stand itself (its way grows the grid) and takes a post in the band once one is known.
+/// Before, a post once reached was kept for the round (Junk Flea: posts up to 1675 units from the stand).
+// DC-DEFAULT: BOT-183 (proposed) every 3 s
+pub const POST_FAR_REPICK_MS: u32 = 3000;
+
+pub fn post_short(post: [f32; 3], spot: [f32; 3], max: f32) -> bool {
+    flat(post, spot) > max + POST_REACHED
+}
+
+/// BOT-183: the place a picked-again post `new` replaces the current one `cur` with: while walking to the stand
+/// itself (`cur` is `spot`) a post that is not short; else one nearer the stand by more than [`POST_REACHED`].
+pub fn post_repick(cur: [f32; 3], new: Option<[f32; 3]>, spot: [f32; 3], max: f32) -> Option<[f32; 3]> {
+    let n = new?;
+    let take = if cur == spot {
+        !post_short(n, spot, max)
+    } else {
+        flat(n, spot) + POST_REACHED < flat(cur, spot)
+    };
+    take.then_some(n)
 }
 
 /// The nearest of `points` to `at` (flat) and its distance.
@@ -562,7 +781,7 @@ mod tests {
     #[test]
     fn rom_the_infected_override_rows_are_faster_than_a_human() {
         let rom = dc_rez::dc_rom::rom_or_skip!();
-        let rows = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
+        let rows = dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(&rom)).expect("speed rows");
         let human = crate::motion::loadout_mods(&rows, Some(145), (None, None, None), None, false);
         let n = rows.bodies.len() - rows.override_base;
         let mut faster = 0;
@@ -752,5 +971,137 @@ mod tests {
         let both = [(2, [200.0, 0.0, 0.0]), (6, [700.0, 0.0, 0.0])];
         assert_eq!(r.chase_pick(41_000, at, &both), (Some(both[0]), Some(6)));
         assert_eq!(r.chase_pick(41_100, at, &[]), (None, None));
+    }
+
+    /// BOT-183: with no human known an infected searches the last-seen places, then the stand, its ring and the other
+    /// stands, shared out among the infected; with its share done it sweeps cells it has not walked, in its own
+    /// sector; a place is done when reached or after 30 s.
+    #[test]
+    fn an_infected_with_no_human_in_view_searches_seen_places_then_stands_then_new_ground() {
+        let mut r = Round::default();
+        r.on_countdown(1);
+        r.note_humans(1000, &[(3, [100.0, 0.0, 0.0]), (5, [3000.0, 0.0, 0.0])]);
+        r.note_humans(2000, &[(5, [3200.0, 0.0, 0.0])]);
+        assert_eq!(
+            r.humans_seen_places(2500),
+            vec![[3200.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
+            "newest first, one place per human"
+        );
+        r.on_team(3, INFECTED);
+        assert_eq!(r.humans_seen_places(2500), vec![[3200.0, 0.0, 0.0]], "an infected is no human to find");
+        assert!(r.humans_seen_places(2000 + HUMAN_SEEN_KEEP_MS).is_empty(), "old places expire");
+        r.note_humans(1000, &[(3, [0.0; 3])]);
+        assert!(r.humans_seen.iter().all(|h| h.0 != 3), "an infected pid is not noted");
+
+        let stand = [0.0, 0.0, 2000.0];
+        let rg = ring(stand);
+        assert_eq!(rg.len(), SEARCH_RING_N);
+        assert!(rg.iter().all(|p| (flat(*p, stand) - SEARCH_RING).abs() < 1.0));
+        let others = [[0.0, 0.0, 2050.0], [-2000.0, 0.0, 0.0]];
+        let fixed = search_places(&[[3200.0, 0.0, 0.0]], Some(stand), &rg[..2], &others);
+        assert_eq!(
+            fixed,
+            vec![[3200.0, 0.0, 0.0], stand, rg[0], rg[1], [-2000.0, 0.0, 0.0]],
+            "seen, stand, ring, other stands (one at the stand drops out)"
+        );
+
+        // shared out: of 3 infected, slot 0 takes places 0 and 3, slot 1 places 1 and 4, slot 2 place 2
+        let none = std::collections::BTreeSet::new();
+        let at = [0.0; 3];
+        let pick = |slot, searched: &[[f32; 3]]| search_pick(at, slot, 3, &fixed, &[], &none, searched);
+        assert_eq!(pick(0, &[]), Some(fixed[0]));
+        assert_eq!(pick(1, &[]), Some(fixed[1]));
+        assert_eq!(pick(2, &[]), Some(fixed[2]));
+        assert_eq!(pick(0, &[fixed[0]]), Some(fixed[3]));
+        assert_eq!(pick(2, &[fixed[2]]), None, "share done, no grid: nothing left");
+
+        // the sweep: unwalked cells at least 500 away, nearest in the own sector
+        let nodes = [
+            [200.0, 0.0, 0.0],   // too near
+            [0.0, 0.0, 900.0],   // bearing 0 (slot 0 of 2)
+            [0.0, 0.0, -700.0],  // bearing pi (slot 1 of 2)
+            [0.0, 0.0, -1500.0], // bearing pi, farther
+        ];
+        let mut walked = std::collections::BTreeSet::new();
+        assert_eq!(search_pick(at, 0, 2, &[], &nodes, &walked, &[]), Some(nodes[1]));
+        assert_eq!(search_pick(at, 1, 2, &[], &nodes, &walked, &[]), Some(nodes[2]));
+        walked.insert(cell(nodes[2]));
+        assert_eq!(
+            search_pick(at, 1, 2, &[], &nodes, &walked, &[]),
+            Some(nodes[3]),
+            "a walked cell is not searched again"
+        );
+        assert_eq!(search_pick(at, 1, 2, &[], &nodes, &walked, &[nodes[3]]), Some(nodes[1]));
+
+        // the walk: kept until reached or 30 s, then done
+        r.search = Some(([1000.0, 0.0, 0.0], 0));
+        assert_eq!(r.search_keep(1000, at), Some([1000.0, 0.0, 0.0]));
+        assert_eq!(r.search_keep(2000, [900.0, 0.0, 0.0]), None, "reached");
+        assert_eq!(r.searched, vec![[1000.0, 0.0, 0.0]]);
+        r.search = Some(([5000.0, 0.0, 0.0], 0));
+        assert_eq!(r.search_keep(SEARCH_GIVE_UP_MS, at), None, "given up");
+        assert_eq!(r.searched.len(), 2);
+        r.search = Some(([0.0, 600.0, 0.0], 0));
+        assert!(r.search_keep(10, at).is_some(), "another floor is not reached");
+        r.note_walk([450.0, 0.0, -10.0]);
+        assert!(r.visited.contains(&(1, -1)));
+        r.on_countdown(2);
+        assert!(r.visited.is_empty() && r.searched.is_empty() && r.search.is_none() && r.humans_seen.is_empty());
+
+        // the rank among the infected
+        let inf: std::collections::BTreeSet<u8> = [2, 6].into_iter().collect();
+        assert_eq!(infected_slot(Some(4), &inf), (1, 3));
+        assert_eq!(infected_slot(Some(6), &inf), (1, 2));
+        assert_eq!(infected_slot(None, &inf), (0, 2));
+    }
+
+    /// BOT-183: a post far beyond the post band from the stand (the young grid's frontier) is short of the stand and
+    /// a new pick replaces it only when that lies nearer the stand.
+    #[test]
+    fn a_post_short_of_the_stand_is_picked_again_when_a_nearer_one_is_known() {
+        let spot = [0.0; 3];
+        assert!(!post_short([600.0, 0.0, 0.0], spot, PRE_POST_MAX));
+        assert!(!post_short([740.0, 0.0, 0.0], spot, PRE_POST_MAX), "within the reach margin");
+        assert!(post_short([1675.0, 0.0, 0.0], spot, PRE_POST_MAX));
+        assert!(post_short([400.0, 0.0, 0.0], spot, POST_RADIUS));
+        let far = [1675.0, 0.0, 0.0];
+        let m = PRE_POST_MAX;
+        assert_eq!(post_repick(far, Some([500.0, 0.0, 0.0]), spot, m), Some([500.0, 0.0, 0.0]));
+        assert_eq!(
+            post_repick(far, Some([1500.0, 0.0, 0.0]), spot, m),
+            Some([1500.0, 0.0, 0.0]),
+            "nearer: the grid grew toward it"
+        );
+        assert_eq!(post_repick(far, Some([1650.0, 0.0, 0.0]), spot, m), None, "the same frontier");
+        assert_eq!(post_repick(far, Some([1800.0, 0.0, 0.0]), spot, m), None);
+        assert_eq!(post_repick(far, None, spot, m), None);
+        // walking to the stand itself: only a post in the band ends the walk
+        assert_eq!(post_repick(spot, Some([1500.0, 0.0, 0.0]), spot, m), None);
+        assert_eq!(post_repick(spot, Some([600.0, 0.0, 0.0]), spot, m), Some([600.0, 0.0, 0.0]));
+    }
+
+    /// BOT-194: a post the bot left for a fall-back keeps its whole give-up time for the walk back.
+    #[test]
+    fn a_fall_back_restarts_the_post_clock() {
+        let post = [200.0, 0.0, 0.0];
+        // picked at 0 and reached; pulled off by a fall-back from 3 s to 18 s
+        let mut guard = Some((post, false, 0u32));
+        for now in (3_000..=18_000).step_by(500) {
+            post_clock_restart(&mut guard, now);
+        }
+        let g = guard.unwrap();
+        assert_eq!(g.0, post, "the post is kept");
+        // back to the post plan at 18.5 s, 300 units off: not given up
+        assert!(!post_given_up(18_500 - g.2, 300.0));
+        assert!(!post_given_up(32_000 - g.2, 300.0));
+        // still not back 15 s after the fall-back ended: given up
+        assert!(post_given_up(33_000 - g.2, 300.0));
+        // at the post: never given up
+        assert!(!post_given_up(60_000 - g.2, 40.0));
+        // without the restart (the old clock) the return was a give-up at once
+        assert!(post_given_up(18_500, 300.0));
+        let mut none: Option<([f32; 3], bool, u32)> = None;
+        post_clock_restart(&mut none, 5);
+        assert!(none.is_none());
     }
 }

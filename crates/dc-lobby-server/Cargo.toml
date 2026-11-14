@@ -73,3 +73,5 @@ dc-net-engine = { path = "../dc-net-engine" }
 socket2 = "0.6"
 # the schema-coverage test walks the config key tree
 toml = "0.8"
+# src/devsession/web_tests.rs: the client crate's device-session flow driven against the real handlers (ROM-free)
+dc-session = { path = "../dc-session" }

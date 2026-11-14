@@ -694,8 +694,8 @@ impl ModHost {
     /// Each field (except `id`) becomes bute value text: a number its shortest text (`41`, `0.5`), a string as
     /// given, a boolean `1` / `0`; a nested table or an id of another form is an error naming the record.
     // DC-DEFAULT: MOD-21 (proposed), see DC_DEFAULTS.md
-    pub fn weapon_patches(&self) -> Result<dc_bute::modpatch::WeaponContent, String> {
-        use dc_bute::modpatch::{AmmoPatch, PatchOp, WeaponContent, WeaponPatch};
+    pub fn weapon_patches(&self) -> Result<dc_attr::modpatch::WeaponContent, String> {
+        use dc_attr::modpatch::{AmmoPatch, PatchOp, WeaponContent, WeaponPatch};
         let st = self.state.borrow();
         let Some(store) = st.content.domains.get("weapons") else {
             return Ok(WeaponContent::default());
@@ -781,7 +781,7 @@ impl ModHost {
     pub fn weapon_patches_of<F: Fn(&ModManifest) -> bool>(
         &self,
         keep: F,
-    ) -> Result<dc_bute::modpatch::WeaponContent, String> {
+    ) -> Result<dc_attr::modpatch::WeaponContent, String> {
         let dirs: Vec<(String, PathBuf)> = {
             let st = self.state.borrow();
             st.load_order

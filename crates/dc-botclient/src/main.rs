@@ -48,13 +48,13 @@ use dc_botclient::run::{open_rom, run_bot, run_game_with, session_report, BotCon
 use dc_botclient::session::{BotSession, GameConfig};
 
 const USAGE: &str = "usage: dc-botclient swarm --help     (a few bots that join a public lobby with you, docs/BOTS.md)
-       dc-botclient (--lobby <host:port> | --udp <host:port>) --name <nick> [--room <n|new|any>]
+       dc-botclient (--lobby <host:port> | --udp <host:port> [--ticket <32 hex> | env DC_SEAT_TICKET]) --name <nick> [--room <n|new|any>]
        [--walk | --hunt] [--duration <s>] [--log <jsonl>] [--log-max <bytes>] [--log-transport] [--capture <jsonl>] [--report <json>] [--user <id>]
        [--start-after <n>] [--password <p>] [--login-password <pw>] [--mod-set-hash <hex>] [--content-hash <hex|0>]
        [--mode <n>] [--title <t>] [--max-players <n>] [--mod-cache <dir>] [--room-title <part>]
        [--parent-pipe] [--known-servers <file>] [--pool]   (--pool: a seat of the lobby's bot pool, no --name needed)
        [--channel <id>] [--server-id <n>]
-       [--force-updates] [--state-form <n>] [--update-hz <f>] [--load-ms <n>] [--rom <dir>] [--no-rom]
+       [--force-updates] [--state-form <n>] [--update-hz <f>] [--load-ms <n>] [--rom <dir>] [--no-rom] [--game <dir>]
        [--match-wait <s>] [--loss <permille>] [--loss-seed <n>] [--drop-over <bytes>] [--net <profile[,k=v..]>] [--no-aim-quat]
        [--join-timeout <s>] [--idle-exit <s>] [--respawn-after <ms>] [--shooter | --hold-fire] [--fire-interval <ms>]
        [--throw-every <ms>] [--grenades <chance 0..1>]
@@ -68,6 +68,8 @@ struct Cli {
     known_servers: Option<PathBuf>,
     lobby: Option<SocketAddr>,
     udp: Option<SocketAddr>,
+    /// LG-327: the seat ticket for a direct `--udp` join (a lobby-run match pushes its own).
+    ticket: Option<dc_wire::seatticket::Ticket>,
     cfg: BotConfig,
     log: Option<PathBuf>,
     log_max: u64,
@@ -100,6 +102,19 @@ fn hash_arg(flag: &str, v: String, zero_ok: bool) -> Result<String, String> {
     }
 }
 
+/// The environment variable read for the seat ticket when `--ticket` is absent (a direct `--udp` join only).
+const TICKET_ENV: &str = "DC_SEAT_TICKET";
+
+/// Reads a seat ticket given as 32 hex digits (LG-327); `what` names the flag or variable in the error.
+fn seat_ticket(what: &str, v: &str) -> Result<dc_wire::seatticket::Ticket, String> {
+    dc_wire::seatticket::from_hex(v.trim()).ok_or_else(|| {
+        format!(
+            "{what}: not {} hex digits",
+            2 * dc_wire::seatticket::LEN
+        )
+    })
+}
+
 fn parse(args: Vec<String>) -> Result<Cli, String> {
     let placeholder: SocketAddr = "127.0.0.1:0".parse().expect("literal address");
     let mut c = Cli {
@@ -107,6 +122,7 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
         known_servers: None,
         lobby: None,
         udp: None,
+        ticket: None,
         cfg: BotConfig::new(placeholder, "Bot1"),
         log: None,
         log_max: 0,
@@ -134,6 +150,7 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
         match a.as_str() {
             "--lobby" => c.lobby = Some(addr(&val("--lobby")?)?),
             "--udp" => c.udp = Some(addr(&val("--udp")?)?),
+            "--ticket" => c.ticket = Some(seat_ticket("--ticket", &val("--ticket")?)?),
             "--name" => name = Some(val("--name")?),
             "--user" => user = Some(val("--user")?),
             "--room" => c.room = val("--room")?,
@@ -181,6 +198,13 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
             "--rom" => c.cfg.rom = Some(PathBuf::from(val("--rom")?)),
             "--mod-cache" => c.cfg.mod_cache = Some(PathBuf::from(val("--mod-cache")?)),
             "--no-rom" => c.cfg.use_rom = false,
+            // DC-DEFAULT: ENG-3 (proposed) a content profile folder (game.json), loaded and checked here
+            "--game" => {
+                let dir = PathBuf::from(val("--game")?);
+                c.cfg.game = Some(std::sync::Arc::new(
+                    dc_config::game::GameProfile::load(&dir)?,
+                ));
+            }
             "--no-aim-quat" => c.cfg.aim_quat = false,
             "--join-timeout" => {
                 c.cfg.join_timeout = Duration::from_secs_f64(
@@ -266,6 +290,15 @@ fn parse(args: Vec<String>) -> Result<Cli, String> {
     if c.lobby.is_none() && c.udp.is_none() {
         return Err("one of --lobby or --udp is required".into());
     }
+    // LG-327: a supervisor may pass the ticket in the environment, out of the process list
+    if c.ticket.is_none() && c.udp.is_some() {
+        if let Some(v) = std::env::var(TICKET_ENV).ok().filter(|v| !v.is_empty()) {
+            c.ticket = Some(seat_ticket(TICKET_ENV, &v)?);
+        }
+    }
+    if c.ticket.is_some() && c.udp.is_none() {
+        return Err("--ticket goes with --udp (a lobby pushes the seat ticket itself)".into());
+    }
     c.cfg.nick = name.clone();
     if let Some(v) = skill_text {
         let seed = c.cfg.nick.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
@@ -333,6 +366,9 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Some(g) = &c.cfg.game {
+        eprintln!("dc-botclient: {}", g.summary());
+    }
     if c.parent_pipe {
         // BOT-102: no bot outlives the `swarm` command, however that ends
         let _ = std::thread::Builder::new().name("parent-pipe".into()).spawn(|| {
@@ -375,6 +411,7 @@ fn main() {
         let rom = open_rom(c.cfg.use_rom, c.cfg.rom.as_ref());
         let mut gc = GameConfig::new(&c.cfg.nick);
         gc.hello_tag = c.cfg.user.clone();
+        gc.seat_ticket = c.ticket;
         gc.motion = c.cfg.motion;
         gc.force_updates = c.cfg.force_updates;
         gc.state_form = c.cfg.state_form;
@@ -475,5 +512,63 @@ mod tests {
         assert!(parse(args(&["--mod-set-hash", "0"])).is_err());
         assert!(parse(args(&["--mod-set-hash", "xyz"])).is_err());
         assert!(parse(args(&["--content-hash", &"g".repeat(64)])).is_err());
+    }
+
+    /// LG-327: `--ticket` on a direct `--udp` join reaches the hello blob after the 2009 bytes, as a lobby-pushed
+    /// ticket does; a value that is no ticket, or a ticket without `--udp`, is a usage error.
+    #[test]
+    fn the_ticket_flag_reaches_the_direct_hello() {
+        let direct = |extra: &[&str]| -> Vec<String> {
+            ["--udp", "127.0.0.1:27015", "--name", "Bravo"]
+                .iter()
+                .chain(extra)
+                .map(|s| s.to_string())
+                .collect()
+        };
+        let hex = "0123456789abcdef0123456789ABCDEF";
+        let c = parse(direct(&["--ticket", hex])).ok().unwrap();
+        let t = c.ticket.expect("ticket parsed");
+        assert_eq!(dc_wire::seatticket::to_hex(&t), hex.to_ascii_lowercase());
+        let w = dc_botclient::shell::hello("Bravo", "bravo", c.ticket.as_ref());
+        let bytes = w.as_bytes();
+        let at = bytes
+            .windows(4)
+            .position(|x| x == b"DCST")
+            .expect("ticket extension in the hello");
+        assert_eq!(&bytes[at + 4..at + 4 + dc_wire::seatticket::LEN], &t[..]);
+        assert!(parse(direct(&[])).ok().unwrap().ticket.is_none());
+        assert!(parse(direct(&["--ticket", "abc"])).is_err());
+        assert!(parse(direct(&["--ticket", &"zz".repeat(16)])).is_err());
+        assert!(parse(args(&["--ticket", hex])).is_err());
+        // the environment form reads the same way (the variable itself is not set here: tests share the process)
+        assert_eq!(seat_ticket(TICKET_ENV, &format!(" {hex}\n")), Ok(t));
+        assert!(seat_ticket(TICKET_ENV, "abc").is_err());
+    }
+
+    /// ENG-3: `--game <dir>` loads the content profile into the bot's configuration (where the session reads it);
+    /// without the flag there is none.
+    #[test]
+    fn the_game_flag_loads_a_content_profile_into_the_config() {
+        assert!(parse(args(&[])).ok().unwrap().cfg.game.is_none());
+        let d = std::env::temp_dir().join(format!("dc-botclient-{}-game", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("base")).unwrap();
+        std::fs::write(d.join("base/a.txt"), b"own\n").unwrap();
+        std::fs::write(
+            d.join("game.json"),
+            br#"{"format":1,"id":"own","roots":["base"]}"#,
+        )
+        .unwrap();
+        let dir = d.display().to_string();
+        let c = parse(args(&["--game", &dir])).ok().unwrap();
+        let g = c.cfg.game.clone().expect("profile loaded");
+        assert_eq!(g.summary(), "game: own, 1 roots, 0 packs");
+        assert_eq!(
+            g.vfs(None).entry_text("any.rez", "a.txt").unwrap().as_deref(),
+            Some("own\n")
+        );
+        assert!(parse(args(&["--game"])).is_err());
+        assert!(parse(args(&["--game", &format!("{dir}/nowhere")])).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

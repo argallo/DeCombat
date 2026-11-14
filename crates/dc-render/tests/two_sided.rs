@@ -673,7 +673,11 @@ fn opposite_twins(mesh: &SceneMesh) -> (usize, usize) {
 #[test]
 fn rom_worlds_stay_one_sided_and_the_back_faces_cost_is_printed() {
     let rom = dc_rom::rom_or_skip!();
-    let viewer = match RomViewer::open(&rom, AdapterChoice::Auto, RenderSettings::default()) {
+    let viewer = match RomViewer::open(
+        dc_rez::RezVfs::new(&rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => v,
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");
@@ -754,7 +758,11 @@ fn rom_worlds_stay_one_sided_and_the_back_faces_cost_is_printed() {
 #[test]
 fn rom_maps_keep_their_look_from_the_play_area() {
     let rom = dc_rom::rom_or_skip!();
-    let viewer = match RomViewer::open(&rom, AdapterChoice::Auto, RenderSettings::default()) {
+    let viewer = match RomViewer::open(
+        dc_rez::RezVfs::new(&rom).into_vfs(),
+        AdapterChoice::Auto,
+        RenderSettings::default(),
+    ) {
         Ok(v) => v,
         Err(ViewError::Gpu(e)) => {
             println!("skipped: {e}");

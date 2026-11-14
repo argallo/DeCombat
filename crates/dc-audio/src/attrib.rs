@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dc_bute::{eq_fold, ButeDoc, SectionMap};
+use dc_attr::{eq_fold, ButeDoc, SectionMap};
 
 use crate::KeyId;
 
@@ -293,7 +293,7 @@ impl SoundTable {
     }
 
     /// Loads the sound attributes from `ATTRIBUTES.rez` by matching the entry name's hash.
-    pub fn from_vfs(vfs: &dc_bute::RezVfs) -> Option<Self> {
+    pub fn from_vfs(vfs: &dc_vfs::Vfs) -> Option<Self> {
         let list = vfs.list_entries("ATTRIBUTES.rez").ok()?;
         for (full, _, _) in list {
             let base = full.rsplit(['\\', '/']).next().unwrap_or(&full);

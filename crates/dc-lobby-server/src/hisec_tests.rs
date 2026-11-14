@@ -237,6 +237,7 @@ fn game_of(st: &mut Core, id: u64, accounts: &[u32]) {
                 .collect(),
             left: Default::default(),
             result_done: false,
+            unranked: false,
             entry_keys: Default::default(),
             seat_tickets: Default::default(),
             seat_told: Default::default(),
@@ -319,6 +320,34 @@ fn rom_lookups_find_cases_keys_rows_and_products() {
     // without any ROM table nothing resolves
     let bare = state();
     assert_eq!(crate::hisec::case_product(&bare, 0), None);
+}
+
+/// LOC-4: a case or crate pickup of an unranked match gives nothing; the same line of a ranked match does.
+#[test]
+fn an_unranked_match_grants_no_case_or_crate() {
+    let mut st = rom_state();
+    let (mut a, na) = player(&mut st, 1, "h1", "Alice", 1);
+    game_of(&mut st, 5, &[na]);
+    st.games.get_mut(&5).unwrap().unranked = true;
+    feed(
+        &mut st,
+        5,
+        &format!("@hisec uid={na} case=1 key=1 name=Alice"),
+    );
+    feed(
+        &mut st,
+        5,
+        &format!("@crate uid={na} kind=camo key=2 name=Alice"),
+    );
+    assert!(inbox(&st, na).is_empty());
+    assert_eq!(a.count(INBOX_STALE_PUSH), 0);
+    game_of(&mut st, 6, &[na]);
+    feed(
+        &mut st,
+        6,
+        &format!("@hisec uid={na} case=1 key=1 name=Alice"),
+    );
+    assert_eq!(inbox(&st, na).len(), 1, "a ranked match delivers");
 }
 
 #[test]

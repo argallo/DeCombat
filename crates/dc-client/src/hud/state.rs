@@ -449,6 +449,8 @@ pub struct HudState {
     pub death: Option<DeathNote>,
     /// The revenge panel of the last own death, when the 0x6d carried a revenge block.
     pub revenge: Option<RevengePanel>,
+    /// CLI-1957: the killer's card while the kill zoom shows it ([`super::killcard`]).
+    pub kill_card: Option<super::killcard::KillCardShown>,
     /// Names over the players' heads this frame ([`super::marks::frame_marks`]).
     pub marks: Vec<super::marks::PlayerMark>,
     /// CLI-1620: the x-ray boxes a declared server mod's `render.entity_visibility` hook asked for this frame
@@ -476,6 +478,10 @@ pub struct HudState {
     pub pings: super::teamping::PingView,
     /// CLI-1952: the place markers on the screen this frame ([`super::teamping::marker_place`]).
     pub ping_marks: Vec<super::teamping::PingMark>,
+    /// CLI-1954: an enemy / a place notice arrived since the last sound cues (one sound each).
+    pub ping_sounds: [bool; 2],
+    /// CLI-1954: a pinged tag blinked in the last marks step.
+    pub ping_blinked: bool,
     /// The own kill banner and its pending voice lines ([`super::banners`]).
     pub banner: super::banners::BannerState,
     /// The low-health pulse and heartbeat clock ([`super::vitals`]).

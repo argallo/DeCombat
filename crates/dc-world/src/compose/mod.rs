@@ -488,9 +488,9 @@ pub fn has_pieces(bytes: &[u8]) -> bool {
     }
 }
 
-/// A reader of the user's ROM worlds: `WORLDS\NAME.DAT` (the first path part names the archive, `WORLDS.rez`).
-pub fn rom_reader(rom: &std::path::Path) -> impl FnMut(&str) -> Result<Vec<u8>, String> {
-    let vfs = dc_rez::RezVfs::new(rom);
+/// A reader of the ROM worlds through `vfs`: `WORLDS\NAME.DAT` (the first path part names the archive,
+/// `WORLDS.rez`). The apps pass a file system whose archive layer is the user's ROM (`dc_rez::RezVfs`).
+pub fn rom_reader(vfs: &dc_vfs::Vfs) -> impl FnMut(&str) -> Result<Vec<u8>, String> + '_ {
     move |path: &str| {
         let norm = path.replace('/', "\\");
         let stem = norm
@@ -510,8 +510,7 @@ pub fn rom_reader(rom: &std::path::Path) -> impl FnMut(&str) -> Result<Vec<u8>, 
 /// The size of a texture of the user's ROM from its header (FMT_DTX.md: width and height as u16 at 4 and 6), read
 /// without the rest of the file; the first part of the name names the archive, as for [`rom_reader`].
 // SPEC: FMT_DTX.md §2 (header: width 0x04, height 0x06)
-pub fn rom_texture_size(rom: &std::path::Path) -> impl FnMut(&str) -> Option<(u32, u32)> {
-    let vfs = dc_rez::RezVfs::new(rom);
+pub fn rom_texture_size(vfs: &dc_vfs::Vfs) -> impl FnMut(&str) -> Option<(u32, u32)> + '_ {
     move |path: &str| {
         let norm = path.replace('/', "\\");
         let stem = norm
@@ -528,22 +527,22 @@ pub fn rom_texture_size(rom: &std::path::Path) -> impl FnMut(&str) -> Option<(u3
     }
 }
 
-/// Composes when the bytes hold piece records, reading the pieces from the ROM at `rom`; the bytes unchanged
-/// otherwise. The one call every loader makes.
+/// Composes when the bytes hold piece records, reading the pieces through `vfs` (the user's ROM); the bytes
+/// unchanged otherwise. The one call every loader makes.
 pub fn compose_with_rom(
     bytes: Vec<u8>,
-    rom: Option<&std::path::Path>,
+    vfs: Option<&dc_vfs::Vfs>,
 ) -> Result<Vec<u8>, ComposeError> {
     if !has_pieces(&bytes) {
         return Ok(bytes);
     }
-    let Some(rom) = rom else {
+    let Some(vfs) = vfs else {
         return Err(ComposeError::Record(
             "the map is built from pieces of the ROM's worlds, and no ROM is at hand".into(),
         ));
     };
-    let mut read = rom_reader(rom);
-    let mut size = rom_texture_size(rom);
+    let mut read = rom_reader(vfs);
+    let mut size = rom_texture_size(vfs);
     match compose_with(&bytes, &mut read, &mut size)? {
         Some(c) => Ok(c.bytes),
         None => Ok(bytes),
@@ -661,7 +660,7 @@ fn renamed(piece: &str, name: &[u8]) -> Vec<u8> {
     out.push(RENAME_SEP as u8);
     out.extend_from_slice(name);
     if out.len() > MAX_NAME {
-        let digest = dc_rom::sha256_hex(&out);
+        let digest = dc_core::sha256_hex(&out);
         out.truncate(MAX_NAME - 9);
         out.push(RENAME_SEP as u8);
         out.extend_from_slice(&digest.as_bytes()[..8]);
@@ -908,7 +907,7 @@ pub fn compose_with(
                 "the pieces' worlds hold more than {MAX_COMPOSED_BYTES} bytes together"
             )));
         }
-        let got = dc_rom::sha256_hex(&bytes);
+        let got = dc_core::sha256_hex(&bytes);
         if got != piece.sha256 {
             return Err(rom_err(format!(
                 "the ROM's world has SHA-256 {got}, the map was built against {}",

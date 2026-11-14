@@ -396,7 +396,7 @@ fn main() -> ExitCode {
         }
     };
     if a.list {
-        match WorldSource::open(&rom) {
+        match dc_rez::WorldArchive::open(&rom) {
             Ok(w) => {
                 for m in w.map_names() {
                     println!("{m}");
@@ -566,7 +566,7 @@ fn main() -> ExitCode {
     if a.window {
         return on_screen(&rom, &req, settings, a.window_secs);
     }
-    let viewer = match RomViewer::open(&rom, a.adapter, settings) {
+    let viewer = match RomViewer::open(dc_rez::RezVfs::new(&rom).into_vfs(), a.adapter, settings) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("worldview: {e}");
@@ -584,7 +584,7 @@ fn main() -> ExitCode {
     // SPEC: RENDER_2009.md §2.5 (engine+0xf6f10); DC-DEFAULT: REN-21 (proposed), see the staged rows
     let gamma = a
         .gamma
-        .or_else(|| dc_render::profile_gamma(&rom))
+        .or_else(|| profile_gamma(&rom))
         .unwrap_or(PROFILE_GAMMA_DEFAULT);
     let mut img = img;
     apply_ramp(&mut img.rgba, &ramp_for_gamma(gamma));
@@ -608,7 +608,12 @@ fn on_screen(
     settings: RenderSettings,
     secs: f32,
 ) -> ExitCode {
-    match run_window(rom, req, settings, WindowOptions { seconds: secs }) {
+    match run_window(
+        dc_rez::RezVfs::new(rom).into_vfs(),
+        req,
+        settings,
+        WindowOptions { seconds: secs },
+    ) {
         Ok(r) => {
             println!("{}", r.summary());
             ExitCode::SUCCESS
@@ -627,6 +632,19 @@ fn on_screen(
     _s: RenderSettings,
     _secs: f32,
 ) -> ExitCode {
-    eprintln!("worldview: built without the `window` feature (cargo build -p dc-render --features window)");
+    eprintln!(
+        "worldview: built without the `window` feature (cargo build -p dc-xtask --features window)"
+    );
     ExitCode::from(2)
+}
+
+/// The gamma of the user's profile in the client folder `rom` (decrypted with the client's own profile key, read
+/// from its CShell.dll by RVA and accepted by its pinned SHA-256); `None` when anything is missing.
+// SPEC: same framing as the archive attributes (Blowfish ECB over byte-swapped words, plain tail), dc-rez
+fn profile_gamma(rom: &std::path::Path) -> Option<f32> {
+    let pe = dc_rom::PeFile::from_file(&rom.join("Game").join("CShell.dll")).ok()?;
+    let key = dc_rom::crypt_key_from_pe(&pe, PROFILE_KEY_RVA, PROFILE_KEY_SHA256).ok()?;
+    let raw = std::fs::read(rom.join(PROFILE_FILE)).ok()?;
+    let plain = dc_rez::decrypt_with_key(&raw, &key).ok()?;
+    gamma_of_profile_text(&String::from_utf8_lossy(&plain))
 }

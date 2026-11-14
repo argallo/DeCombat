@@ -72,7 +72,35 @@ Metric definitions (the shared definitions every reviewer uses; thresholds are t
   round end       `bomb` (exploded), `defuse`, `elimination` (`team(s) X without a living player`), `forfeit` (a
                   team left), `capture` / `mission` / `goal` (a capture, the spy's upload, a kill goal), `timer`
                   (round ran >= its length - 1 s), else `other`. The warm-up's own result is not a round.
-  K/D spread      max - min of the bots' kills/death ratios (deaths 0 counts as 1).
+  K/D spread      max - min of the bots' kills/death ratios (deaths 0 counts as 1). Not shown for Spy Hunt or Quarantine.
+
+Round-3 additions (rubric revision of 2026-11-09; the constants carry the numbers):
+  accuracy        3..40 % hits per shot AND at most SHOTS_PER_KILL_MAX shots per kill (bots with >= 100 shots).
+  kills per 2 min the room's lowest-skill bot (`shooter.skill.level`) is exempt (when the levels differ).
+  guard (CTF)     from `guard_spot` events (`sees`, `why`, `dwell`): a spot without sight of the flag that the bot stood at
+                  (within GUARD_AT_SPOT_U) for >= GUARD_BLIND_S, or a bot parked at its spot longer than GUARD_ROTATE_X x the
+                  spot's dwell before the next spot (a life end or a non-guard track kind ends the hold). Rooms from before
+                  `sees` existed are judged for rotation only.
+  knife           `knife_run` on/off pairs: runs shorter than KNIFE_SHORT_S (not ending on sighting / hurt / target) <= 10 %
+                  of the runs, and <= KNIFE_SWAPS_PER_MIN_MAX knife draws (`knife_run` on) per bot per alive minute.
+  hopping, team   all stuck jumps per alive minute, the median bot of each team (team modes): neither team above HOP_TEAM_RATIO x the other
+                  (with >= HOP_TEAM_MIN_PER_MIN on the higher side).
+  creep           CREEP_N non-face stuck jumps CREEP_GAP_S apart, each moving CREEP_STEP_U: one creep; <= CREEP_MAX_PER_ROOM.
+  grenade death   a world death within GRENADE_MATCH_MS of the bot's own grenade `self_kill` is counted apart.
+  spawn deaths    `teleport` events (deduplicated) are spawns; one spawn point (x, z within SPAWN_CLUSTER_U) where the spawn
+                  died to the world (server killer None; every death if SPAWN_WORLD_ONLY is False) within SPAWN_DEATH_S more
+                  than SPAWN_DEATH_MAX times fails. The line's numbers also give the all-cause count.
+  stuck + world   a stuck episode that ends within STUCK_WORLD_S of a world death fails on its own.
+  Spy Hunt cases  from the server's `intel N at` / `seized` / `dropped` lines: the longest a free case lay while a player held
+                  SPY_HOLDER_N or more (<= SPY_CASE_UNTOUCHED_S), and the drops by holders of 4+ per stage (<= SPY_HOLDER_LOSS_MAX).
+  Quarantine      a human in `post_stand` is idle only when still >= QRT_POST_STAND_IDLE_S; a living human without an infected
+                  within QRT_ALONE_U for QRT_ALONE_S after the outbreak (<= QRT_ALONE_MAX_PER_ROOM); a timer win is a human win
+                  only when an infected came within QRT_ALONE_U of a survivor in the last QRT_TIMER_CONTACT_S.
+  S&D             attackers-win judged with >= 5 planted rounds; defenders must get within SND_DEFENDER_NEAR_U (3-D, |dy| <
+                  SND_DEFENDER_DY_U) of the bomb in >= 50 % of the planted rounds with a defender alive.
+
+The matrix harness will gain a skill-band room per mode (`--skills 70-90` and `--skills 5-25`, one room each) next to the
+good:8 rooms; the scorer needs no change for them (the lowest-skill exemption reads each room's own skill levels).
 
 Nick <-> server client id: the bot's own `roster` event (`own` true, `pid`), else the server's `@join` lines.
 """
@@ -128,7 +156,7 @@ CONFINED_GOAL_U = 300.0         # ... while the goal stays farther than this
 CONFINED_ISLANDS = 20           # or the nav `islands` count grows by this much inside one life
 CONFINED_MAX_PER_ROOM = 0       # allowed per room
 MATE_STACK_U = 36.0             # a team mate within one body width
-MATE_STACK_MAX_SHARE = 0.05     # ... for at most this share of a bot's samples (TDM / CTF)
+MATE_STACK_MAX_SHARE = 0.08     # ... for at most this share of a bot's samples (TDM / CTF)
 MATE_STACK_SPAWN_S = 3.0        # samples this soon after a spawn / respawn / round start are not counted (TDM_FFA review)
 REACTION_IQR_MIN_S = 0.10       # a bot's planned first-sighting delays must vary (a fixed delay is a tell)
 REACTION_IQR_MIN_N = 20         # judged on the planned `delay_ms` of `reaction` kind new, n >= 20 (TDM_FFA review)
@@ -150,7 +178,8 @@ COVERAGE_MIN = 0.45             # per team, TDM (real teams play lanes)
 KILLS_PER_2MIN_ALIVE_MIN = 0.67       # 1 kill per 3 min alive (a quiet average player on a big map)
 TEAM_KILL_SHARE = (0.35, 0.65)  # TDM / CTF
 FFA_TOP_SHARE_MAX = 0.40
-ACCURACY = (0.05, 0.40)         # hit_claims / shots, rifles (hits per shot; a kill takes several hits)
+ACCURACY = (0.03, 0.40)         # hit_claims / shots, rifles (hits per shot; a kill takes several hits) (r3 decision 1)
+SHOTS_PER_KILL_MAX = 120        # ... and shots per kill at most this, for the same bots (r3 decision 1; TDM_FFA review)
 ACCURACY_MIN_SHOTS = 100        # a bot with fewer shots is not judged (CTF review)
 SPY_BANDS = ((0.0, 150.0, 0.25, 0.60), (150.0, 600.0, 0.10, 0.40), (600.0, float("inf"), 0.02, 0.20))
                                 # Spy Hunt hit rate by distance: (from u, to u, min, max) (BNT review)
@@ -204,6 +233,45 @@ QRT_HUMAN_SHOTS_PER_S = 3.0     # humans fire at least this many shots per secon
 QRT_SIGHT_MIN_S = 10.0          # ... judged with this many seconds in sight
 QRT_HOST_KILL_MAX_SHARE = 0.25  # rounds won by killing the host with zero infections
 TSV_ELIM_MIN = 0.80
+# ---- round-3 rubric revision (r3 reviews, 2026-11-09)
+GUARD_BLIND_S = 20.0            # CTF: a guard spot with no sight of the flag (`guard_spot.sees` false) held this long fails ...
+GUARD_ROTATE_X = 2.0            # ... and so does a spot held longer than this x its `dwell` before the next `guard_spot`
+GUARD_KINDS = (None, "stand", "objective", "hold")  # track kinds that still belong to guard duty (another kind ends the hold)
+GUARD_AT_SPOT_U = 200.0         # a bot is "at" its spot within this (x, z); "parked" = every sample of the hold is at the spot
+KNIFE_SHORT_S = 1.0             # a knife run (`knife_run` on -> off, `ran_ms`) shorter than this is a flicker ...
+KNIFE_SHORT_MAX_SHARE = 0.10    # ... in at most this share of the runs (judged with >= KNIFE_SHORT_MIN_RUNS runs) ...
+KNIFE_SHORT_MIN_RUNS = 10
+KNIFE_FREE_WHY = ("sighting", "hurt", "target")  # a run that ended on these is a reaction, not a flicker
+KNIFE_SWAPS_PER_MIN_MAX = 4.0   # ... and at most this many knife swaps (knife draws, `knife_run` on) per bot per alive minute
+HOP_TEAM_RATIO = 2.5            # team modes: a team's median bot's stuck jumps (face ones too: crate climbs) per alive minute over the other's by this factor ...
+HOP_TEAM_MIN_PER_MIN = 3.0      # ... with at least this many per minute on the higher side (the team's median bot)
+GUARD_ROTATE_SLACK_S = 3.0      # the bot's own dwell cap is checked on a tick: slack over GUARD_ROTATE_X x dwell
+HOP_TEAM_MODES = ("TDM", "TMM", "CTF", "TSV")
+CREEP_N = 5                     # a creep: this many non-face stuck jumps ...
+CREEP_GAP_S = (2.0, 3.6)        # ... each this many seconds after the last ...
+CREEP_STEP_U = (20.0, 90.0)     # ... each moving the body this far
+CREEP_MAX_PER_ROOM = 1
+GRENADE_DEATHS_PER_BOT_PER_10MIN = 1  # own-grenade deaths (grenade `self_kill`) are kept out of the world deaths
+GRENADE_MATCH_MS = 1500         # the world-death server line this close to the `self_kill` event is that death
+SPAWN_DEATH_S = 10.0            # a spawn whose player dies within this long ...
+SPAWN_DEATH_MAX = 1             # ... more than this many times at one spawn point fails
+SPAWN_WORLD_ONLY = True         # only a WORLD death (kill volume, fall; server killer None) counts: an enemy killing a fresh spawn is
+                                # ordinary FFA / TDM play (25 % of FFA spawns die within 10 s); False = every death counts
+SPAWN_CLUSTER_U = 32.0          # spawn positions this close (x, z) are one spawn point
+SPAWN_DEDUPE_S = 1.0            # the same spawn teleport arrives twice
+STUCK_WORLD_S = 6.0             # a stuck episode followed by a world death within this long fails on its own
+SPY_CASE_UNTOUCHED_S = 90.0     # Spy Hunt: no case lies free (not seized) longer than this while a player holds ...
+SPY_HOLDER_N = 4                # ... this many cases
+SPY_HOLDER_LOSS_MAX = 5         # holders of SPY_HOLDER_N or more lose their cases at most this often per stage
+QRT_POST_STAND_IDLE_S = 90.0    # a human standing its `post_stand` counts as idle only when still this long
+QRT_ALONE_S = 45.0              # a living human with no infected within QRT_ALONE_U for this long after the outbreak ...
+QRT_ALONE_U = 800.0
+QRT_ALONE_MAX_PER_ROOM = 1      # ... at most this many per room
+QRT_TIMER_CONTACT_S = 60.0      # a timer win is a human win only if an infected came within QRT_ALONE_U of a survivor this recently
+SND_ATTACKER_WIN_MIN_PLANTS = 5  # "attackers win >= 35 %" is judged only with this many planted rounds
+SND_DEFENDER_NEAR_U = 400.0     # a defender alive at the plant reaches within this (3-D) of the bomb ...
+SND_DEFENDER_DY_U = 64.0        # ... with |dy| below this ...
+SND_DEFENDER_NEAR_MIN = 0.50    # ... in at least this share of the planted rounds with a defender alive
 CORPSE_KILL_MAX_SHARE = 0.05    # kills (seen by the bot) after which it still hit the body / kills seen
 CORPSE_TAIL_P95_MAX_S = 1.2     # p95 of the firing at a body after its death was shown (a human stops within a second;
                                 # the max was one outlier, TMM_TSV review)
@@ -354,6 +422,7 @@ RE = {k: re.compile(v) for k, v in {
     "ctf_returned": r"^dc-dserver: ctf: team (\d+) flag returned by (client (\d+)|the timer)",
     "ctf_capture": r"^dc-dserver: ctf: client (\d+) captured the team (\d+) flag, captures (\d+):(\d+)",
     "spy_placed": r"^dc-dserver: spy: (\d+) intel placed, stage 1",
+    "spy_intel": r"^dc-dserver: spy: intel (\d+) at \((-?\d+), (-?\d+), (-?\d+)\)",
     "spy_seized": r"^dc-dserver: spy: client (\d+) seized intel \((\d+) of (\d+)\)",
     "spy_back": r"^dc-dserver: spy: (\d+ dropped intel back at the spawn points|stage 1 again)",
     "spy_drop": r"^dc-dserver: spy: client (\d+) dropped (\d+) intel",
@@ -573,7 +642,7 @@ def metric_stuck(segs):
             dur = seg[j]["t"] - s0["t"]
             if j > i and dur >= STUCK_MIN_S:
                 eps.append({"t": round(s0["t"], 1), "secs": round(dur, 1), "pos": [round(v) for v in s0["pos"]],
-                            "goal": [round(v) for v in s0["goal"]], "kind": s0.get("kind")})
+                            "goal": [round(v) for v in s0["goal"]], "kind": s0.get("kind"), "end_sms": seg[j].get("_sms")})
                 i = j + 1
             else:
                 i += 1
@@ -603,6 +672,8 @@ def metric_idle(segs, contacts_ms=(), plant_ms=None):
             dur = seg[j]["t"] - s0["t"]
             need = IDLE_GUARD_MIN_S if s0.get("kind") in IDLE_GUARD_KINDS else IDLE_MIN_S
             rno = s0["_round"]["no"] if s0.get("_round") else None
+            if s0.get("qrt") == "post_stand":
+                need = max(need, QRT_POST_STAND_IDLE_S)  # Quarantine: a human standing its post (QRT review r3)
             if (str(s0.get("job") or "").startswith("Hold") and plant_ms is not None
                     and (rno not in plant_ms or seg[j].get("_sms", 0) < plant_ms[rno])):
                 need = max(need, IDLE_HOLD_JOB_MIN_S)  # a Hold job holds an angle until the plant
@@ -658,7 +729,7 @@ def metric_pacing(segs, stuck):
                 t0, t1 = s0["t"], seg[j]["t"]
                 if not any(e["t"] <= t1 and e["t"] + e["secs"] >= t0 for e in stuck):
                     eps.append({"t": round(t0, 1), "secs": round(dur, 1), "pos": [round(v) for v in s0["pos"]],
-                                "goal": [round(v) for v in s0["goal"]], "kind": "pacing"})
+                                "goal": [round(v) for v in s0["goal"]], "kind": "pacing", "end_sms": seg[j].get("_sms")})
                 i = j + 1
             else:
                 i += 1
@@ -681,6 +752,105 @@ def metric_pogo(jumps):
         else:
             i += 1
     return runs
+
+
+def metric_creep(jumps):
+    """Creeps: CREEP_N or more non-face stuck jumps, each CREEP_GAP_S after the last and each moving CREEP_STEP_U."""
+    js = sorted((e for e in jumps if not e.get("face")), key=lambda e: e["t"])
+    runs, i = [], 0
+    while i < len(js):
+        j = i
+        while (j + 1 < len(js) and CREEP_GAP_S[0] <= js[j + 1]["t"] - js[j]["t"] <= CREEP_GAP_S[1]
+               and CREEP_STEP_U[0] <= dist3(js[j + 1]["pos"], js[j]["pos"]) <= CREEP_STEP_U[1]):
+            j += 1
+        if j - i + 1 >= CREEP_N:
+            runs.append({"t": round(js[i]["t"], 1), "n": j - i + 1, "secs": round(js[j]["t"] - js[i]["t"], 1),
+                         "pos": [round(v) for v in js[i]["pos"]]})
+            i = j + 1
+        else:
+            i += 1
+    return runs
+
+
+def metric_knife(evs, alive_s):
+    """Knife runs: `knife_run` on / off events; flickers = runs under KNIFE_SHORT_S not ended by a reaction."""
+    offs = [e for e in evs if e.get("ev") == "knife_run" and e.get("on") is False and e.get("ran_ms") is not None]
+    short = [e for e in offs if e["ran_ms"] < KNIFE_SHORT_S * 1000 and e.get("why") not in KNIFE_FREE_WHY]
+    swaps = sum(1 for e in evs if e.get("ev") == "knife_run" and e.get("on") is True)  # a swap = a knife draw
+    return {"runs": len(offs), "short": len(short), "swaps": swaps,
+            "swaps_per_min": round(swaps / (alive_s / 60.0), 2) if alive_s else 0.0}
+
+
+def metric_guard(evs, deaths_ms):
+    """CTF guard spots from the `guard_spot` events: blind holds and holds without rotation (see the docstring)."""
+    gs = sorted((e for e in evs if e.get("ev") == "guard_spot" and e.get("ms") is not None), key=lambda e: e["ms"])
+    out = {"spots": len(gs), "sees_known": 0, "blind": [], "no_rotation": []}
+    if not gs:
+        return out
+    tr = sorted((e for e in evs if e.get("ev") == "track" and e.get("ms") is not None), key=lambda e: e["ms"])
+    last_ms = tr[-1]["ms"] if tr else gs[-1]["ms"]
+    dms = sorted(deaths_ms)
+    for i, g in enumerate(gs):
+        nxt = gs[i + 1]["ms"] if i + 1 < len(gs) else None
+        died = next((d for d in dms if d > g["ms"] and (nxt is None or d <= nxt)), None)
+        end = died if died is not None else (nxt if nxt is not None else last_ms)
+        left = next((t["ms"] for t in tr if g["ms"] < t["ms"] <= end and t.get("kind") not in GUARD_KINDS), None)
+        rotated = nxt is not None and died is None and left is None
+        if left is not None:
+            end = left
+        held = (end - g["ms"]) / 1000.0
+        spot = g.get("spot")
+        mine = [t for t in tr if g["ms"] < t["ms"] <= end and t.get("pos")]
+        at_s = (sum(1 for t in mine if dist_xz(t["pos"], spot) <= GUARD_AT_SPOT_U) * TRACK_PERIOD_S) if spot else 0.0
+        parked = bool(mine) and bool(spot) and all(dist_xz(t["pos"], spot) <= GUARD_AT_SPOT_U for t in mine)
+        row = {"t": round(g["ms"] / 1000.0, 1), "held_s": round(held, 1), "spot": [round(v) for v in g.get("spot") or []],
+               "why": g.get("why")}
+        if "sees" in g:
+            out["sees_known"] += 1
+            if g["sees"] is False and min(held, at_s) >= GUARD_BLIND_S:  # it really stood there that long
+                out["blind"].append(row)
+        dwell = (g.get("dwell") or 0) / 1000.0
+        if rotated and parked and dwell > 0 and held > GUARD_ROTATE_X * dwell + GUARD_ROTATE_SLACK_S:
+            out["no_rotation"].append(dict(row, dwell_s=round(dwell, 1)))
+    return out
+
+
+def metric_spawns(evs):
+    """Spawns (the deduplicated `teleport` events) and whether the player died within SPAWN_DEATH_S of each."""
+    tps = []
+    for e in sorted((e for e in evs if e.get("ev") == "teleport" and e.get("pos") and e.get("t") is not None),
+                    key=lambda e: e["t"]):
+        if tps and e["t"] - tps[-1][0] < SPAWN_DEDUPE_S:
+            continue
+        tps.append((e["t"], e["pos"]))
+    deaths = sorted(e["t"] for e in evs if e.get("ev") == "died" and e.get("t") is not None)
+    died_ms = {e["t"]: e["ms"] for e in evs if e.get("ev") == "died" and e.get("t") is not None and e.get("ms") is not None}
+    out = []
+    for k, (t, pos) in enumerate(tps):
+        nxt = tps[k + 1][0] if k + 1 < len(tps) else float("inf")
+        died = next((x for x in deaths if t < x <= min(t + SPAWN_DEATH_S, nxt)), None)
+        out.append({"t": round(t, 1), "pos": [round(v) for v in pos], "died": died is not None, "died_ms": died_ms.get(died), "world": False})
+    return out
+
+
+def spawn_points(bots):
+    """Cluster the bots' spawns into spawn points; the points where spawns died within SPAWN_DEATH_S more than
+    SPAWN_DEATH_MAX times."""
+    pts = []  # [x, z, spawns, deaths within SPAWN_DEATH_S, of them world deaths]
+    for b in bots:
+        for sp in b["spawns"]:
+            x, z = sp["pos"][0], sp["pos"][2]
+            hit = next((p for p in pts if math.hypot(p[0] - x, p[1] - z) <= SPAWN_CLUSTER_U), None)
+            if hit is None:
+                hit = [x, z, 0, 0, 0]
+                pts.append(hit)
+            hit[2] += 1
+            hit[3] += 1 if sp["died"] else 0
+            hit[4] += 1 if sp["world"] else 0
+    bad = [{"x": p[0], "z": p[1], "spawns": p[2], "deaths": p[3], "world": p[4]} for p in pts
+           if (p[4] if SPAWN_WORLD_ONLY else p[3]) > SPAWN_DEATH_MAX]
+    return {"points": len(pts), "spawns": sum(p[2] for p in pts), "deaths": sum(p[3] for p in pts),
+            "world_deaths": sum(p[4] for p in pts), "bad": bad}
 
 
 def metric_confined(segs):
@@ -881,6 +1051,7 @@ def score_bot(nick, evs, client, ds):
     goals = metric_goals(segs)
     planned, planned_re, measured, measured_re = metric_reaction(evs)
     alive_s = len(tracks) * TRACK_PERIOD_S
+    skill_ev = next((e for e in evs if e.get("ev") == "shooter" and isinstance(e.get("skill"), dict)), None)
     rep = next((e for e in reversed(evs) if e.get("ev") == "report"), None)
     sh = (rep or {}).get("shooter") or {}
     sniper = any(e.get("ev") == "weapon_select" and e.get("sniper") for e in evs)
@@ -906,6 +1077,11 @@ def score_bot(nick, evs, client, ds):
         "stuck_jump_nonface_per_min": round(sum(1 for e in jumps if not e.get("face")) / (alive_s / 60.0), 2)
         if alive_s else 0.0,
         "pogo": pogo, "confined": confined, "bands": metric_bands(evs),
+        "skill": (skill_ev["skill"].get("level") if skill_ev else None),
+        "creep": metric_creep(jumps), "knife": metric_knife(evs, alive_s), "guard": metric_guard(evs, deaths_ms),
+        "spawns": metric_spawns(evs),
+        "grenade_sms": [e["ms"] + off for e in evs if e.get("ev") == "grenade" and e.get("phase") == "self_kill"
+                        and e.get("ms") is not None],
         "reaction_planned_s": planned, "reaction_reacquire_s": planned_re, "reaction_measured_s": measured,
         "reaction_reacquire_measured_s": measured_re,
         "shots": sh.get("shots"), "hit_claims": sh.get("hit_claims"), "kills_by_me": sh.get("kills_by_me"),
@@ -1012,6 +1188,14 @@ def score_room(folder, sc):
                 b[f] = netlab_bot.get(b["nick"], {}).get(f)
     by_client = {b["client"]: b for b in bots if b["client"] is not None}
 
+    # own-grenade deaths: the server logs them as a world death (killer None) at the bot's `self_kill` event
+    for b in bots:
+        b["grenade_deaths"] = len(b["grenade_sms"])
+        for x in b["grenade_sms"]:
+            cand = [k for k in ds["kills"] if k["victim"] == b["client"] and k["killer"] is None and not k.get("grenade")
+                    and not k.get("bomb") and abs(k["ms"] - x) <= GRENADE_MATCH_MS]
+            if cand:
+                min(cand, key=lambda k: abs(k["ms"] - x))["grenade"] = True
     # kills / deaths from the server
     for b in bots:
         b.update(kills=0, deaths=0, world_deaths=0, team_kills=0, killed_by={})
@@ -1021,7 +1205,7 @@ def score_room(folder, sc):
         v = by_client.get(k["victim"])
         if v is not None:
             v["deaths"] += 1
-            if k["killer"] is None and not k.get("bomb"):
+            if k["killer"] is None and not k.get("bomb") and not k.get("grenade"):
                 v["world_deaths"] += 1
             else:
                 kn = nick_of.get(k["killer"], f"client {k['killer']}")
@@ -1036,6 +1220,17 @@ def score_room(folder, sc):
                 kb["team_kills"] += 1
             else:
                 kb["kills"] += 1
+    for b in bots:  # a stuck episode that ends in a world death fails on its own
+        wd = [k["ms"] for k in ds["kills"] if k["victim"] == b["client"] and k["killer"] is None and not k.get("bomb")
+              and not k.get("grenade") and not k["warmup"]]
+        b["stuck_world"] = [ep for ep in b["stuck"] if ep.get("end_sms") is not None
+                            and any(0 <= w - ep["end_sms"] <= STUCK_WORLD_S * 1000 for w in wd)]
+    for b in bots:  # which early deaths at a spawn were the world's (the server's killer None, not the grenade ones)
+        off = ds["linked"].get(b["client"], 0) if b["client"] is not None else 0
+        wd = [k["ms"] - off for k in ds["kills"] if k["victim"] == b["client"] and k["killer"] is None
+              and not k.get("bomb") and not k.get("grenade")]
+        for sp in b["spawns"]:
+            sp["world"] = bool(sp["died_ms"] is not None and any(abs(w - sp["died_ms"]) <= GRENADE_MATCH_MS for w in wd))
     for b in bots:
         b["kd"] = round(b["kills"] / max(1, b["deaths"]), 2)
         if b["team"] is None and b["client"] is not None:
@@ -1152,7 +1347,9 @@ def room_totals(bots, ds, key):
     return {
         "kills": sum(b["kills"] for b in bots), "server_kill_lines": len(kills), "infections": infections,
         "mate_stack": stack, "mate_stack_share_max": max([v for v in stack.values()] or [0.0]),
-        "world_deaths": sum(1 for k in kills if k["killer"] is None and not k.get("bomb")),
+        "world_deaths": sum(1 for k in kills if k["killer"] is None and not k.get("bomb") and not k.get("grenade")),
+        "grenade_deaths": sum(b["grenade_deaths"] for b in bots),
+        "spawn_points": spawn_points(bots),
         "bomb_deaths": sum(1 for k in kills if k["killer"] is None and k.get("bomb")),
         "team_kills": sum(b["team_kills"] for b in bots),
         "kills_by_team": team_kills,
@@ -1242,6 +1439,8 @@ def snd_metrics(ds, rounds, bots):
     defuse_alive = 0
     reach_expected = 0
     reach_defused = 0
+    near_expected = 0
+    near_reached = 0
     att_wins = 0
     contested = 0
     defuse_starts = 0
@@ -1271,6 +1470,15 @@ def snd_metrics(ds, rounds, bots):
                     reach_expected += 1
                     reach_defused += 1 if r["defuse_starts"] > 0 else 0
                     break
+        if pp is not None:  # a defender alive at the plant gets within SND_DEFENDER_NEAR_U of the bomb before the round ends
+            dead_at_plant = {k["victim"] for k in r["kills"] if k["ms"] <= plant["ms"]}
+            alive_def = [c for c in defenders if c not in dead_at_plant]
+            if alive_def:
+                near_expected += 1
+                if any(plant["ms"] <= x.get("_sms", -1) <= end and dist3(x["pos"], pp) <= SND_DEFENDER_NEAR_U
+                       and abs(x["pos"][1] - pp[1]) < SND_DEFENDER_DY_U
+                       for c in alive_def for x in (by_client[c]["tracks"] if c in by_client else [])):
+                    near_reached += 1
         for e in ev:
             if e["kind"] == "defuse_start" and r["start"] <= e["ms"] <= end:
                 defuse_starts += 1
@@ -1287,7 +1495,8 @@ def snd_metrics(ds, rounds, bots):
             "defuse_expected_rounds": defuse_expected, "defuse_when_alive_rounds": defuse_when_alive,
             "attacker_wins_planted": att_wins, "defuse_starts": defuse_starts, "defuse_starts_alive": defuse_alive,
             "defuses_contested": contested, "defuse_reach_expected_rounds": reach_expected,
-            "defuse_reach_rounds": reach_defused,
+            "defuse_reach_rounds": reach_defused, "defender_near_expected_rounds": near_expected,
+            "defender_near_rounds": near_reached,
             "attackers_left_spawn": left_spawn, "defender_split": split}
 
 
@@ -1442,7 +1651,81 @@ def spy_metrics(ds, bots):
             "uploads": sum(1 for e in ev if e["kind"] == "spy_uploads"),
             "missions": sum(1 for e in ev if e["kind"] == "spy_done"),
             "stage2_timer_ends": timer_ends, "agent_rounds": len(judged), "agent_wins": agent_wins,
-            "stage2_samples": samples, "stage2_hunters_ok": ok}
+            "stage2_samples": samples, "stage2_hunters_ok": ok, **spy_case_metrics(ds, bots)}
+
+
+def spy_case_metrics(ds, bots):
+    """Spy Hunt cases from the server lines: a free case is one the server announced (`intel N at`) and nobody seized yet
+    (a seize takes the free case nearest the seizer; an expiry "dropped intel back at the spawn points" takes the oldest
+    dropped ones). Reported: the longest a case lay free while a player held SPY_HOLDER_N or more, and the drops by
+    holders of that many per stage (a stage ends at the plant of the intel, a restart or the agent)."""
+    by_client = {b["client"]: b for b in bots if b["client"] is not None}
+    free, closed = [], []
+    holds4, ivs = {}, []
+    st = {"stage": 0}
+    losses = {0: 0}
+    seen = False
+
+    def reset(ms):
+        for a in holds4.values():
+            ivs.append((a, ms))
+        holds4.clear()
+        for cs in free:
+            if cs["since"] < ms:
+                closed.append((cs["since"], ms, cs["pos"]))
+        free[:] = [cs for cs in free if cs["since"] >= ms]
+        st["stage"] += 1
+        losses[st["stage"]] = 0
+
+    for e in ds["objective"]:
+        k, ms, a = e["kind"], e["ms"], e["args"]
+        if k == "spy_intel":
+            seen = True
+            free.append({"pos": tuple(int(v) for v in a[1:4]), "since": ms, "drop": False})
+        elif k == "spy_placed" or k == "spy_agent":
+            reset(ms)
+        elif k == "spy_back":
+            if "again" in str(a[0]):
+                reset(ms)
+            else:
+                n = int(re.match(r"\d+", a[0]).group(0))
+                for cs in [x for x in free if x["drop"] and x["since"] < ms][:n]:
+                    free.remove(cs)
+                    closed.append((cs["since"], ms, cs["pos"]))
+        elif k == "spy_seized":
+            c, n = int(a[0]), int(a[1])
+            if free:
+                p = nearest_pos(by_client.get(c), ms)
+                cs = min(free, key=lambda x: dist3(x["pos"], p) if p else x["since"])
+                free.remove(cs)
+                closed.append((cs["since"], ms, cs["pos"]))
+            if n >= SPY_HOLDER_N and c not in holds4:
+                holds4[c] = ms
+        elif k == "spy_drop":
+            c, n = int(a[0]), int(a[1])
+            for cs in [x for x in free if x["since"] == ms][-n:]:
+                cs["drop"] = True
+            if c in holds4:
+                ivs.append((holds4.pop(c), ms))
+            if n >= SPY_HOLDER_N:
+                losses[st["stage"]] += 1
+    end = ds["last_ms"]
+    ivs += [(a, end) for a in holds4.values()]
+    closed += [(cs["since"], end, cs["pos"]) for cs in free]
+    ivs.sort()
+    merged = []
+    for lo, hi in ivs:
+        if merged and lo <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    worst, worst_pos = 0.0, None
+    for lo, hi, pos in closed:
+        over = sum(max(0, min(hi, b) - max(lo, a)) for a, b in merged) / 1000.0
+        if over > worst:
+            worst, worst_pos = over, list(pos)
+    return {"spy_cases_known": seen, "case_untouched_max_s": round(worst, 1), "case_untouched_pos": worst_pos,
+            "holder_losses": [losses[i] for i in sorted(losses)], "holder_losses_max": max(losses.values())}
 
 
 def qrt_metrics(ds, rounds, bots):
@@ -1452,6 +1735,22 @@ def qrt_metrics(ds, rounds, bots):
     post, claw_rounds, fast_claw = [], 0, 0
     hunt = hs = m_ok = m_n = shots = 0
     sight_s = 0.0
+    lonely, nocontact = [], 0
+    by_client = {b["client"]: b for b in bots if b["client"] is not None}
+    trk = {c: sorted_tracks(b) for c, b in by_client.items()}
+
+    def nearest_infected(s, inf_at, me):
+        """Distance from sample s to the nearest infected (infected by then), None when none has a sample near it."""
+        best = None
+        for ic, ims in inf_at.items():
+            if ic == me or ims > s["_sms"] or ic not in trk:
+                continue
+            h = near_track(trk[ic][0], trk[ic][1], s["_sms"], tol=2500)
+            if h is not None:
+                d = dist3(h["pos"], s["pos"])
+                best = d if best is None else min(best, d)
+        return best
+
     for r in rounds:
         end = r["end"] or ds["last_ms"]
         inf = [e for e in ev if e["kind"] == "infect_client" and r["start"] <= e["ms"] <= end]
@@ -1464,6 +1763,37 @@ def qrt_metrics(ds, rounds, bots):
             claw_rounds += 1
             fast_claw += 1 if claws[0]["ms"] - out_ms <= QRT_FIRST_CLAW_S * 1000 else 0
         inf_at = {int(e["args"][0]): e["ms"] for e in inf}
+        for b in bots:  # a living human far from every infected for QRT_ALONE_S after the outbreak
+            c = b["client"]
+            run0, flagged = None, False
+            for s in b["tracks"]:
+                if (c is None or s.get("_round") is not r or s["_sms"] < out_ms
+                        or (c in inf_at and inf_at[c] <= s["_sms"])):
+                    run0, flagged = None, False
+                    continue
+                d = nearest_infected(s, inf_at, c)
+                if d is None or d <= QRT_ALONE_U:
+                    run0, flagged = None, False
+                    continue
+                if run0 is None:
+                    run0 = s["t"]
+                elif not flagged and s["t"] - run0 >= QRT_ALONE_S:
+                    lonely.append({"nick": b["nick"], "round": r["no"], "t": round(run0, 1), "pos": [round(v) for v in s["pos"]]})
+                    flagged = True
+        if r["how"] == "timer" and r.get("win") == 1:  # a timer win needs an infected near a survivor in its last minute
+            contact = False
+            for b in bots:
+                c = b["client"]
+                if contact or c is None or c in inf_at:
+                    continue
+                for s in b["tracks"]:
+                    if s.get("_round") is not r or not end - QRT_TIMER_CONTACT_S * 1000 <= s["_sms"] <= end:
+                        continue
+                    d = nearest_infected(s, inf_at, c)
+                    if d is not None and d <= QRT_ALONE_U:
+                        contact = True
+                        break
+            nocontact += 0 if contact else 1
         buckets = {}
         for b in bots:
             c = b["client"]
@@ -1485,7 +1815,8 @@ def qrt_metrics(ds, rounds, bots):
             ds_ = [dist3(ps[i], ps[j]) for i in range(len(ps)) for j in range(i + 1, len(ps))]
             m_n += 1
             m_ok += 1 if statistics.median(ds_) <= QRT_MUTUAL_DIST_U else 0
-    return {"post_outbreak_median_s": round(statistics.median(post), 1) if post else None,
+    return {"lonely_humans": lonely, "outbreak_rounds": len(post), "timer_nocontact_wins": nocontact,
+            "post_outbreak_median_s": round(statistics.median(post), 1) if post else None,
             "claw_rounds": claw_rounds, "first_claw_fast": fast_claw,
             "human_samples": hs, "human_hunt_share": round(hunt / hs, 3) if hs else None,
             "mutual_samples": m_n, "mutual_share": round(m_ok / m_n, 3) if m_n else None,
@@ -1523,6 +1854,7 @@ def elim_metrics(ds, rounds, bots=None, key=None):
            "round_median_s": round(statistics.median(lengths), 1) if lengths else None, "round_wins": wins}
     if key == "QRT" and bots is not None:
         res.update(qrt_metrics(ds, rounds, bots))
+        res["human_wins_valid"] -= res.get("timer_nocontact_wins", 0)  # a timer win without contact is no human win
     return res
 
 
@@ -1632,12 +1964,56 @@ def rubric(key, minutes, bots, room, ds):
     else:
         wmax = WORLD_DEATHS_ROUND_ROOM
     L.append(line("mobility", f"world deaths <= {wmax} per room", t["world_deaths"] <= wmax,
-                  f"{t['world_deaths']} total"))
+                  f"{t['world_deaths']} total (own-grenade deaths counted apart)"))
+    L.append(line("mobility", f"own-grenade deaths <= {GRENADE_DEATHS_PER_BOT_PER_10MIN} per bot per 10 min",
+                  all(b["grenade_deaths"] <= GRENADE_DEATHS_PER_BOT_PER_10MIN * per10 for b in bots),
+                  f"{t['grenade_deaths']} total" + "".join(f"; {b['nick']} {b['grenade_deaths']}" for b in bots
+                                                          if b["grenade_deaths"])))
+    sw = [(b["nick"], e) for b in bots for e in b["stuck_world"]]
+    L.append(line("mobility", f"no stuck episode ends in a world death (within {STUCK_WORLD_S:.0f} s)", not sw,
+                  f"{len(sw)} episodes" + ("; " + "; ".join(f"{n} t={e['t']} {e['secs']} s at {e['pos']}" for n, e in sw[:4])
+                                           if sw else "")))
+    sp = t["spawn_points"]
+    L.append(line("mobility", f"a spawn point whose spawns die to the world within {SPAWN_DEATH_S:.0f} s <= {SPAWN_DEATH_MAX} time(s)",
+                  (not sp["bad"]) if sp["spawns"] else None,
+                  f"{sp['world_deaths']} world deaths (+{sp['deaths'] - sp['world_deaths']} other) within {SPAWN_DEATH_S:.0f} s "
+                  f"of {sp['spawns']} spawns at {sp['points']} points"
+                  + ("; over: " + ", ".join(f"({b['x']:.0f}, {b['z']:.0f}) {b['world']} of {b['spawns']}" for b in sp["bad"][:4])
+                     if sp["bad"] else "")))
     hoppers = [f"{b['nick']} {b['stuck_jump_nonface_per_min']}" for b in bots
                if b["stuck_jump_nonface_per_min"] > STUCK_JUMP_PER_MIN_MAX]
     L.append(line("mobility", f"non-face stuck jumps <= {STUCK_JUMP_PER_MIN_MAX:g} per bot per alive minute", not hoppers,
                   f"{sum(b['stuck_jumps_nonface'] for b in bots)} of {t['stuck_jumps']} stuck jumps are non-face"
                   + (f"; over: {', '.join(hoppers)}" if hoppers else "")))
+    if key in HOP_TEAM_MODES:
+        rate = {}
+        for tm in sorted({b["team"] for b in bots if b["team"] is not None}):
+            mem = [b for b in bots if b["team"] == tm]
+            per = [b["stuck_jumps"] / (b["alive_s"] / 60.0) for b in mem if b["alive_s"] >= 60]
+            rate[tm] = round(statistics.median(per), 2) if per else 0.0
+        one_sided = None
+        if len(rate) >= 2:
+            hi_r, lo_r = max(rate.values()), min(rate.values())
+            one_sided = not (hi_r >= HOP_TEAM_MIN_PER_MIN and hi_r > HOP_TEAM_RATIO * lo_r)
+        L.append(line("mobility", f"no one-sided hopping: a team's median bot's stuck jumps (face included) per alive minute <= {HOP_TEAM_RATIO:g}x the "
+                                  f"other's (or < {HOP_TEAM_MIN_PER_MIN:g})", one_sided, f"per team {rate}"))
+    creeps = [(b["nick"], c) for b in bots for c in b["creep"]]
+    L.append(line("mobility", f"creep ({CREEP_N}+ stuck jumps {CREEP_GAP_S[0]:g}-{CREEP_GAP_S[1]:g} s apart, each moving "
+                              f"{CREEP_STEP_U[0]:g}-{CREEP_STEP_U[1]:g} u) <= {CREEP_MAX_PER_ROOM} per room",
+                  len(creeps) <= CREEP_MAX_PER_ROOM,
+                  f"{len(creeps)} creeps" + ("; " + "; ".join(f"{n} t={c['t']} x{c['n']} at {c['pos']}" for n, c in creeps[:4])
+                                             if creeps else "")))
+    kn_runs = sum(b["knife"]["runs"] for b in bots)
+    kn_short = sum(b["knife"]["short"] for b in bots)
+    kn_over = [f"{b['nick']} {b['knife']['swaps_per_min']}" for b in bots
+               if b["alive_s"] >= 60 and b["knife"]["swaps_per_min"] > KNIFE_SWAPS_PER_MIN_MAX]
+    kn_checks = [c for c in ((kn_short <= KNIFE_SHORT_MAX_SHARE * kn_runs) if kn_runs >= KNIFE_SHORT_MIN_RUNS else None,
+                             (not kn_over) if any(b["alive_s"] >= 60 for b in bots) else None) if c is not None]
+    L.append(line("mobility", f"knife runs under {KNIFE_SHORT_S:g} s (not ended by sighting / hurt / target) <= "
+                              f"{KNIFE_SHORT_MAX_SHARE:.0%} of the runs (>= {KNIFE_SHORT_MIN_RUNS}), knife swaps <= "
+                              f"{KNIFE_SWAPS_PER_MIN_MAX:g} per bot per alive minute",
+                  all(kn_checks) if kn_checks else None,
+                  f"{kn_short} of {kn_runs} runs short" + (f"; swaps over: {', '.join(kn_over)}" if kn_over else "")))
     pogo_over, pogo_all = [], 0
     for b in bots:
         pogo_all += len(b["pogo"])
@@ -1676,12 +2052,14 @@ def rubric(key, minutes, bots, room, ds):
     # 2. combat
     if key in RESPAWN_MODES:
         guards = {b["nick"] for b in bots if key == "CTF" and b["guard_share"] >= 0.5}
-        slow = [b["nick"] for b in bots if b["alive_s"] > 0 and b["nick"] not in guards
+        lv = [(b["skill"], b["nick"]) for b in bots if b["skill"] is not None]
+        lowest = min(lv)[1] if len({x[0] for x in lv}) > 1 else None  # the room's lowest-skill bot is exempt
+        slow = [b["nick"] for b in bots if b["alive_s"] > 0 and b["nick"] not in guards and b["nick"] != lowest
                 and b["kills"] / (b["alive_s"] / 120.0) < KILLS_PER_2MIN_ALIVE_MIN]
         # Spy Hunt: the 2009 damage matrix (DSV-453) lets a hunter shoot only the holders, so kills are rare by design
-        L.append(line("combat", f"each bot >= {KILLS_PER_2MIN_ALIVE_MIN:g} kill per 2 min alive (CTF guards exempt, not Spy Hunt)",
+        L.append(line("combat", f"each bot >= {KILLS_PER_2MIN_ALIVE_MIN:g} kill per 2 min alive (CTF guards and the lowest-skill bot exempt, not Spy Hunt)",
                       (not slow) if key != "BNT" else None, (f"below: {', '.join(slow)}" if slow else "all")
-                      + (f"; guards {sorted(guards)}" if guards else "")))
+                      + (f"; guards {sorted(guards)}" if guards else "") + (f"; exempt lowest skill {lowest}" if lowest else "")))
         silent = [b["nick"] for b in bots if b["targets"] > 0 and not b["shots"]]
         L.append(line("combat", "no bot with 0 shots while it had a target", not silent,
                       f"{', '.join(silent)}" if silent else "none"))
@@ -1720,8 +2098,11 @@ def rubric(key, minutes, bots, room, ds):
             acc = [(b["nick"], (b["hit_claims"] or 0) / b["shots"]) for b in bots
                    if not b["sniper"] and (b["shots"] or 0) >= ACCURACY_MIN_SHOTS]
             bad = [f"{n} {a:.1%}" for n, a in acc if not ACCURACY[0] <= a <= ACCURACY[1]]
-            L.append(line("combat", f"accuracy hits/shots {ACCURACY[0]:.0%}..{ACCURACY[1]:.0%} (rifles, bots with >= "
-                                    f"{ACCURACY_MIN_SHOTS} shots)",
+            spk = [(b["nick"], b["shots"] / max(1, b["kills"])) for b in bots
+                   if not b["sniper"] and (b["shots"] or 0) >= ACCURACY_MIN_SHOTS]
+            bad += [f"{n} {v:.0f} shots/kill" for n, v in spk if v > SHOTS_PER_KILL_MAX]
+            L.append(line("combat", f"accuracy hits/shots {ACCURACY[0]:.0%}..{ACCURACY[1]:.0%} and <= {SHOTS_PER_KILL_MAX} "
+                                    f"shots per kill (rifles, bots with >= {ACCURACY_MIN_SHOTS} shots)",
                           (not bad) if acc else None, f"outside: {', '.join(bad)}" if bad else f"{len(acc)} judged"))
         med = t["reaction_measured_median_s"]
         n_m = t["reaction_measured_n"]
@@ -1753,19 +2134,17 @@ def rubric(key, minutes, bots, room, ds):
         L.append(line("objective", f"plant attempted in >= {SND_PLANT_ROUNDS_MIN:.0%} of rounds",
                       (o["plant_attempt_rounds"] / n >= SND_PLANT_ROUNDS_MIN) if n else None,
                       f"{o['plant_attempt_rounds']} of {n}"))
-        L.append(line("objective", f"defuse attempted after >= {SND_DEFUSE_AFTER_PLANT_MIN:.0%} of the plants a defender was alive {SND_DEFUSE_ALIVE_S:.0f} s after",
-                      (o["defuse_when_alive_rounds"] / o["defuse_expected_rounds"] >= SND_DEFUSE_AFTER_PLANT_MIN)
-                      if o["defuse_expected_rounds"] else None,
-                      f"{o['defuse_when_alive_rounds']} of {o['defuse_expected_rounds']} ({o['defuse_after_plant_rounds']} "
-                      f"of {o['planted_rounds']} plants)"))
-        L.append(line("objective", f"attackers win >= {SND_ATTACKER_WIN_MIN:.0%} of the planted rounds",
-                      (o["attacker_wins_planted"] / o["planted_rounds"] >= SND_ATTACKER_WIN_MIN) if o["planted_rounds"] else None,
-                      f"{o['attacker_wins_planted']} of {o['planted_rounds']}"))
-        L.append(line("objective", f"a defuse starts in >= {SND_DEFUSE_REACH_MIN:.0%} of the planted rounds where a defender "
-                                   f"could reach the site within {SND_DEFUSE_REACH_S:.0f} s ({SND_RUN_SPEED_U:.0f} u/s) alive",
-                      (o["defuse_reach_rounds"] / o["defuse_reach_expected_rounds"] >= SND_DEFUSE_REACH_MIN)
-                      if o["defuse_reach_expected_rounds"] else None,
-                      f"{o['defuse_reach_rounds']} of {o['defuse_reach_expected_rounds']}"))
+        pl = o["planted_rounds"]
+        L.append(line("objective", f"attackers win >= {SND_ATTACKER_WIN_MIN:.0%} of the planted rounds (judged with >= "
+                                   f"{SND_ATTACKER_WIN_MIN_PLANTS} planted rounds)",
+                      (o["attacker_wins_planted"] / pl >= SND_ATTACKER_WIN_MIN) if pl >= SND_ATTACKER_WIN_MIN_PLANTS else None,
+                      f"{o['attacker_wins_planted']} of {pl}"))
+        L.append(line("objective", f"a defender reaches within {SND_DEFENDER_NEAR_U:.0f} u (3-D, |dy| < {SND_DEFENDER_DY_U:.0f}) of the "
+                                   f"bomb in >= {SND_DEFENDER_NEAR_MIN:.0%} of the planted rounds with a defender alive",
+                      (o["defender_near_rounds"] / o["defender_near_expected_rounds"] >= SND_DEFENDER_NEAR_MIN)
+                      if o["defender_near_expected_rounds"] else None,
+                      f"{o['defender_near_rounds']} of {o['defender_near_expected_rounds']} (defuse starts in "
+                      f"{o['defuse_after_plant_rounds']} of {o['planted_rounds']} plants)"))
         L.append(line("objective", f"an attacker fires within {SND_CONTEST_S:.0f} s of >= {SND_CONTEST_MIN:.0%} of the defuse "
                                    f"starts with an attacker alive",
                       (o["defuses_contested"] / o["defuse_starts_alive"] >= SND_CONTEST_MIN) if o["defuse_starts_alive"] else None,
@@ -1799,6 +2178,16 @@ def rubric(key, minutes, bots, room, ds):
         late = [d for d in dr if not d["resolved"] or d["resolved"]["secs"] > CTF_DROP_RESOLVE_S]
         L.append(line("objective", f"a dropped flag is taken or returned within {CTF_DROP_RESOLVE_S:.0f} s",
                       (not late) if dr else None, f"{len(dr) - len(late)} of {len(dr)}"))
+        gd = [(b["nick"], g) for b in bots for g in b["guard"]["blind"]]
+        gn = [(b["nick"], g) for b in bots for g in b["guard"]["no_rotation"]]
+        known = sum(b["guard"]["sees_known"] for b in bots)
+        L.append(line("objective", f"no guard spot without sight of the flag held >= {GUARD_BLIND_S:.0f} s, none held longer than "
+                                   f"{GUARD_ROTATE_X:g}x its dwell without rotation",
+                      (not gd and not gn) if any(b["guard"]["spots"] for b in bots) else None,
+                      (f"{sum(b['guard']['spots'] for b in bots)} spots, {len(gd)} blind, {len(gn)} without rotation"
+                       + ("" if known else " (no `sees` in the events, an older run: blindness not judged)"))
+                      + "".join(f"; {n} blind t={g['t']} {g['held_s']} s at {g['spot']}" for n, g in gd[:3])
+                      + "".join(f"; {n} parked on a spot t={g['t']} {g['held_s']} s (dwell {g['dwell_s']})" for n, g in gn[:3])))
         L.append(line("objective", "defenders return their own flag (no return by the timer)",
                       o["returned_by_timer"] == 0 if (o["returned_by_timer"] + o["returned_by_client"]) else None,
                       f"{o['returned_by_client']} by a player, {o['returned_by_timer']} by the timer"))
@@ -1815,6 +2204,13 @@ def rubric(key, minutes, bots, room, ds):
         L.append(line("objective", "stage 2 ends by the upload or the agent's death, never by the stage timer",
                       (o["stage2_timer_ends"] == 0) if o["stage2"] else None,
                       f"{o['stage2_timer_ends']} timer ends of {len(o['stage2'])} stage 2"))
+        L.append(line("objective", f"no case lies free longer than {SPY_CASE_UNTOUCHED_S:.0f} s while a player holds {SPY_HOLDER_N}",
+                      (o["case_untouched_max_s"] <= SPY_CASE_UNTOUCHED_S) if o.get("spy_cases_known") else None,
+                      f"longest {o.get('case_untouched_max_s')} s" + (f" at {o['case_untouched_pos']}"
+                                                                      if o.get("case_untouched_pos") else "")))
+        L.append(line("objective", f"holders of {SPY_HOLDER_N}+ lose their cases at most {SPY_HOLDER_LOSS_MAX} times per stage",
+                      (o["holder_losses_max"] <= SPY_HOLDER_LOSS_MAX) if o.get("spy_cases_known") else None,
+                      f"per stage {o.get('holder_losses')}"))
         L.append(line("objective", f">= {SPY_STAGE2_HUNTERS_MIN} hunters chase / guard / within {SPY_STAGE2_NEAR_U:.0f} u of the "
                                    f"agent or its uplink for >= {SPY_STAGE2_SHARE_MIN:.0%} of stage 2",
                       (o["stage2_hunters_ok"] / o["stage2_samples"] >= SPY_STAGE2_SHARE_MIN) if o["stage2_samples"] >= 5 else None,
@@ -1849,6 +2245,12 @@ def rubric(key, minutes, bots, room, ds):
                                    f"(>= {QRT_SIGHT_MIN_S:.0f} s in sight)",
                       (sp_ >= QRT_HUMAN_SHOTS_PER_S) if o.get("human_sight_s", 0) >= QRT_SIGHT_MIN_S else None,
                       f"{sp_} shots/s over {o.get('human_sight_s')} s in sight"))
+        lo_ = o.get("lonely_humans") or []
+        L.append(line("objective", f"no living human goes >= {QRT_ALONE_S:.0f} s after the outbreak without an infected within "
+                                   f"{QRT_ALONE_U:.0f} u (<= {QRT_ALONE_MAX_PER_ROOM} per room)",
+                      (len(lo_) <= QRT_ALONE_MAX_PER_ROOM) if o.get("outbreak_rounds") else None,
+                      f"{len(lo_)} cases" + "".join(f"; {x['nick']} r{x['round']} t={x['t']} at {x['pos']}" for x in lo_[:4])
+                      + f"; {o.get('timer_nocontact_wins', 0)} timer win(s) without contact are no human win"))
         L.append(line("objective", f"<= {QRT_HOST_KILL_MAX_SHARE:.0%} of the rounds won by killing the host with zero infections",
                       (o["host_kill_wins"] <= QRT_HOST_KILL_MAX_SHARE * n) if n else None,
                       f"{o['host_kill_wins']} host kills of {n} rounds"))
@@ -1916,7 +2318,7 @@ def room_md(room):
       f"verdict **{room['verdict']}**\n")
     w(f"- kills {t['kills']} (world deaths {t['world_deaths']}, team kills {t['team_kills']}"
       f"{', infections ' + str(t['infections']) if t.get('infections') else ''}), by team "
-      f"{t['kills_by_team']}{'' if room['mode'] == 'BNT' else ', K/D spread ' + str(t['kd_spread'])}; shots {t['shots']}, hits claimed {t['hit_claims']}\n")
+      f"{t['kills_by_team']}{'' if room['mode'] in ('BNT', 'QRT') else ', K/D spread ' + str(t['kd_spread'])}; shots {t['shots']}, hits claimed {t['hit_claims']}\n")
     w(f"- alive {t['alive_min']} bot-min, stuck {t['stuck']} (longest {t['stuck_longest_s']} s), idle {t['idle_s']} s, "
       f"stuck jumps {t['stuck_jumps']}, cells {t['cells_all']} {t['coverage_by_team']}\n")
     w(f"- objective: {objective_summary(room)}\n\n")
@@ -1973,7 +2375,7 @@ def summary_row(room):
     t = room["totals"]
     return {"mode": room["mode"], "map": room["map"], "bots": room["bots"], "minutes": room["minutes"],
             "verdict": room["verdict"], "kills": t["kills"], "world_deaths": t["world_deaths"],
-            "team_kills": t["team_kills"], "kd_spread": None if room["mode"] == "BNT" else t["kd_spread"],
+            "team_kills": t["team_kills"], "kd_spread": None if room["mode"] in ("BNT", "QRT") else t["kd_spread"],
             "stuck": t["stuck"],
             "stuck_longest_s": t["stuck_longest_s"], "idle_s": t["idle_s"], "stuck_jumps": t["stuck_jumps"],
             "goals_ok": t["goals_ok"], "goals_late": t["goals_late"], "shots": t["shots"],
@@ -2090,7 +2492,9 @@ def main():
     r.add_argument("--minutes", type=float, default=0, help="override every room's minutes")
     r.add_argument("--bin", default=os.path.join(REPO, "target", "release"))
     r.add_argument("--rom", default=None, help="the client folder (default: CA_ROM)")
-    r.add_argument("--no-score", action="store_true")
+    r.add_argument("--no-score", action="store_true",
+                   help="skip scoring after the run (a skill-band room per mode, --skills 70-90 and 5-25, will join the matrix; "
+                        "the scorer reads each room's own skill levels)")
     s = sub.add_parser("score", help="score one netlab --out folder or a folder of many")
     s.add_argument("dir")
     s.add_argument("--md", action="store_true", help="also print summary.md")

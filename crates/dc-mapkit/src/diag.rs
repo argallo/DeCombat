@@ -149,6 +149,7 @@ codes! {
     WalkKillFloor = "walk.kill_floor", Warning, "the survey found columns whose floor puts a standing body inside a kill volume (`walk --survey`)";
     WalkTrap = "walk.trap", Warning, "the reach analysis found floors a player can get to from the main area but never get back from (`walk --reach`)";
     WalkDeadly = "walk.deadly", Warning, "the reach analysis found moves from the main area that kill: a lethal fall, a kill volume or a fall out of the world (`walk --reach`)";
+    WalkSight = "walk.sight", Warning, "a team spawn sees an enemy spawn, or is seen from a position outside its base within range (`walk --sight`)";
     WalkSpawnOutside = "walk.spawn_outside", Warning, "the reach analysis found a player spawn outside the main area (`walk --reach`)";
 
     ScriptError = "script.error", Error, "a Lua generator failed: a syntax error, a runtime error or a map.* call with bad arguments (the path names the script line)";

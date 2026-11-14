@@ -149,7 +149,12 @@ pub(crate) fn read_soup(c: &mut Cur<'_>, section: Section) -> Result<PolySoup> {
         let dist = c.f32()?;
         let nv = c.u32()?;
         let raw = c.take_n(nv, 12)?;
-        let verts = raw.chunks_exact(12).map(|r| le_vec3(r, 0)).collect();
+        let verts = raw
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .map(|r| le_vec3(r, 0))
+            .collect();
         polys.push(BlockerPoly {
             normal,
             dist,

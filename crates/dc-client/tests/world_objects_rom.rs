@@ -197,7 +197,7 @@ fn rom_junk_flea_draws_the_server_set_of_the_mode() {
         !extra.is_empty(),
         "the file view shows models the server never creates in elimination"
     );
-    let parsed_bytes = dc_render::WorldSource::open(&rom)
+    let parsed_bytes = dc_rez::WorldArchive::open(&rom)
         .unwrap()
         .read(MAP)
         .unwrap()

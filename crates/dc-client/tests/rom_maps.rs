@@ -81,7 +81,7 @@ fn rom_client_loop_equals_dc_sim() {
     let start = PlayerState::new(at, world.stand_dims, &p);
     let mut sim = Simulation::new(p, &world.collision, start, 60);
     // the client applies the ROM speed rows of its body row 0 (no weapon offline; CLI-340, MOVEMENT_2009.md §7)
-    let mods = dc_sim::SpeedTable::from_vfs(&dc_rez::RezVfs::new(&rom))
+    let mods = dc_bute::speed::from_vfs(&dc_rez::RezVfs::new(&rom))
         .expect("speed rows")
         .mods(&dc_sim::Loadout {
             body: Some(0),

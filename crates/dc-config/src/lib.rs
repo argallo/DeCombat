@@ -9,6 +9,7 @@
 
 mod check;
 pub mod directory;
+pub mod game;
 pub mod modes;
 pub mod schema;
 pub mod vanilla_plus;

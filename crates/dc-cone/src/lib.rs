@@ -21,8 +21,8 @@
 
 use std::sync::OnceLock;
 
-use dc_bute::ButeDoc;
-use dc_rez::RezVfs;
+use dc_attr::ButeDoc;
+use dc_vfs::Vfs;
 
 // --------------------------------------------------------------------------------------------- the table
 
@@ -79,7 +79,7 @@ pub fn table_from_doc(doc: &ButeDoc) -> Option<Vec<f32>> {
 }
 
 /// The table as the 2009 client loads it from the user's ROM (`None`: no entry, or [`table_from_doc`] fails).
-pub fn rom_table(vfs: &RezVfs) -> Option<Vec<f32>> {
+pub fn rom_table(vfs: &Vfs) -> Option<Vec<f32>> {
     let doc = ButeDoc::from_vfs(vfs, TABLE_REZ, TABLE_ENTRY)?;
     table_from_doc(&doc)
 }
@@ -87,7 +87,7 @@ pub fn rom_table(vfs: &RezVfs) -> Option<Vec<f32>> {
 /// SHA-256 (hex) of a table as little-endian binary32 values (compare with [`TABLE_SHA256`]).
 pub fn table_sha256(t: &[f32]) -> String {
     let bytes: Vec<u8> = t.iter().flat_map(|v| v.to_le_bytes()).collect();
-    dc_rez::dc_rom::sha256_hex(&bytes)
+    dc_core::sha256_hex(&bytes)
 }
 
 /// The cone's random table (values in [0, 1)) with where it came from. Dereferences to the values.
@@ -100,7 +100,7 @@ pub struct ShotTable {
 
 impl ShotTable {
     /// The ROM entry's table ([`rom_table`]).
-    pub fn from_rom(vfs: &RezVfs) -> Option<ShotTable> {
+    pub fn from_rom(vfs: &Vfs) -> Option<ShotTable> {
         rom_table(vfs).map(|values| ShotTable {
             values,
             source: "rom",
@@ -123,10 +123,9 @@ impl ShotTable {
         }
     }
 
-    /// The ROM's table, else the generator's.
-    pub fn open(rom: Option<&std::path::Path>) -> ShotTable {
-        rom.and_then(|p| Self::from_rom(&RezVfs::new(p)))
-            .unwrap_or_else(Self::generated)
+    /// The table of `vfs` (the user's ROM), else the generator's.
+    pub fn open(vfs: Option<&Vfs>) -> ShotTable {
+        vfs.and_then(Self::from_rom).unwrap_or_else(Self::generated)
     }
 
     pub fn len(&self) -> usize {
@@ -294,7 +293,7 @@ impl Default for ConeRow {
 }
 
 /// A finite number of a section key (case-insensitive name; a trailing `f` is allowed).
-pub fn num(sec: &dc_bute::SectionMap, k: &str) -> Option<f32> {
+pub fn num(sec: &dc_attr::SectionMap, k: &str) -> Option<f32> {
     let t = sec
         .iter()
         .find(|(kk, _)| kk.eq_ignore_ascii_case(k))
@@ -308,7 +307,7 @@ impl ConeRow {
     /// The cone keys of a `[Weapon<n>]` section; integer keys are truncated like the client's integer reader.
     // EVIDENCE: cshell+0x17bd20 (MinPerturb +0x288, MaxPerturb +0x28c read as integers); addendum AC-2.1 (zoomed
     // +0x298 / +0x29c, triple +0x330 / +0x334), AC-3.2 (+0x274, +0x278 run, +0x27c walk, +0x280 jump)
-    pub fn of_section(sec: &dc_bute::SectionMap) -> ConeRow {
+    pub fn of_section(sec: &dc_attr::SectionMap) -> ConeRow {
         let d = ConeRow::default();
         let int = |k: &str, dflt: i32| num(sec, k).map_or(dflt, |v| v.trunc() as i32);
         let f = |k: &str, dflt: f32| num(sec, k).unwrap_or(dflt);
@@ -342,7 +341,7 @@ pub struct ModRow {
 impl ModRow {
     // DC-DEFAULT: CLI-122 a missing mod key reads 0 (the mod constructor's defaults, cshell+0x175730, are not read;
     // no ROM mod row sets RangePer or VectorsPerRoundPer)
-    pub fn of_section(sec: &dc_bute::SectionMap) -> ModRow {
+    pub fn of_section(sec: &dc_attr::SectionMap) -> ModRow {
         ModRow {
             scale: num(sec, key::SCALE).unwrap_or(0.0),
             range_per: num(sec, key::RANGE_PER).unwrap_or(0.0),
@@ -703,11 +702,14 @@ mod tests {
     #[test]
     fn rom_entry_equals_the_generator() {
         let rom = dc_rez::dc_rom::rom_or_skip!();
-        let t = ShotTable::from_rom(&RezVfs::new(&rom)).expect("ROM random table entry");
+        let t = ShotTable::from_rom(&dc_rez::RezVfs::new(&rom)).expect("ROM random table entry");
         assert_eq!((t.len(), t.source), (TABLE_LEN, "rom"));
         assert_eq!(table_sha256(&t), TABLE_SHA256);
         assert_eq!(&t[..], shared_generated());
-        assert_eq!(ShotTable::open(Some(&rom)).source, "rom");
+        assert_eq!(
+            ShotTable::open(Some(&dc_rez::RezVfs::new(&rom))).source,
+            "rom"
+        );
     }
 
     #[test]

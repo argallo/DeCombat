@@ -14,20 +14,19 @@ window = ["dep:winit"]
 # profiler's GPU-memory high-water marks; off by default (a few atomic adds per resource create / destroy).
 gpu-counters = ["wgpu/counters"]
 
-[[bin]]
-name = "worldview"
-path = "src/bin/worldview.rs"
-
 [dependencies]
-# Our own crates: world reader (FMT_DAT85), texture reader (FMT_DTX), archive index (ROM model, read-only).
+# Our own crates: world reader (FMT_DAT85), texture reader (FMT_DTX). The archives are read through the caller's
+# dc-vfs layer; no ROM crate is a dependency (tools/engine_crates.txt).
 dc-world = { path = "../dc-world" }
 dc-tex = { path = "../dc-tex" }
-dc-rez = { path = "../dc-rez" }
-dc-rom = { path = "../dc-rom" }
+# dc-core (SHA-256: determinism manifest, sha-ids) and dc-vfs (the file system models, styles and tables are read
+# through; callers pass the ROM's RezVfs, which derefs to it).
+dc-core = { path = "../dc-core" }
+dc-vfs = { path = "../dc-vfs" }
 # Model container reader (FMT_LTB) for the model passes; attribute-table reader for the character body rows
 # (the ROM model table names each body's model file and skins).
 dc-model = { path = "../dc-model" }
-dc-bute = { path = "../dc-bute" }
+dc-attr = { path = "../dc-attr" }
 # CLEANROOM.md 4a: wgpu is the client graphics API (DX12 / Metal / Vulkan, WARP fallback on Windows);
 # MIT OR Apache-2.0. Default features keep the WGSL front end and the native backends.
 wgpu = "25"
@@ -47,3 +46,8 @@ winit = { version = "0.30", optional = true }
 # (dc-client CLI-1284) and the window's animation behaviour (CLI-1288). Same version as winit's (in the lock); MIT.
 objc2-app-kit = { version = "0.2.2", features = ["NSCursor", "NSWindow", "NSView", "NSResponder"] }
 objc2 = "0.5"
+
+[dev-dependencies]
+# dc-rez / dc-rom: the ROM-gated tests and examples open the user's own archives (WorldArchive, RomLayer, RezVfs).
+dc-rez = { path = "../dc-rez" }
+dc-rom = { path = "../dc-rom" }

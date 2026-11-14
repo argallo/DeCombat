@@ -19,14 +19,14 @@ use crate::lights::{
 use crate::model::{ModelFiles, ModelMeshStats};
 use crate::model_gpu::{ModelInstance, ModelLook, StyleChoice, StyleStats};
 use crate::scene::{SceneMesh, SceneOptions, SceneStats};
-use crate::source::{TextureIndex, WorldSource};
+use crate::source::TextureIndex;
 use crate::style::{describe, RenderStyle, StyleLibrary};
 use crate::texture::RomTextures;
-use dc_rez::RezVfs;
+use dc_vfs::{Vfs, VfsError};
 use dc_world::{ObjectRole, World};
 use glam::{Quat, Vec3, Vec4};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -394,11 +394,29 @@ impl PreparedView {
     }
 }
 
-/// The user's ROM plus a device.
+/// Name of the world archive the viewer lists and reads maps from.
+// OBSERVED: ROM table key WORLDS (the archive holding all 21 `.dat` worlds, FMT_DAT85.md §11)
+const WORLD_ARCHIVE: &str = "WORLDS.rez";
+
+/// `(map name, full entry path)` of every `.dat` entry of the world archive: the name is the basename without
+/// extension, upper case.
+fn world_entries(vfs: &Vfs) -> Result<Vec<(String, String)>, VfsError> {
+    Ok(vfs
+        .list_entries(WORLD_ARCHIVE)?
+        .into_iter()
+        .filter(|e| e.0.len() > 4 && e.0[e.0.len() - 4..].eq_ignore_ascii_case(".dat"))
+        .map(|e| {
+            let base = e.0.rsplit(['\\', '/']).next().unwrap_or(&e.0);
+            (base[..base.len() - 4].to_ascii_uppercase(), e.0.clone())
+        })
+        .collect())
+}
+
+/// A file system over the user's ROM plus a device.
 pub struct RomViewer {
-    worlds: WorldSource,
+    worlds: Vec<(String, String)>,
     textures: TextureIndex,
-    vfs: RezVfs,
+    vfs: Vfs,
     pub ctx: GpuContext,
     pub renderer: WorldRenderer,
 }
@@ -412,7 +430,7 @@ fn yaw_pitch_of(c: &Camera) -> (f32, f32) {
 
 /// First 12 hex digits of SHA-256 of an upper-cased resource path.
 pub fn path_hash(path: &str) -> String {
-    let h = dc_rom::sha256(
+    let h = dc_core::sha256(
         path.trim()
             .replace('/', "\\")
             .to_ascii_uppercase()
@@ -422,28 +440,29 @@ pub fn path_hash(path: &str) -> String {
 }
 
 impl RomViewer {
+    /// A viewer over `vfs` (the apps pass one whose archive layer is the user's ROM).
     pub fn open(
-        rom: &Path,
+        vfs: Vfs,
         adapter: AdapterChoice,
         settings: RenderSettings,
     ) -> Result<RomViewer, ViewError> {
         let ctx = GpuContext::headless(adapter)?;
-        RomViewer::with_context(rom, ctx, OFFSCREEN_FORMAT, settings)
+        RomViewer::with_context(vfs, ctx, OFFSCREEN_FORMAT, settings)
     }
 
     pub fn with_context(
-        rom: &Path,
+        vfs: Vfs,
         ctx: GpuContext,
         format: wgpu::TextureFormat,
         settings: RenderSettings,
     ) -> Result<RomViewer, ViewError> {
-        let worlds = WorldSource::open(rom).map_err(|e| ViewError::Rom(e.to_string()))?;
-        let textures = TextureIndex::open(rom).map_err(|e| ViewError::Rom(e.to_string()))?;
+        let worlds = world_entries(&vfs).map_err(|e| ViewError::Rom(e.to_string()))?;
+        let textures = TextureIndex::from_vfs(&vfs);
         let renderer = WorldRenderer::new(&ctx, format, settings);
         Ok(RomViewer {
             worlds,
             textures,
-            vfs: RezVfs::new(rom),
+            vfs,
             ctx,
             renderer,
         })
@@ -451,11 +470,14 @@ impl RomViewer {
 
     /// Map names read from the user's world archive.
     pub fn map_names(&self) -> Vec<String> {
-        self.worlds.map_names()
+        let mut v: Vec<String> = self.worlds.iter().map(|w| w.0.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
-    /// The archive VFS of the user's ROM.
-    pub fn vfs(&self) -> &RezVfs {
+    /// The file system the viewer reads through.
+    pub fn vfs(&self) -> &Vfs {
         &self.vfs
     }
 
@@ -509,10 +531,20 @@ impl RomViewer {
 
     /// Loads, builds and uploads a map and places the camera (and the model, when one is requested).
     pub fn prepare(&self, req: &ViewRequest) -> Result<PreparedView, ViewError> {
-        let data = self
+        let want = req.map.to_ascii_uppercase();
+        let path = self
             .worlds
-            .read(&req.map)
+            .iter()
+            .find(|w| w.0 == want)
+            .map(|w| w.1.as_str());
+        let data = path
+            .map(|p| {
+                let _io = crate::perf::span(crate::perf::Counter::IoNs);
+                self.vfs.entry(WORLD_ARCHIVE, p)
+            })
+            .transpose()
             .map_err(|e| ViewError::Rom(e.to_string()))?
+            .flatten()
             .ok_or_else(|| ViewError::NoSuchMap(req.map.clone()))?;
         let file_bytes = data.len();
         let t = Instant::now();

@@ -404,6 +404,11 @@ pub const OPS: &[(&str, &str, Fields)] = &[
         &[
             ("bake_shadow", "num|null", "shadows on floors and walls from solids and hidden cores, 0 (off) .. 1"),
             ("bake_lightmap", "num|null", "world units a lightmap texel covers, 2 .. 64: lightmaps, lamps (dc.point_light) and bounced light; 0 is off"),
+            ("bake_ambient", "num|null", "the bake's ambient weight (build.bake.ambient), 0 .. 2"),
+            ("bake_sun", "num|null", "the bake's sun weight (build.bake.sun), 0 .. 2"),
+            ("bake_hemisphere", "num|null", "the bake's sky-up / ground-down weight (build.bake.hemisphere), 0 .. 2"),
+            ("bake_ao", "num|null", "the bake's ambient occlusion weight (build.bake.ao), 0 .. 2"),
+            ("sky_inner", "num|null", "how far the sky eye moves inside the sky box as the player crosses the map, 0 .. 1 of its half size (0: the sky stays at infinity; unset: 0.9)"),
             ("fog_enable", "bool|null", "fog on"),
             ("fog_near", "num|null", "fog start"),
             ("fog_far", "num|null", "fog end"),

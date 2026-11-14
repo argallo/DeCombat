@@ -22,9 +22,12 @@ The evidence for 2009 behaviour is in [specs/](../specs/README.md). Rules that a
 | `dc-dserver` | Dedicated game server: rooms, modes, movement, hits, world objects. |
 | `dc-host` | Remote game host agent: dials the lobby over TLS and runs one `dc-dserver` per match. |
 | `dc-botclient` | Headless client: lobby flow, UDP game session, a stand-in player with simple AI. |
+| `dc-core` | Engine basics with no game data: SHA-256, the read journal and the read trace (re-exported by `dc-rom`). |
 | `dc-rom` | Locate and verify the ROM folder; read its resources. |
-| `dc-rez` | Read `.rez` archives, a virtual file system with mod overrides. |
-| `dc-bute` | Parse the `.txt` / `.bms` / `.gms` table format. |
+| `dc-vfs` | Layered virtual file system: override folders, base content folders, an archive layer behind a trait. |
+| `dc-rez` | Read `.rez` archives: the ROM's archive layer of `dc-vfs` (`RomLayer`) and `RezVfs` over it. |
+| `dc-attr` | Parse the `.txt` / `.bms` / `.gms` attribute-text format; the mod content-patch document. |
+| `dc-bute` | The 2009 game tables (rooms, shop, items, weapons) over `dc-attr`. |
 | `dc-wire` | TCP frame and bit-aligned UDP packet reader/writer; FILETIME helpers. |
 | `dc-net-engine` | The game-connection UDP transport (link, host, joiner); pure, time is an input. |
 | `dc-sim` | Deterministic movement and collision shared by the server and the client. |
@@ -35,12 +38,13 @@ The evidence for 2009 behaviour is in [specs/](../specs/README.md). Rules that a
 | `dc-fx-data` | Sprite, texture-script and effect content parsers. |
 | `dc-ui-data` | UI strings, layout tables, screen pages and fonts from the ROM. |
 | `dc-audio` | Sound mixer, attribute records, music and sound decode. |
-| `dc-render` | wgpu renderer and offline world viewer. |
+| `dc-render` | wgpu renderer and the world viewer library; reads archives only through the caller's dc-vfs layer. |
 | `dc-mod-lua` | Sandboxed per-mod Lua 5.4 runtime with manifest, hooks and events. |
 | `dc-modkit` | Mod developer CLI: scaffold, validate, lint, pack. |
 | `dc-config` | `server.toml` schema, environment overrides, the directory and review-list checks. |
 | `dc-mapkit` | Community map builder: text project, JSON ops, Lua generators, world build, export, MCP server, GUI. |
 | `dc-hangdump` | Hang and crash diagnostics (Windows). |
+| `dc-session` | Device sessions, client side: the per-device sign-in credential, its store and the refresh / rotation flow. |
 | `dc-ios-app` | The iPad app's static library. |
 | `dc-ios-hid` | iPadOS keyboard, mouse and pointer lock. |
-| `dc-xtask` | Dev-only tooling: differential dumps of the ROM through the crates. |
+| `dc-xtask` | Dev-only tooling: differential dumps of the ROM through the crates; `worldview`, the ROM world viewer (`--features window` for on-screen). |

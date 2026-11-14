@@ -40,6 +40,12 @@ pub const REACHED_RISE: f32 = 90.0;
 /// in the flight of its jump had reached the top of the crate it was jumping onto and steered on).
 // DC-DEFAULT: BOT-141 (proposed) 8 units
 pub const TOP_LEVEL: f32 = 8.0;
+/// BOT-196: in the flight of a jump ([`JUMP_HOLD_MS`] after it) a top is reached only by a body this close under its
+/// height (up on it). Before, [`TOP_LEVEL`] held in the flight too: a body whose flight topped out 3..6 under the rim of
+/// a narrow ledge (Two Towers' ledge at (1771, -635, 706) beside the floor at -702, a rise of 68) had the top dropped as
+/// reached, fell back to the floor, and the jump counted as no failure: the next plan jumped there again (nav_rom).
+// DC-DEFAULT: BOT-196 (proposed) 2 units (`LEVEL`)
+pub const FLIGHT_LEVEL: f32 = crate::LEVEL;
 /// BOT-141: for this long after the follower said jump, the way it jumps along is not planned again on the clock (a
 /// plan from the body in flight began elsewhere, the body steered off the crate's edge and fell back).
 // DC-DEFAULT: BOT-141 (proposed) 1000 ms (a jump's flight, 2 x 330 / 1100 = 0.6 s, and the step onto the edge)
@@ -77,6 +83,13 @@ pub const FACE_RISE: f32 = 40.0;
 // DC-DEFAULT: BOT-153 (proposed) 76 units, 72 units; BOT-162 (proposed) 106 units
 pub const FACE_MAX_RISE: f32 = REACH;
 pub const FACE_NEAR: f32 = 72.0;
+/// BOT-197: no face jump from a body standing more than this above another take-off of a jump link onto the top that
+/// lies nearer the top (the ground slopes down to the ledge's foot: the body walks on to the foot first and the face jump is taken there, the
+/// stuck jump of [`JUMP_MS`] stays). Before, at Pump Jack's ledge outside team 1's spawn (top 114, foot 50, the ground
+/// 57..61 a step back) the face jump was taken 70 units out on the slope, the body came down at the foot and jumped
+/// again: two jumps a climb, 22 of a TDM room's 82 team-1 jumps (2026-11-10 room of the bot evaluation).
+// DC-DEFAULT: BOT-197 (proposed) 4 units
+pub const FACE_ABOVE: f32 = 4.0;
 /// BOT-162: the jumps of one life are counted by the place the body jumped from (within [`PLACE_NEAR`] flat and
 /// [`PLACE_RISE`] in height of the first), whatever top they were for: after [`PLACE_JUMPS`] jumps there within
 /// [`PLACE_WINDOW_MS`] the place is spent for the rest of the life: no jump is taken from it again, the top ahead is
@@ -114,6 +127,26 @@ pub const RISE_MS: u32 = 350;
 /// still got up a rise of 87 (Overdose, nav_rom); 17 below it, beside its step, it failed (2026-11-08 rooms).
 // DC-DEFAULT: BOT-162 (proposed) 14 units
 pub const TAKEOFF_LEVEL: f32 = 14.0;
+/// BOT-186: a jump up onto a top at most [`APEX`] above the body is taken only where the body fits raised to the top's
+/// height (one unit over it); elsewhere (under a slab's edge or a beam beside the ledge) the body first walks to the
+/// take-off of a jump link onto that top (the node the grid's jump test raised the body at), for at most
+/// [`TAKEOFF_MS`], until it stands within [`TAKEOFF_AT`] (flat) of it; with no such take-off known it does not jump
+/// (the stuck count runs on to its re-plan). Before, a body that landed on Gray Hammer's crate stairs under the slab of
+/// the walk above jumped at the next crate from there, struck its head (its flight topped out 37 above the take-off,
+/// short of the 42 it needed) and fell back, often off the narrow crate to the floor (nav_rom). [`APEX`] is a jump's
+/// apex (330^2 / 2200 = 49.5): a higher top is reached by the step at the end of the flight, the body moving on from
+/// under what is over it (Two Towers' corner under the bridge: a top 62 up, nav_rom). Not kept: a walk to the take-off
+/// also for a body more than 16 units off the line from the take-off to the top (more falls than it saved on Gray
+/// Hammer's crate stairs), and the headroom test also 16 units ahead toward the top (more falls).
+// DC-DEFAULT: BOT-186 (proposed) 1000 ms, 8 units, 50 units
+pub const TAKEOFF_MS: u32 = 1000;
+pub const TAKEOFF_AT: f32 = 8.0;
+pub const APEX: f32 = 50.0;
+/// BOT-166: a body this close (flat) to a ladder's foot, the way's next point the ladder's top, is at the ladder (the
+/// foot lies a body's width and a margin beside the ladder's end, the body may hold the ladder anywhere along its
+/// width).
+// DC-DEFAULT: BOT-166 (proposed) one and a half lattice steps
+pub const LADDER_AT: f32 = crate::STEP * 1.5;
 /// The end of a way counts as the target's place within this flat distance, at most `REACHED_RISE` above or below
 /// it and in sight of it (a place right under a target on a floor above, or behind the wall from it, is not its
 /// place).
@@ -168,6 +201,34 @@ pub const TOP_STEP_GAP_MS: u32 = 250;
 /// (a crate a face jump gets onto at the second try, BOT-141, stays a way).
 // DC-DEFAULT: BOT-145 (proposed) 2
 pub const TOP_FAILS: u32 = 3;
+/// BOT-191: failures at tops count together while they lie within [`crate::REFUSE_NEAR`] (flat) and a step in height
+/// of the one counted first (the links up onto all of them go together, [`NavGrid`]'s `unlink_ups_onto`), within this
+/// time of it; a jump at a top whose flight ended with the body not up there (the top still ahead, the body more than
+/// [`TOP_LEVEL`] below it, [`JUMP_HOLD_MS`] after the jump or at the next jump) is such a failure. Before, the count
+/// was kept per lattice node: a body at a parapet or a crate's edge jumped at the node in front of it, then at the
+/// one beside it (the next plan's), and no count ran up (Rattlesnake's spawn exit parapet, Overdose's crate stack,
+/// 4..5 jumps within 6 s).
+// DC-DEFAULT: BOT-191 (proposed) 30 s
+pub const FAIL_WINDOW_MS: u32 = 30_000;
+/// BOT-196: the failures are counted at up to this many places at once (each place: the first top counted there and
+/// the tops near it, BOT-191), and a goal changed or given up keeps them (a new life forgets them, as the places jumped
+/// from, BOT-162). Before, one count was kept: a failure at another top started it again, and every goal given up or
+/// gone for more than 1.5 s (a fight) cleared it with the way, so a body that failed at the tiers of a stairs of
+/// ledges in turn (Overdose's tiers 70..80 apart outside team 2's spawn, Two Towers' beams round the pool) or fought
+/// between its tries never ran a count up: 4..9 jumps at one place within 6 s, again and again.
+// DC-DEFAULT: BOT-196 (proposed) 8 places
+pub const FAIL_SPOTS: usize = 8;
+/// BOT-196: after [`BURST_JUMPS`] jumps in a row near one another (each within [`BURST_NEAR`] of the place the body
+/// would jump from now, each less than [`BURST_GAP_MS`] after the one before, the last less than that before now) the
+/// next jump from there waits until [`BURST_GAP_MS`] after the last: the stuck count runs on meanwhile (its re-plan,
+/// the refusal of the top, BOT-145) and the goal may move on. A ladder's top is not held. Before, a body at a stairs
+/// of ledges whose tops it got onto and fell off again, or whose plan changed with the goal, jumped 4..9 times within
+/// a few seconds there (Overdose's tiers outside team 2's spawn, Two Towers' beams round the pool): failures and
+/// spent places (BOT-162, BOT-191) are counted per top and per place and are cleared by a jump that gets the body up.
+// DC-DEFAULT: BOT-196 (proposed) 3 jumps, 96 units (3D), 6 s
+pub const BURST_JUMPS: usize = 3;
+pub const BURST_NEAR: f32 = 96.0;
+pub const BURST_GAP_MS: u32 = 6000;
 
 /// A grid node's lattice key.
 type Lattice = (i32, i32, i32);
@@ -180,6 +241,14 @@ struct TopTry {
     last: u32,
     ms: u32,
     tries: u32,
+}
+
+/// BOT-191 / BOT-196: a place failures at tops were counted at: the first top counted, how many, since when.
+#[derive(Debug, Clone)]
+struct FailSpot {
+    at: [f32; 3],
+    n: u32,
+    first: u32,
 }
 
 /// BOT-162: a place the body jumped from in this life: where, the first jump counted, how many, spent for the life.
@@ -228,6 +297,14 @@ pub struct FollowStats {
     /// BOT-162: jumps not taken from a spent place, and stops at a top out of the body's reach.
     pub place_spent: u64,
     pub out_of_reach: u64,
+    /// BOT-197: jumps not taken on a ladder's rungs.
+    pub rung_holds: u64,
+    /// BOT-186: jumps put off for a walk to the take-off (no headroom where the body stood).
+    pub takeoffs: u64,
+    /// BOT-191: refusals made after jumps whose flight did not get the body up onto the top.
+    pub jump_fails: u64,
+    /// BOT-196: stuck counts whose jump was held after a run of jumps near one another.
+    pub burst_holds: u64,
     /// Plans made, those that reached the target's place, those that found no way, those that found the follower on
     /// an island.
     pub plans: u64,
@@ -295,11 +372,24 @@ pub struct Follower {
     /// BOT-145: the top being tried (a next point more than a step above the body), since when, and when it was the
     /// next point last.
     tops: Vec<TopTry>,
-    /// BOT-145: the last top a failure was counted at, and how many.
-    top_fails: Option<([f32; 3], u32)>,
+    /// BOT-145: the tops failures were counted at, and how many (BOT-191: tops near one count with it, since the
+    /// first; BOT-196: at up to [`FAIL_SPOTS`] places at once, kept across goals).
+    top_fails: Vec<FailSpot>,
+    /// BOT-191: the top the body last jumped at and when (judged when the flight is over).
+    pending: Option<([f32; 3], u32)>,
     /// BOT-162: the places jumped from in this life, and when a top out of reach was last met.
     places: Vec<JumpPlace>,
+    /// BOT-196: the last jumps said (when, where), newest last.
+    burst: Vec<(u32, [f32; 3], bool)>,
     reach_at: Option<u32>,
+    /// BOT-186: the take-off the body walks to before its jump (no headroom where it stood), and until when.
+    takeoff: Option<([f32; 3], u32)>,
+    /// BOT-186: the top whose take-off walk ran out of time (its jump is taken from where the body stands).
+    takeoff_spent: Option<[f32; 3]>,
+    /// BOT-186: the height the body last jumped from, and when.
+    jump_from: Option<(f32, u32)>,
+    /// BOT-196: the last jump of the run a jump was last held after, and whether it is held (judged once a run).
+    held_at: Option<(u32, bool)>,
     pub stats: FollowStats,
     /// BOT-141: why the follower said jump last (for the session's event): at a ledge's face (else after the
     /// stuck time), the next point's height over the body, its flat distance, and whether it was a top.
@@ -341,9 +431,15 @@ impl Default for Follower {
             face_jumps: None,
             refused: Vec::new(),
             tops: Vec::new(),
-            top_fails: None,
+            top_fails: Vec::new(),
+            pending: None,
             places: Vec::new(),
+            burst: Vec::new(),
             reach_at: None,
+            takeoff: None,
+            takeoff_spent: None,
+            jump_from: None,
+            held_at: None,
             stats: FollowStats::default(),
             last_jump: None,
         }
@@ -402,22 +498,30 @@ impl Follower {
     }
 
     /// Forgets the way and the stuck count (a new life, a new grid); the counters stay, and the places jumped from
-    /// (BOT-162: a goal given up or changed keeps them; [`Self::forget_places`] at a new life).
+    /// (BOT-162: a goal given up or changed keeps them; [`Self::forget_places`] at a new life), and the failures at
+    /// tops (BOT-196, likewise).
     pub fn clear(&mut self) {
         let stats = std::mem::take(&mut self.stats);
         let refused = std::mem::take(&mut self.refused);
         let places = std::mem::take(&mut self.places);
+        let top_fails = std::mem::take(&mut self.top_fails);
+        let burst = std::mem::take(&mut self.burst);
         *self = Follower {
             stats,
             refused,
             places,
+            top_fails,
+            burst,
             ..Follower::default()
         };
     }
 
-    /// BOT-162: forgets the places jumped from (a new life: the body was moved elsewhere).
+    /// BOT-162: forgets the places jumped from (a new life: the body was moved elsewhere); BOT-196: and the failures
+    /// counted at tops and the last jumps.
     pub fn forget_places(&mut self) {
         self.places.clear();
+        self.top_fails.clear();
+        self.burst.clear();
     }
 
     /// BOT-162: the place the body at `pos` stands at, among those jumped from (counts older than
@@ -459,9 +563,8 @@ impl Follower {
     /// BOT-162: the next point is a top out of the body's reach by a jump (higher than [`crate::JUMP_RISE`] and no
     /// ladder's top).
     fn out_of_reach(&self, grid: &NavGrid, pos: [f32; 3]) -> bool {
-        self.top.is_some_and(|(w, high)| {
-            high && w[1] - pos[1] > REACH && !grid.laddered_onto(w)
-        })
+        self.top
+            .is_some_and(|(w, high)| high && w[1] - pos[1] > REACH && !grid.laddered_onto(w))
     }
 
     /// BOT-145: forgets the jump links taken out (a new grid: they belong to the old one).
@@ -478,21 +581,71 @@ impl Follower {
         let Some((w, true)) = self.top else {
             return false;
         };
-        let fails = match self.top_fails {
-            Some((t, n)) if flat(t, w) < 1.0 && (t[1] - w[1]).abs() < 1.0 => n + 1,
-            _ => 1,
+        self.refuse_top(grid, now, pos, w, force)
+    }
+
+    /// [`Self::refuse`] for the top `w` (BOT-191: also a top jumped at before, judged after the flight).
+    fn refuse_top(
+        &mut self,
+        grid: &mut NavGrid,
+        now: u32,
+        pos: [f32; 3],
+        w: [f32; 3],
+        force: bool,
+    ) -> bool {
+        // BOT-191: tops near the first one counted count with it (the links up onto them go together); BOT-196: at
+        // each of the places counted at in the window
+        let near =
+            |t: [f32; 3]| flat(t, w) <= crate::REFUSE_NEAR && (t[1] - w[1]).abs() <= crate::STEP_UP;
+        self.top_fails
+            .retain(|f| now.wrapping_sub(f.first) <= FAIL_WINDOW_MS);
+        let i = match self.top_fails.iter().position(|f| near(f.at)) {
+            Some(i) => {
+                self.top_fails[i].n += 1;
+                i
+            }
+            None => {
+                if self.top_fails.len() >= FAIL_SPOTS {
+                    self.top_fails.remove(0);
+                }
+                self.top_fails.push(FailSpot {
+                    at: w,
+                    n: 1,
+                    first: now,
+                });
+                self.top_fails.len() - 1
+            }
         };
-        self.top_fails = Some((w, fails));
+        let (at, fails) = (self.top_fails[i].at, self.top_fails[i].n);
+        // (a failure counted here is not judged again after the flight)
+        if self.pending.is_some_and(|(t, _)| near(t)) {
+            self.pending = None;
+        }
         if !force && fails < TOP_FAILS {
             return false;
         }
-        let out = grid.unlink_ups_onto(w);
+        // (BOT-191: and onto the tops near the first one counted)
+        let mut out = grid.unlink_ups_onto(w);
+        if flat(at, w) >= 1.0 || (at[1] - w[1]).abs() >= 1.0 {
+            out.extend(grid.unlink_ups_onto(at));
+        }
         if out.is_empty() {
             return false;
         }
         if let Some(t) = self.want {
-            grid.route(pos, t);
-            if grid.last_way_closed() {
+            let way = grid.route(pos, t);
+            // BOT-191: a failure counted (not a top tried too long) keeps the ways up when the way round would not
+            // reach the target while the way followed did (a stairway of tiers a jump high, climbed at the second or
+            // third try: Waverider's deck)
+            let lost = !force
+                && self.whole
+                && !way.is_some_and(|w| {
+                    let e = w[w.len() - 1];
+                    flat(e, t) <= AT_TARGET
+                        && (e[1] - t[1]).abs() <= REACHED_RISE
+                        && grid.in_sight(e, t)
+                });
+            if grid.last_way_closed() || lost {
                 for l in out {
                     grid.relink(l);
                 }
@@ -532,6 +685,21 @@ impl Follower {
     /// that got shorter only because it was planned again, or the target came nearer, is no progress of the body).
     fn moved(&self, pos: [f32; 3]) -> bool {
         self.best_pos.is_none_or(|b| flat(b, pos) >= MOVED)
+    }
+
+    /// BOT-166: the height left to climb when the next point is a ladder's top more than a step above the body at `pos`
+    /// and within [`TOP_NEAR`] of it (flat): the body climbs; 0 otherwise. Before, the stuck count measured the way
+    /// left flat only, so a climb made no way, and a re-plan from the rungs (2 s) found no node near the body: a bot on
+    /// Snow Valley's cellar ladder hung at its middle for the rest of the walk (nav_rom).
+    fn climb_rise(&self, grid: &NavGrid, pos: [f32; 3]) -> f32 {
+        self.pts
+            .first()
+            .filter(|w| {
+                w[1] - pos[1] > crate::STEP_UP + 1.0
+                    && flat(**w, pos) <= TOP_NEAR
+                    && grid.laddered_onto(**w)
+            })
+            .map_or(0.0, |w| w[1] - pos[1])
     }
 
     /// The way left from `pos`: to the first point, then along the points (the target when there are none).
@@ -596,32 +764,67 @@ impl Follower {
         // BOT-139: a point more than a step above the body (the top of a jump) is reached only once the body is up;
         // BOT-141: up on it, not in the flight below its height
         let top = self.top;
+        // BOT-186: in the flight of a jump a point is judged from the height the body jumped from (before: a top that
+        // became the next point while the body rose toward it counted as no top, was reached in the flight and the
+        // body steered on past the crate's rim)
+        let in_flight = self
+            .jump_from
+            .is_some_and(|(_, t)| now.wrapping_sub(t) < JUMP_HOLD_MS);
+        let base = match self.jump_from {
+            Some((y, _)) if in_flight => pos[1].min(y),
+            _ => pos[1],
+        };
         let reached = |w: &[f32; 3]| {
             let high = match top {
                 Some((t, h)) if t == *w => h,
-                _ => w[1] - pos[1] > crate::STEP_UP + 1.0,
+                _ => w[1] - base > crate::STEP_UP + 1.0,
             };
-            let rise = if high {
-                TOP_LEVEL
-            } else {
-                crate::STEP_UP + 1.0
+            // BOT-196: in the flight a top is reached only by a body up on it (the step at the end of the flight
+            // puts it there), not by one at the top of its flight a few units under the rim
+            let rise = match (high, in_flight) {
+                (true, true) => FLIGHT_LEVEL,
+                (true, false) => TOP_LEVEL,
+                _ => crate::STEP_UP + 1.0,
             };
             flat(*w, pos) <= REACHED && pos[1] - w[1] <= REACHED_RISE && w[1] - pos[1] <= rise
         };
         // the nodes reached are dropped, then the way ahead is pulled straight from here
         let before = self.pts.len();
-        // BOT-162: a jump's take-off is reached only by a body level with it
-        while self.pts.first().is_some_and(reached) && !off_takeoff(&self.pts, 0, pos) {
-            self.pts.remove(0);
+        // BOT-162: a jump's take-off is reached only by a body level with it; BOT-166: a ladder's foot by a body on the
+        // ladder at any height up to its top
+        while self
+            .pts
+            .first()
+            .is_some_and(|w| reached(w) && !off_takeoff(&self.pts, 0, pos))
+            || at_ladder(grid, &self.pts, pos)
+        {
+            let w = self.pts.remove(0);
+            // BOT-191: the top jumped at was reached: no failure
+            if self.pending.is_some_and(|(t, _)| t == w) {
+                self.pending = None;
+            }
+        }
+        // BOT-191: a jump's flight is over and the body is not up on the top it jumped at: a failure there (the third
+        // near it refuses the ways up, BOT-145)
+        // (BOT-196: judged at a step that may plan; before, a call between two steps dropped it)
+        if let Some((w, t)) = self.pending {
+            if now.wrapping_sub(t) >= JUMP_HOLD_MS && may_plan {
+                self.pending = None;
+                if w[1] - pos[1] > TOP_LEVEL && self.refuse_top(grid, now, pos, w, false) {
+                    self.stats.jump_fails += 1;
+                }
+            }
         }
         if self.pts.len() < before && self.pts.len() > 1 {
             let k = grid.shortcut(pos, &self.pts, AHEAD);
             self.pts.drain(..k);
         }
         let moved = self.goal.is_none_or(|g| flat(g, target) > TARGET_MOVED);
+        // BOT-166: nor a timed re-plan during a climb (from the rungs the grid has no node near the body)
         let flight = self
             .jump_at
-            .is_some_and(|t| now.wrapping_sub(t) < JUMP_HOLD_MS);
+            .is_some_and(|t| now.wrapping_sub(t) < JUMP_HOLD_MS)
+            || self.climb_rise(grid, pos) > 0.0;
         let due = (self.pts.is_empty() && !self.whole)
             || moved
             || self.replan
@@ -642,7 +845,7 @@ impl Follower {
         // BOT-141: whether the next point is a top, judged when it became the next one
         self.top = self.pts.first().map(|w| match top {
             Some((t, h)) if t == *w => (*w, h),
-            _ => (*w, w[1] - pos[1] > crate::STEP_UP + 1.0),
+            _ => (*w, w[1] - base > crate::STEP_UP + 1.0),
         });
         // BOT-145: a top tried for too long, or too often, without the body getting up is refused (the plan goes
         // round)
@@ -711,8 +914,22 @@ impl Follower {
                 .first()
                 .map(|w| (*w, w[1] - pos[1] > crate::STEP_UP + 1.0));
         }
+        // BOT-186: the walk to the take-off of the jump ahead, while the top is the next point
+        if let Some((t, until)) = self.takeoff {
+            if later(until, now)
+                && flat(t, pos) > TAKEOFF_AT
+                && (t[1] - pos[1]).abs() <= crate::STEP_UP
+                && self.top.is_some_and(|(_, high)| high)
+            {
+                return NavGoal::Way(t);
+            }
+            if !later(until, now) {
+                self.takeoff_spent = self.top.map(|(w, _)| w);
+            }
+            self.takeoff = None;
+        }
         match self.pts.first() {
-            Some(w) => NavGoal::Way(*w),
+            Some(w) => NavGoal::Way(rung(grid, *w, pos)),
             // at the end of a whole way: the target itself
             None if self.whole => NavGoal::Way(target),
             None if self.island => NavGoal::Hold,
@@ -777,8 +994,9 @@ impl Follower {
     /// The stuck check of a walk of the follower at `pos` along its way at `now` (call it on each tick it walks):
     /// the way left must get [`STUCK_MOVE`] shorter. After [`JUMP_MS`] without that it says [`Stuck::Jump`] (once),
     /// after [`STUCK_REPLAN_MS`] the link from where it stands toward the first point is given up, the way is
-    /// dropped and the next [`Self::next`] plans at once ([`Stuck::Replan`]).
-    pub fn stuck(&mut self, grid: &mut NavGrid, now: u32, pos: [f32; 3]) -> Stuck {
+    /// dropped and the next [`Self::next`] plans at once ([`Stuck::Replan`]). BOT-196: a jump is said only while
+    /// `on_feet` (the body's jump would leave the ground now); else it is put off, uncounted, to a tick that is.
+    pub fn stuck(&mut self, grid: &mut NavGrid, now: u32, pos: [f32; 3], on_feet: bool) -> Stuck {
         // BOT-133: a back-up is no walk along the way
         if self.backing() {
             self.last_walk = None;
@@ -788,8 +1006,17 @@ impl Follower {
             .last_walk
             .is_none_or(|t| now.wrapping_sub(t) > WALK_GAP_MS);
         self.last_walk = Some(now);
-        let left = self.left(pos);
-        if fresh || (left < self.best_left - STUCK_MOVE && self.moved(pos)) {
+        // BOT-166: on a ladder the height climbed is way made (the count starts again at the foot, where the height
+        // to climb joins the way left)
+        let rise = self.climb_rise(grid, pos);
+        let left = self.left(pos) + rise;
+        let moved = self.moved(pos)
+            || (rise > 0.0
+                && self
+                    .best_pos
+                    .is_some_and(|b| (b[1] - pos[1]).abs() >= MOVED));
+        let climb_start = rise > 0.0 && left > self.best_left + DETOUR;
+        if fresh || climb_start || (left < self.best_left - STUCK_MOVE && moved) {
             self.best_left = left;
             self.best_at = now;
             self.best_pos = Some(pos);
@@ -833,7 +1060,9 @@ impl Follower {
                     && ((w[1] - pos[1] >= FACE_RISE
                         && w[1] - pos[1] <= FACE_MAX_RISE
                         && flat(w, pos) <= FACE_NEAR
-                        && grid.jumped_onto(w))
+                        && grid.jumped_onto(w)
+                        // BOT-197: not from above the jump link's take-off (a slope down to the ledge's foot)
+                        && !grid.takeoff_below(w, pos, FACE_ABOVE))
                         // BOT-162: higher than a jump only a ladder's top (before: any top higher than a jump)
                         || (w[1] - pos[1] > crate::JUMP_RISE && grid.laddered_onto(w)))
         });
@@ -860,9 +1089,7 @@ impl Follower {
         });
         // BOT-162: no jump in the rise of the last one (at the top of its flight the body moves level between two
         // steps and passed the on-its-feet test: two to three jumps a climb, 15..200 ms apart, in the rooms)
-        let in_flight = self
-            .jump_at
-            .is_some_and(|t| now.wrapping_sub(t) < RISE_MS);
+        let in_flight = self.jump_at.is_some_and(|t| now.wrapping_sub(t) < RISE_MS);
         if in_flight {
             return Stuck::No;
         }
@@ -885,10 +1112,84 @@ impl Follower {
                 return Stuck::No;
             }
         }
-        if (stuck >= JUMP_MS || at_face) && !self.jumped && !spent {
+        // BOT-197: no jump on a ladder's rungs (the body more than a step above the ladder's foot): the climb goes on.
+        // Before, each climb took a second jump 0.4..0.5 s after the one at the foot, on the rungs (Gray Hammer's
+        // trench ladder, Two Towers' ladder by team 2's spawn: 2 stuck jumps a climb in the 2026-11-10 rooms)
+        let on_rungs = ladder
+            && self.top.is_some_and(|(w, _)| {
+                grid.ladder_topped(w)
+                    .is_some_and(|(f, _)| pos[1] > f[1] + crate::STEP_UP)
+            });
+        if on_rungs && (stuck >= JUMP_MS || at_face) && !self.jumped {
+            self.jumped = true;
+            self.stats.rung_holds += 1;
+            return Stuck::No;
+        }
+        // BOT-186: no jump up where the body does not fit raised to the top's height: it walks to the jump link's
+        // take-off first (the jump is taken from there)
+        if (stuck >= JUMP_MS || at_face) && !self.jumped && !spent && !ladder {
+            if let Some((w, true)) = self.top.filter(|t| self.takeoff_spent != Some(t.0)) {
+                let rise = w[1] - pos[1];
+                let headroom = rise > APEX || grid.fits([pos[0], w[1] + 1.0, pos[2]]);
+                let t = grid.jump_takeoff(w, pos);
+                match t.filter(|t| !headroom && flat(*t, pos) > TAKEOFF_AT) {
+                    Some(t) => {
+                        if self.takeoff.is_none() {
+                            self.stats.takeoffs += 1;
+                        }
+                        self.takeoff = Some((t, now.wrapping_add(TAKEOFF_MS)));
+                        return Stuck::No;
+                    }
+                    // no take-off known and no headroom: no jump (the stuck count runs on to its re-plan)
+                    None if !headroom => {
+                        self.jumped = true;
+                        return Stuck::No;
+                    }
+                    None => {}
+                }
+            }
+        }
+        // BOT-196: not while the jump would not leave the ground (on a rim the body is not standing on, crouched,
+        // in a flight): the jump is put off, and counts nowhere (before: 11 % of the stuck jumps of an Overdose room
+        // got the body no higher, each counted as a jump at the place and the top)
+        if (stuck >= JUMP_MS || at_face) && !self.jumped && !spent && on_feet {
+            // BOT-191: a jump again while the last one is not judged yet: the body is not up on the top it jumped at
+            // (a failure there; the third near it refuses the ways up and no jump is taken)
+            if let Some((w, _)) = self.pending.take() {
+                if w[1] - pos[1] > TOP_LEVEL && self.refuse_top(grid, now, pos, w, false) {
+                    self.stats.jump_fails += 1;
+                    self.jumped = true;
+                    return Stuck::No;
+                }
+            }
+            // BOT-196: no fourth jump in a row from about here until the last one is BURST_GAP_MS old
+            // (not when the top ahead is the only way to the target: its tries go on, as BOT-191 keeps its ways)
+            if !ladder && self.in_burst(now, pos) {
+                let last = self.burst.last().map(|b| b.0);
+                if self.held_at.map(|h| h.0) != last {
+                    let hold = !self.only_way_up(grid, pos);
+                    self.held_at = last.map(|t| (t, hold));
+                    if hold {
+                        self.stats.burst_holds += 1;
+                    }
+                }
+                if self.held_at.is_some_and(|h| h.1) {
+                    return Stuck::No;
+                }
+            }
+            if !ladder {
+                if self.burst.len() >= 8 {
+                    self.burst.remove(0);
+                }
+                self.burst.push((now, pos, true));
+            }
             // (BOT-153: every jump at a top counts toward FACE_SPENT, the stuck jump of JUMP_MS too)
             if let Some((w, true)) = self.top {
                 self.face_jumps = Some((w, tries + 1));
+                // BOT-191: judged when the flight is over (not at a ladder: the body climbs on)
+                if !ladder {
+                    self.pending = Some((w, now));
+                }
             }
             // BOT-162: and toward the place's count (not at a ladder)
             if !ladder {
@@ -896,6 +1197,7 @@ impl Follower {
             }
             self.jumped = true;
             self.jump_at = Some(now);
+            self.jump_from = Some((pos[1], now));
             self.stats.jumps += 1;
             let next = self.pts.first().copied();
             self.last_jump = Some(JumpWhy {
@@ -907,6 +1209,63 @@ impl Follower {
             return Stuck::Jump;
         }
         Stuck::No
+    }
+
+    /// BOT-196: whether the top ahead is the only way to the target: the way followed reaches the target's place and
+    /// a plan from `pos` without the ways up onto that top would not (the links go back at once).
+    fn only_way_up(&mut self, grid: &mut NavGrid, pos: [f32; 3]) -> bool {
+        let (Some((w, true)), Some(t)) = (self.top, self.want) else {
+            return false;
+        };
+        if !self.whole {
+            return false;
+        }
+        let out = grid.unlink_ups_onto(w);
+        if out.is_empty() {
+            return false;
+        }
+        let way = grid.route(pos, t);
+        let round = way.is_some_and(|w| {
+            let e = w[w.len() - 1];
+            flat(e, t) <= AT_TARGET && (e[1] - t[1]).abs() <= REACHED_RISE && grid.in_sight(e, t)
+        });
+        for l in out {
+            grid.relink(l);
+        }
+        !round
+    }
+
+    /// BOT-196: the jump said last was not taken (the bot's jump test refused its flight, BOT-134): it counts toward
+    /// a run of jumps only with other jumps not taken (a body that tries a ledge from several places along it, its
+    /// jumps there refused now and then, is not hopping; one whose every try is refused stands saying jump).
+    pub fn jump_not_taken(&mut self) {
+        if let Some(b) = self.burst.last_mut() {
+            b.2 = false;
+        }
+    }
+
+    /// BOT-196: whether the last jumps were a run near `pos` (each within [`BURST_NEAR`] of it, less than
+    /// [`BURST_GAP_MS`] apart and the last less than that before `now`): [`BURST_JUMPS`] taken ones, or as many not
+    /// taken in a row.
+    fn in_burst(&self, now: u32, pos: [f32; 3]) -> bool {
+        let d3 = |a: [f32; 3]| {
+            ((a[0] - pos[0]).powi(2) + (a[1] - pos[1]).powi(2) + (a[2] - pos[2]).powi(2)).sqrt()
+        };
+        let mut t = now;
+        let (mut taken, mut refused, mut refused_run) = (0, 0, true);
+        for (at, p, took) in self.burst.iter().rev() {
+            if t.wrapping_sub(*at) >= BURST_GAP_MS || d3(*p) > BURST_NEAR {
+                break;
+            }
+            if *took {
+                taken += 1;
+                refused_run = false;
+            } else if refused_run {
+                refused += 1;
+            }
+            t = *at;
+        }
+        taken >= BURST_JUMPS || refused >= BURST_JUMPS
     }
 
     /// BOT-145: the place to walk back to along the way the body came (the newest place passed at least
@@ -991,6 +1350,35 @@ fn off_takeoff(pts: &[[f32; 3]], i: usize, pos: [f32; 3]) -> bool {
         && (pos[1] - w[1]).abs() > TAKEOFF_LEVEL
 }
 
+/// BOT-166: whether the way's next point `pts[0]` is a ladder's foot with the ladder's top after it, and the body at
+/// `pos` is at that ladder: within [`LADDER_AT`] (flat) of the foot, no more than [`REACHED_RISE`] below it and not
+/// above the top. Such a foot is reached: the body climbs from where it holds the ladder. Before, BOT-162's take-off
+/// rule took the foot for a jump's take-off (the top 790 above it) and a body that had dropped onto Snow Valley's
+/// shaft ladder up to S&D site B (bobbing 25..50 above the foot, 30 from it) never reached it: the follower gave the
+/// ladder up after 6 s and its way round to the site took 31 s (2026-11-08 rooms: every bomb there detonated).
+/// BOT-166: where a body steers for the way's next point `w`: while `w` is a ladder's top more than a step above the
+/// body and the body is within [`TOP_NEAR`] of it (flat), the ladder's middle (halfway between its foot and top places,
+/// flat) at the top's height, so the body climbs in the middle of the ladder and steps off only up at the top; else `w`.
+/// Before, the body steered at the top place beyond the ladder from the first rung, pressed against that side of the
+/// ladder and hung under the floor slab beside a hatch (Snow Valley's cellar ladder up to S&D site A: 105 below its
+/// top for the rest of the walk, nav_rom).
+fn rung(grid: &NavGrid, w: [f32; 3], pos: [f32; 3]) -> [f32; 3] {
+    if w[1] - pos[1] <= crate::STEP_UP || flat(w, pos) > TOP_NEAR {
+        return w;
+    }
+    grid.ladder_topped(w)
+        .map_or(w, |(f, t)| [(f[0] + t[0]) * 0.5, t[1], (f[2] + t[2]) * 0.5])
+}
+
+fn at_ladder(grid: &NavGrid, pts: &[[f32; 3]], pos: [f32; 3]) -> bool {
+    let (Some(w), Some(n)) = (pts.first(), pts.get(1)) else {
+        return false;
+    };
+    grid.ladder_ends(*w, *n).is_some_and(|(f, t)| {
+        flat(f, pos) <= LADDER_AT && pos[1] >= f[1] - REACHED_RISE && pos[1] <= t[1]
+    })
+}
+
 /// BOT-133: gives up every link of the node nearest `pos` (within the grid's reach of a standing place); the links
 /// given up.
 fn ban_node(grid: &mut NavGrid, pos: [f32; 3]) -> usize {
@@ -1030,7 +1418,7 @@ mod tests {
             if flat(pos, target) <= REACHED {
                 return (pos, s);
             }
-            f.stuck(grid, now, pos);
+            f.stuck(grid, now, pos, true);
             if let Some(p) = grid.walk(pos, w, 16.0, crate::STEP_UP) {
                 pos = p;
             }
@@ -1093,7 +1481,7 @@ mod tests {
         ));
         let mut seen = Vec::new();
         for now in (0..=3000).step_by(50) {
-            let s = f.stuck(&mut grid, now, pos);
+            let s = f.stuck(&mut grid, now, pos, true);
             if s != Stuck::No {
                 seen.push((now, s));
             }
@@ -1105,9 +1493,9 @@ mod tests {
         f.next(&mut grid, 3050, pos, target, true);
         assert_eq!(f.stats.plans, plans + 1);
         // a walk asked for after a pause starts the count again
-        assert_eq!(f.stuck(&mut grid, 3050, pos), Stuck::No);
-        assert_eq!(f.stuck(&mut grid, 5000, pos), Stuck::No);
-        assert_eq!(f.stuck(&mut grid, 5040, pos), Stuck::No);
+        assert_eq!(f.stuck(&mut grid, 3050, pos, true), Stuck::No);
+        assert_eq!(f.stuck(&mut grid, 5000, pos, true), Stuck::No);
+        assert_eq!(f.stuck(&mut grid, 5040, pos, true), Stuck::No);
     }
 
     /// BOT-141: at the face of a ledge whose top is the next point the follower says jump at the first walk step
@@ -1133,8 +1521,8 @@ mod tests {
             panic!("no way");
         };
         assert!(top[1] > 90.0, "the next point is on the ledge: {top:?}");
-        assert_eq!(f.stuck(&mut grid, 1900, pos), Stuck::No);
-        assert_eq!(f.stuck(&mut grid, 1950, pos), Stuck::Jump);
+        assert_eq!(f.stuck(&mut grid, 1900, pos, true), Stuck::No);
+        assert_eq!(f.stuck(&mut grid, 1950, pos, true), Stuck::Jump);
         let plans = f.stats.plans;
         let air = [top[0], top[1] - 20.0, top[2]];
         assert!(matches!(f.next(&mut grid, 2100, air, target, true), NavGoal::Way(w) if w == top));
@@ -1192,13 +1580,155 @@ mod tests {
         };
         let mut seen = Stuck::No;
         for k in 0..=(STUCK_REPLAN_MS / STEP_MS) {
-            seen = g.stuck(&mut grid, later + k * STEP_MS, pos);
+            seen = g.stuck(&mut grid, later + k * STEP_MS, pos, true);
             if matches!(seen, Stuck::Replan | Stuck::Trap) {
                 break;
             }
         }
         assert_eq!(seen, Stuck::Replan);
         assert_eq!(g.stats.refusals, 0);
+    }
+
+    /// BOT-191: a body that never gets up onto a low wall (its jumps fall back) while its goal flips between two places
+    /// beyond it (a new top beside the last one at each plan) has the ways up onto those tops refused after `TOP_FAILS`
+    /// failures there in all (two jumps whose flight ended below the top and a stuck re-plan) and walks round the wall's
+    /// end. Before, each top kept its own count and none ran up.
+    #[test]
+    fn failed_jumps_at_tops_near_one_another_count_together() {
+        let w = Arc::new(dc_sim::CollisionWorld::from_parts(
+            vec![
+                solid_box([-400.0, -64.0, -200.0], [400.0, 0.0, 400.0]),
+                solid_box([-160.0, 0.0, 100.0], [160.0, 60.0, 140.0]),
+            ],
+            &[],
+        ));
+        let mut grid = NavGrid::new(w, BODY);
+        let mut f = Follower::default();
+        let pos = [0.0, 40.0, 80.0];
+        let goals = [[-40.0, 40.0, 220.0], [40.0, 40.0, 220.0]];
+        grid.seed_grown(pos);
+        while grid.growing() {
+            grid.expand(2_000, None);
+        }
+        let mut jumps = 0;
+        let mut tops = Vec::new();
+        let mut now = 0;
+        while f.stats.refusals == 0 && now < 20_000 {
+            now += STEP_MS;
+            let target = goals[((now / 1500) % 2) as usize];
+            if let NavGoal::Way(w) = f.next(&mut grid, now, pos, target, true) {
+                if w[1] > 90.0 && !tops.contains(&w) {
+                    tops.push(w);
+                }
+            }
+            if f.stuck(&mut grid, now, pos, true) == Stuck::Jump {
+                jumps += 1;
+            }
+        }
+        assert!(tops.len() >= 2, "the goal flips give other tops: {tops:?}");
+        assert_eq!(f.stats.refusals, 1, "{:?}", f.stats);
+        assert!(jumps < TOP_FAILS, "{jumps} jumps, {:?}", f.stats);
+        // the way goes round the wall's end now
+        let next = f.next(&mut grid, now + STEP_MS, pos, goals[0], true);
+        assert!(matches!(next, NavGoal::Way(w) if w[1] < 50.0), "{next:?}");
+    }
+
+    /// BOT-196: failures at two places along a ledge (more than [`crate::REFUSE_NEAR`] apart) taken in turn count at
+    /// each place, and a way cleared between them (a goal given up, a fight) keeps the counts: the third failure at
+    /// one place refuses its ways up. Before, one count was kept and each failure elsewhere or each clear began it
+    /// again (no refusal at all).
+    #[test]
+    fn failures_count_at_each_place_and_across_cleared_ways() {
+        let w = Arc::new(dc_sim::CollisionWorld::from_parts(
+            vec![
+                solid_box([-400.0, -64.0, -200.0], [400.0, 0.0, 400.0]),
+                solid_box([-300.0, 0.0, 100.0], [300.0, 60.0, 140.0]),
+            ],
+            &[],
+        ));
+        let mut grid = NavGrid::new(w, BODY);
+        let mut f = Follower::default();
+        let pos = [0.0, 40.0, 80.0];
+        grid.seed_grown(pos);
+        while grid.growing() {
+            grid.expand(2_000, None);
+        }
+        // a top of a jump link near each end of the ledge
+        let top = |x: f32| {
+            grid.links_near([x, 100.0, 120.0], 72.0)
+                .into_iter()
+                .map(|(p, _)| p)
+                .find(|p| p[1] > 90.0 && grid.jumped_onto(*p))
+                .expect("a jump link onto the ledge")
+        };
+        let (a, b) = (top(-150.0), top(150.0));
+        assert!(flat(a, b) > crate::REFUSE_NEAR * 2.0, "{a:?} {b:?}");
+        let mut refused = Vec::new();
+        for (i, t) in [a, b, a, b, a].into_iter().enumerate() {
+            let now = 1000 + i as u32 * 2000;
+            refused.push(f.refuse_top(&mut grid, now, pos, t, false));
+            // a fight between the tries: the way and the stuck count go, the failures stay
+            f.clear();
+        }
+        assert_eq!(refused, [false, false, false, false, true], "{:?}", f.stats);
+        assert_eq!(f.stats.refusals, 1);
+        assert!(!f.refused.is_empty());
+        // a new life forgets them
+        f.forget_places();
+        assert!(!f.refuse_top(&mut grid, 12_000, pos, b, false));
+    }
+
+    /// BOT-196: a body at a ledge's face that makes no way jumps at most `BURST_JUMPS` times in a row there; the next
+    /// jump waits until `BURST_GAP_MS` after the last (the jumps at a ladder's top are not held), and a jump not said
+    /// while the body is off its feet is said at the first tick it is on them.
+    #[test]
+    fn a_run_of_jumps_at_one_place_is_held_and_jumps_wait_for_the_feet() {
+        let w = Arc::new(dc_sim::CollisionWorld::from_parts(
+            vec![
+                solid_box([-2000.0, -64.0, -2000.0], [2000.0, 0.0, 2000.0]),
+                solid_box([-2000.0, 0.0, 100.0], [2000.0, 60.0, 2000.0]),
+            ],
+            &[],
+        ));
+        let mut grid = NavGrid::new(w, BODY);
+        let mut f = Follower::default();
+        let (pos, target) = ([0.0, 40.0, 80.0], [0.0, 100.0, 400.0]);
+        grid.seed_grown(pos);
+        for _ in 0..60 {
+            f.grow(&mut grid, pos, GROW_PROBES);
+        }
+        let mut jumps = Vec::new();
+        let mut now = 0;
+        while now < 9_000 {
+            now += STEP_MS;
+            f.next(&mut grid, now, pos, target, true);
+            // off its feet for the first 3 s: no jump is said
+            let feet = now >= 3_000;
+            if f.stuck(&mut grid, now, pos, feet) == Stuck::Jump {
+                jumps.push(now);
+                // (the way stays: each jump starts a stuck count again, as a walk would)
+                f.last_walk = None;
+            }
+        }
+        assert!(jumps.first().is_some_and(|t| *t == 3_000), "{jumps:?}");
+        assert!(jumps.len() >= BURST_JUMPS, "{jumps:?} {:?}", f.stats);
+        let run = &jumps[..BURST_JUMPS];
+        if let Some(next) = jumps.get(BURST_JUMPS) {
+            assert!(next - run[BURST_JUMPS - 1] >= BURST_GAP_MS, "{jumps:?}");
+        }
+        assert!(f.stats.burst_holds >= 1, "{:?}", f.stats);
+        // far from the run, or after the gap, no hold
+        assert!(f.in_burst(run[BURST_JUMPS - 1] + 100, pos));
+        assert!(!f.in_burst(run[BURST_JUMPS - 1] + 100, [500.0, 40.0, 80.0]));
+        assert!(!f.in_burst(run[BURST_JUMPS - 1] + BURST_GAP_MS, pos));
+        // jumps the bot's jump test refused: a run of them alone is held, mixed with taken ones not
+        let mut g = Follower::default();
+        for t in [100, 600, 1100] {
+            g.burst.push((t, pos, false));
+        }
+        assert!(g.in_burst(1500, pos));
+        g.burst[0].2 = true;
+        assert!(!g.in_burst(1500, pos));
     }
 
     /// BOT-162: a body that never gets up a ledge while its goal flips between two places along the ledge (a new top
@@ -1231,7 +1761,7 @@ mod tests {
                     tops.push(w);
                 }
             }
-            if f.stuck(&mut grid, now, pos) == Stuck::Jump {
+            if f.stuck(&mut grid, now, pos, true) == Stuck::Jump {
                 jumps += 1;
             }
         }
@@ -1286,7 +1816,10 @@ mod tests {
             ..Default::default()
         };
         for k in 0..(JUMP_MS / STEP_MS + 2) {
-            assert_ne!(g.stuck(&mut grid, 500 + k * STEP_MS, low), Stuck::Jump);
+            assert_ne!(
+                g.stuck(&mut grid, 500 + k * STEP_MS, low, true),
+                Stuck::Jump
+            );
         }
         assert_eq!(g.stats.out_of_reach, 1, "{:?}", g.stats);
     }
@@ -1302,7 +1835,9 @@ mod tests {
             ..Default::default()
         };
         let below = [10.0, 248.0, 0.0];
-        assert!(matches!(f.next(&mut grid, 100, below, top, false), NavGoal::Way(w) if w == takeoff));
+        assert!(
+            matches!(f.next(&mut grid, 100, below, top, false), NavGoal::Way(w) if w == takeoff)
+        );
         let level = [10.0, 262.0, 0.0];
         assert!(matches!(f.next(&mut grid, 150, level, top, false), NavGoal::Way(w) if w == top));
         // a point that is no take-off is reached as before
@@ -1310,7 +1845,9 @@ mod tests {
             pts: vec![takeoff, [0.0, 265.0, 96.0]],
             ..Default::default()
         };
-        assert!(matches!(g.next(&mut grid, 100, below, top, false), NavGoal::Way(w) if w[2] == 96.0));
+        assert!(
+            matches!(g.next(&mut grid, 100, below, top, false), NavGoal::Way(w) if w[2] == 96.0)
+        );
     }
 
     /// BOT-145: the way back along the trail is the newest place passed at least `BACK_MIN` away.
@@ -1402,7 +1939,7 @@ mod tests {
             f.grow(&mut grid, pos, GROW_PROBES);
             match f.next(&mut grid, now, pos, target, true) {
                 NavGoal::Way(w) => {
-                    f.stuck(&mut grid, now, pos);
+                    f.stuck(&mut grid, now, pos, true);
                     if let Some(p) = grid.walk(pos, w, 16.0, crate::STEP_UP) {
                         pos = p;
                     }
@@ -1469,7 +2006,7 @@ mod tests {
             let mut seen = Vec::new();
             for (i, now) in (0..=3000u32).step_by(50).enumerate() {
                 f.next(&mut grid, now, pos, target_at(i as f32), true);
-                let s = f.stuck(&mut grid, now, pos);
+                let s = f.stuck(&mut grid, now, pos, true);
                 if s != Stuck::No {
                     seen.push(s);
                 }
@@ -1503,7 +2040,7 @@ mod tests {
         let start = now;
         while now <= start + 6500 {
             if let NavGoal::Way(_) = f.next(&mut grid, now, pos, target, true) {
-                let s = f.stuck(&mut grid, now, pos);
+                let s = f.stuck(&mut grid, now, pos, true);
                 if s != Stuck::No {
                     seen.push(s);
                 }
@@ -1530,7 +2067,7 @@ mod tests {
             panic!("no back-up");
         };
         assert!(flat(back, pos) >= BACK_MIN && back[2] < 0.0, "{back:?}");
-        assert_eq!(f.stuck(&mut grid, now + STEP_MS, pos), Stuck::No);
+        assert_eq!(f.stuck(&mut grid, now + STEP_MS, pos, true), Stuck::No);
         assert_eq!(f.stats.plans, plans);
         // reached (or run out): a plan from where it stands
         f.next(&mut grid, now + 2 * STEP_MS, back, target, true);
@@ -1598,5 +2135,60 @@ mod tests {
         }
         assert!(!f.whole(), "a whole way to {target:?} from {pos:?}");
         assert!(pos[2] < 500.0, "at {pos:?}");
+    }
+
+    /// BOT-166: a body on the rungs above a ladder's foot has reached the foot (no jump's take-off), steers at the
+    /// ladder's middle at the top's height until it is up, and its climb is way made for the stuck count (no re-plan
+    /// in a climb of 4 s).
+    #[test]
+    fn a_body_on_the_rungs_climbs_on_without_a_replan() {
+        let w = Arc::new(dc_sim::CollisionWorld::from_parts(
+            vec![
+                solid_box([-2000.0, -64.0, -2000.0], [2000.0, 0.0, 2000.0]),
+                solid_box([-2000.0, 0.0, 200.0], [2000.0, 200.0, 2000.0]),
+            ],
+            &[],
+        ));
+        let ladder = dc_sim::ConvexVolume::from_box(
+            dc_sim::V3::new(-30.0, 0.0, 190.0),
+            dc_sim::V3::new(30.0, 200.0, 200.0),
+        );
+        let mut grid = NavGrid::new(w, BODY).with_ladders(&[ladder]);
+        let (low, high) = ([0.0f32, 40.0, 0.0], [0.0f32, 240.0, 600.0]);
+        grid.seed(low);
+        while grid.growing() && grid.probes < 200_000 {
+            grid.expand(2_000, Some(high));
+        }
+        let (foot, top) = grid.ladder_topped([0.0, 240.0, 230.0]).expect("the ladder");
+        assert!(top[1] - foot[1] > crate::JUMP_RISE);
+        let mid = [(foot[0] + top[0]) * 0.5, top[1], (foot[2] + top[2]) * 0.5];
+        // on the rungs 60 above the foot: the foot is passed, the body steers at the ladder's middle
+        let mut f = Follower {
+            pts: vec![foot, top, high],
+            goal: Some(high),
+            whole: true,
+            planned_at: Some(0),
+            ..Default::default()
+        };
+        let on = [foot[0], foot[1] + 60.0, foot[2] + 20.0];
+        assert_eq!(f.next(&mut grid, 100, on, high, false), NavGoal::Way(mid));
+        assert_eq!(f.points()[0], top);
+        // a climb of 4 s at 40 units a second: no re-plan, no jump
+        for k in 0..80u32 {
+            let p = [on[0], on[1] + 2.0 * k as f32, on[2]];
+            let now = 100 + k * STEP_MS;
+            assert!(matches!(
+                f.next(&mut grid, now, p, high, false),
+                NavGoal::Way(_)
+            ));
+            assert_eq!(f.stuck(&mut grid, now, p, true), Stuck::No, "at {k}");
+        }
+        // up at the top's height it steers off the ladder (at the top place or past it)
+        let up = [mid[0], top[1] - 10.0, mid[2]];
+        let next = f.next(&mut grid, 5000, up, high, false);
+        assert!(
+            matches!(next, NavGoal::Way(w) if w != mid && w[2] > mid[2]),
+            "{next:?}"
+        );
     }
 }

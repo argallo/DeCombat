@@ -14,9 +14,23 @@ path = "src/lib.rs"
 name = "refdump"
 path = "src/main.rs"
 
+# worldview: renders one world of the user's ROM to a PNG (or, with `window`, briefly on screen); moved here from
+# dc-render so the renderer library builds without the ROM crates.
+[[bin]]
+name = "worldview"
+path = "src/bin/worldview.rs"
+
+[features]
+# worldview --window: the renderer's on-screen viewer
+window = ["dc-render/window"]
+
 [dependencies]
 dc-rom = { path = "../dc-rom" }
 dc-rez = { path = "../dc-rez" }
 dc-bute = { path = "../dc-bute" }
+# dc-render: the worldview bin (the ROM viewer)
+dc-render = { path = "../dc-render" }
+# wgpu: the adapter choice of worldview --adapter (same version as dc-render's; vetted in CLEANROOM.md 4a)
+wgpu = "25"
 # serde_json: canonical JSON writer (sorted object keys, compact, UTF-8); vetted in CLEANROOM.md 4a
 serde_json = "1"

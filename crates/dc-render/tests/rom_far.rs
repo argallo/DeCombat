@@ -27,7 +27,11 @@ fn request(map: &str, yaw: f32, world_far: bool) -> ViewRequest {
 }
 
 fn viewer(rom: &std::path::Path, adapter: AdapterChoice) -> Option<RomViewer> {
-    match RomViewer::open(rom, adapter, RenderSettings::default()) {
+    match RomViewer::open(
+        dc_rez::RezVfs::new(rom).into_vfs(),
+        adapter,
+        RenderSettings::default(),
+    ) {
         Ok(v) => Some(v),
         Err(e) => {
             println!("skipped {adapter:?}: {e}");
@@ -48,7 +52,7 @@ fn differing(a: &FrameImage, b: &FrameImage) -> usize {
 #[test]
 fn the_camera_takes_the_world_far_plane() {
     let rom = dc_rom::rom_or_skip!();
-    let src = WorldSource::open(&rom).expect("worlds");
+    let src = dc_rez::WorldArchive::open(&rom).expect("worlds");
     let Some(v) = viewer(&rom, AdapterChoice::Auto) else {
         return;
     };

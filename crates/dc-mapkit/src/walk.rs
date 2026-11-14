@@ -1092,6 +1092,8 @@ pub enum Job {
     },
     /// The reachability analysis ([`crate::reach`]).
     Reach(crate::reach::ReachJob),
+    /// Spawn sight lines ([`crate::sight`]).
+    Sight(crate::sight::SightJob),
 }
 
 /// A `walk` request (the CLI verb and the MCP tool).
@@ -1234,6 +1236,7 @@ fn request_area(req: &WalkRequest, p: &Project) -> Result<Option<[f32; 4]>, Diag
             }
             (&r.area, r.step)
         }
+        Job::Sight(s) => (&s.area, s.step),
         Job::Routes(r) if r.is_empty() => return Err(invalid("--routes", "no route")),
         Job::Routes(_) => return Ok(None),
     };
@@ -1275,7 +1278,8 @@ fn walk_built(
             return Err(d);
         }
     };
-    let picture = matches!(req.job, Job::Survey { .. } | Job::Reach(_)) || req.out.is_some();
+    let picture =
+        matches!(req.job, Job::Survey { .. } | Job::Reach(_) | Job::Sight(_)) || req.out.is_some();
     let parsed = if picture {
         dc_world::World::parse(bytes)
     } else {
@@ -1312,6 +1316,15 @@ fn walk_built(
                 ));
             };
             crate::reach::report(req, p, &world, &w, area, job, world_info, diags)
+        }
+        Job::Sight(job) => {
+            let Some(area) = area_arg.or(w.ground) else {
+                return Err(invalid(
+                    "--box",
+                    "the world has no solid floor to look over: give --box",
+                ));
+            };
+            crate::sight::report(req, p, &world, &w, area, job, world_info, diags)
         }
         Job::Routes(routes) => {
             let mut reports = Vec::with_capacity(routes.len());

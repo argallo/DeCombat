@@ -535,7 +535,21 @@ impl Game {
         let head = hit[1] >= centre[1] + d[1] - 2.0 * d[1] * self.cfg.head_fraction;
         // DC-DEFAULT: DSV-30 (proposed) health damage = ROM InstDamage x the zone multiplier (ROM skeleton node of the
         // reported model part, else head / body factor)
-        let (zone_factor, zone) = self.hit_zone(vpid, f, head);
+        // DC-DEFAULT: DSV-656 (proposed) a head node counts only with the hit point in the upper half of the box at
+        // the latest or a rewound position (an honest head hit is about 0.66 half heights above the centre)
+        let upper = path.iter().any(|c| hit[1] >= c[1]);
+        if !upper
+            && self.cfg.zone_factors_from_rom
+            && self
+                .reported_node(vpid, f)
+                .is_some_and(|n| n.location == gs::KILL_ZONE_HEAD)
+        {
+            self.log(format!(
+                "client {pid}: head node on client {vpid} set aside (hit point {:.0} below the box centre)",
+                centre[1] - hit[1]
+            ));
+        }
+        let (zone_factor, zone) = self.hit_zone(vpid, f, head, upper);
         let base = self.hit_damage(pid, f);
         let info = HitInfo {
             shooter: pid,
@@ -858,6 +872,8 @@ impl Game {
             // DC-DEFAULT: VIS-14 (proposed) the killer stays shown to the dead viewer
             v.killed_by = killer.filter(|&k| k != vpid);
         }
+        // DC-DEFAULT: DSV-652 (proposed) the victim's kill card
+        self.kill_card(vpid, killer);
         let head = zone == gs::KILL_ZONE_HEAD;
         let kinfo = killer
             .filter(|&k| k != vpid)
