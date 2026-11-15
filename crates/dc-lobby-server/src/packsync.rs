@@ -643,7 +643,15 @@ mod tests {
     }
 
     fn mods(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("dc_packsync_mods_{tag}_{}", std::process::id()));
+        // macOS: the temp folder is under /var, a symbolic link to /private/var, and an install refuses a path with
+        // a link in it (`no_symlink`); the tests install into the folder's real path there
+        let tmp = std::env::temp_dir();
+        let tmp = if cfg!(target_os = "macos") {
+            tmp.canonicalize().unwrap_or(tmp)
+        } else {
+            tmp
+        };
+        let d = tmp.join(format!("dc_packsync_mods_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }

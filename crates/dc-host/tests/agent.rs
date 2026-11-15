@@ -161,19 +161,30 @@ fn field<'a>(line: &'a str, key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {key}= in {line:?}"))
 }
 
-/// A free range of three loopback UDP ports.
+/// A free range of three loopback UDP ports that no other test of this binary was given. The tests run side by
+/// side: two ranges that overlap, or a neighbour's probe holding a port for a moment, made an agent skip a port
+/// (seen on the Windows runner, where every call falls through to the same fixed scan: 20002 for 20001).
 fn port_range() -> (u16, u16) {
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    // held over the probes too, so no other call binds inside a range while it is being handed out
+    let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+    let free = |lo: u16, given: &[u16]| {
+        given.iter().all(|g| lo.abs_diff(*g) >= 3)
+            && (lo..lo + 3).all(|p| UdpSocket::bind(("127.0.0.1", p)).is_ok())
+    };
     for _ in 0..50 {
         let s = UdpSocket::bind("127.0.0.1:0").unwrap();
         let lo = s.local_addr().unwrap().port();
         drop(s);
-        if lo < 60000 && (lo..lo + 3).all(|p| UdpSocket::bind(("127.0.0.1", p)).is_ok()) {
+        if lo < 60000 && free(lo, &given) {
+            given.push(lo);
             return (lo, lo + 2);
         }
     }
     // the system's next ephemeral port can sit above 60000 for a long while (Windows hands them out in order)
     for lo in (20000..60000u16).step_by(97) {
-        if (lo..lo + 3).all(|p| UdpSocket::bind(("127.0.0.1", p)).is_ok()) {
+        if free(lo, &given) {
+            given.push(lo);
             return (lo, lo + 2);
         }
     }
