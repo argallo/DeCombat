@@ -26,6 +26,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # OPS-33: one fixed Rust for every job (also over rust-toolchain.toml's channel). A new stable changes rustfmt's
+  # output and where cargo puts test binaries; move this and the install lines together, on purpose.
+  RUSTUP_TOOLCHAIN: "1.99.1"
   CA_ROM: ""
 
 concurrency:
@@ -78,7 +81,7 @@ jobs:
             [ -f "$f" ] || { echo "::error::$DC_SHA is older than this workflow (no $f); deploy a later commit"; exit 1; }
           done
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-gnu && rustup default stable
+        run: rustup toolchain install 1.99.1 --profile minimal --target x86_64-unknown-linux-gnu && rustup default 1.99.1
       - name: build settings
         run: bash tools/ci_env.sh
       - name: build release servers
