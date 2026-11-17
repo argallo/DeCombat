@@ -63,7 +63,7 @@ export function Legend({items}: {items: {paint: Paint; name: string; line?: bool
   );
 }
 
-interface TipRow {
+export interface TipRow {
   paint?: Paint;
   value: string;
   name: string;
@@ -125,14 +125,18 @@ export interface Column {
   parts: SplitPart[];
   /** The list this is counted from does not reach back to this span. */
   unknown?: boolean;
+  /** The pointer's box, when it says more than the parts' values (a unit, a second figure). */
+  tip?: TipRow[];
 }
 
 /** A count per span of time; the parts of a column are stacked from the baseline. */
-export function Columns({columns, label, height = 120, legend}: {
+export function Columns({columns, label, height = 120, legend, unit = ''}: {
   columns: Column[];
   label: string;
   height?: number;
   legend?: ReactNode;
+  /** Written after the axis' top value. */
+  unit?: string;
 }) {
   const [on, setOn] = useState<number | null>(null);
   const total = (c: Column) => c.parts.reduce((n, p) => n + p.value, 0);
@@ -143,7 +147,7 @@ export function Columns({columns, label, height = 120, legend}: {
     <div className="viz" role="img" aria-label={label}>
       {legend}
       <div className="viz-chart">
-        <YAxis values={axis} unit="" />
+        <YAxis values={axis} unit={unit} />
         <div className="viz-plot" style={{height}} onPointerLeave={() => setOn(null)}>
           <Rules values={axis} />
           <div className="viz-bars">
@@ -168,7 +172,9 @@ export function Columns({columns, label, height = 120, legend}: {
               rows={
                 hit.unknown
                   ? [{value: 'not known', name: 'older than the list reaches'}]
-                  : total(hit) === 0
+                  : hit.tip
+                    ? hit.tip
+                    : total(hit) === 0
                     ? [{value: '0', name: 'none'}]
                     : hit.parts.filter(p => p.value > 0).map(p => ({paint: p.paint, value: String(p.value), name: p.name}))
               }

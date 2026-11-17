@@ -19,13 +19,19 @@ const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? o
 /** Marks the first, the last and about every `every`-th label, so they do not run into each other. */
 const marked = (i: number, n: number, every: number) => i === 0 || i === n - 1 || (i % every === 0 && n - 1 - i >= every - 1);
 
-export function MatchesPerDay({rows, now, height}: {
+const ENDED: [string, string] = ['ended with a result, or running', 'ended another way'];
+
+/** `limit`: what the list was asked with; `words`: the names of the two parts when they are not a match's ending. */
+export function MatchesPerDay({rows, now, height, limit = MATCH_LIMIT, words = ENDED}: {
   rows: {started: number; outcome: string}[];
   now: number;
   height?: number;
+  limit?: number;
+  words?: [string, string];
 }) {
   const from = starts(now, DAYS, 'day');
-  const whole = wholeFrom(rows.map(r => r.started), MATCH_LIMIT);
+  const whole = wholeFrom(rows.map(r => r.started), limit);
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
   const fine = from.map(() => 0);
   const other = from.map(() => 0);
   for (const r of rows) {
@@ -41,8 +47,8 @@ export function MatchesPerDay({rows, now, height}: {
     // a day that ended before the list's oldest match is not in the list at all
     unknown: (from[i + 1] ?? Infinity) <= whole,
     parts: [
-      {paint: 's1', value: fine[i] ?? 0, name: 'ended with a result, or running'},
-      {paint: 'bad', value: other[i] ?? 0, name: 'ended another way'},
+      {paint: 's1', value: fine[i] ?? 0, name: words[0]},
+      {paint: 'bad', value: other[i] ?? 0, name: words[1]},
     ],
   }));
   const total = fine.reduce((a, b) => a + b, 0) + other.reduce((a, b) => a + b, 0);
@@ -51,12 +57,12 @@ export function MatchesPerDay({rows, now, height}: {
     <Columns
       columns={columns}
       height={height}
-      label={`Matches per day over ${DAYS} days: ${plural(total, 'match', 'matches')}, ${bad} of them ended another way than with a result.`}
+      label={`Matches per day over ${DAYS} days: ${plural(total, 'match', 'matches')}, ${bad} of them ${words[1]}.`}
       legend={
         <Legend
           items={[
-            {paint: 's1', name: 'Ended with a result, or running'},
-            {paint: 'bad', name: 'Ended another way'},
+            {paint: 's1', name: cap(words[0])},
+            {paint: 'bad', name: cap(words[1])},
           ]}
         />
       }

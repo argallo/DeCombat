@@ -3,7 +3,7 @@
 // reads; the rules of the headline and the list are in ../overview.ts.
 // Provenance: ORIGINAL (DeCombat operator tooling)
 
-import {type ReactNode, useCallback} from 'react';
+import {useCallback} from 'react';
 import type {Api} from '../api.ts';
 import {
   type AlertCheck,
@@ -46,7 +46,7 @@ import {
 } from '../ui/index.ts';
 import {MATCH_LIMIT, MatchesPerDay, PROBLEM_LIMIT, ProblemsPerHour} from '../viz/activity.tsx';
 import {Dots, Hero, Legend, Meter, type Paint, Split} from '../viz/charts.tsx';
-import {Part, Quiet, ScreenHead} from './parts.tsx';
+import {Part, Quiet, ScreenHead, Tile} from './parts.tsx';
 
 const HEALTH_WORD: Record<Health, string> = {good: 'Good', warn: 'Shaky', bad: 'Bad', none: 'No data'};
 const HEALTH_BADGE: Record<Health, 'success' | 'warning' | 'error' | 'neutral'> = {
@@ -102,22 +102,6 @@ function Attention({list}: {list: Finding[]}) {
           />
         ))}
       </List>
-    </Card>
-  );
-}
-
-function Tile({label, value, visual, note}: {label: string; value: string; visual?: ReactNode; note?: ReactNode}) {
-  return (
-    <Card padding={3}>
-      <VStack gap={2}>
-        <VStack gap={0}>
-          <Text type="supporting">{label}</Text>
-          <Text type="display-3">{value}</Text>
-        </VStack>
-        {visual}
-        {/* a tile without a note keeps the height of its neighbours */}
-        {typeof note === 'string' || note == null ? <Text type="supporting">{note ?? ' '}</Text> : note}
-      </VStack>
     </Card>
   );
 }

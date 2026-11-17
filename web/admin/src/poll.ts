@@ -16,29 +16,37 @@ export interface Poll<T> {
   refresh: () => Promise<void>;
 }
 
-/** `load` must keep its identity while it reads the same thing (useCallback): a new one starts over. */
-export function usePoll<T>(load: () => Promise<T>): Poll<T> {
+/**
+ * `load` must keep its identity while it reads the same thing (useCallback): a new one starts over. With `keep` the
+ * last reading stays on the screen until the new one's answer is there (a list whose filter changed), instead of
+ * the screen going empty in between. An answer to a question that is no longer asked is dropped.
+ */
+export function usePoll<T>(load: () => Promise<T>, keep = false): Poll<T> {
   const [data, setData] = useState<T | null>(null);
   const [at, setAt] = useState(0);
   const [error, setError] = useState<Error | null>(null);
-  const gone = useRef(false);
+  // which question is open: one more at every new `load` and when the screen goes
+  const asked = useRef(0);
 
   const refresh = useCallback(async () => {
+    const mine = asked.current;
     try {
       const d = await load();
-      if (gone.current) return;
+      if (mine !== asked.current) return;
       setData(d);
       setAt(Date.now());
       setError(null);
     } catch (e) {
-      if (!gone.current) setError(e instanceof Error ? e : new Error(String(e)));
+      if (mine === asked.current) setError(e instanceof Error ? e : new Error(String(e)));
     }
   }, [load]);
 
   useEffect(() => {
-    gone.current = false;
-    setData(null);
-    setAt(0);
+    asked.current++;
+    if (!keep) {
+      setData(null);
+      setAt(0);
+    }
     setError(null);
     void refresh();
     // a hidden tab asks nothing; it catches up when it is looked at again
@@ -50,11 +58,11 @@ export function usePoll<T>(load: () => Promise<T>): Poll<T> {
     };
     document.addEventListener('visibilitychange', seen);
     return () => {
-      gone.current = true;
+      asked.current++;
       clearInterval(timer);
       document.removeEventListener('visibilitychange', seen);
     };
-  }, [refresh]);
+  }, [refresh, keep]);
 
   return {data, at, error, refresh};
 }

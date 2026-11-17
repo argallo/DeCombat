@@ -5,7 +5,7 @@
 
 import {useCallback, useState} from 'react';
 import {type Api, ApiError} from '../api.ts';
-import {type Health, duration, healthOf, plural} from '../overview.ts';
+import {duration, healthOf, plural} from '../overview.ts';
 import {usePoll} from '../poll.ts';
 import {toHash} from '../routes.ts';
 import {when} from '../time.ts';
@@ -29,7 +29,7 @@ import {MATCH_LIMIT, MatchesPerDay} from '../viz/activity.tsx';
 import {Legend, Lines, Meter, type Paint, type Series, Split} from '../viz/charts.tsx';
 import {type EventRow, EventLog} from './EventLog.tsx';
 import {RTT_SCALE} from './Overview.tsx';
-import {Part, Quiet, ScreenHead} from './parts.tsx';
+import {Fact, HealthBadge, Part, Quiet, ScreenHead} from './parts.tsx';
 
 type Num = number | null | undefined;
 
@@ -102,20 +102,7 @@ interface Detail {
   events: EventRow[];
 }
 
-const HEALTH_WORD: Record<Health, string> = {good: 'Good', warn: 'Shaky', bad: 'Bad', none: 'No data'};
-const HEALTH_BADGE: Record<Health, 'success' | 'warning' | 'error' | 'neutral'> = {
-  good: 'success',
-  warn: 'warning',
-  bad: 'error',
-  none: 'neutral',
-};
-
 const n = (v: Num, unit = '') => (v == null ? '-' : `${v}${unit}`);
-
-function HealthBadge({health}: {health: string | null | undefined}) {
-  const h = healthOf(health);
-  return <Badge variant={HEALTH_BADGE[h]} label={HEALTH_WORD[h]} />;
-}
 
 /** How a match ended: the usual words are plain, anything else is marked. */
 function OutcomeBadge({outcome}: {outcome: string}) {
@@ -226,17 +213,6 @@ function Spark({points}: {points: Report[]}) {
       />
       <path d={path} fill="none" stroke="currentColor" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
     </svg>
-  );
-}
-
-function Fact({label, value}: {label: string; value: string}) {
-  return (
-    <VStack gap={0}>
-      <Text type="supporting">{label}</Text>
-      <Text type="body" hasTabularNumbers>
-        {value}
-      </Text>
-    </VStack>
   );
 }
 

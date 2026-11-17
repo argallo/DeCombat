@@ -21,7 +21,13 @@ export interface EventRow {
 /** How many rows are shown before "Show all". */
 const FIRST = 50;
 
-export function EventLog({events, now, empty}: {events: EventRow[]; now: number; empty: string}) {
+/** `ofOne`: the list is one person's own, so a row names no person and opens its match. */
+export function EventLog({events, now, empty, ofOne = false}: {
+  events: EventRow[];
+  now: number;
+  empty: string;
+  ofOne?: boolean;
+}) {
   const [all, setAll] = useState(false);
   if (events.length === 0) return <Quiet>{empty}</Quiet>;
   const rows = all ? events : events.slice(0, FIRST);
@@ -32,8 +38,9 @@ export function EventLog({events, now, empty}: {events: EventRow[]; now: number;
           {rows.map((e, i) => {
             const match = e.match == null || e.match === '' || e.match === 0 ? '' : String(e.match);
             // a row opens the person it is about, else the match
-            const href = e.nick ? toHash('players', e.nick) : match ? toHash('matches', match) : undefined;
-            const who = [e.nick, match ? `match ${match}` : ''].filter(Boolean).join(' · ');
+            const nick = ofOne ? '' : e.nick;
+            const href = nick ? toHash('players', nick) : match ? toHash('matches', match) : undefined;
+            const who = [nick, match ? `match ${match}` : ''].filter(Boolean).join(' · ');
             return (
               <ListItem
                 key={`${e.at}:${i}`}

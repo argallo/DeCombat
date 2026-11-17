@@ -197,7 +197,7 @@ How it works and what is checked:
 ## 8. The new dashboard (`/ops`) and the classic one (`/ops/classic`)
 
 The dashboard is being rebuilt as an app with a side navigation, screens that work on a phone and clearer confirmations
-(rules: DC_DEFAULTS.md LG-441 to LG-449). The app is what `/ops` opens: `https://admin.<your domain>/ops` after the
+(rules: DC_DEFAULTS.md LG-441 to LG-451). The app is what `/ops` opens: `https://admin.<your domain>/ops` after the
 sign-in (a further instance: `/i/<name>/ops`), or `http://127.0.0.1:<admin port>/ops` through the SSH tunnel (with
 `?token=` when the port has a token). Its screens arrive one by one.
 
@@ -207,7 +207,7 @@ until every screen has moved. Nothing of it is gone:
 
 - the app's navigation ends with **Classic dashboard**, and the classic page's bar has **New dashboard**;
 - a screen that has not moved yet says so and opens the matching classic tab with one button (Bots opens
-  `/ops/classic#bots`, Deploy `#updates`, a match `#match=<id>`, a player `#timeline=<name>`);
+  `/ops/classic#bots`, Deploy `#updates`);
 - an address saved before the change (`/ops#bots`, `/ops#match=12`) opens the app on the same thing;
 - the beta list (`/ops/beta`) and the key page (`/keys`) are where they were;
 - every JSON address and every write under `/ops` is unchanged, so scripts that read them need no change.
@@ -250,6 +250,32 @@ A tick is saved at once and can be taken back; when the lobby refuses it the scr
 first 600 characters with a button for the rest. A report's text and its author are shown as text; only an attachment
 the lobby accepted as a link is a link, and it opens in a new tab.
 
+**Players** (LG-450) is the classic tab Players, read only. The list shows every account, 50 at a time with a
+button for the next 50: found by a part of the character name or the login as you type, ordered by last seen (the
+people online first), newest account or most matches, without the bots unless **Include bots** is ticked, only the
+banned ones with **Only banned**. A row says who is online, when the others were last seen, when they joined, their
+kills and deaths, how much they played (a bar against the most of the rows shown) and whether the account is banned,
+disabled, muted, a GM or a bot. A player opens their page: where they are now, a red banner when they are banned (until
+when, by whom, why) and a yellow one when the login is disabled, their rank, EXP, GP and NX, kills for every death,
+the matches of the last 14 days and how many of them they left another way than by quitting or at the end, their
+typical round trip with the mix of good, shaky and bad connections, a bar per match of the mean round trip in the
+colour of the connection, their matches per day, the account's facts, the matches as a list (each opens the match,
+each with the fixed-scale round trip bar) and their events. The classic address `/ops#timeline=<name>` opens it.
+
+**Changes to an account** (LG-451) are a row of buttons on the player's page: Give or take, Ban (Change the ban,
+Lift the ban), Kick, Mute (Change the mute, Unmute), Disable login (Enable login), Send a reset mail, Delete account.
+A button that cannot be used right now is grey and a line under the row says why (not online, no character yet, no
+recovery address, mail not set up, a GM account, online). Every change that somebody notices asks first, in one
+dialog: the form when the change has one (amount, length, minutes, reason), then the question: the change as a
+sentence, what will happen with the numbers of this moment (the balance before and after, until when the ban
+runs, that they are online and will be dropped), the reason again, and a button that names the change (`Ban for 3
+days`, `Give 500 NX`), red when it drops or locks somebody out. **Back** returns to the form with everything typed.
+Deleting an account also needs its login typed. On a further lobby instance the question starts with `On: <lobby>`.
+When the lobby refuses a change the dialog stays open and says why; nothing typed is lost. When it worked the dialog
+closes, a note at the edge of the window shows the lobby's own sentence, and the page reads the account again.
+Unmute and Enable login are undone with one press, so they do not ask. The writes are the same as the classic
+page's (`POST /ops/player/<action>`), recorded the same way. The loadout is still given on the classic page.
+
 **Charts** (LG-449). The screens draw what they read instead of only listing it. The Overview opens with the
 status sentence large on a coloured card, and its numbers each carry a small picture: where the players online are,
 the connections of the people playing, the seats taken, a dot per game server, the bots running. Every person in a
@@ -264,7 +290,7 @@ number is: it sits beside the list or the figures it is drawn from. A list the l
 all the way back: the days or hours before its oldest row are hatched as not known, not drawn as nought. The charts
 are drawn by the app itself with plain elements; no chart library is bundled.
 
-Status: the frame, the Overview, Health, Matches, Bug reports and the charts are implemented, unit-tested (the list's rules, the charts' arithmetic) and looked at in a headless browser
+Status: the frame, the Overview, Health, Matches, Bug reports, Players and the charts are implemented, unit-tested (the lists' rules, the charts' arithmetic) and looked at in a headless browser
 on the admin port at desktop and phone width, with a quiet lobby and with made-up busy answers; not yet tried in a real
 browser behind the tunnel or with real matches.
 

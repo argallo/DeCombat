@@ -95,3 +95,6 @@
 .viz-under { margin-top: 4px; }
 .viz-dots { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 12px; }
 .viz-dots > span { width: 12px; height: 12px; border-radius: 50%; background: var(--viz-fill); }
+
+/* a dialog's form or question and its buttons, under the dialog's header (confirm.tsx) */
+.dc-dialog-body { display: flex; flex-direction: column; gap: 20px; padding: 0 16px 8px; }

@@ -12,6 +12,7 @@ import {Health} from './screens/Health.tsx';
 import {Matches} from './screens/Matches.tsx';
 import {ClassicIcon, SCREEN_ICON} from './viz/icons.tsx';
 import {Overview} from './screens/Overview.tsx';
+import {Players} from './screens/Players.tsx';
 import {
   AppShell,
   Banner,
@@ -87,6 +88,7 @@ function Screen({api, route}: {api: Api; route: Route}) {
   if (route.screen === 'health') return <Health api={api} />;
   if (route.screen === 'bugs') return <BugReports api={api} />;
   if (route.screen === 'matches') return <Matches api={api} id={route.arg} key={route.arg} />;
+  if (route.screen === 'players') return <Players api={api} name={route.arg} key={route.arg} />;
   return <NotBuilt api={api} label={screenLabel(route.screen)} route={route} />;
 }
 
